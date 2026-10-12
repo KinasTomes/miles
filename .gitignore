@@ -1,0 +1,42 @@
+# Báo cáo học phần chỉ lưu local
+/report/
+
+# Build output, caches and local data
+/bin/
+/dist/
+/coverage/
+/.cache/
+/data/
+*.test
+*.prof
+coverage.out
+
+# Local credentials/config; keep checked-in examples
+.env
+.env.*
+!.env.example
+/configs/*.local.*
+/configs/secrets.*
+*.pem
+*.key
+
+# Terraform state and local overrides
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+*.auto.tfvars
+*.auto.tfvars.json
+terraform.tfvars
+terraform.tfvars.json
+*_override.tf
+*_override.tf.json
+
+# Editor/OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*~
