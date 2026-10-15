@@ -252,13 +252,16 @@ Decoder là reader streaming bọc body, không buộc tải toàn bộ object v
 | P1 | DeleteBucket | `DELETE /{bucket}` | `aws s3 rb` |
 | P1 | GetBucketLocation | `GET /{bucket}?location` | SDK |
 | P1 | Presigned GET/PUT | Query `X-Amz-*` | `aws s3 presign` |
+| P1 | GetObject + `If-Match` | `GET /{bucket}/{key}` + `If-Match`; sai ETag trả 412 | `aws s3 cp` tải file lớn: mỗi Range GET gửi If-Match (AWS CLI 2.36.41, s3transfer ≥0.13) |
 | P2 | ListObjects (v1) | `GET /{bucket}` | Công cụ cũ |
 | P2 | ListMultipartUploads | `GET /{bucket}?uploads` | SDK |
 | P2 | UploadPartCopy | `PUT ...?partNumber&uploadId` + `x-amz-copy-source` | `cp` file lớn giữa các key |
-| P2 | Điều kiện | `If-Match`, `If-None-Match`, `If-Modified-Since` | SDK |
+| P2 | Điều kiện còn lại | `If-Match` ngoài GetObject, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `x-amz-copy-source-if-*` | SDK; chưa hỗ trợ trả `NotImplemented`, không bỏ qua |
 | P2 | GetObjectAttributes / GET/HEAD partNumber | GET với query tương ứng | Checksum/part inspection nâng cao |
 | P2 | Ghi đè response | `response-content-type`, ... | Presigned URL |
 | Ngoài phạm vi | Versioning, ACL, Policy, Lifecycle, Tagging, Object Lock, SelectObjectContent | | Trả `NotImplemented` |
+
+Bảng route/operation và mã lỗi thực thi nằm ở `internal/api/s3` (`Resolve`, `WriteError`), fixture request/response ở `tests/fixtures/s3`. Router chọn đúng một operation theo method, mức service/bucket/object, tập query phân biệt (`uploads`, `uploadId`, `partNumber`, `delete`, `restore`, `location`, `list-type`, `attributes`) và có/không `x-amz-copy-source`; không có dòng fallback. Query lạ trên GET/HEAD là tham số của handler; trên PUT/POST/DELETE trả `NotImplemented` để không thành PutObject. Header ACL/grant/tagging/object lock/SSE-C/website redirect/expected bucket owner/append trả `NotImplemented` (trừ `x-amz-acl: private`/`bucket-owner-full-control`, `x-amz-object-ownership: BucketOwnerEnforced`, `x-amz-tagging-directive: COPY`); checksum algorithm ngoài mục 2.7 trả `InvalidRequest`.
 
 ### 4.2 Chi tiết các operation P0
 
@@ -289,7 +292,7 @@ Decoder là reader streaming bọc body, không buộc tải toàn bộ object v
 | Thành phần | Chi tiết |
 |---|---|
 | Range | Một khoảng bytes=a-b, bytes=a-, bytes=-n; multi-range không hỗ trợ; invalid/không giao object trả 416 |
-| Điều kiện P2 | If-Match, If-None-Match, If-Modified-Since; khi triển khai phải phân biệt 304 và 412 theo method |
+| Điều kiện | If-Match P1, sai ETag trả 412 PreconditionFailed; If-None-Match, If-Modified-Since, If-Unmodified-Since P2, trả NotImplemented đến khi triển khai; khi đó phải phân biệt 304 và 412 theo method |
 | Response | 200 hoặc 206 + Content-Range; ETag, Last-Modified, Content-Length, Content-Type, Accept-Ranges, metadata HTTP đã lưu |
 | Lỗi | AccessDenied, NoSuchBucket/NoSuchKey, InvalidRange, InvalidObjectState, InternalError trước header |
 
@@ -425,7 +428,7 @@ POST /bucket?delete; write bucket. XML Delete gồm tối đa 1000 Object/Key v�
 
 ### 4.7 Presigned và điều kiện (P1/P2)
 
-Presigned GET/PUT dùng query SigV4, expiry/credential scope được kiểm tra; query URL không cấp thêm quyền. Credential/grant revoked từ chối request mới. Presigned PUT vẫn kiểm tra body/checksum/length theo mode SDK; không buộc Authorization header. Debug chỉ khi header x-dsg-debug được ký và credential system admin; không cho query debug của user thường mở số liệu vật lý. Conditionals/response overrides là P2, được test riêng khi bật.
+Presigned GET/PUT dùng query SigV4, expiry/credential scope được kiểm tra; query URL không cấp thêm quyền. Credential/grant revoked từ chối request mới. Presigned PUT vẫn kiểm tra body/checksum/length theo mode SDK; không buộc Authorization header. Debug chỉ khi header x-dsg-debug được ký và credential system admin; không cho query debug của user thường mở số liệu vật lý. Response overrides và conditionals trừ If-Match của GetObject là P2, trả NotImplemented đến khi bật và được test riêng.
 
 ---
 
@@ -938,6 +941,8 @@ Bảng này chốt defaults; JSON ở 6.3 minh họa override policy/quota/cache
 ### 13.4 Lịch sử sửa sau review (2026-10-10; giữ v2)
 
 Sửa quyền admin, bastion/token bootstrap, multipart completion takeover/receipt expiry/checksums, exact recovery membership/PITR data retention, overwrite reservation/staging, ALB cấu hình cụ thể, copy threshold boundary/opaque ETag và mốc benchmark. Kiến trúc v4 có lịch sử đầy đủ tại phụ lục.
+
+2026-10-15 (W01-CHIEN-01): đóng bảng route/operation/lỗi mục 4.1; If-Match của GetObject lên P1 vì AWS CLI 2.36.41 gửi If-Match ở mọi Range GET khi tải file lớn; header/query chưa hỗ trợ trả NotImplemented hoặc InvalidRequest thay vì bỏ qua.
 
 Nguồn đối chiếu: [AWS checksum](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html), [CopyObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_CopyObject.html), [PITR](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Point-in-time-recovery.html), [ALB attributes](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/edit-load-balancer-attributes.html).
 
