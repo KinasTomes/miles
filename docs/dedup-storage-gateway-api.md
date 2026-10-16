@@ -246,19 +246,31 @@ Decoder là reader streaming bọc body, không buộc tải toàn bộ object v
 | P1 | CompleteMultipartUpload | `POST /{bucket}/{key}?uploadId=ID` | như trên |
 | P1 | AbortMultipartUpload | `DELETE /{bucket}/{key}?uploadId=ID` | như trên |
 | P1 | ListParts | `GET /{bucket}/{key}?uploadId=ID` | SDK |
-| P1 | DeleteObjects | `POST /{bucket}?delete` | `aws s3 rm --recursive`, `sync --delete` |
-| P1 | CopyObject | `PUT /{bucket}/{key}` + `x-amz-copy-source` | cp/mv trong giới hạn single-copy; file lớn cần UploadPartCopy P2 |
+| P1 | DeleteObjects | `POST /{bucket}?delete` | `aws s3api delete-objects`, SDK; AWS CLI 2.36.41 `s3 rm --recursive`/`sync --delete` gọi DeleteObject từng key |
+| P1 | CopyObject | `PUT /{bucket}/{key}` + `x-amz-copy-source` | cp/mv trong giới hạn single-copy; file lớn AWS CLI gọi GetObjectTagging (ngoài phạm vi) rồi UploadPartCopy P2, cả hai trả 501 |
 | P1 | RestoreObject | `POST /{bucket}/{key}?restore` | `aws s3api restore-object` |
 | P1 | DeleteBucket | `DELETE /{bucket}` | `aws s3 rb` |
 | P1 | GetBucketLocation | `GET /{bucket}?location` | SDK |
 | P1 | Presigned GET/PUT | Query `X-Amz-*` | `aws s3 presign` |
+| P1 | GetObject + `If-Match` | `GET /{bucket}/{key}` + `If-Match`; sai ETag trả 412 | `aws s3 cp` tải file lớn: mỗi Range GET gửi If-Match (AWS CLI 2.36.41, s3transfer ≥0.13) |
 | P2 | ListObjects (v1) | `GET /{bucket}` | Công cụ cũ |
 | P2 | ListMultipartUploads | `GET /{bucket}?uploads` | SDK |
 | P2 | UploadPartCopy | `PUT ...?partNumber&uploadId` + `x-amz-copy-source` | `cp` file lớn giữa các key |
-| P2 | Điều kiện | `If-Match`, `If-None-Match`, `If-Modified-Since` | SDK |
+| P2 | Điều kiện còn lại | `If-Match` ngoài GetObject, `If-None-Match`, `If-Modified-Since`, `If-Unmodified-Since`, `x-amz-copy-source-if-*` | SDK; chưa hỗ trợ trả `NotImplemented`, không bỏ qua |
 | P2 | GetObjectAttributes / GET/HEAD partNumber | GET với query tương ứng | Checksum/part inspection nâng cao |
 | P2 | Ghi đè response | `response-content-type`, ... | Presigned URL |
 | Ngoài phạm vi | Versioning, ACL, Policy, Lifecycle, Tagging, Object Lock, SelectObjectContent | | Trả `NotImplemented` |
+
+Bảng route/operation và mã lỗi thực thi nằm ở `internal/api/s3` (`Resolve`, `WriteError`), fixture request/response ở `tests/fixtures/s3`.
+
+**Router (`Resolve`) quyết định trước khi đọc body:**
+
+- Chọn đúng một operation theo method, mức service/bucket/object, tập query phân biệt và có/không `x-amz-copy-source`; không có dòng fallback. Query phân biệt dạng cờ (`uploads`, `delete`, `restore`, `location`, `attributes`) không mang giá trị; `uploadId`, `partNumber`, `list-type` phải có giá trị. Tổ hợp không khớp dòng nào (ví dụ `?uploads&uploadId`, `?delete` trên object) trả `InvalidRequest`.
+- Mọi query key khác phải là tham số của operation đã chọn, nếu không trả `NotImplemented` trên mọi method, kể cả GET/HEAD: ListObjectsV2 nhận `prefix`, `delimiter`, `max-keys`, `continuation-token`, `start-after`, `encoding-type`, `fetch-owner`; ListParts nhận `max-parts`, `part-number-marker`; operation P0/P1 khác không nhận tham số nào. `x-id` và `x-amz-*` (presigned SigV4) thuộc lớp auth. Key lặp lại trả `InvalidArgument`. `partNumber` của UploadPart là số nguyên 1..10000, `list-type` phải là `2`; sai trả `InvalidArgument`.
+- Header ACL/grant/tagging/object lock/SSE-C/website redirect/expected bucket owner/append và điều kiện P2 trả `NotImplemented` (trừ `x-amz-acl: private`/`bucket-owner-full-control`, `x-amz-object-ownership: BucketOwnerEnforced`, `x-amz-tagging-directive: COPY`).
+- Checksum trả `InvalidRequest` khi: algorithm ngoài mục 2.7; có hơn một giá trị checksum (header `x-amz-checksum-<alg>` và trailer cộng lại); `x-amz-sdk-checksum-algorithm`/`x-amz-checksum-algorithm` khác algorithm của giá trị; `x-amz-trailer` không đi với `x-amz-content-sha256` `STREAMING-UNSIGNED-PAYLOAD-TRAILER`/`STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` hoặc ngược lại; `x-amz-checksum-type` ngoài Create/Complete multipart, khác `FULL_OBJECT`/`COMPOSITE`, hoặc ở Create thiếu `x-amz-checksum-algorithm`/sai cặp algorithm-type của bảng 2.7; `x-amz-checksum-mode` ngoài GetObject/HeadObject hoặc khác `ENABLED`.
+
+**Handler (W02-CHIEN-01, W03) kiểm tra phần cần ngữ nghĩa tham số hoặc state:** giá trị `max-keys`, `max-parts`, `part-number-marker`, `continuation-token`, `encoding-type`, `fetch-owner`, `start-after`; cú pháp Range; quy tắc tên bucket; checksum algorithm/type so với upload đã tạo; `If-Match` so với ETag hiện hành (412).
 
 ### 4.2 Chi tiết các operation P0
 
@@ -289,7 +301,7 @@ Decoder là reader streaming bọc body, không buộc tải toàn bộ object v
 | Thành phần | Chi tiết |
 |---|---|
 | Range | Một khoảng bytes=a-b, bytes=a-, bytes=-n; multi-range không hỗ trợ; invalid/không giao object trả 416 |
-| Điều kiện P2 | If-Match, If-None-Match, If-Modified-Since; khi triển khai phải phân biệt 304 và 412 theo method |
+| Điều kiện | If-Match P1, sai ETag trả 412 PreconditionFailed; If-None-Match, If-Modified-Since, If-Unmodified-Since P2, trả NotImplemented đến khi triển khai; khi đó phải phân biệt 304 và 412 theo method |
 | Response | 200 hoặc 206 + Content-Range; ETag, Last-Modified, Content-Length, Content-Type, Accept-Ranges, metadata HTTP đã lưu |
 | Lỗi | AccessDenied, NoSuchBucket/NoSuchKey, InvalidRange, InvalidObjectState, InternalError trước header |
 
@@ -425,7 +437,7 @@ POST /bucket?delete; write bucket. XML Delete gồm tối đa 1000 Object/Key v�
 
 ### 4.7 Presigned và điều kiện (P1/P2)
 
-Presigned GET/PUT dùng query SigV4, expiry/credential scope được kiểm tra; query URL không cấp thêm quyền. Credential/grant revoked từ chối request mới. Presigned PUT vẫn kiểm tra body/checksum/length theo mode SDK; không buộc Authorization header. Debug chỉ khi header x-dsg-debug được ký và credential system admin; không cho query debug của user thường mở số liệu vật lý. Conditionals/response overrides là P2, được test riêng khi bật.
+Presigned GET/PUT dùng query SigV4, expiry/credential scope được kiểm tra; query URL không cấp thêm quyền. Credential/grant revoked từ chối request mới. Presigned PUT vẫn kiểm tra body/checksum/length theo mode SDK; không buộc Authorization header. Debug chỉ khi header x-dsg-debug được ký và credential system admin; không cho query debug của user thường mở số liệu vật lý. Response overrides và conditionals trừ If-Match của GetObject là P2, trả NotImplemented đến khi bật và được test riêng.
 
 ---
 
@@ -834,10 +846,10 @@ CI xác nhận header đã nằm SignedHeaders và user thường không nhận 
 | `aws s3 rm s3://demo/small.bin` | DeleteObject | P0 |
 | `aws s3 cp big.tar s3://demo/` (file lớn) | CreateMPU, UploadPart nhiều lần, Complete | P1 |
 | `aws s3 cp s3://demo/big.tar .` | HeadObject, nhiều GetObject có Range | P1 |
-| `aws s3 sync dir/ s3://demo/dir/` | ListObjectsV2, HeadObject, PutObject | P1 |
-| `aws s3 rm s3://demo --recursive` | ListObjectsV2, DeleteObjects | P1 |
+| `aws s3 sync dir/ s3://demo/dir/` | ListObjectsV2, PutObject; `--delete` thêm DeleteObject từng key | P1 |
+| `aws s3 rm s3://demo --recursive` | ListObjectsV2, DeleteObject từng key (AWS CLI 2.36.41) | P1 |
 | `aws s3 mv s3://demo/a s3://demo/b` (file size < threshold, ≤5 GiB) | CopyObject, DeleteObject | P1 |
-| `aws s3 cp/mv` giữa key file lớn | UploadPartCopy; chưa hỗ trợ trả 501 | P2; ở P1 dùng cách né ở mục 4.5 (nâng multipart_threshold hoặc `s3api copy-object`) |
+| `aws s3 cp/mv` giữa key file lớn | GetObjectTagging rồi UploadPartCopy; cả hai trả 501, AWS CLI 2.36.41 dừng ở GetObjectTagging | P2; ở P1 dùng cách né ở mục 4.5 (nâng multipart_threshold hoặc `s3api copy-object`) |
 | `aws s3api get-object --range bytes=0-1023 ...` | GetObject có Range | P0 |
 | `aws s3api restore-object ...` | RestoreObject | P1 |
 | `aws s3 presign s3://demo/f` rồi `curl` | Presigned GET | P1 |
