@@ -506,6 +506,8 @@ Không yêu cầu total=dup+revived+unique vì dup đếm occurrences còn reviv
 | P1 | POST / GET | /faults | System admin; flag enable-fault-injection, scope node/cluster rõ ràng |
 | P1 | DELETE | /faults/{id} | System admin gỡ fault cụ thể; không xóa lỗi người khác qua unscoped endpoint |
 
+**Hợp đồng job `scrub` P1:** Cho phép system admin gọi `POST /admin/v1/jobs` với `type=scrub` (hoặc `dsgctl job run scrub`) để chạy scrub thủ công có phạm vi hữu hạn. Kết quả job ở `GET /admin/v1/jobs/{id}` phải ghi nhận phạm vi/mẫu, số candidate/checked/corrupt/skipped, lý do bỏ qua và trạng thái/lỗi; kiểm pack/sidecar/index checksum, byte chunk đã giải nén với SHA-256 cho dữ liệu có thể đọc (Warm/GLACIER_IR/GLACIER Restored hợp lệ). Không tự restore GLACIER chưa được restore, không tính skipped là verified, không dùng stub/no-op để báo thành công. Giữ quyền, lease/fence, R1 read pins và quy tắc cancel an toàn; báo lỗi toàn vẹn qua logs/metrics, không auto-repair/xóa dữ liệu. Full automated/periodic scrub là hạng mục hệ thống tùy chọn (kiến trúc §11.2, §15.1), không thuộc P1; auto-repair không được tự bật và cần duyệt phạm vi riêng. Các field/schema chi tiết của job tuân hợp đồng jobs chung khi triển khai; không giả định AWS/test đã chạy.
+
 ### 6.3 Ví dụ và định nghĩa
 
 **PUT /admin/v1/buckets/demo/grants/user-a** (owner demo hoặc system admin):
