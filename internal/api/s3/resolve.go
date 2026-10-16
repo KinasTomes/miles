@@ -1,9 +1,15 @@
 // Package s3 is the S3 API contract of the gateway: the operation table that
-// maps a path-style request to exactly one operation, the operations and
-// headers DSG rejects instead of ignoring, and the XML error format
-// (docs/dedup-storage-gateway-api.md sections 2.1, 2.4, 2.5, 2.7 and 4.1).
-// Request/response fixtures for router implementations live in
+// maps a path-style request to exactly one operation, the query parameters,
+// headers and checksum combinations DSG rejects instead of ignoring, and the
+// XML error format (docs/dedup-storage-gateway-api.md sections 2.1, 2.4, 2.5,
+// 2.7 and 4.1). Request/response fixtures for router implementations live in
 // tests/fixtures/s3.
+//
+// Resolve checks what can be decided from the request line and headers
+// alone. Handlers own every check that needs a parameter's meaning or stored
+// state: max-keys, max-parts, part-number-marker, continuation-token,
+// encoding-type, fetch-owner, start-after, Range syntax, bucket name rules,
+// checksum algorithm/type against the upload, and If-Match against the ETag.
 package s3
 
 import (
@@ -11,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -73,11 +80,21 @@ const (
 	out
 )
 
-const maxKeyBytes = 1024
+const (
+	maxKeyBytes = 1024
+	maxParts    = 10000
+)
+
+var (
+	listObjectsV2Params = []string{"continuation-token", "delimiter", "encoding-type", "fetch-owner", "max-keys", "prefix", "start-after"}
+	listPartsParams     = []string{"max-parts", "part-number-marker"}
+)
 
 // routes is the operation table. A request matches a row only when method,
 // level, discriminator set and presence of x-amz-copy-source are all equal.
 // There is no fallback row, so a write never reaches PutObject by accident.
+// params lists the other query parameters the operation takes; any other key
+// is NotImplemented, on every method.
 var routes = []struct {
 	method string
 	level  level
@@ -85,38 +102,43 @@ var routes = []struct {
 	copy   bool   // x-amz-copy-source present
 	op     Operation
 	scope  scope
+	params []string
 }{
-	{http.MethodGet, levelService, "", false, ListBuckets, p0},
+	{http.MethodGet, levelService, "", false, ListBuckets, p0, nil},
 
-	{http.MethodPut, levelBucket, "", false, CreateBucket, p0},
-	{http.MethodHead, levelBucket, "", false, HeadBucket, p0},
-	{http.MethodGet, levelBucket, "list-type", false, ListObjectsV2, p0},
-	{http.MethodGet, levelBucket, "location", false, GetBucketLocation, p1},
-	{http.MethodPost, levelBucket, "delete", false, DeleteObjects, p1},
-	{http.MethodDelete, levelBucket, "", false, DeleteBucket, p1},
-	{http.MethodGet, levelBucket, "", false, ListObjects, p2},
-	{http.MethodGet, levelBucket, "uploads", false, ListMultipartUploads, p2},
-	{http.MethodPost, levelBucket, "", false, PostObject, out},
+	{http.MethodPut, levelBucket, "", false, CreateBucket, p0, nil},
+	{http.MethodHead, levelBucket, "", false, HeadBucket, p0, nil},
+	{http.MethodGet, levelBucket, "list-type", false, ListObjectsV2, p0, listObjectsV2Params},
+	{http.MethodGet, levelBucket, "location", false, GetBucketLocation, p1, nil},
+	{http.MethodPost, levelBucket, "delete", false, DeleteObjects, p1, nil},
+	{http.MethodDelete, levelBucket, "", false, DeleteBucket, p1, nil},
+	{http.MethodGet, levelBucket, "", false, ListObjects, p2, nil},
+	{http.MethodGet, levelBucket, "uploads", false, ListMultipartUploads, p2, nil},
+	{http.MethodPost, levelBucket, "", false, PostObject, out, nil},
 
-	{http.MethodPut, levelObject, "", false, PutObject, p0},
-	{http.MethodGet, levelObject, "", false, GetObject, p0},
-	{http.MethodHead, levelObject, "", false, HeadObject, p0},
-	{http.MethodDelete, levelObject, "", false, DeleteObject, p0},
-	{http.MethodPut, levelObject, "", true, CopyObject, p1},
-	{http.MethodPost, levelObject, "uploads", false, CreateMultipartUpload, p1},
-	{http.MethodPut, levelObject, "partNumber&uploadId", false, UploadPart, p1},
-	{http.MethodPost, levelObject, "uploadId", false, CompleteMultipartUpload, p1},
-	{http.MethodDelete, levelObject, "uploadId", false, AbortMultipartUpload, p1},
-	{http.MethodGet, levelObject, "uploadId", false, ListParts, p1},
-	{http.MethodPost, levelObject, "restore", false, RestoreObject, p1},
-	{http.MethodPut, levelObject, "partNumber&uploadId", true, UploadPartCopy, p2},
-	{http.MethodGet, levelObject, "attributes", false, GetObjectAttributes, p2},
-	{http.MethodGet, levelObject, "partNumber", false, GetObject, p2},
-	{http.MethodHead, levelObject, "partNumber", false, HeadObject, p2},
+	{http.MethodPut, levelObject, "", false, PutObject, p0, nil},
+	{http.MethodGet, levelObject, "", false, GetObject, p0, nil},
+	{http.MethodHead, levelObject, "", false, HeadObject, p0, nil},
+	{http.MethodDelete, levelObject, "", false, DeleteObject, p0, nil},
+	{http.MethodPut, levelObject, "", true, CopyObject, p1, nil},
+	{http.MethodPost, levelObject, "uploads", false, CreateMultipartUpload, p1, nil},
+	{http.MethodPut, levelObject, "partNumber&uploadId", false, UploadPart, p1, nil},
+	{http.MethodPost, levelObject, "uploadId", false, CompleteMultipartUpload, p1, nil},
+	{http.MethodDelete, levelObject, "uploadId", false, AbortMultipartUpload, p1, nil},
+	{http.MethodGet, levelObject, "uploadId", false, ListParts, p1, listPartsParams},
+	{http.MethodPost, levelObject, "restore", false, RestoreObject, p1, nil},
+	{http.MethodPut, levelObject, "partNumber&uploadId", true, UploadPartCopy, p2, nil},
+	{http.MethodGet, levelObject, "attributes", false, GetObjectAttributes, p2, nil},
+	{http.MethodGet, levelObject, "partNumber", false, GetObject, p2, nil},
+	{http.MethodHead, levelObject, "partNumber", false, HeadObject, p2, nil},
 }
 
-// discriminators are the query keys that select a row of routes.
-var discriminators = []string{"attributes", "delete", "list-type", "location", "partNumber", "restore", "uploadId", "uploads"}
+// Discriminators are the query keys that select a row of routes. Flag
+// subresources take no value; the others need a non-empty one.
+var (
+	flagSubresources  = []string{"attributes", "delete", "location", "restore", "uploads"}
+	valueSubresources = []string{"list-type", "partNumber", "uploadId"}
+)
 
 // unsupportedSubresources are S3 features outside DSG scope (API v2 4.1). They
 // get NotImplemented on every method instead of being served as a plain
@@ -133,11 +155,10 @@ var unsupportedSubresources = []string{
 // Resolve maps a path-style request to its operation, or to the S3 error the
 // router must return before authentication reads the body.
 //
-// Query keys other than discriminators are operation parameters on GET/HEAD
-// and are left to the handler. On writes every query key must be a
-// discriminator, so an unknown subresource fails instead of turning into a
-// PutObject. "x-id" (SDK hint) and "x-amz-*" keys (presigned SigV4 and
-// hoisted headers) belong to the auth layer and are skipped here.
+// Every query key must be a discriminator or a parameter of the resolved
+// operation, and may appear once. "x-id" (SDK hint) and "x-amz-*" keys
+// (presigned SigV4 and hoisted headers) belong to the auth layer and are
+// skipped here.
 func Resolve(r *http.Request) (Route, *Error) {
 	rest, ok := strings.CutPrefix(r.URL.EscapedPath(), "/")
 	if !ok {
@@ -162,17 +183,28 @@ func Resolve(r *http.Request) (Route, *Error) {
 	if err != nil {
 		return fail(ErrInvalidArgument, "malformed query string")
 	}
-	read := r.Method == http.MethodGet || r.Method == http.MethodHead
-	var subs []string
+	var subs, params []string
 	for _, k := range slices.Sorted(maps.Keys(query)) {
+		v := query[k]
+		if len(v) > 1 {
+			return fail(ErrInvalidArgument, "query parameter "+k+" is repeated")
+		}
 		switch {
 		case k == "x-id" || len(k) >= 6 && strings.EqualFold(k[:6], "x-amz-"):
 		case slices.Contains(unsupportedSubresources, k) || strings.HasPrefix(k, "response-"):
 			return fail(ErrNotImplemented, "?"+k+" is not implemented")
-		case slices.Contains(discriminators, k):
+		case slices.Contains(flagSubresources, k):
+			if v[0] != "" {
+				return fail(ErrInvalidArgument, "?"+k+" takes no value")
+			}
 			subs = append(subs, k)
-		case !read:
-			return fail(ErrNotImplemented, "?"+k+" is not implemented on "+r.Method)
+		case slices.Contains(valueSubresources, k):
+			if v[0] == "" {
+				return fail(ErrInvalidArgument, k+" must not be empty")
+			}
+			subs = append(subs, k)
+		default:
+			params = append(params, k)
 		}
 	}
 	sub := strings.Join(subs, "&")
@@ -202,8 +234,20 @@ func Resolve(r *http.Request) (Route, *Error) {
 			}
 			return fail(ErrNotImplemented, name+" is not implemented")
 		}
-		if row.op == ListObjectsV2 && query.Get("list-type") != "2" {
-			return fail(ErrInvalidArgument, "list-type must be 2")
+		for _, p := range params {
+			if !slices.Contains(row.params, p) {
+				return fail(ErrNotImplemented, "?"+p+" is not implemented for "+string(row.op))
+			}
+		}
+		switch row.op {
+		case ListObjectsV2:
+			if query.Get("list-type") != "2" {
+				return fail(ErrInvalidArgument, "list-type must be 2")
+			}
+		case UploadPart:
+			if n, err := strconv.ParseUint(query.Get("partNumber"), 10, 32); err != nil || n < 1 || n > maxParts {
+				return fail(ErrInvalidArgument, "Part number must be an integer between 1 and 10000, inclusive")
+			}
 		}
 		if e := checkHeaders(r.Header, row.op); e != nil {
 			e.Bucket, e.Key = bucket, key
@@ -216,10 +260,6 @@ func Resolve(r *http.Request) (Route, *Error) {
 	}
 	return fail(ErrInvalidRequest, "no operation matches "+r.Method+" with this query and x-amz-copy-source")
 }
-
-// checksumAlgorithms are the algorithms of API v2 2.7. Others, including
-// SHA512, XXHASH* and MD5 as x-amz-checksum-md5, fail before the body.
-var checksumAlgorithms = []string{"CRC32", "CRC32C", "CRC64NVME", "SHA1", "SHA256"}
 
 // headerRules lists request headers DSG does not implement. Ignoring them
 // would let the client believe a condition, ACL, tag, lock, website redirect,
@@ -266,11 +306,8 @@ func checkHeaders(h http.Header, op Operation) *Error {
 				return &Error{Code: ErrNotImplemented, Message: "header " + lower + " is not implemented"}
 			}
 		}
-		if e := checkChecksumHeader(lower, value); e != nil {
-			return e
-		}
 	}
-	return nil
+	return checkChecksum(h, op)
 }
 
 func headerMatches(rule, name string) bool {
@@ -280,28 +317,103 @@ func headerMatches(rule, name string) bool {
 	return name == rule
 }
 
-// checkChecksumHeader rejects checksum algorithms outside API v2 2.7 by name.
-// Which algorithm/type pairs each operation accepts is the handler's matrix.
-func checkChecksumHeader(name, value string) *Error {
-	var alg string
-	switch name {
-	case "x-amz-checksum-mode", "x-amz-checksum-type":
-		return nil
-	case "x-amz-checksum-algorithm", "x-amz-sdk-checksum-algorithm":
-		alg = value
-	case "x-amz-trailer":
-		var ok bool
-		if alg, ok = strings.CutPrefix(strings.ToLower(value), "x-amz-checksum-"); !ok {
-			return &Error{Code: ErrInvalidRequest, Message: "trailer " + value + " is not supported"}
-		}
-	default:
-		var ok bool
-		if alg, ok = strings.CutPrefix(name, "x-amz-checksum-"); !ok {
-			return nil
+// checksumTypes maps each algorithm of API v2 2.7 to the multipart checksum
+// types it supports. Other algorithms, including SHA512, XXHASH* and MD5 as
+// x-amz-checksum-md5, fail before the body.
+var checksumTypes = map[string][]string{
+	"CRC64NVME": {"FULL_OBJECT"},
+	"CRC32":     {"FULL_OBJECT", "COMPOSITE"},
+	"CRC32C":    {"FULL_OBJECT", "COMPOSITE"},
+	"SHA1":      {"COMPOSITE"},
+	"SHA256":    {"COMPOSITE"},
+}
+
+// trailerPayloads are the x-amz-content-sha256 values whose aws-chunked body
+// carries the trailer named by x-amz-trailer.
+var trailerPayloads = []string{"STREAMING-UNSIGNED-PAYLOAD-TRAILER", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"}
+
+// checkChecksum rejects checksum headers DSG cannot honour, before the body
+// is read: an algorithm outside checksumTypes; more than one checksum value
+// (x-amz-checksum-<alg> headers and x-amz-trailer entries together); names
+// that disagree with x-amz-sdk-checksum-algorithm or x-amz-checksum-algorithm;
+// x-amz-trailer without a trailer payload or the reverse; and
+// x-amz-checksum-type or x-amz-checksum-mode outside the operations and values
+// S3 defines for them. All are InvalidRequest (API v2 2.7).
+func checkChecksum(h http.Header, op Operation) *Error {
+	invalid := func(msg string) *Error { return &Error{Code: ErrInvalidRequest, Message: msg} }
+	var algs []string // every algorithm named, in header order
+	values := 0       // checksum values sent in headers or trailers
+	for _, name := range slices.Sorted(maps.Keys(h)) {
+		lower := strings.ToLower(name)
+		alg, isChecksum := strings.CutPrefix(lower, "x-amz-checksum-")
+		switch {
+		case lower == "x-amz-sdk-checksum-algorithm" || isChecksum && alg == "algorithm":
+			algs = append(algs, h[name]...)
+		case !isChecksum || alg == "mode" || alg == "type":
+		default:
+			for range h[name] {
+				algs = append(algs, alg)
+			}
+			values += len(h[name])
 		}
 	}
-	if !slices.ContainsFunc(checksumAlgorithms, func(a string) bool { return strings.EqualFold(a, alg) }) {
-		return &Error{Code: ErrInvalidRequest, Message: "checksum algorithm " + alg + " is not supported"}
+
+	payload := h.Get("X-Amz-Content-Sha256")
+	if trailers := h.Values("X-Amz-Trailer"); len(trailers) > 0 {
+		if !slices.Contains(trailerPayloads, payload) {
+			return invalid("x-amz-trailer requires x-amz-content-sha256 " + strings.Join(trailerPayloads, " or "))
+		}
+		for _, t := range strings.Split(strings.Join(trailers, ","), ",") {
+			alg, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(t)), "x-amz-checksum-")
+			if !ok {
+				return invalid("trailer " + t + " is not supported")
+			}
+			algs = append(algs, alg)
+			values++
+		}
+	} else if slices.Contains(trailerPayloads, payload) {
+		return invalid("x-amz-content-sha256 " + payload + " requires x-amz-trailer")
+	}
+
+	for _, a := range algs {
+		if _, ok := checksumTypes[strings.ToUpper(a)]; !ok {
+			return invalid("checksum algorithm " + a + " is not supported")
+		}
+	}
+	if values > 1 {
+		return invalid("expecting a single x-amz-checksum- header or trailer")
+	}
+	for _, a := range algs {
+		if !strings.EqualFold(a, algs[0]) {
+			return invalid("checksum headers name different algorithms: " + algs[0] + ", " + a)
+		}
+	}
+
+	if types := h.Values("X-Amz-Checksum-Type"); len(types) > 0 {
+		if op != CreateMultipartUpload && op != CompleteMultipartUpload {
+			return invalid("x-amz-checksum-type is only valid on CreateMultipartUpload and CompleteMultipartUpload")
+		}
+		t := types[0]
+		if len(types) > 1 || t != "FULL_OBJECT" && t != "COMPOSITE" {
+			return invalid("x-amz-checksum-type must be FULL_OBJECT or COMPOSITE")
+		}
+		if op == CreateMultipartUpload {
+			alg := strings.ToUpper(h.Get("X-Amz-Checksum-Algorithm"))
+			if alg == "" {
+				return invalid("x-amz-checksum-type requires x-amz-checksum-algorithm")
+			}
+			if !slices.Contains(checksumTypes[alg], t) {
+				return invalid(alg + " does not support checksum type " + t)
+			}
+		}
+	}
+	if modes := h.Values("X-Amz-Checksum-Mode"); len(modes) > 0 {
+		if op != GetObject && op != HeadObject {
+			return invalid("x-amz-checksum-mode is only valid on GetObject and HeadObject")
+		}
+		if len(modes) > 1 || modes[0] != "ENABLED" {
+			return invalid("x-amz-checksum-mode must be ENABLED")
+		}
 	}
 	return nil
 }

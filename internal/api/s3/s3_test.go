@@ -3,6 +3,8 @@ package s3
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -87,7 +89,9 @@ func TestErrorFixtures(t *testing.T) {
 	for _, r := range f.Responses {
 		t.Run(r.Name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			WriteError(rec, httptest.NewRequest(r.Method, "/", nil), &r.Error, f.RequestID)
+			if err := WriteError(rec, httptest.NewRequest(r.Method, "/", nil), &r.Error, f.RequestID); err != nil {
+				t.Fatal(err)
+			}
 			if rec.Code != r.Status {
 				t.Errorf("status %d, want %d", rec.Code, r.Status)
 			}
@@ -103,5 +107,17 @@ func TestErrorFixtures(t *testing.T) {
 				t.Errorf("Content-Length %s, want %d", rec.Header().Get("Content-Length"), len(r.Body))
 			}
 		})
+	}
+}
+
+type closedClient struct{ *httptest.ResponseRecorder }
+
+func (closedClient) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+// A body write that fails after the status is sent must reach the caller.
+func TestWriteErrorReturnsWriteFailure(t *testing.T) {
+	err := WriteError(closedClient{httptest.NewRecorder()}, httptest.NewRequest(http.MethodGet, "/", nil), &Error{Code: ErrNoSuchKey}, "R")
+	if !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("err = %v, want %v", err, io.ErrClosedPipe)
 	}
 }

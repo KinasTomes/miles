@@ -4,7 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 )
@@ -124,33 +123,45 @@ type errorBody struct {
 
 // WriteError writes e as the S3 XML error with the common response headers
 // of API v2 2.3. A HEAD response carries status and headers only, never a
-// body (API v2 4.2 HeadObject).
-func WriteError(w http.ResponseWriter, r *http.Request, e *Error, requestID string) {
+// body (API v2 4.2 HeadObject). Invalid XML characters in a key are written
+// as U+FFFD.
+//
+// The returned error comes from encoding or writing the body, usually a
+// client that went away. The status line is already sent by then, so the
+// caller can only log it with requestID; it must not write another response.
+func WriteError(w http.ResponseWriter, r *http.Request, e *Error, requestID string) error {
 	h := w.Header()
 	h.Set("Server", "DedupStorageGateway")
 	h.Set("X-Amz-Request-Id", requestID)
 	h.Set("X-Amz-Id-2", requestID)
 	if r.Method == http.MethodHead {
 		w.WriteHeader(e.Status())
-		return
+		return nil
 	}
-	// Marshal of plain strings cannot fail; invalid XML characters in a key
-	// are written as U+FFFD.
-	body, _ := xml.Marshal(errorBody{
+	body, err := xml.Marshal(errorBody{
 		Code:       e.Code,
 		Message:    e.message(),
 		Key:        e.Key,
 		BucketName: e.Bucket,
 		RequestID:  requestID,
 	})
+	if err != nil {
+		w.WriteHeader(e.Status())
+		return fmt.Errorf("s3: encode %s error: %w", e.Code, err)
+	}
+	body = append([]byte(xml.Header), body...)
 	h.Set("Content-Type", "application/xml")
-	h.Set("Content-Length", strconv.Itoa(len(xml.Header)+len(body)))
+	h.Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(e.Status())
-	io.WriteString(w, xml.Header)
-	w.Write(body)
+	if _, err := w.Write(body); err != nil {
+		return fmt.Errorf("s3: write %s error: %w", e.Code, err)
+	}
+	return nil
 }
 
 // NewRequestID returns a request ID in the S3 form: 16 upper-case hex digits.
+// It has no error path: since Go 1.24 crypto/rand.Read never returns an
+// error and crashes the process if the system entropy source fails.
 func NewRequestID() string {
 	var b [8]byte
 	rand.Read(b[:])
