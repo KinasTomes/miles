@@ -40,3 +40,7 @@ terraform.tfvars.json
 .DS_Store
 Thumbs.db
 *~
+
+# Local coding-agent guide
+AGENTS.md
+.omp/
