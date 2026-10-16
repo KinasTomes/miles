@@ -709,6 +709,8 @@ Terraform phải dựng public/private subnets trên ít nhất hai AZ cho Cloud
 - Drain đặt flag nhận request tại gateway **ngay lập tức**, trả 503 request mới; `/readyz` trả 503. Cloud đồng thời deregister ALB target, chờ deregistration delay và active requests/pack/journal export checkpoint trước kết thúc ASG lifecycle action. Có timeout/heartbeat lifecycle và báo incomplete khi quá hạn, không khẳng định flush hoàn tất khi chưa xong.
 - Không dựa riêng health check: có độ trễ và ALB có thể fail-open khi mọi target unhealthy. Edge áp gateway admission gate, không cần gọi ALB. Flush journal dùng outbox nên node mất vẫn có thể export từ node khác.
 
+**Scrub P1 tối thiểu (on-demand):** System admin có thể tạo job `scrub` theo yêu cầu qua Admin API/`dsgctl`; job thực sự kiểm tra dữ liệu thuộc phạm vi hữu hạn đã chọn (có thể là mẫu được xác định/ghi nhận) đối với pack có payload đọc được (Warm, GLACIER_IR hoặc bản GLACIER đã restore hợp lệ): kiểm tra pack/sidecar/index checksum, giải nén và xác minh SHA-256 của những chunk được kiểm tra trước khi báo thành công. Ghi job id, phạm vi, số candidate/checked/corrupt/skipped, lý do skipped và lỗi có thể truy vết, không làm lộ thông tin vật lý cho user thường. GLACIER chưa restore được đánh dấu skipped/unverified, không tự khởi tạo restore hay coi đã verify. Job dùng lease/fence, bảo vệ view/pins R1 nếu đọc payload, hỗ trợ cancel tại safe point; không tự sửa/xóa pack/chunk khi phát hiện lỗi. Job chỉ pass nếu mọi mục thuộc phạm vi có thể đọc đã được kiểm thực và không có corruption; partial/skipped phải hiện rõ coverage, không khai báo kiểm chứng toàn kho. **Lịch quét định kỳ và full-store automated scrub là tùy chọn**, không thuộc DoD P1; auto-repair phải được duyệt phạm vi riêng, không tự kích hoạt. Implement/test ở W05-HUNG-02 (jobs) và W06-HUNG-02 (manual scrub); tài liệu W1 chưa chứng minh chức năng đã chạy.
+
 Nguồn: [Roles Anywhere credential helper](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/credential-helper.html), [ALB health checks/fail-open](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/target-group-health-checks.html).
 
 > **Tiết kiệm chi phí khi làm đồ án:** instance nhỏ, dữ liệu thử vài chục GB, `terraform destroy` mỗi khi ngừng làm, AWS Budgets có cảnh báo. EBS gp3 đủ để đo tương đối, không nhất thiết dùng instance NVMe.
@@ -844,7 +846,7 @@ flowchart LR
 | Số PUT request so với chunk-per-object | Giảm từ 90% trở lên |
 | Cache hit ratio khi đọc lặp | Từ 80% trở lên |
 | Throughput PUT một luồng | Không thấp hơn 50% so với ghi thẳng S3 |
-| Tương thích công cụ | `aws s3 cp/sync` (kể cả multipart, file lớn) hoạt động đúng |
+| Tương thích công cụ | `aws s3 cp/sync` upload/download (file lớn: multipart **upload**, HeadObject + Range GET + If-Match **download**) hoạt động theo API P0/P1; copy giữa các key dùng CopyObject đơn ≤5 GiB (lệnh `s3api copy-object`); với `aws s3 cp/mv` high-level còn phải có size < multipart_threshold, còn copy multipart qua UploadPartCopy/GetObjectTagging không thuộc P1 |
 | Toàn vẹn | 100% object đọc lại khớp hash sau các bài test lỗi |
 | Chịu lỗi | Kill 1 gateway giữa lúc PUT: không object hỏng, retry thành công |
 | Khôi phục | Xóa metadata, chạy `rebuild-index`, dữ liệu đọc lại đúng (nêu rõ RPO) |
