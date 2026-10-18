@@ -71,7 +71,7 @@ Các giá trị `x-amz-content-sha256` cần xử lý:
 | `STREAMING-UNSIGNED-PAYLOAD-TRAILER` | `aws-chunked`, không ký khung, kèm checksum trailer |
 | `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` | `aws-chunked`, có chữ ký và checksum trailer |
 
-> **Rủi ro lớn nhất của S3 API:** CLI/SDK đời mới mặc định gửi checksum bổ sung (`x-amz-checksum-*`, `x-amz-trailer`) qua `aws-chunked`. Nếu parser không xử lý đúng, `aws s3 cp` sẽ lỗi ngay từ file đầu tiên. Thử với **đúng phiên bản CLI của nhóm** từ tuần 1-2. Cách tạm khi đang phát triển: đặt `request_checksum_calculation = when_required` và `response_checksum_validation = when_required` trong cấu hình AWS CLI (kiểm chứng tên tùy chọn theo phiên bản CLI đang dùng).
+> **Rủi ro lớn nhất của S3 API:** CLI/SDK đời mới mặc định gửi checksum bổ sung (`x-amz-checksum-*`, `x-amz-trailer`) qua `aws-chunked`. AWS CLI 2.36.41 và boto3 1.43.114 qua HTTPS gửi mọi PutObject/UploadPart dạng `Transfer-Encoding: chunked` + `Content-Encoding: aws-chunked` + `STREAMING-UNSIGNED-PAYLOAD-TRAILER` (mục 2.2.2, 11.1). Nếu parser không xử lý đúng, `aws s3 cp` sẽ lỗi ngay từ file đầu tiên. `request_checksum_calculation = when_required` và `response_checksum_validation = when_required` (tên đúng ở CLI 2.36.41) bỏ checksum và `aws-chunked`; chỉ dùng để khoanh lỗi khi debug, không phải bằng chứng tương thích, giống `--no-verify-ssl`.
 
 **Lưu trữ khóa truy cập:** SigV4 cần **secret key gốc** để tính lại chữ ký nên không thể băm một chiều như mật khẩu. Lưu secret **mã hóa bằng KMS** trong bảng `Credentials` (hoặc Secrets Manager). MVP có thể dùng một credential tĩnh gắn user/owner rõ ràng, không bỏ authorization. Credential IAM backend là EC2 role/Roles Anywhere/IAM user hạn chế quyền, tách khỏi bảng này.
 
@@ -97,6 +97,42 @@ Sai lệch đồng hồ quá 15 phút giữa client và gateway: trả `RequestT
 - Lookup Chunks nhận cặp domain/hash nhưng key DynamoDB là một partition key ghép `domain_id#hash`; không partition toàn bộ Chunks chỉ theo domain. Domain ID 1–64 ký tự `[a-z0-9_-]`, không chứa `#`; hash hex lowercase 64 ký tự; schema footer/journal lưu riêng hai thành phần.
 - Authorization trước lookup Chunks, layout, cache hay restore. Bucket tồn tại nhưng không có quyền trả AccessDenied, không NoSuchKey tiết lộ key. Presigned URL giữ quyền của credential ký và vẫn kiểm tra status/grant hiện tại.
 - Authorization snapshot gồm user active + credential/token active + owner/grant hiện hành, cache tối đa 5 giây tính từ dữ liệu authoritative; cache hit không refresh tuổi. Request mới bị từ chối sau bound này; GET đã nhận có thể kết thúc trong lease/deadline, writes kiểm tra lại trước head/part publish. Backend role không là quyền của user DSG; bearer không là SigV4 key.
+
+### 2.2.2 Đặc tả SigV4, presigned và aws-chunked
+
+Hợp đồng của parser/xác thực S3. `tests/fixtures/s3/transport.json` giữ nguyên byte request của các client đã pin ở mục 11.1 (head và body còn khung HTTP chunked/aws-chunked), canonical request client đã ký, `now` là đồng hồ server khi verify, và kết quả mong đợi: `op` của router, `error` (rỗng là chấp nhận), `payload_sha256` của byte logical. Biến thể lỗi chỉ có đúng một lỗi so với case gốc (`from`). `scripts/s3capture` sinh lại file từ client thật; credential là cặp ví dụ công khai của AWS.
+
+**Header SigV4**
+
+- `Authorization: AWS4-HMAC-SHA256 Credential=<access key>/<yyyymmdd>/<region>/s3/aws4_request, SignedHeaders=<tên;...>, Signature=<64 hex>`. Nhận cả `,` lẫn `, ` giữa ba phần (botocore dùng `, `, ví dụ AWS dùng `,`). Ngày của scope bằng 8 ký tự đầu `X-Amz-Date`, region bằng Region cấu hình, service `s3`.
+- Bắt buộc `X-Amz-Date` (ISO 8601 basic, hậu tố `Z`) và `x-amz-content-sha256` với một giá trị ở bảng trên. `SignedHeaders` phải có `host` và mọi header `x-amz-*` có trong request; thiếu thì trả `AccessDenied`. `x-dsg-debug` không ký thì request vẫn hợp lệ nhưng bỏ debug (mục 5).
+- Canonical URI là path của request-target **đúng như nhận**, không decode/encode lại, không normalize. Ví dụ AWS CLI gửi và ký `/demo/caf%C3%A9%20a%2Bb%25.txt`.
+- Canonical query: decode rồi encode lại từng tên/giá trị theo RFC 3986 (giữ `A-Z a-z 0-9 - . _ ~`, còn lại `%XX` chữ hoa), sắp theo tên rồi giá trị, giá trị rỗng thành `name=`. Presigned bỏ `X-Amz-Signature`. Ví dụ `?list-type=2&prefix=&delimiter=%2F&encoding-type=url` ký thành `delimiter=%2F&encoding-type=url&list-type=2&prefix=`.
+- Canonical headers: tên lowercase, giá trị trim và gộp khoảng trắng liên tiếp, sắp theo tên. `host` gồm cả port như client gửi.
+- Payload hash là giá trị `x-amz-content-sha256`. AWS CLI ký SHA-256 chuỗi rỗng cho GET/HEAD/LIST/CreateMultipartUpload; presigned ký `UNSIGNED-PAYLOAD`.
+- String to sign: `AWS4-HMAC-SHA256\n<X-Amz-Date>\n<scope>\n<hex SHA-256 canonical request>`. Signing key: HMAC-SHA256 lần lượt từ `"AWS4"+secret` qua ngày, region, `s3`, `aws4_request`. So chữ ký bằng constant-time compare.
+- Đồng hồ: chấp nhận khi |now − X-Amz-Date| ≤ 15 phút; lệch hơn, dù client chạy trước hay sau, trả `RequestTimeTooSkewed`.
+
+**Presigned (query)**
+
+- Tham số `X-Amz-Algorithm=AWS4-HMAC-SHA256`, `X-Amz-Credential`, `X-Amz-Date`, `X-Amz-Expires`, `X-Amz-SignedHeaders` (có `host`), `X-Amz-Signature`. Thiếu tham số hoặc `X-Amz-Expires` ngoài 1..604800 trả `InvalidArgument` (S3 dùng `AuthorizationQueryParametersError`, ngoài bảng 2.4). URL hợp lệ khi now ≤ X-Amz-Date + X-Amz-Expires; quá hạn trả `AccessDenied`.
+- Không hỗ trợ SigV2 (`AWSAccessKeyId`/`Signature`/`Expires`): router trả `NotImplemented`. boto3 1.43.114 mặc định presign bằng SigV2, client phải đặt `Config(signature_version="s3v4")`; `aws s3 presign` đã dùng SigV4.
+
+**aws-chunked**
+
+- Áp dụng khi `x-amz-content-sha256` là `STREAMING-*`. Cần `Content-Encoding` có token `aws-chunked` (bỏ token này khỏi Content-Encoding lưu cho object) và `x-amz-decoded-content-length`. Body HTTP dùng `Content-Length` (ví dụ AWS) hoặc `Transfer-Encoding: chunked` không kèm `Content-Length` (botocore); giải HTTP chunked trước, rồi mới giải aws-chunked.
+- Khung không ký (`STREAMING-UNSIGNED-PAYLOAD-TRAILER`): các chunk `<hex>\r\n<data>\r\n`, rồi `0\r\n`, dòng trailer `x-amz-checksum-<alg>:<base64>\r\n`, kết thúc `\r\n`. Khung ký: `<hex>;chunk-signature=<64 hex>\r\n<data>\r\n`, chunk cuối `0;chunk-signature=<sig>\r\n`, sau đó `\r\n` với `STREAMING-AWS4-HMAC-SHA256-PAYLOAD`, hoặc trailer + `x-amz-trailer-signature:<sig>\r\n\r\n` với bản `-TRAILER`.
+- Kích thước chunk không cố định: botocore cắt một chunk cho mỗi lần đọc file (fixture có chunk 7 byte). DSG không áp tối thiểu 8 KiB.
+- Chữ ký chunk: `AWS4-HMAC-SHA256-PAYLOAD\n<X-Amz-Date>\n<scope>\n<chữ ký trước>\n<SHA-256 chuỗi rỗng>\n<SHA-256 data chunk>`; chunk đầu dùng chữ ký `Authorization` (seed). Chữ ký trailer: `AWS4-HMAC-SHA256-TRAILER\n<X-Amz-Date>\n<scope>\n<chữ ký chunk 0>\n<SHA-256 các dòng trailer dạng name:value\n>`. Sửa data, chữ ký hoặc trailer đều trả `SignatureDoesNotMatch`. Không client đã pin nào gửi khung ký; fixture dùng hai ví dụ trong tài liệu AWS, đã tính lại mọi chữ ký. Ví dụ trailer của AWS ghi `SignedHeaders` lệch canonical request (có `content-length`, thiếu `x-amz-trailer`); fixture theo canonical request vì seed signature tính từ đó.
+- Trailer phải có đúng một dòng checksum, tên trùng `x-amz-trailer`; thiếu hoặc khác tên trả `InvalidRequest`. Giá trị sai trả `BadDigest`.
+- Kết thúc sớm (EOF giữa chunk/trailer, tổng data nhỏ hơn `x-amz-decoded-content-length`, body ngắn hơn `Content-Length`) trả `IncompleteBody`. Dòng size không phải hex, thiếu CRLF, tổng data lớn hơn decoded length hoặc còn byte sau trailer trả `InvalidRequest`.
+
+**Thứ tự kiểm** (lỗi đầu tiên được trả; có lỗi thì không commit):
+
+1. Router `Resolve` (mục 4.1).
+2. Xác thực: định dạng Authorization/query (`InvalidArgument`), access key (`InvalidAccessKeyId`), đồng hồ hoặc hạn presigned, chữ ký (`SignatureDoesNotMatch`), header `x-amz-*` chưa ký (`AccessDenied`).
+3. Quyền bucket (mục 2.2.1).
+4. Decoder: khung và độ dài, chữ ký từng chunk/trailer khi đọc, `x-amz-content-sha256` dạng hex (`XAmzContentSHA256Mismatch`), `Content-MD5` (`BadDigest`), checksum header/trailer (`BadDigest`).
 
 ### 2.3 Header chung
 
@@ -124,9 +160,9 @@ Bảng mã lỗi cần hỗ trợ:
 
 | Mã | HTTP | Khi nào |
 |---|---|---|
-| `AccessDenied` | 403 | Không có quyền, hoặc presigned URL hết hạn |
+| `AccessDenied` | 403 | Không có quyền, presigned URL hết hạn, hoặc header `x-amz-*` không nằm trong SignedHeaders |
 | `InvalidAccessKeyId` | 403 | Không tìm thấy access key |
-| `SignatureDoesNotMatch` | 403 | Chữ ký sai |
+| `SignatureDoesNotMatch` | 403 | Chữ ký header/query, chunk hoặc trailer sai |
 | `RequestTimeTooSkewed` | 403 | Lệch đồng hồ quá 15 phút |
 | `InvalidObjectState` | 403 | GET hoặc phần Copy cần đọc có pack GLACIER/DEEP_ARCHIVE chưa restore; GLACIER_IR không thuộc nhánh này |
 | `NoSuchBucket` | 404 | Bucket không tồn tại |
@@ -135,18 +171,18 @@ Bảng mã lỗi cần hỗ trợ:
 | `MethodNotAllowed` | 405 | Method không hỗ trợ trên resource |
 | `BucketAlreadyOwnedByYou` | 409 | Tạo bucket đã thuộc owner |
 | `BucketAlreadyExists` | 409 | Tên bucket đã thuộc người khác |
-| `InvalidRequest` | 400 | Operation/query/checksum mode không hợp lệ |
+| `InvalidRequest` | 400 | Operation/query/checksum mode không hợp lệ; khung `aws-chunked`/trailer sai (mục 2.2.2) |
 | `RestoreAlreadyInProgress` | 409 | Restore đang chạy, không khởi tạo pack nào mới |
 | `OperationAborted` | 409 | Complete/Abort cạnh tranh hoặc upload đang Completing |
 | `QuotaExceeded` (DSG) | 403 | Logical quota/reservation không đủ, không tiết lộ physical bytes |
 | `BucketNotEmpty` | 409 | Xóa bucket còn object |
 | `InvalidBucketName` | 400 | Tên bucket sai quy tắc |
 | `KeyTooLongError` | 400 | Key dài hơn 1024 byte |
-| `InvalidArgument` | 400 | Tham số sai |
+| `InvalidArgument` | 400 | Tham số sai, kể cả Authorization/query presigned sai định dạng |
 | `MalformedXML` | 400 | Body XML sai |
-| `BadDigest` | 400 | `Content-MD5` không khớp |
+| `BadDigest` | 400 | `Content-MD5` hoặc checksum header/trailer không khớp |
 | `XAmzContentSHA256Mismatch` | 400 | Hash payload không khớp |
-| `IncompleteBody` | 400 | Body ngắn hơn `Content-Length` |
+| `IncompleteBody` | 400 | Body ngắn hơn `Content-Length` hoặc `x-amz-decoded-content-length` |
 | `InvalidPart` | 400 | Part không tồn tại hoặc ETag sai |
 | `InvalidPartOrder` | 400 | Danh sách part không tăng dần |
 | `EntityTooSmall` | 400 | Part (không phải part cuối) dưới 5 MiB |
@@ -194,12 +230,26 @@ Tính trên **byte logical sau decode aws-chunked**, trước nén; SHA-256 chun
 | CRC32 / CRC32C | Có | Có | Có | COMPOSITE |
 | SHA1 / SHA256 | Có | Không | Có | COMPOSITE |
 
+Matrix client đã pin (mục 11.1) theo `tests/fixtures/s3/transport.json`. Giá trị header/trailer là Base64 của digest big-endian.
+
+| Algorithm | Digest | AWS CLI 2.36.41 | boto3 1.43.114 không awscrt | Case trong fixture |
+|---|---|---|---|---|
+| CRC64NVME | 8 byte | Mặc định của PutObject và UploadPart; `aws s3 cp` multipart gửi ở Create | Không gửi được: `MissingDependencyException` trước request | `cli-put-default`, `cli-mpu-create-crc64nvme-full-object`, `cli-mpu-part-default`, `cli-mpu-complete-full-object`, `cli-cp-multipart/*`; `cli-mpu-create-crc64nvme-composite` → InvalidRequest |
+| CRC32 | 4 byte | `--checksum-algorithm CRC32` | Mặc định | `cli-put-crc32`, `cli-mpu-create-crc32`, `boto3-put-default`, `boto3-put-multichunk` |
+| CRC32C | 4 byte | `--checksum-algorithm CRC32C` | Không gửi được, như CRC64NVME | `cli-put-crc32c`, `aws-docs-signed-chunked-trailer` |
+| SHA1 | 20 byte | `--checksum-algorithm SHA1` | Có | `cli-put-sha1`; `cli-mpu-create-sha1-full-object` → InvalidRequest |
+| SHA256 | 32 byte | `--checksum-algorithm SHA256` | Có | `cli-put-sha256`, `cli-mpu-create-sha256-composite`, `cli-mpu-part-sha256`, `cli-mpu-complete-composite` |
+| Ngoài bảng trên | — | SHA512, XXHASH64 (đã thử) | SHA512 | `cli-put-sha512`, `cli-put-xxhash64` → InvalidRequest |
+
+- CRC64NVME là CRC-64/NVME: đa thức 0xad93d23594c93659 phản chiếu, init và xorout toàn bit 1, `crc("123456789") = 0xae8b14860a799888`; trong Go là `crc64.MakeTable(0x9a6c9329ac4bc9b5)`. Giá trị Go khớp trailer do awscrt 0.36.2 của AWS CLI tính trong mọi case fixture.
+- **Content-MD5 là kiểm tra riêng**, không phải một algorithm của bảng: nếu có header `Content-MD5`, MD5 Base64 của byte logical phải khớp, sai trả `BadDigest`. Client có thể gửi cùng lúc Content-MD5 và trailer checksum (`cli-put-content-md5`); `cli-put-content-md5-wrong` là request sai do chính CLI gửi.
+- AWS CLI high-level multipart (`cli-cp-multipart`) chỉ gửi `x-amz-checksum-algorithm: CRC64NVME` ở Create, trailer ở từng part và Complete không có checksum part/object, nên DSG phải tự combine FULL_OBJECT như dưới đây.
 - Không gửi algorithm: DSG tính/lưu CRC64NVME FULL_OBJECT mặc định (kể cả multipart). Xác thực Content-MD5 và payload SigV4 độc lập với checksum bổ sung. Algorithm/type không hỗ trợ (gồm SHA512/XXHASH/x-amz-checksum-md5 ở P2) trả 400 InvalidRequest trước body/publish, không echo checksum chưa verify; type khác Create hoặc checksum sai trả BadDigest/InvalidRequest phù hợp.
 - UploadPart tính MD5 ETag và checksum algorithm đã chọn. Verify header/trailer client nếu có; server luôn giữ **binary part digest và raw length** trong part head, trả checksum Base64 và ListParts trả từng checksum. COMPOSITE bắt buộc client gửi part checksums khi Complete; chúng phải khớp part heads đã verify, PartNumber liên tiếp 1..N. DSG trả 400 InvalidPartOrder khi có gap, là khác biệt lỗi được công bố so một số đường S3 trả 500.
 - FULL_OBJECT CRC combine part digests theo raw length và selected order (CRC linearization); checksum Complete nếu client gửi phải khớp. COMPOSITE dùng algorithm trên nối binary part digests, encode Base64 và suffix -N theo format AWS. Không tính SHA full object từ SHA part digests. Complete không tải lại toàn payload chỉ để checksum.
 - Head object giữ algorithm/type/value/part_count. GET toàn object và HEAD với x-amz-checksum-mode=ENABLED trả checksum + x-amz-checksum-type đã lưu; absent mode không bắt buộc trả. Range GET không trả full-object checksum như checksum của range; bỏ checksum đó và ghi hạn chế này trong fixture. GET/HEAD partNumber và GetObjectAttributes là P2, unsupported trả 501 rõ trước stream.
 - PUT ETag là MD5 logical quoted; Complete ETag là MD5(nối binary part MD5) + -N, độc lập với checksum mode. Copy giữ ETag và checksum descriptor nguồn như opaque metadata theo 4.5, không suy ETag luôn là whole-object MD5.
-- CI pin actual AWS CLI/boto3/botocore/s3transfer versions tuần 1; test từng mode, trailers, checksum sai, part gap, empty PUT, Range và download checksum validation. Default hoặc thuật toán mới của SDK khác matrix phải bị phát hiện trước benchmark, không tắt verify âm thầm.
+- Client và version pin ở mục 11.1. CI test từng mode, trailers, checksum sai, part gap, empty PUT, Range và download checksum validation. Default hoặc thuật toán mới của SDK khác matrix phải bị phát hiện trước benchmark (sinh lại fixture khi đổi version), không tắt verify âm thầm.
 
 Nguồn format/types: [AWS checksum upload](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html). Phạm vi hỗ trợ và default DSG trên là lựa chọn thiết kế.
 
@@ -252,7 +302,7 @@ Decoder là reader streaming bọc body, không buộc tải toàn bộ object v
 | P1 | DeleteBucket | `DELETE /{bucket}` | `aws s3 rb` |
 | P1 | GetBucketLocation | `GET /{bucket}?location` | SDK |
 | P1 | Presigned GET/PUT | Query `X-Amz-*` | `aws s3 presign` |
-| P1 | GetObject + `If-Match` | `GET /{bucket}/{key}` + `If-Match`; sai ETag trả 412 | `aws s3 cp` tải file lớn: mỗi Range GET gửi If-Match (AWS CLI 2.36.41, s3transfer ≥0.13) |
+| P1 | GetObject + `If-Match` | `GET /{bucket}/{key}` + `If-Match`; sai ETag trả 412 | `aws s3 cp` tải file lớn: mỗi Range GET gửi If-Match (AWS CLI 2.36.41) |
 | P2 | ListObjects (v1) | `GET /{bucket}` | Công cụ cũ |
 | P2 | ListMultipartUploads | `GET /{bucket}?uploads` | SDK |
 | P2 | UploadPartCopy | `PUT ...?partNumber&uploadId` + `x-amz-copy-source` | `cp` file lớn giữa các key |
@@ -857,7 +907,7 @@ CI xác nhận header đã nằm SignedHeaders và user thường không nhận 
 | `aws s3 presign s3://demo/f` rồi `curl` | Presigned GET | P1 |
 | `aws s3 rb s3://demo` | DeleteBucket | P1 |
 
-Pin version AWS CLI/boto3/curl, Region, addressing/checksum/multipart threshold vào fixture; không suy rằng mọi SDK có cùng transport. Chạy CI bảng trên, thêm các contract sau:
+Client, version và cấu hình đã pin ở mục 11.1; không suy rằng mọi SDK có cùng transport. Chạy CI bảng trên, thêm các contract sau:
 
 | Nhóm | Kịch bản bắt buộc |
 |---|---|
@@ -874,6 +924,32 @@ Pin version AWS CLI/boto3/curl, Region, addressing/checksum/multipart threshold 
 | Copy boundary | size threshold−1/threshold/threshold+1, đúng 5 GiB dùng s3api, >5 GiB ngoài single-copy; self-copy COPY/REPLACE và opaque ETag/checksum của multipart source |
 
 Đây là kế hoạch kiểm thử, chưa phải kết quả test hệ thống.
+
+### 11.1 Client đã pin
+
+| Client | Phiên bản thật | Ghi chú |
+|---|---|---|
+| AWS CLI | 2.36.41 Windows `script-exe` (Python 3.14.6, awscrt 0.36.2) | botocore/s3transfer là bản vendored trong bundle (`awscli.botocore` 2.0.0dev155, `awscli.s3transfer` 0.5.1), không so được với số version PyPI |
+| boto3 | boto3 1.43.114, botocore 1.43.114, s3transfer 0.19.2, urllib3 2.8.0, không awscrt, Python 3.13.13 | Pin đủ dependency ở `scripts/s3capture/requirements.txt`; `pip install boto3` mặc định không có awscrt |
+| curl | 8.21.0 (Schannel) | Chỉ để gọi URL presigned |
+
+Cấu hình: Region `us-east-1`; `addressing_style = path`; `request_checksum_calculation` và `response_checksum_validation` để mặc định `when_supported`; `multipart_threshold`/`multipart_chunksize` mặc định 8MB (case multipart dùng profile 5MB để part nhỏ). TLS luôn verify bằng CA riêng qua `AWS_CA_BUNDLE`/`curl --cacert`, không dùng `--no-verify-ssl`. Fixture `tests/fixtures/s3/transport.json` ghi lại version, file config và lệnh của từng case.
+
+Hành vi transport quan sát được (chi tiết checksum ở mục 2.7):
+
+| Request | AWS CLI 2.36.41 | boto3 1.43.114 |
+|---|---|---|
+| PutObject/UploadPart qua HTTPS | `Transfer-Encoding: chunked` + `aws-chunked`, `STREAMING-UNSIGNED-PAYLOAD-TRAILER`, trailer CRC64NVME, `Expect: 100-continue` | Như CLI, trailer CRC32 |
+| PutObject qua HTTP | Payload SHA-256 hex + header `x-amz-checksum-crc64nvme`, `Content-Length` | Chưa thu |
+| `when_required` | Payload SHA-256 hex, không checksum, không `aws-chunked` | Chưa thu |
+| GET/HEAD/LIST/Create | Ký SHA-256 chuỗi rỗng; GET gửi `x-amz-checksum-mode: ENABLED` | Chưa thu |
+| Presigned | `aws s3 presign`: SigV4, `UNSIGNED-PAYLOAD` | SigV2 nếu không đặt `signature_version="s3v4"` (DSG trả 501) |
+
+Sinh lại fixture khi đổi version client hoặc cần thêm case (cần AWS CLI và curl trong PATH; script tự kiểm chữ ký, checksum, Content-MD5 và lỗi router trước khi ghi):
+
+```bash
+uv run --no-project --python 3.13 --with-requirements scripts/s3capture/requirements.txt -- go run ./scripts/s3capture
+```
 
 
 ---

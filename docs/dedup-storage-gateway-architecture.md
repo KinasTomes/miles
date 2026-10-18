@@ -1011,7 +1011,7 @@ Defaults là lựa chọn kỹ thuật có thể cấu hình lại sau tuần 5�
 - JSON `/admin/v1`, CLI và error schemas theo API v2; unknown privilege/policy fields bị từ chối. Revision CAS bắt buộc khi đổi grants/policy, kèm expected_bucket_id cho route bucket để không áp request cũ vào bucket tái tạo.
 - Cache debug header là snapshot pre-flight hit/miss/partial. ETag là quoted MD5 cho PUT, MD5-of-part-MD5 cho Complete, opaque giữ nguồn khi Copy; self-copy COPY không đổi metadata trả InvalidRequest, REPLACE hợp lệ và quota delta 0. Copy đổi checksum algorithm khác nguồn là P2, reject trước mutation.
 - Admin token opaque, provisioning/bootstrap/offline recovery và bearer/SigV4 tách biệt theo API 6.4; system admin quản lý/audit, không có read/write object ngầm định.
-- Chạy contract/property/fault tests trước đóng băng serialization cuối tuần 2; chương trình/SDK chưa có trong project nên chưa công bố số version/client benchmark giả. Pin actual executable + dependency versions trong fixture ở tuần 1, trước kiểm thử transport.
+- Chạy contract/property/fault tests trước đóng băng serialization cuối tuần 2. Version thật của AWS CLI/boto3/botocore/s3transfer/curl đã pin trong fixture transport (API 11.1) trước kiểm thử transport; chưa có số benchmark client nào.
 
 ### Nguồn đối chiếu
 
