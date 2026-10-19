@@ -1,0 +1,10 @@
+# boto3 stack pinned for tests/fixtures/s3/transport.json (API v2 section 11).
+# awscrt is deliberately absent: plain `pip install boto3` has no CRT, which
+# changes the default checksum (CRC32) and drops CRC32C/CRC64NVME.
+boto3==1.43.114
+botocore==1.43.114
+s3transfer==0.19.2
+urllib3==2.8.0
+jmespath==1.1.0
+python-dateutil==2.9.0.post0
+six==1.17.0
