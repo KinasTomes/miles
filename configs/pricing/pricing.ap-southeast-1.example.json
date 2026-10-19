@@ -1,0 +1,1071 @@
+{
+  "schema_version": 1,
+  "region": "ap-southeast-1",
+  "as_of": "2026-10-19",
+  "currency": "USD",
+  "basis": "gross_model_before_tax_credits_free_tier",
+  "sources": {
+    "s3": {
+      "url": "https://aws.amazon.com/s3/pricing/",
+      "retrieved_at": "2026-10-19",
+      "kind": "official_page"
+    },
+    "ddb": {
+      "url": "https://aws.amazon.com/dynamodb/pricing/",
+      "retrieved_at": "2026-10-19",
+      "kind": "official_page"
+    },
+    "ec2": {
+      "url": "https://aws.amazon.com/ec2/pricing/on-demand/",
+      "retrieved_at": "2026-10-19",
+      "kind": "official_page"
+    },
+    "ebs": {
+      "url": "https://aws.amazon.com/ebs/pricing/",
+      "retrieved_at": "2026-10-19",
+      "kind": "official_page"
+    },
+    "kms": {
+      "url": "https://aws.amazon.com/kms/pricing/",
+      "retrieved_at": "2026-10-19",
+      "kind": "official_page"
+    },
+    "secrets": {
+      "url": "https://aws.amazon.com/secrets-manager/pricing/",
+      "retrieved_at": "2026-10-19",
+      "kind": "official_page"
+    },
+    "cloudwatch": {
+      "url": "https://aws.amazon.com/cloudwatch/pricing/",
+      "retrieved_at": "2026-10-19",
+      "kind": "official_page"
+    },
+    "vpc": {
+      "url": "https://aws.amazon.com/vpc/pricing/",
+      "retrieved_at": "2026-10-19",
+      "kind": "official_page"
+    },
+    "elb": {
+      "url": "https://aws.amazon.com/elasticloadbalancing/pricing/",
+      "retrieved_at": "2026-10-19",
+      "kind": "official_page"
+    },
+    "ssm": {
+      "url": "https://aws.amazon.com/systems-manager/pricing/",
+      "retrieved_at": "2026-10-19",
+      "kind": "official_page"
+    },
+    "api": {
+      "url": "https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/API_pricing_GetProducts.html",
+      "retrieved_at": "2026-10-19",
+      "kind": "aws_price_api"
+    }
+  },
+  "storage_rules": [
+    {
+      "class": "STANDARD",
+      "minimum_days": 0,
+      "minimum_billable_bytes": 0,
+      "metadata_standard_bytes": 0,
+      "metadata_archive_bytes": 0,
+      "source_id": "s3"
+    },
+    {
+      "class": "STANDARD_IA",
+      "minimum_days": 30,
+      "minimum_billable_bytes": 131072,
+      "metadata_standard_bytes": 0,
+      "metadata_archive_bytes": 0,
+      "source_id": "s3"
+    },
+    {
+      "class": "GLACIER_IR",
+      "minimum_days": 90,
+      "minimum_billable_bytes": 131072,
+      "metadata_standard_bytes": 0,
+      "metadata_archive_bytes": 0,
+      "source_id": "s3"
+    },
+    {
+      "class": "GLACIER",
+      "minimum_days": 90,
+      "minimum_billable_bytes": 0,
+      "metadata_standard_bytes": 8192,
+      "metadata_archive_bytes": 32768,
+      "source_id": "s3"
+    }
+  ],
+  "rates": [
+    {
+      "id": "s3.storage.standard",
+      "category": "storage",
+      "service": "AmazonS3",
+      "unit": "GB-Mo",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-TimedStorage-ByteHrs",
+        "operation": "",
+        "volumeType": "Standard",
+        "sku": "M6MTARCQFUQBQ2V3",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": "51200",
+          "usd": "0.0250000000"
+        },
+        {
+          "begin": "51200",
+          "end": "512000",
+          "usd": "0.0240000000"
+        },
+        {
+          "begin": "512000",
+          "end": null,
+          "usd": "0.0230000000"
+        }
+      ],
+      "note": "Archive packs, dead bytes and control objects accounted by actual class/byte-time."
+    },
+    {
+      "id": "s3.storage.standard_ia",
+      "category": "storage",
+      "service": "AmazonS3",
+      "unit": "GB-Mo",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-TimedStorage-SIA-ByteHrs",
+        "operation": "",
+        "volumeType": "Standard - Infrequent Access",
+        "sku": "VRNEADAH39YMA2GG",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0138000000"
+        }
+      ],
+      "note": "Archive packs, dead bytes and control objects accounted by actual class/byte-time."
+    },
+    {
+      "id": "s3.storage.glacier_ir",
+      "category": "storage",
+      "service": "AmazonS3",
+      "unit": "GB-Mo",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-TimedStorage-GIR-ByteHrs",
+        "operation": "",
+        "volumeType": "Glacier Instant Retrieval",
+        "sku": "UVQY45BSCBGNAH94",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0050000000"
+        }
+      ],
+      "note": "Archive packs, dead bytes and control objects accounted by actual class/byte-time."
+    },
+    {
+      "id": "s3.storage.glacier",
+      "category": "storage",
+      "service": "AmazonS3",
+      "unit": "GB-Mo",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-TimedStorage-GlacierByteHrs",
+        "operation": "",
+        "volumeType": "Amazon Glacier",
+        "sku": "FSCSS6TRWM9N2ZE7",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0045000000"
+        }
+      ],
+      "note": "Archive packs, dead bytes and control objects accounted by actual class/byte-time."
+    },
+    {
+      "id": "s3.put_standard",
+      "category": "request",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-Tier1",
+        "operation": "",
+        "volumeType": "",
+        "sku": "VHRJWKRHEA6VHEFY",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000050000"
+        }
+      ],
+      "note": "Use exact operation/class; include retries, controls and full-pack retrieval."
+    },
+    {
+      "id": "s3.get_standard",
+      "category": "request",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-Tier2",
+        "operation": "",
+        "volumeType": "",
+        "sku": "T469UNPYX78434EG",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000004000"
+        }
+      ],
+      "note": "Use exact operation/class; include retries, controls and full-pack retrieval."
+    },
+    {
+      "id": "s3.retrieval_ia",
+      "category": "retrieval",
+      "service": "AmazonS3",
+      "unit": "GB",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Retrieval-SIA",
+        "operation": "",
+        "volumeType": "",
+        "sku": "XG62Y5XDMRTKEN2C",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0100000000"
+        }
+      ],
+      "note": "Use exact operation/class; include retries, controls and full-pack retrieval."
+    },
+    {
+      "id": "s3.retrieval_ir",
+      "category": "retrieval",
+      "service": "AmazonS3",
+      "unit": "GB",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Retrieval-GIR",
+        "operation": "",
+        "volumeType": "",
+        "sku": "FNZRW975QWGYKZSN",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0300000000"
+        }
+      ],
+      "note": "Use exact operation/class; include retries, controls and full-pack retrieval."
+    },
+    {
+      "id": "s3.restore_standard_gb",
+      "category": "restore",
+      "service": "AmazonS3",
+      "unit": "GB",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Standard-Retrieval-Bytes",
+        "operation": "RestoreObject",
+        "volumeType": "",
+        "sku": "PB2B932AJF8NJW49",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0120000000"
+        }
+      ],
+      "note": "Use exact operation/class; include retries, controls and full-pack retrieval."
+    },
+    {
+      "id": "s3.put_ia",
+      "category": "request",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-SIA-Tier1",
+        "operation": "",
+        "volumeType": "",
+        "sku": "U8VT25APWDB8S2HZ",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000100000"
+        }
+      ],
+      "note": "PUT/COPY/POST in Standard-IA."
+    },
+    {
+      "id": "s3.put_ir",
+      "category": "request",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-GIR-Tier1",
+        "operation": "",
+        "volumeType": "",
+        "sku": "S999S3RRGVTGYCMR",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000200000"
+        }
+      ],
+      "note": "PUT/COPY/POST in Glacier IR."
+    },
+    {
+      "id": "s3.put_glacier",
+      "category": "request",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-GLACIER-Tier1",
+        "operation": "PutObject",
+        "volumeType": "",
+        "sku": "TPQBYUR7B8YQY37B",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000360000"
+        }
+      ],
+      "note": "PUT/COPY/POST to Glacier Flexible; distinguish COPY from lifecycle transition."
+    },
+    {
+      "id": "s3.get_ia",
+      "category": "request",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-SIA-Tier2",
+        "operation": "",
+        "volumeType": "",
+        "sku": "5DHWA6HVKP8K3VED",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000010000"
+        }
+      ],
+      "note": "GET requests in Standard-IA, separate retrieval bytes."
+    },
+    {
+      "id": "s3.get_ir",
+      "category": "request",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-GIR-Tier2",
+        "operation": "",
+        "volumeType": "",
+        "sku": "MTJQZ7AVHAEMDZ7E",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000100000"
+        }
+      ],
+      "note": "GET in IR, separate retrieval bytes."
+    },
+    {
+      "id": "s3.restore_standard_requests",
+      "category": "restore",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-Tier3",
+        "operation": "RestoreObject",
+        "volumeType": "",
+        "sku": "GND9MSP6AZKCYFX5",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000600000"
+        }
+      ],
+      "note": "Flexible Retrieval Standard restore requests, separate retrieved GB."
+    },
+    {
+      "id": "s3.restore_bulk_requests",
+      "category": "restore",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-Tier5",
+        "operation": "",
+        "volumeType": "",
+        "sku": "WR25SPCTYP2Z7RZ8",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000000000"
+        }
+      ],
+      "note": "Flexible Retrieval Bulk restore requests, verify even if rate is zero."
+    },
+    {
+      "id": "s3.restore_bulk_gb",
+      "category": "restore",
+      "service": "AmazonS3",
+      "unit": "GB",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Bulk-Retrieval-Bytes",
+        "operation": "RestoreObject",
+        "volumeType": "",
+        "sku": "KATTT4RMBWRFC9WN",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000000000"
+        }
+      ],
+      "note": "Flexible Retrieval Bulk bytes, verify even if rate is zero."
+    },
+    {
+      "id": "s3.transition_ir",
+      "category": "transition",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-Tier4",
+        "operation": "S3-GIRTransition",
+        "volumeType": "",
+        "sku": "X9PHXR8DQUSJBJT5",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000200000"
+        }
+      ],
+      "note": "Lifecycle transition to IR, not additive to a self-COPY already charged as PUT."
+    },
+    {
+      "id": "s3.transition_glacier",
+      "category": "transition",
+      "service": "AmazonS3",
+      "unit": "Requests",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-Requests-Tier3",
+        "operation": "S3-GlacierTransition",
+        "volumeType": "",
+        "sku": "FGTQ8QT3USQUPH22",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000360000"
+        }
+      ],
+      "note": "Lifecycle transition to Flexible, not additive to self-COPY."
+    },
+    {
+      "id": "s3.it_monitoring",
+      "category": "infrastructure",
+      "service": "AmazonS3",
+      "unit": "Objects",
+      "status": "unpriced",
+      "source_id": "s3",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Simulator-only Intelligent-Tiering monitoring, exclude ineligible small objects."
+    },
+    {
+      "id": "ddb.storage",
+      "category": "infrastructure",
+      "service": "AmazonDynamoDB",
+      "unit": "GB-Mo",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-TimedStorage-ByteHrs",
+        "operation": "",
+        "volumeType": "Amazon DynamoDB - Indexed DataStore",
+        "sku": "YCMS8QPJ7DRVHAXD",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.2850000000"
+        }
+      ],
+      "note": "Gross Standard table storage uses the paid rate from quantity zero. Original AWS Free Tier tariff is retained in gross_adjustment, not applied to this gross model. Allowance eligibility/remaining balance is unverified; never reset it per table, stack or trial.",
+      "gross_adjustment": {
+        "method": "exclude_free_tier",
+        "raw_tiers": [
+          {
+            "begin": "0",
+            "end": "25",
+            "usd": "0.0000000000"
+          },
+          {
+            "begin": "25",
+            "end": null,
+            "usd": "0.2850000000"
+          }
+        ],
+        "allowance": {
+          "quantity": "25",
+          "unit": "GB-Mo",
+          "scope": "account_region",
+          "source_id": "ddb"
+        }
+      }
+    },
+    {
+      "id": "ddb.pitr",
+      "category": "infrastructure",
+      "service": "AmazonDynamoDB",
+      "unit": "GB-Mo",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-TimedPITRStorage-ByteHrs",
+        "operation": "",
+        "volumeType": "Amazon DynamoDB - Point-In-Time-Restore (PITR) Backup Storage",
+        "sku": "GSSDTS2TPQ4RHW4R",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.2280000000"
+        }
+      ],
+      "note": "Standard table class; transaction units and item rounding must be modeled, not a flat per-operation surcharge."
+    },
+    {
+      "id": "ddb.backup",
+      "category": "infrastructure",
+      "service": "AmazonDynamoDB",
+      "unit": "GB-Month",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-TimedBackupStorage-ByteHrs",
+        "operation": "",
+        "volumeType": "Amazon DynamoDB - On-Demand Backup Storage",
+        "sku": "A4JVT7FRHPDGJJKZ",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.1140000000"
+        }
+      ],
+      "note": "Standard table class; transaction units and item rounding must be modeled, not a flat per-operation surcharge."
+    },
+    {
+      "id": "ddb.write",
+      "category": "infrastructure",
+      "service": "AmazonDynamoDB",
+      "unit": "WriteRequestUnits",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-WriteRequestUnits",
+        "operation": "PayPerRequestThroughput",
+        "volumeType": "",
+        "sku": "PZTVP859DVDCGT8X",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000007100"
+        }
+      ],
+      "note": "Standard table class; transaction units and item rounding must be modeled, not a flat per-operation surcharge."
+    },
+    {
+      "id": "ddb.read",
+      "category": "infrastructure",
+      "service": "AmazonDynamoDB",
+      "unit": "ReadRequestUnits",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-ReadRequestUnits",
+        "operation": "PayPerRequestThroughput",
+        "volumeType": "",
+        "sku": "XF4WN9CQUFPSY9SQ",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0000001425"
+        }
+      ],
+      "note": "Standard table class; transaction units and item rounding must be modeled, not a flat per-operation surcharge."
+    },
+    {
+      "id": "ec2.compute",
+      "category": "infrastructure",
+      "service": "AmazonEC2",
+      "unit": "Hrs",
+      "status": "unpriced",
+      "source_id": "ec2",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Instance type/OS/tenancy not selected in W2; set quote when workload chosen."
+    },
+    {
+      "id": "ec2.cpu_surplus",
+      "category": "infrastructure",
+      "service": "AmazonEC2",
+      "unit": "vCPU-Hrs",
+      "status": "unpriced",
+      "source_id": "ec2",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Only for applicable burstable/unlimited mode."
+    },
+    {
+      "id": "ebs.gp3",
+      "category": "infrastructure",
+      "service": "AmazonEC2",
+      "unit": "GB-Mo",
+      "status": "unpriced",
+      "source_id": "ebs",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Provisioned EBS, snapshots/extra IOPS/throughput need separate rows when used."
+    },
+    {
+      "id": "kms.key",
+      "category": "infrastructure",
+      "service": "awskms",
+      "unit": "key-month",
+      "status": "unpriced",
+      "source_id": "kms",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Runtime CMK persists after compute stops."
+    },
+    {
+      "id": "kms.requests",
+      "category": "infrastructure",
+      "service": "awskms",
+      "unit": "Requests",
+      "status": "unpriced",
+      "source_id": "kms",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Encryption/decryption requests; free tier not baked into gross rate."
+    },
+    {
+      "id": "secret.storage",
+      "category": "infrastructure",
+      "service": "AWSSecretsManager",
+      "unit": "secret-month",
+      "status": "unpriced",
+      "source_id": "secrets",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Secret version/request accounting follows service terms."
+    },
+    {
+      "id": "secret.requests",
+      "category": "infrastructure",
+      "service": "AWSSecretsManager",
+      "unit": "Requests",
+      "status": "unpriced",
+      "source_id": "secrets",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Secret API requests."
+    },
+    {
+      "id": "ssm.parameters",
+      "category": "infrastructure",
+      "service": "AmazonSSM",
+      "unit": "parameter-month",
+      "status": "unpriced",
+      "source_id": "ssm",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Parameter tier and throughput must be specified."
+    },
+    {
+      "id": "cw.logs_ingest",
+      "category": "infrastructure",
+      "service": "AmazonCloudWatch",
+      "unit": "GB",
+      "status": "unpriced",
+      "source_id": "cloudwatch",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Ingested logs, not retained bytes."
+    },
+    {
+      "id": "cw.logs_storage",
+      "category": "infrastructure",
+      "service": "AmazonCloudWatch",
+      "unit": "GB-Mo",
+      "status": "unpriced",
+      "source_id": "cloudwatch",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Retained logs."
+    },
+    {
+      "id": "cw.metrics",
+      "category": "infrastructure",
+      "service": "AmazonCloudWatch",
+      "unit": "metric-month",
+      "status": "unpriced",
+      "source_id": "cloudwatch",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Custom metrics, avoid high-cardinality series."
+    },
+    {
+      "id": "cw.api",
+      "category": "infrastructure",
+      "service": "AmazonCloudWatch",
+      "unit": "Requests",
+      "status": "unpriced",
+      "source_id": "cloudwatch",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Metrics API and alarms require workload-specific accounting."
+    },
+    {
+      "id": "network.nat_hour",
+      "category": "infrastructure",
+      "service": "AmazonEC2",
+      "unit": "Hrs",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-NatGateway-Hours",
+        "operation": "NatGateway",
+        "volumeType": "",
+        "sku": "98TA3WPUP3A4AH4Y",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0590000000"
+        }
+      ],
+      "note": "Network/ALB billing separate from payload transfer; endpoint hours counted per service per AZ."
+    },
+    {
+      "id": "network.nat_gb",
+      "category": "infrastructure",
+      "service": "AmazonEC2",
+      "unit": "GB",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-NatGateway-Bytes",
+        "operation": "NatGateway",
+        "volumeType": "",
+        "sku": "E9U985ZGMWKXKT47",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0590000000"
+        }
+      ],
+      "note": "Network/ALB billing separate from payload transfer; endpoint hours counted per service per AZ."
+    },
+    {
+      "id": "network.endpoint_hour",
+      "category": "infrastructure",
+      "service": "AmazonVPC",
+      "unit": "Hrs",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-VpcEndpoint-Hours",
+        "operation": "VpcEndpoint",
+        "volumeType": "",
+        "sku": "ZW3HVQKP8FYZ6Y6K",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0130000000"
+        }
+      ],
+      "note": "Network/ALB billing separate from payload transfer; endpoint hours counted per service per AZ."
+    },
+    {
+      "id": "network.public_ipv4",
+      "category": "infrastructure",
+      "service": "AmazonVPC",
+      "unit": "Hrs",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-PublicIPv4:InUseAddress",
+        "operation": "",
+        "volumeType": "",
+        "sku": "C8D8VMQRDHMB9KRU",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0050000000"
+        }
+      ],
+      "note": "Network/ALB billing separate from payload transfer; endpoint hours counted per service per AZ."
+    },
+    {
+      "id": "alb.hour",
+      "category": "infrastructure",
+      "service": "AWSELB",
+      "unit": "Hrs",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-LoadBalancerUsage",
+        "operation": "LoadBalancing:Application",
+        "volumeType": "",
+        "sku": "UXD3JNG6UAM79CW6",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0252000000"
+        }
+      ],
+      "note": "Network/ALB billing separate from payload transfer; endpoint hours counted per service per AZ."
+    },
+    {
+      "id": "alb.lcu",
+      "category": "infrastructure",
+      "service": "AWSELB",
+      "unit": "LCU-Hrs",
+      "status": "verified",
+      "source_id": "api",
+      "dimensions": {
+        "location": "Asia Pacific (Singapore)",
+        "usagetype": "APS1-LCUUsage",
+        "operation": "LoadBalancing:Application",
+        "volumeType": "",
+        "sku": "45KY3J5YX2QM6KS7",
+        "regionCode": "ap-southeast-1"
+      },
+      "tiers": [
+        {
+          "begin": "0",
+          "end": null,
+          "usd": "0.0080000000"
+        }
+      ],
+      "note": "Network/ALB billing separate from payload transfer; endpoint hours counted per service per AZ."
+    },
+    {
+      "id": "network.endpoint_gb",
+      "category": "transfer",
+      "service": "AmazonVPC",
+      "unit": "GB",
+      "status": "unpriced",
+      "source_id": "vpc",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Route/quantity and eligibility must be specified; local VM is not assumed free. Local rates use operator evidence; this URL is only a reference, not proof of local pricing."
+    },
+    {
+      "id": "transfer.internet_egress",
+      "category": "transfer",
+      "service": "AmazonS3",
+      "unit": "GB",
+      "status": "unpriced",
+      "source_id": "s3",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Route/quantity and eligibility must be specified; local VM is not assumed free. Local rates use operator evidence; this URL is only a reference, not proof of local pricing."
+    },
+    {
+      "id": "transfer.internet_ingress",
+      "category": "transfer",
+      "service": "AmazonS3",
+      "unit": "GB",
+      "status": "unpriced",
+      "source_id": "s3",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Route/quantity and eligibility must be specified; local VM is not assumed free. Local rates use operator evidence; this URL is only a reference, not proof of local pricing."
+    },
+    {
+      "id": "transfer.cross_az",
+      "category": "transfer",
+      "service": "AmazonEC2",
+      "unit": "GB",
+      "status": "unpriced",
+      "source_id": "ec2",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Route/quantity and eligibility must be specified; local VM is not assumed free. Local rates use operator evidence; this URL is only a reference, not proof of local pricing."
+    },
+    {
+      "id": "transfer.inter_region",
+      "category": "transfer",
+      "service": "AmazonEC2",
+      "unit": "GB",
+      "status": "unpriced",
+      "source_id": "ec2",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Route/quantity and eligibility must be specified; local VM is not assumed free. Local rates use operator evidence; this URL is only a reference, not proof of local pricing."
+    },
+    {
+      "id": "edge.compute",
+      "category": "infrastructure",
+      "service": "local-vm",
+      "unit": "Hrs",
+      "status": "unpriced",
+      "source_id": "ec2",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Route/quantity and eligibility must be specified; local VM is not assumed free. Local rates use operator evidence; this URL is only a reference, not proof of local pricing."
+    },
+    {
+      "id": "edge.disk_network",
+      "category": "infrastructure",
+      "service": "local-vm",
+      "unit": "Hrs",
+      "status": "unpriced",
+      "source_id": "ec2",
+      "dimensions": {},
+      "tiers": [],
+      "note": "Route/quantity and eligibility must be specified; local VM is not assumed free. Local rates use operator evidence; this URL is only a reference, not proof of local pricing."
+    }
+  ]
+}
