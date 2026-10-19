@@ -607,7 +607,7 @@ Page target nên theo **kích thước serialization thực tế**, không chỉ
 
 ### 10.2 Commit, quota và LIST
 
-- Chuẩn bị pack/index/pages trước, retry hết UnprocessedItems. R2 transaction gồm head revision, logical quota/reservation, outbox pointer; Complete luôn thêm state Completed/receipt. Không yêu cầu ALL_OLD của PutItem như cơ chế commit chính nữa; đọc head cũ consistent, CAS revision rồi lưu cleanup delta theo op_id.
+- Chuẩn bị pack/index/pages trước, retry hết UnprocessedItems. R2 transaction gồm head revision, logical quota/reservation, outbox pointer và điều kiện quyền của request (credential/user/bucket/grant, API 2.2.3) để revoke có hiệu lực tại commit; Complete luôn thêm state Completed/receipt. Không yêu cầu ALL_OLD của PutItem như cơ chế commit chính nữa; đọc head cũ consistent, CAS revision rồi lưu cleanup delta theo op_id.
 - DELETE viết tombstone revision; LIST/GET/HEAD xử lý `deleted` là không tồn tại. Quota chỉ thay đổi trên commit thành công; overwrite trừ size cũ, cộng size mới. Concurrency owner/bucket delete phải được condition-check/gate để không tạo object trong bucket đã xóa.
 - `ListObjects`: Query consistent theo bucket/prefix; bỏ tombstone, gộp delimiter, tiếp tục query cho đủ trang logical hoặc hết dữ liệu. `CommonPrefixes` tính vào max-keys, continuation token giữ vị trí đã quét và trạng thái delimiter, ràng buộc bucket/prefix/options. Không giả định token chỉ là key cuối trả về; không dùng mẹo successor prefix chưa kiểm chứng làm mất key.
 - Hot partition bucket và counter quota chủ sở hữu là rủi ro đo được; shard chỉ khi có dữ liệu tải. GSI không phục vụ authorization/commit/read-after-write.
