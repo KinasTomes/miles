@@ -1,5 +1,5 @@
 {
-  "note": "API v2 2.2.3. Bucket demo of user-owner, key k exists, upload UP1 on demo/k. s3 rows: requires is the rule of 2.2.3 ('|' = or, '+' = and); cells are the result for each principal when the caller is the initiator of UP1 and the CopyObject source is demo/k. allow = authorized (the handler goes on), listed/hidden = ListBuckets shows demo or not, else an S3 error code. s3_cases change one condition each. snapshot times are milliseconds of the monotonic clock of the node that reads the snapshot. admin cells: allow, 401 or 403.",
+  "note": "API v2 2.2.3. Bucket demo of user-owner, key k exists, upload UP1 on demo/k. s3 rows: requires is the rule of 2.2.3 ('|' = or, '+' = and); cells are the result for each principal when the caller is the initiator of UP1 and the CopyObject source is demo/k. allow = authorized (the handler goes on), listed/hidden = ListBuckets shows demo or not, else an S3 error code. s3_cases change one condition each. snapshot times are milliseconds of the monotonic clock of the node that reads the snapshot; for phase publish, at is the commit time of the write transaction, whose authorization conditions decide regardless of the snapshot age. admin cells: allow, 401 or 403.",
   "bucket": {"bucket": "demo", "bucket_id": "bkt-demo-0001", "owner_id": "user-owner", "dedup_domain": "default"},
   "principals": {
     "owner": {"user_id": "user-owner"},
@@ -80,8 +80,11 @@
     {"name": "every node denies at revoke+5 s", "phase": "admit", "read_at": 999, "at": 6000, "revoked_at": 1000, "expect": "deny", "must_reread": true},
     {"name": "snapshot read after the revocation", "phase": "admit", "read_at": 1000, "at": 1500, "revoked_at": 1000, "expect": "deny", "must_reread": false},
     {"name": "admitted GET stream runs to the end", "phase": "stream", "read_at": 0, "at": 1800000, "revoked_at": 1000, "expect": "allow", "must_reread": false},
-    {"name": "PUT publish after a long body re-reads", "phase": "publish", "read_at": 0, "at": 10000, "revoked_at": 1000, "expect": "deny", "must_reread": true},
-    {"name": "PUT publish inside the window may pass", "phase": "publish", "read_at": 0, "at": 3000, "revoked_at": 1000, "expect": "may_allow", "must_reread": false},
+    {"name": "PUT publish after a long body", "phase": "publish", "read_at": 0, "at": 10000, "revoked_at": 1000, "expect": "deny", "must_reread": false},
+    {"name": "commit inside the admission window still fails", "phase": "publish", "read_at": 0, "at": 3000, "revoked_at": 1000, "expect": "deny", "must_reread": false},
+    {"name": "snapshot T-1, revoke T, recheck T+3 passes, commit T+6 fails", "phase": "publish", "read_at": 999, "at": 7000, "revoked_at": 1000, "expect": "deny", "must_reread": false},
+    {"name": "revoked 1 ms before the commit", "phase": "publish", "read_at": 0, "at": 3000, "revoked_at": 2999, "expect": "deny", "must_reread": false},
+    {"name": "revoked after the commit", "phase": "publish", "read_at": 0, "at": 3000, "revoked_at": 3001, "expect": "allow", "must_reread": false},
     {"name": "token expiry caps the snapshot", "phase": "admit", "read_at": 0, "at": 2000, "expires_at": 2000, "expect": "deny", "must_reread": true},
     {"name": "token before expiry", "phase": "admit", "read_at": 0, "at": 1999, "expires_at": 2000, "expect": "allow", "must_reread": false}
   ],
