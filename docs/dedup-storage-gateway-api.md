@@ -130,9 +130,71 @@ Hợp đồng của parser/xác thực S3. `tests/fixtures/s3/transport.json` gi
 **Thứ tự kiểm** (lỗi đầu tiên được trả; có lỗi thì không commit):
 
 1. Router `Resolve` (mục 4.1).
-2. Xác thực: định dạng Authorization/query (`InvalidArgument`), access key (`InvalidAccessKeyId`), đồng hồ hoặc hạn presigned, chữ ký (`SignatureDoesNotMatch`), header `x-amz-*` chưa ký (`AccessDenied`).
-3. Quyền bucket (mục 2.2.1).
+2. Xác thực: định dạng Authorization/query (`InvalidArgument`), access key không có hoặc đã revoke (`InvalidAccessKeyId`), đồng hồ hoặc hạn presigned, chữ ký (`SignatureDoesNotMatch`), header `x-amz-*` chưa ký (`AccessDenied`).
+3. Quyền bucket (mục 2.2.1, thứ tự kiểm ở 2.2.3).
 4. Decoder: khung và độ dài, chữ ký từng chunk/trailer khi đọc, `x-amz-content-sha256` dạng hex (`XAmzContentSHA256Mismatch`), `Content-MD5` (`BadDigest`), checksum header/trailer (`BadDigest`).
+
+### 2.2.3 Danh tính, snapshot quyền và binding upload — hợp đồng W1
+
+Hợp đồng cho auth, metadata Users/Credentials/Buckets/BucketGrants/Uploads và Admin API danh tính. Test case: `tests/fixtures/s3/authorization.json` gồm ma trận S3/Admin theo vai trò, thứ tự lỗi, CopyObject, binding upload và tuổi snapshot. Chưa có handler: `internal/api/s3/contract_test.go` kiểm từng giá trị mong đợi bằng hàm tham chiếu viết đúng các quy tắc dưới đây; code thật (W02-CHIEN-02, W04) phải chạy cùng fixture rồi thay hàm tham chiếu.
+
+**Định danh**
+
+| Thực thể | Khóa và định dạng | Trường | Quy tắc |
+|---|---|---|---|
+| User | `user_id`: 1–64 ký tự `[a-z0-9_-]` | `status` = `active`/`disabled`, `default_domain`, `logical_limit` (user mới 1 TiB), revision | Chỉ system admin tạo/sửa. Không xóa user, chỉ disable, nên `user_id` không tái dùng. Đổi `default_domain` chỉ áp bucket tạo sau. used/reserved/staged/active_upload_count là counter dẫn xuất (kiến trúc 9.2) |
+| Credential SigV4 | `access_key_id`: 20 ký tự `[A-Z0-9]`; secret: Base64 40 ký tự của 30 byte CSPRNG | `user_id`, `status` = `active`/`revoked`, `system_admin`, `debug_allowed`, revision | Secret trả một lần lúc tạo, lưu KMS ciphertext. `revoked` không quay lại `active`. `debug_allowed` cần `system_admin`, sai trả 400. Credential không mang quyền bucket |
+| Admin token | `token_id.secret`, mục 6.4 | `user_id`, `system_admin`, `status`, `expires_at` | Chỉ dùng cho Admin API. Credential SigV4 không mở Admin API, bearer không ký S3 |
+| Bucket | `bucket`: tên S3, namespace chung; `bucket_id`: 1–64 ký tự `[a-z0-9_-]`, gateway sinh 32 hex từ 128 bit CSPRNG mỗi lần CreateBucket | `owner_id`, `dedup_domain`, `state` = `active`/`deleting`, revision, created_at | `owner_id` là user tạo, không chuyển. `dedup_domain` chép `default_domain` của owner lúc tạo, bất biến. `bucket_id` không tái dùng: tạo lại cùng tên ra `bucket_id` mới, không kế thừa grants, upload hay receipt |
+| Grant | PK `bucket_id`, SK `user_id` | `read`, `write`, revision | Gắn `bucket_id`, không gắn tên. Không lưu read = write = false (dùng DELETE). Grant cho `owner_id` trả 400 vì quyền owner ngầm định và không giảm được; `user_id` không có trả 404 |
+| Upload | `upload_id`: 32 hex từ 128 bit CSPRNG, không tái dùng | bucket, `bucket_id`, key, `initiator` (user_id), `dedup_domain`, checksum algorithm/type, `base_size`, `expires_at` = Create + 24 giờ | Binding cố định từ Create; key là byte đã decode một lần như `Route.Key` |
+
+**Quyền hiệu lực** của user u trên bucket b, lấy từ một snapshot: `owner` = (b.owner_id = u); `read` = owner ∨ grant.read; `write` = owner ∨ grant.write; `admin` = cờ `system_admin` của credential (S3) hoặc token (Admin API). `admin` không cộng read/write; grant cấp cho admin có hiệu lực như user thường và được audit. `initiator` = caller là `Uploads.initiator`.
+
+| Operation S3 | Cho phép khi |
+|---|---|
+| ListBuckets | User active; chỉ liệt kê bucket có owner ∨ read ∨ write |
+| CreateBucket | User active; tên đã thuộc caller trả `BucketAlreadyOwnedByYou`, thuộc người khác trả `BucketAlreadyExists` |
+| HeadBucket, GetBucketLocation, ListObjectsV2, GetObject, HeadObject, RestoreObject | read |
+| PutObject, DeleteObject, DeleteObjects, CreateMultipartUpload | write |
+| CopyObject | write đích ∧ read nguồn |
+| DeleteBucket | owner ∨ admin |
+| UploadPart, CompleteMultipartUpload | write ∧ initiator; owner/admin không dùng `upload_id` để ghi thay initiator |
+| AbortMultipartUpload | (write ∧ initiator) ∨ owner ∨ admin |
+| ListParts | (read ∧ initiator) ∨ owner ∨ admin |
+
+**Thứ tự kiểm** (sau router và chữ ký mục 2.2.2; lỗi đầu tiên được trả):
+
+1. Credential không có hoặc `revoked`: `InvalidAccessKeyId`, không phân biệt hai trường hợp.
+2. User `disabled`: `AccessDenied`, trước khi tra bucket.
+3. Không có bucket theo tên: `NoSuchBucket` (CreateBucket thì tạo). CopyObject kiểm bucket đích trước.
+4. Điều kiện ở bảng trên, tạm bỏ `initiator` và read nguồn: `AccessDenied`. Bước này chạy trước khi tra `upload_id` hay nguồn nên không lộ upload/object tồn tại.
+5. CopyObject: không có bucket nguồn `NoSuchBucket`, thiếu read nguồn `AccessDenied`, không có key nguồn `NoSuchKey`.
+6. Multipart: `upload_id` không có, hoặc `bucket_id`/key của upload khác bucket hiện hành/route: `NoSuchUpload`; rồi điều kiện đủ có `initiator`: `AccessDenied`.
+7. Object và state: `NoSuchKey` chỉ trả cho caller có read; DeleteObject key không có trả 204 khi đã có write. State multipart theo mục 4.3.1.
+
+**Snapshot quyền**
+
+- Snapshot gồm user (status), credential hoặc token (status, cờ, `expires_at`), bucket (`bucket_id`, owner, domain, state) và grant (bucket_id, user), đọc consistent từ metadata authoritative tại `read_at`.
+- Tuổi đo bằng monotonic clock của node đọc. Dùng lại khi now < `valid_until` = min(`read_at` + 5 giây, `expires_at` của token); từ `valid_until` phải đọc lại. Cache hit không đổi `read_at`; không nhận snapshot của node khác.
+- Hệ quả: revoke credential/token, disable user, sửa/xóa grant hoặc xóa bucket commit lúc T thì mọi admission và publish từ T + 5 giây trên mọi node thấy thay đổi. Trong [T, T + 5 giây) node còn snapshot cũ có thể vẫn cho phép; test không được đòi từ chối trong khoảng này.
+- Read (GET/HEAD/LIST, đọc nguồn Copy) quyết định một lần lúc admit; stream đã nhận chạy tới hết trong lease/deadline 30 phút, không cắt vì revoke.
+- Write kiểm lại ngay trước publish: transaction commit head (PutObject, CopyObject, DeleteObject, từng key của DeleteObjects, Complete) và CAS part head (UploadPart) chỉ được phát với snapshot còn now < `valid_until` (đọc lại nếu cũ) trong đó credential/token còn active và bước 2–6 vẫn thỏa; Copy chỉ kiểm lại write đích vì nguồn đã pin. Credential, user hoặc quyền không còn: `AccessDenied` (request đã xác thực nên không trả `InvalidAccessKeyId`), không publish, release reservation (mục 2.6). Bucket không còn hoặc `bucket_id` khác lúc admit: `NoSuchBucket`.
+- Transaction commit có điều kiện `Buckets[bucket].bucket_id` bằng `bucket_id` lúc admit và state `active` (kiến trúc 10.2), nên object không rơi vào bucket đã xóa hoặc tạo lại. User/credential/grant không nằm trong condition; bound 5 giây do bước kiểm lại bảo đảm.
+- Takeover Complete không có caller: kiểm initiator còn active và còn write theo snapshot mới; không thì Aborting (mục 4.3).
+
+**Admin API** (bearer mục 6.1):
+
+| Endpoint | Cho phép khi |
+|---|---|
+| GET /buckets/{b}, GET /buckets/{b}/grants, PUT/DELETE /buckets/{b}/grants/{user_id}, GET/PUT /buckets/{b}/policy | owner ∨ admin; grantee read/write trả 403 |
+| GET /users/{id}/usage | token của chính `id` ∨ admin |
+| DELETE /admin-tokens/{token_id} | chủ token ∨ admin |
+| Các endpoint còn lại của mục 6.2 | admin |
+
+Bearer thiếu, sai, revoked, hết hạn hoặc thuộc user disabled trả 401.
+
+Lựa chọn của DSG, cần review: user disabled trả `AccessDenied` (S3 không có trạng thái này); grant cho owner bị từ chối thay vì bỏ qua; admin chỉ thao tác dữ liệu S3 ở DeleteBucket, Abort và ListParts.
 
 ### 2.3 Header chung
 
@@ -160,30 +222,30 @@ Bảng mã lỗi cần hỗ trợ:
 
 | Mã | HTTP | Khi nào |
 |---|---|---|
-| `AccessDenied` | 403 | Không có quyền, presigned URL hết hạn, hoặc header `x-amz-*` không nằm trong SignedHeaders |
-| `InvalidAccessKeyId` | 403 | Không tìm thấy access key |
+| `AccessDenied` | 403 | Không có quyền, user disabled, presigned URL hết hạn, hoặc header `x-amz-*` không nằm trong SignedHeaders |
+| `InvalidAccessKeyId` | 403 | Không tìm thấy access key hoặc key đã revoke |
 | `SignatureDoesNotMatch` | 403 | Chữ ký header/query, chunk hoặc trailer sai |
 | `RequestTimeTooSkewed` | 403 | Lệch đồng hồ quá 15 phút |
 | `InvalidObjectState` | 403 | GET hoặc phần Copy cần đọc có pack GLACIER/DEEP_ARCHIVE chưa restore; GLACIER_IR không thuộc nhánh này |
 | `NoSuchBucket` | 404 | Bucket không tồn tại |
 | `NoSuchKey` | 404 | Object không tồn tại |
-| `NoSuchUpload` | 404 | `uploadId` không hợp lệ hoặc đã hết hạn |
+| `NoSuchUpload` | 404 | `uploadId` không có, không khớp bucket_id/key, đã abort, hết hạn hoặc hết receipt (mục 4.3.1) |
 | `MethodNotAllowed` | 405 | Method không hỗ trợ trên resource |
 | `BucketAlreadyOwnedByYou` | 409 | Tạo bucket đã thuộc owner |
 | `BucketAlreadyExists` | 409 | Tên bucket đã thuộc người khác |
 | `InvalidRequest` | 400 | Operation/query/checksum mode không hợp lệ; khung `aws-chunked`/trailer sai (mục 2.2.2) |
 | `RestoreAlreadyInProgress` | 409 | Restore đang chạy, không khởi tạo pack nào mới |
 | `OperationAborted` | 409 | Complete/Abort cạnh tranh hoặc upload đang Completing |
-| `QuotaExceeded` (DSG) | 403 | Logical quota/reservation không đủ, không tiết lộ physical bytes |
+| `QuotaExceeded` (DSG) | 403 | Logical quota/reservation không đủ, hoặc vượt 16 upload/staging của owner (mục 2.6); không tiết lộ physical bytes |
 | `BucketNotEmpty` | 409 | Xóa bucket còn object |
 | `InvalidBucketName` | 400 | Tên bucket sai quy tắc |
 | `KeyTooLongError` | 400 | Key dài hơn 1024 byte |
 | `InvalidArgument` | 400 | Tham số sai, kể cả Authorization/query presigned sai định dạng |
 | `MalformedXML` | 400 | Body XML sai |
-| `BadDigest` | 400 | `Content-MD5` hoặc checksum header/trailer không khớp |
+| `BadDigest` | 400 | `Content-MD5`, checksum header/trailer hoặc checksum part/object của Complete không khớp |
 | `XAmzContentSHA256Mismatch` | 400 | Hash payload không khớp |
 | `IncompleteBody` | 400 | Body ngắn hơn `Content-Length` hoặc `x-amz-decoded-content-length` |
-| `InvalidPart` | 400 | Part không tồn tại hoặc ETag sai |
+| `InvalidPart` | 400 | Part không tồn tại, chưa publish hoặc ETag sai |
 | `InvalidPartOrder` | 400 | Danh sách part không tăng dần |
 | `EntityTooSmall` | 400 | Part (không phải part cuối) dưới 5 MiB |
 | `EntityTooLarge` | 400 | Vượt giới hạn kích thước |
@@ -216,6 +278,10 @@ Bảng mã lỗi cần hỗ trợ:
 - R2 transaction head + logical quota/reservation + outbox; Complete thêm state Completed/receipt cùng transaction. Refcount cập nhật idempotent theo op_id, không là căn cứ duy nhất xóa. Object lớn có immutable pages, outbox giữ pointer dưới item/transaction limits. Event có history_id/recovery_epoch và stable event_id theo op_id; retry unknown outcome tra outbox/receipt consistent, không chỉ nhìn head đã có thể bị overwrite; ClientRequestToken chỉ reuse khi params giữ nguyên (kiến trúc 9.0). membership epoch được seal ngoài request (kiến trúc 9.1).
 - R1 giữ writer admission + read views/location pins và mutation gate. Maintenance/drain chặn admission tương ứng trả 503; lease 60 giây/heartbeat 15 giây, deadline request 30 phút, không giữ request vô hạn. Recovery-cut gate còn chặn control-plane event producers để đóng epoch đủ.
 - Quota tính committed logical theo owner bucket đích. Reserve r=max(0, candidate_size−base_head_size), streaming grow từng 64 MiB; commit dùng delta theo head hiện tại và condition used+delta+(reserved−r)≤limit. Đồng thời cap 16 active uploads và staged logical≤logical_limit+100 GiB; thay part/abort/recovery release idempotent. Overwrite cùng size có thể không cần thêm quota, nhưng reservation không bảo đảm commit nếu head/usage đã đổi. Công thức/ledger đầy đủ ở kiến trúc 9.2; physical bytes không xuất hiện trong usage user.
+- **Chủ chịu quota và miền — hợp đồng W1.** Write (PutObject, CopyObject, Complete, DeleteObject/DeleteObjects) tính cho `owner_id` của bucket đích, không cho caller, initiator hay owner nguồn. Domain là `dedup_domain` của bucket đích (Complete dùng domain đã chép vào upload lúc Create), không lấy `default_domain` hiện tại của owner hay caller. Ledger theo ký hiệu kiến trúc 9.2, test case `tests/fixtures/s3/quota.json`:
+  - Admit: B = size head lúc admit (0 nếu không có hoặc tombstone), r = max(0, S − B), cho phép khi used + reserved + r ≤ limit. Streaming giữ B + r ≥ số byte đã nhận, mỗi lần tăng đúng 64 MiB với cùng điều kiện; hết body hạ r về max(0, S − B).
+  - Commit: H = size head hiện hành, D = S − H, cho phép khi used + D + (reserved − r) ≤ limit; thành công used += D, reserved −= r. Thất bại trả `QuotaExceeded`, ledger giữ nguyên; PUT/Copy release r khi kết thúc request, Complete mở lại Active và upload giữ r. Release idempotent theo op_id.
+  - Multipart: Create cần số upload Active/Completing của owner nhỏ hơn 16 và chụp B. Upload giữ r = max(0, C − B), C = tổng part đã publish cộng part đang ghi; UploadPart tăng r theo điều kiện admit và cần staged + size part ≤ logical_limit + 100 GiB. Vượt bất kỳ giới hạn nào trả `QuotaExceeded` trước body.
 - PUT/Complete thành công đọc ngay được từ bản Warm hoặc GLACIER_IR được bảo vệ. Copy metadata có thể tạo object Cold hoặc phụ thuộc expiry Restored theo mục 4.5; không áp cùng bảo đảm PUT.
 
 ---
@@ -415,6 +481,70 @@ Complete validate danh sách không rỗng, PartNumber tăng nghiêm ngặt, t�
 5. Transaction timeout chưa rõ kết quả: tra state/receipt/op_id; DDB chưa đọc được trả 503 và giữ roots/counters. Không mở lại Active hoặc release reservation chỉ vì timeout. Stale worker mất fence không được publish, kể cả response backend đến muộn. Validation lỗi trước commit mở lại Active bằng fence còn hợp lệ; Abort thắng trước thì Complete trả NoSuchUpload.
 
 Part upload song song/sai thứ tự được hỗ trợ; cùng partNumber CAS head, last publisher wins khi Active. Candidate/staging bounds ở 2.6 và kiến trúc 9.2. Terminal cleanup giải phóng reservation/counters một lần; TTL chỉ dọn metadata sau receipt/recovery/read protection, không dọn Completing. CI kill sau freeze, sau prepare, trước/sau transaction và khi mất response; retry sau Active expiry nhưng trong receipt retention vẫn trả receipt nếu namespace incarnation còn đúng.
+
+#### 4.3.1 Complete: input chuẩn hóa, receipt và lỗi — hợp đồng W1
+
+Test case: `tests/fixtures/s3/multipart.json` gồm golden input từ request của client đã pin (XML → canonical → SHA-256 → response lưu trong receipt), ca validation và bảng state. Parser XML và handler thuộc W02-CHIEN-02/W04; `contract_test.go` kiểm digest, dạng mã hóa canonical, ETag và checksum COMPOSITE của golden.
+
+**Canonical input v1**: byte JSON UTF-8, không khoảng trắng, field theo đúng thứ tự bảng.
+
+| Field | Giá trị |
+|---|---|
+| `v` | 1 |
+| `bucket_id`, `key` | Của upload, đã khớp route ở bước binding |
+| `checksum_algorithm`, `checksum_type` | Của upload lúc Create (mặc định `CRC64NVME`/`FULL_OBJECT`) |
+| `object_checksum` | Header `x-amz-checksum-<alg>` của Complete, Base64 chuẩn có padding; `null` nếu không gửi |
+| `object_size` | Header `x-amz-mp-object-size`, số nguyên; `null` nếu không gửi |
+| `parts` | Theo thứ tự request; mỗi phần tử `part_number`, `etag` (bỏ một cặp `"` bao ngoài, hex lowercase), `checksum` (giá trị `Checksum<ALG>` của Part, Base64 chuẩn, hoặc `null`) |
+
+Chuỗi escape như Go `encoding/json` với `SetEscapeHTML(false)`: không escape `<`, `>`, `&`; U+2028/U+2029 thành `\u2028`/`\u2029`. `input_digest` là SHA-256 hex lowercase của toàn bộ byte canonical, tính trước khi chia CompletionPages. `x-amz-checksum-type` chỉ được kiểm khớp upload, không vào digest. Có hay không `xmlns`, thứ tự phần tử con của Part, khoảng trắng, `&quot;` hay hoa/thường của ETag không đổi digest.
+
+**Validation** (sau quyền/binding mục 2.2.3; lỗi đầu tiên được trả):
+
+| # | Sai | Lỗi | Sau lỗi |
+|---|---|---|---|
+| 1 | XML không parse được; không có Part; Part thiếu hoặc lặp `PartNumber`/`ETag`; PartNumber không phải số nguyên; phần tử lạ không bắt đầu bằng `Checksum` | `MalformedXML` | State giữ nguyên |
+| 2 | `x-amz-checksum-type` khác upload; header checksum object khác algorithm upload hoặc gửi cho COMPOSITE; `Checksum<ALG>` trong Part khác algorithm upload, nhiều hơn một, hoặc không phải Base64 đúng độ dài digest | `InvalidRequest` | State giữ nguyên |
+| 3 | PartNumber ngoài 1..10000; `x-amz-mp-object-size` không phải số nguyên không âm | `InvalidArgument` | State giữ nguyên |
+| 4 | PartNumber không tăng nghiêm ngặt (kể cả trùng); COMPOSITE không đúng 1..N | `InvalidPartOrder` | State giữ nguyên |
+| 5 | COMPOSITE có Part thiếu checksum | `InvalidRequest` | State giữ nguyên |
+| — | Dispatch theo state ở bảng dưới; Active thì freeze theo bước 1–2 mục 4.3 | | |
+| 6 | Part chưa publish hoặc ETag khác part head đã freeze | `InvalidPart` | Mở lại Active |
+| 7 | Checksum Part khác checksum đã verify lúc UploadPart | `BadDigest` | Mở lại Active |
+| 8 | Part không phải cuối nhỏ hơn 5 MiB | `EntityTooSmall` | Mở lại Active |
+| 9 | Tổng lớn hơn 100 GiB | `EntityTooLarge` | Mở lại Active |
+| 10 | `object_size` khác tổng | `InvalidRequest` | Mở lại Active |
+| 11 | `object_checksum` khác checksum FULL_OBJECT combine | `BadDigest` | Mở lại Active |
+| 12 | Kiểm lại quyền initiator (mục 2.2.3) | `AccessDenied` | Mở lại Active |
+| 13 | Quota commit (mục 2.6) | `QuotaExceeded` | Mở lại Active, upload giữ reservation |
+
+Lựa chọn của DSG, chưa đối chiếu S3 thật: PartNumber ngoài khoảng trả `InvalidArgument` như router UploadPart; checksum Part sai trả `BadDigest`; `object_size` sai trả `InvalidRequest`; header checksum object cho COMPOSITE trả `InvalidRequest`; phần tử lạ trả `MalformedXML`.
+
+**State**: hết hạn là now ≥ `expires_at`; lease còn là now < `lease_expires_at`, grace kéo dài thêm 5 giây; receipt còn là now < `receipt_expires_at`.
+
+| State | Complete | UploadPart | Abort | ListParts |
+|---|---|---|---|---|
+| Active, chưa hết hạn | Freeze rồi validate 6–13 | Publish (CAS, last publisher wins) | Active → Aborting → Aborted, 204 | 200 |
+| Active, hết hạn | `NoSuchUpload` | `NoSuchUpload` | `NoSuchUpload` | `NoSuchUpload` |
+| Completing | Input khác: `InvalidRequest`. Cùng input: lease còn hoặc trong grace `OperationAborted`; hết grace thì takeover cùng completion_op_id, kể cả quá `expires_at` | `OperationAborted` | `OperationAborted` | 200 |
+| Completed, receipt còn | Cùng input trả receipt, kể cả quá `expires_at`; input khác `InvalidRequest` | `NoSuchUpload` | `OperationAborted` | `NoSuchUpload` |
+| Completed, receipt hết | `NoSuchUpload` | `NoSuchUpload` | `NoSuchUpload` | `NoSuchUpload` |
+| Aborting, Aborted | `NoSuchUpload` | `NoSuchUpload` | `NoSuchUpload` | `NoSuchUpload` |
+
+UploadPart đã nhận khi Active nhưng freeze thắng trước publish trả `OperationAborted`, Abort thắng trả `NoSuchUpload`; part đó không được publish. Metadata không đọc được hoặc commit chưa rõ kết quả trả `ServiceUnavailable`, giữ roots/counters (bước 5 ở trên).
+
+**Receipt**, ghi vào Uploads trong transaction Completed:
+
+| Field | Nội dung |
+|---|---|
+| `completion_op_id` | op_id ổn định của lần Complete, cũng là event_id outbox |
+| `input_digest` | Digest canonical input |
+| `snapshot_digest` | Digest frozen part snapshot (format CompletionPages), không trả client |
+| `committed_at`, `receipt_expires_at` | `receipt_expires_at` = `committed_at` + 7 ngày |
+| `object_revision` | Revision head đã commit |
+| `response` | Location, Bucket, Key, ETag, checksum (COMPOSITE có hậu tố `-N`) và checksum type của CompleteMultipartUploadResult |
+
+Retry cùng `input_digest` trong hạn trả lại `response` (200, XML như lần đầu trừ RequestId), không cộng quota/refcount, không tạo lại object dù head đã bị overwrite/delete. Receipt không giữ payload làm GC root.
 
 ### 4.4 Cold và RestoreObject
 
