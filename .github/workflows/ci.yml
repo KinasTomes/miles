@@ -23,3 +23,38 @@ jobs:
           cache: false # Bật khi dự án có dependency và go.sum.
       - name: Format, vet, test and build
         run: make check
+
+  terraform-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install pinned Terraform (verify SHA256)
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, io, pathlib, urllib.request, zipfile
+          version = "1.15.2"
+          base = f"https://releases.hashicorp.com/terraform/{version}/"
+          name = f"terraform_{version}_linux_amd64.zip"
+          archive = urllib.request.urlopen(base + name).read()
+          checksums = urllib.request.urlopen(base + f"terraform_{version}_SHA256SUMS").read().decode()
+          expected = next(line.split()[0] for line in checksums.splitlines() if line.split()[-1] == name)
+          assert hashlib.sha256(archive).hexdigest() == expected
+          dest = pathlib.Path("/tmp/miles-terraform")
+          dest.mkdir(exist_ok=True)
+          zipfile.ZipFile(io.BytesIO(archive)).extract("terraform", dest)
+          (dest / "terraform").chmod(0o755)
+          PY
+          echo /tmp/miles-terraform >> "$GITHUB_PATH"
+      - name: Format, initialize and validate
+        run: |
+          terraform fmt -check -recursive infra/terraform/cloud
+          terraform -chdir=infra/terraform/cloud/bootstrap/state init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=infra/terraform/cloud/bootstrap/state validate
+          terraform -chdir=infra/terraform/cloud/environments/dev init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=infra/terraform/cloud/environments/dev validate
+      - name: Test plans with mock AWS (no credentials or apply)
+        run: terraform -chdir=infra/terraform/cloud/environments/dev test
+
+      - name: Test deployment identity gate (offline)
+        run: python3 -B -m unittest discover -s infra/terraform/cloud/scripts/tests -v
