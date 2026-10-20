@@ -28,14 +28,14 @@ Lỗi được phân theo **stage**; fixture ghim stage, không ghim thông đi�
 | `blob_checksum` | CRC-32C của stored bytes sai |
 | `content` | Giải nén lỗi, sai `raw_len` hoặc SHA-256 |
 | `page_checksum` | SHA-256 của page sai |
-| `page` | Envelope/payload sai cấu trúc, ref `raw_len` = 0, domain sai quy tắc |
+| `page` | Envelope/payload sai cấu trúc, owner/domain sai quy tắc `id`, ref `raw_len` = 0 |
 | `page_key` | kind/owner/page_no trong page khác item key đang đọc |
 | `manifest` | Head và pages không khớp: thiếu page, offset, domain, size, chunk_count, page_index, quá 1024 pages |
 | `stream` | Completion stream thiếu page, sai độ dài/digest, snapshot sai cấu trúc |
 
 ## 2. Pack, footer index và sidecar
 
-### 2.1 Key S3
+### 2.1 Key S3 và identity
 
 ```
 packs/{xx}/{pack_id}/{generation}
@@ -43,6 +43,8 @@ packs-index/{xx}/{pack_id}/{generation}.idx
 ```
 
 `xx` là 2 ký tự đầu của pack_id ngẫu nhiên (256 prefix, KT §4.1); adapter từ chối pack_id ngắn hơn 2 ký tự. Generation nằm trong key vì `PackRef` là cặp (pack_id, generation) và contract `PackStore` cho hai generation cùng pack_id tồn tại, xóa độc lập (promotion). Mọi lần ghi nội dung mới (pack mới, promotion, compaction) dùng generation mới; đổi storage class giữ nguyên key, generation và bytes. Sidecar luôn STANDARD.
+
+Identity vật lý của pack ở mọi nơi là cặp **(pack_id, generation)**: header/index, key S3, `PackRef`, location trong `Chunks`, cache key và item bảng `Packs` (partition key `pack_id`, sort key `generation`, KT §10.1). Mỗi generation có state, class, retention, live bytes riêng; không có item `Packs` chỉ theo pack_id.
 
 ### 2.2 Bố cục
 
@@ -216,7 +218,7 @@ Pages, sidecar và pack không nằm trong transaction (KT §9.0). Định dạn
 | `pack.json` | invalid, corrupt | Pack rỗng, 16385 entries, trùng domain/hash, ID/domain sai, chunk rỗng, codec lạ, raw sai độ dài, frame zstd ngắn, hash sai; trailer cắt/sai version/sai offset, byte index/blob/header lật, đọc nhầm generation, sidecar cắt/nhầm pack/0 entry/thiếu entry_count/codec lạ/gap/raw sai độ dài, footer để byte ngoài entry trước index |
 | `pages.json` | manifests | `empty object` (0 page), `small object` (hash lặp), `upload part` (`tenant-b`), biên 10919/10920 ref, `most refs at default chunking` (419600 ref, 39 pages) |
 | `pages.json` | streams | Input `cli-cp-multipart`, input 10000 part (4 pages), snapshot upload `full` của `multipart.json`, snapshot 10000 part (3 pages) |
-| `pages.json` | invalid, corrupt | raw_len 0, domain sai, snapshot sai thứ tự/lẫn algorithm/part rỗng có page; byte lật, byte thừa, đọc nhầm owner/kind, hoán đổi/thiếu page, head sai size/chunk_count/domain/page_index/1025 pages, stream thiếu page/sai digest/sai độ dài |
+| `pages.json` | invalid, corrupt | raw_len 0, domain sai, owner sai quy tắc ở cả key và page, snapshot sai thứ tự/lẫn algorithm/part rỗng có page; byte lật, byte thừa, đọc nhầm owner/kind, hoán đổi/thiếu page, head sai size/chunk_count/domain/page_index/1025 pages, stream thiếu page/sai digest/sai độ dài |
 
 `internal/pack/format_test.go` và `internal/manifest/pages_test.go` encode lại mọi golden và so bytes, đọc lại qua reader tham chiếu, ánh xạ sang model `internal/storage`, rồi kiểm từng case invalid/corrupt dừng đúng stage. Frame zstd trong fixture là frame RLE một block; reader tham chiếu chỉ giải các frame raw/RLE single-segment đó, codec production dùng decoder zstd đầy đủ. Kiểm ngoài Go: các frame được libzstd (Bun 1.4.3 `zstdDecompressSync`) giải ra đúng raw; một parser JavaScript viết riêng từ bảng ở §2–3 đọc `pack_hex` và `page_hex` cho cùng CRC-32C, SHA-256, offset và digest.
 

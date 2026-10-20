@@ -673,7 +673,7 @@ Không yêu cầu total=dup+revived+unique vì dup đếm occurrences còn reviv
 | P1 | GET | /buckets/{b}/stats | System admin; physical allocation phải ghi methodology, không là bill người dùng |
 | P1 | GET | /objects/layout?bucket={b}&key={key} | System admin; key query encode một lần, tránh ambiguity slash trong path |
 | P1 | GET | /packs | System admin, lọc state/storage_class/live_ratio_lt; pack có thể nhiều domain |
-| P1 | GET | /packs/{id} | System admin: generation/state/class/restore expiry/retention/live bytes |
+| P1 | GET | /packs/{id} | System admin: mọi generation của pack_id, mỗi generation state/class/restore expiry/retention/live bytes |
 | P1 | POST | /packs/{id}/restore | System admin; archive mới restore, trả job hoặc backend error; IR không cần |
 | P1 | POST | /packs/{id}/promote | System admin; chuyển canonical chunks sống sang Warm mới, gate/fence R1 |
 | P1 | POST / GET | /jobs | System admin; type tiering/gc/compaction/scrub/purge_uploads/recover_uploads/journal_flush/recovery_checkpoint/cache_purge/drain |
@@ -945,7 +945,7 @@ message GetRangeRequest {
   string pack_id = 1;
   uint64 offset  = 2;
   uint32 length  = 3;
-  uint64 generation = 4;
+  string generation = 4;
 }
 
 message GetRangeResponse {

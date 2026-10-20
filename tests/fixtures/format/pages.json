@@ -28,6 +28,7 @@
   "invalid": [
     {"name": "ref with zero raw length", "kind": "object", "owner": "m-invalid", "domain": "default", "refs": [{"hash": "7d182adac4f4405160227f08ac57e49f9613abefe8781dfd9db5add7435e6442", "raw": 21}, {"hash": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7", "raw": 0}], "stage": "page"},
     {"name": "domain is not an identifier", "kind": "part", "owner": "m-invalid", "domain": "Tenant", "refs": [{"hash": "7d182adac4f4405160227f08ac57e49f9613abefe8781dfd9db5add7435e6442", "raw": 21}], "stage": "page"},
+    {"name": "owner is not an identifier in both key and page", "kind": "object", "owner": "M/1", "domain": "default", "refs": [{"hash": "7d182adac4f4405160227f08ac57e49f9613abefe8781dfd9db5add7435e6442", "raw": 21}], "stage": "page"},
     {"name": "snapshot parts out of order", "kind": "completion_snapshot", "owner": "c-invalid", "parts": [
       {"part_number": 2, "revision": 1, "size": 32, "page_count": 1, "etag": "2ac02f131509c94c9491af94f0e51b91", "part_manifest_id": "p2", "checksum": "Y53hf1fT3M4="},
       {"part_number": 1, "revision": 1, "size": 5242880, "page_count": 1, "etag": "a2e2a02ed0c37562680327859b8ba0c0", "part_manifest_id": "p1", "checksum": "DPhSFPcSeIE="}

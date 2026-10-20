@@ -145,7 +145,7 @@ func openPage(b []byte, kind byte, owner string, no uint32) ([]byte, error) {
 	magic, version, k, id, n, size := string(r.take(8)), r.u32(), r.u8(), r.id(), r.u32(), r.u32()
 	payload := r.take(int(size))
 	switch {
-	case r.bad || magic != "MILESPAG" || version != formatVersion || size == 0 || len(r.b) != 0:
+	case r.bad || magic != "MILESPAG" || version != formatVersion || !identifier.MatchString(id) || size == 0 || len(r.b) != 0:
 		return nil, fail("page", "envelope")
 	case k != kind || id != owner || n != no:
 		return nil, fail("page_key", "page kind %d %s/%d read as kind %d %s/%d", k, id, n, kind, owner, no)

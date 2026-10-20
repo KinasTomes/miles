@@ -543,6 +543,7 @@ erDiagram
         string domain_id
         string hash
         string pack_id FK
+        string generation FK
         int location_revision
         bigint offset
         int stored_length
@@ -564,7 +565,7 @@ erDiagram
     }
     PACK {
         string pack_id PK
-        int generation
+        string generation PK "content generation"
         string state
         int state_revision
         string storage_class
@@ -588,8 +589,8 @@ erDiagram
 | `SystemConfig` | `config_id` | — | policy/default limits đã chốt, revision; recovery history/epoch hiện hành và service incarnation |
 | `Objects` | `bucket` | `key` | Head/tombstone: bucket_id, domain_id, manifest_id, size, ETag/checksum, chunk/page counts, page_index (first offset từng page), HTTP metadata, checksum algorithm/type/value/part_count, etag_kind, revision, op_id |
 | `ManifestPages` | `manifest_id` | `page_no` | Body nhị phân v1: domain_id, first logical offset và ordered hash/raw_length hỗ trợ Range; immutable, body ≤384 KiB, item <400 KB |
-| `Chunks` | `domain_id#hash` | — | Khóa ghép đầy đủ cho mỗi identity, phân bố hash trên DynamoDB; lưu domain_id/hash riêng, canonical pack/offset/length/codec, location_revision, refcount, created_at |
-| `Packs` | `pack_id` | — | S3 key/content generation, state/state_revision, class, live/total bytes, last_access, protected_until, restore state/expiry, retention, retired_at/recovery protection, mutation fence |
+| `Chunks` | `domain_id#hash` | — | Khóa ghép đầy đủ cho mỗi identity, phân bố hash trên DynamoDB; lưu domain_id/hash riêng, canonical pack_id/generation/offset/length/codec, location_revision, refcount, created_at |
+| `Packs` | `pack_id` | `generation` | Một item cho mỗi generation (`PackRef`, key S3 `packs/{xx}/{pack_id}/{generation}`): state/state_revision, class, live/total bytes, last_access, protected_until, restore state/expiry, retention, retired_at/recovery protection, mutation fence. Promotion/compaction thêm item generation mới; đổi class sửa item hiện có |
 | `Uploads` | `upload_id` | — | Bucket/key/domain/initiator, HTTP metadata/checksum algorithm/type, expiry Active, state/revision, completion lease/fence/op_id, pointer/digest input và snapshot, prepared manifest, receipt expiry riêng, reservation/staged bytes |
 | `UploadParts` | `upload_id` | `part_number` | Part head: part_manifest_id, revision, MD5 ETag, raw size, algorithm + verified part checksum binary, page_count |
 | `UploadPartPages` | `part_manifest_id` | `page_no` | Ordered domain/hash/raw_length refs, cùng body nhị phân như manifest |
