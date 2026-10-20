@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Miles pricing contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "region": {
+      "type": "string",
+      "pattern": "^[a-z]{2}-[a-z0-9-]+-[0-9]+$"
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date"
+    },
+    "currency": {
+      "const": "USD"
+    },
+    "basis": {
+      "const": "gross_model_before_tax_credits_free_tier"
+    },
+    "sources": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "retrieved_at": {
+            "type": "string",
+            "format": "date"
+          },
+          "kind": {
+            "enum": [
+              "aws_price_api",
+              "official_page",
+              "operator_estimate"
+            ]
+          }
+        },
+        "required": [
+          "url",
+          "retrieved_at",
+          "kind"
+        ]
+      }
+    },
+    "storage_rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "class": {
+            "enum": [
+              "STANDARD",
+              "STANDARD_IA",
+              "GLACIER_IR",
+              "GLACIER"
+            ]
+          },
+          "minimum_days": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minimum_billable_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "metadata_standard_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "metadata_archive_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "source_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "class",
+          "minimum_days",
+          "minimum_billable_bytes",
+          "metadata_standard_bytes",
+          "metadata_archive_bytes",
+          "source_id"
+        ]
+      },
+      "minItems": 4
+    },
+    "rates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]+$"
+          },
+          "category": {
+            "enum": [
+              "storage",
+              "request",
+              "retrieval",
+              "restore",
+              "transition",
+              "transfer",
+              "infrastructure"
+            ]
+          },
+          "service": {
+            "type": "string",
+            "minLength": 1
+          },
+          "unit": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "verified",
+              "unpriced"
+            ]
+          },
+          "source_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "dimensions": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "tiers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "begin": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                },
+                "end": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "usd": {
+                  "type": "string",
+                  "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                }
+              },
+              "required": [
+                "begin",
+                "end",
+                "usd"
+              ]
+            }
+          },
+          "note": {
+            "type": "string",
+            "minLength": 1
+          },
+          "gross_adjustment": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "method": {
+                "const": "exclude_free_tier"
+              },
+              "raw_tiers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "begin": {
+                      "type": "string",
+                      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                    },
+                    "end": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "usd": {
+                      "type": "string",
+                      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                    }
+                  },
+                  "required": [
+                    "begin",
+                    "end",
+                    "usd"
+                  ]
+                },
+                "minItems": 2,
+                "maxItems": 2
+              },
+              "allowance": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "quantity": {
+                    "type": "string",
+                    "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+                  },
+                  "unit": {
+                    "const": "GB-Mo"
+                  },
+                  "scope": {
+                    "const": "account_region"
+                  },
+                  "source_id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "quantity",
+                  "unit",
+                  "scope",
+                  "source_id"
+                ]
+              }
+            },
+            "required": [
+              "method",
+              "raw_tiers",
+              "allowance"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "category",
+          "service",
+          "unit",
+          "status",
+          "source_id",
+          "dimensions",
+          "tiers",
+          "note"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "verified"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "tiers": {
+                  "minItems": 1
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "tiers": {
+                  "maxItems": 0
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "region",
+    "as_of",
+    "currency",
+    "basis",
+    "sources",
+    "storage_rules",
+    "rates"
+  ]
+}

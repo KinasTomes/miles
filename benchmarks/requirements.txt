@@ -1,0 +1,2 @@
+# JSON Schema validation tooling only; gateway has no Python runtime dependency.
+jsonschema==4.26.0

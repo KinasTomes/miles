@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "generator": "miles-aesctr-gzip-v1",
+  "go_version": "go1.27.2",
+  "profile": "smoke",
+  "seed": "miles-w02-v1",
+  "versions": 3,
+  "raw_bytes_per_version": 65536,
+  "total_bytes": 589914,
+  "files": [
+    {
+      "path": "low-entropy-v00.bin",
+      "group": "low-entropy",
+      "version": 0,
+      "bytes": 65536,
+      "sha256": "49da097c8a791cf7bc839a8ae7bdd9503ef0e0e1dfdce79a606e797ed5156aa8"
+    },
+    {
+      "path": "compressed-identical-v00.gz",
+      "group": "compressed-identical",
+      "version": 0,
+      "bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "path": "random-distinct-v00.bin",
+      "group": "random-distinct",
+      "version": 0,
+      "bytes": 65536,
+      "sha256": "fadc86b2b66538304fb412b2ff142e4721414dc9305820b8139fc672e412a080"
+    },
+    {
+      "path": "low-entropy-v01.bin",
+      "group": "low-entropy",
+      "version": 1,
+      "bytes": 65536,
+      "sha256": "e9a660088305abb7a1851d096af0bead34b26b030855a5fcf0c7df5a5ff3e07a"
+    },
+    {
+      "path": "compressed-identical-v01.gz",
+      "group": "compressed-identical",
+      "version": 1,
+      "bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "path": "random-distinct-v01.bin",
+      "group": "random-distinct",
+      "version": 1,
+      "bytes": 65536,
+      "sha256": "3496fb93eba865a961e2e034df7e63bbcd1e0a77089cc18bdb832dfd3fbdaeb6"
+    },
+    {
+      "path": "low-entropy-v02.bin",
+      "group": "low-entropy",
+      "version": 2,
+      "bytes": 65536,
+      "sha256": "66c5df83a1347ee6e097b2b124870212592fc25998968216a24b982ea0b00102"
+    },
+    {
+      "path": "compressed-identical-v02.gz",
+      "group": "compressed-identical",
+      "version": 2,
+      "bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "path": "random-distinct-v02.bin",
+      "group": "random-distinct",
+      "version": 2,
+      "bytes": 65536,
+      "sha256": "88fd4b1ae06cd26955fd886b3e8ba12e2f688710b1dc832d5763e014d797440c"
+    }
+  ]
+}
