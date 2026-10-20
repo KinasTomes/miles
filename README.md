@@ -12,7 +12,7 @@ Gateway và `dsgctl` dùng **Go 1.27.2** trong một module `github.com/KinasTom
 
 - [Kiến trúc v4](docs/dedup-storage-gateway-architecture.md).
 - [API v2](docs/dedup-storage-gateway-api.md).
-- [Kế hoạch môi trường AWS, quyền GitHub và tích hợp nhóm](docs/planning/aws-environment-and-integration-plan.md) — W01-HUNG-03.
+- [Kế hoạch môi trường AWS, quyền GitHub và tích hợp nhóm](docs/planning/aws-environment-and-integration-plan.md).
 
 Hai tài liệu là hợp đồng thiết kế của Cloud/Edge. Báo cáo học phần trong `report/` chỉ giữ local, đã được `.gitignore` loại khỏi Git.
 
