@@ -215,8 +215,8 @@ flowchart LR
 
 ```
 s3://<bucket>/
-├── packs/{xx}/{pack_id}            # dữ liệu chunk. xx = 2 ký tự hex đầu của pack_id ngẫu nhiên
-├── packs-index/{xx}/{pack_id}.idx  # sidecar: bản sao footer index, luôn S3 Standard
+├── packs/{xx}/{pack_id}/{generation}            # dữ liệu chunk. xx = 2 ký tự hex đầu của pack_id ngẫu nhiên
+├── packs-index/{xx}/{pack_id}/{generation}.idx  # sidecar: bản sao footer index, luôn S3 Standard
 ├── journal/{yyyy}/{mm}/{dd}/{segment_id}  # immutable event pages/descriptor; luôn S3 Standard
 ├── journal/epochs/{history_id}/{epoch_id}/seal-{sha256}.json  # immutable seal/chain; S3 Standard
 ├── recovery/active-history.json        # catalog chỉ bootstrap/recovery cập nhật CAS; S3 Standard
@@ -233,18 +233,18 @@ s3://<bucket>/
 flowchart LR
     subgraph PK["Pack file (32-64 MB)"]
         direction LR
-        H["Header<br/>magic, version, pack_id"] --> B1["Blob 1<br/>(zstd hoặc raw)"]
+        H["Header<br/>magic, version, pack_id, generation"] --> B1["Blob 1<br/>(zstd hoặc raw)"]
         B1 --> B2["Blob 2"]
         B2 --> BN["... Blob N"]
-        BN --> F["Footer index<br/>mỗi entry: domain_id, hash, offset,<br/>stored_len, raw_len, codec, crc32"]
-        F --> T["Trailer<br/>index_len, index_checksum, magic"]
+        BN --> F["Footer index<br/>pack_id, generation; mỗi entry: domain_id, hash, codec,<br/>offset, stored_len, raw_len, crc32c; SHA-256 index"]
+        F --> T["Trailer<br/>index_offset, index_len, version, magic"]
     end
 ```
 
 - **Đọc footer chỉ cần vài Range GET nhỏ** (đọc trailer ở cuối file để biết độ dài footer, rồi đọc footer).
 - **Sidecar index** là bản sao của footer, lưu thành object nhỏ riêng ở S3 Standard (mục 4.1). Pack đã xuống Glacier Flexible Retrieval không thể đọc footer nếu chưa restore, nên cần sidecar để dựng lại index mà không phải restore hàng loạt.
 - Footer/sidecar ghi `domain_id`, hash gốc, location generation và version định dạng. Hai miền có cùng hash vẫn là hai entry riêng. Sidecar không phải nguồn đáng tin duy nhất cho state/storage class; rebuild phải đối chiếu S3 và journal vị trí.
-- **Đóng băng định dạng này vào cuối tuần 2**: đổi sau sẽ ảnh hưởng mọi module (GC, tiering, rebuild, scrub).
+- **Đóng băng định dạng này vào cuối tuần 2**: đổi sau sẽ ảnh hưởng mọi module (GC, tiering, rebuild, scrub). Byte layout v1, giới hạn, pages và golden fixtures: [hợp đồng pack/sidecar/pages](contracts/pack-and-pages.md). Generation nằm trong key vì hai generation cùng pack_id tồn tại độc lập khi promotion.
 
 ---
 
@@ -543,6 +543,7 @@ erDiagram
         string domain_id
         string hash
         string pack_id FK
+        string generation FK
         int location_revision
         bigint offset
         int stored_length
@@ -564,7 +565,7 @@ erDiagram
     }
     PACK {
         string pack_id PK
-        int generation
+        string generation PK "content generation"
         string state
         int state_revision
         string storage_class
@@ -586,14 +587,14 @@ erDiagram
 | `AdminTokens` | `token_id` | — | user_id, secret_hash, system_admin scope, status, issued_at/expires_at, revision; không lưu bearer plaintext |
 | `Credentials` | `access_key_id` | — | user_id, secret_encrypted, status, system_admin/debug flag, revision; không phải IAM backend key |
 | `SystemConfig` | `config_id` | — | policy/default limits đã chốt, revision; recovery history/epoch hiện hành và service incarnation |
-| `Objects` | `bucket` | `key` | Head/tombstone: bucket_id, domain_id, manifest_id, size, ETag/checksum, chunk/page counts, HTTP metadata, checksum algorithm/type/value/part_count, etag_kind, revision, op_id |
-| `ManifestPages` | `manifest_id` | `page_no` | domain_id và ordered hash/raw_length, cumulative logical offset hỗ trợ Range; immutable, pages <400 KB |
-| `Chunks` | `domain_id#hash` | — | Khóa ghép đầy đủ cho mỗi identity, phân bố hash trên DynamoDB; lưu domain_id/hash riêng, canonical pack/offset/length/codec, location_revision, refcount, created_at |
-| `Packs` | `pack_id` | — | S3 key/content generation, state/state_revision, class, live/total bytes, last_access, protected_until, restore state/expiry, retention, retired_at/recovery protection, mutation fence |
-| `Uploads` | `upload_id` | — | Bucket/key/domain/initiator, HTTP metadata/checksum algorithm/type, expiry Active, state/revision, completion lease/fence/op_id/input pointer/prepared manifest, receipt expiry riêng, reservation/staged bytes |
+| `Objects` | `bucket` | `key` | Head/tombstone: bucket_id, domain_id, manifest_id, size, ETag/checksum, chunk/page counts, page_index (first offset từng page), HTTP metadata, checksum algorithm/type/value/part_count, etag_kind, revision, op_id |
+| `ManifestPages` | `manifest_id` | `page_no` | Body nhị phân v1: domain_id, first logical offset và ordered hash/raw_length hỗ trợ Range; immutable, body ≤384 KiB, item <400 KB |
+| `Chunks` | `domain_id#hash` | — | Khóa ghép đầy đủ cho mỗi identity, phân bố hash trên DynamoDB; lưu domain_id/hash riêng, canonical pack_id/generation/offset/length/codec, location_revision, refcount, created_at |
+| `Packs` | `pack_id` | `generation` | Một item cho mỗi generation (`PackRef`, key S3 `packs/{xx}/{pack_id}/{generation}`): state/state_revision, class, live/total bytes, last_access, protected_until, restore state/expiry, retention, retired_at/recovery protection, mutation fence. Promotion/compaction thêm item generation mới; đổi class sửa item hiện có |
+| `Uploads` | `upload_id` | — | Bucket/key/domain/initiator, HTTP metadata/checksum algorithm/type, expiry Active, state/revision, completion lease/fence/op_id, pointer/digest input và snapshot, prepared manifest, receipt expiry riêng, reservation/staged bytes |
 | `UploadParts` | `upload_id` | `part_number` | Part head: part_manifest_id, revision, MD5 ETag, raw size, algorithm + verified part checksum binary, page_count |
-| `UploadPartPages` | `part_manifest_id` | `page_no` | Ordered domain/hash/raw_length refs, phân trang như manifest |
-| `CompletionPages` | `completion_id` | `page_no` | Immutable normalized input và frozen part snapshot, pages <400 KB; Active/Completing lease bảo vệ |
+| `UploadPartPages` | `part_manifest_id` | `page_no` | Ordered domain/hash/raw_length refs, cùng body nhị phân như manifest |
+| `CompletionPages` | `completion_id` | `page_no` | Immutable stream canonical input hoặc frozen part snapshot, chia theo byte, body ≤384 KiB; Active/Completing lease bảo vệ |
 | `Outbox` (R2) | `event_id` | — | history_id/recovery_epoch, entity/incarnation/revision/op_id, immutable payload/page pointer/checksum, export state/lease; không xóa membership chưa seal |
 | `RecoveryEpochs` (R2) | `history_id#epoch_id` | — | Open/Closed/Sealed, cut_at, previous seal hash, membership descriptor/count/checksum; lease/fence cho seal/checkpoint |
 | `QuotaReservations` (R2) | `reservation_id` | — | owner/upload/op binding, base head revision/size, reserved/staged logical bytes, state/revision; consume/release idempotent |
@@ -603,7 +604,7 @@ erDiagram
 
 `Chunks` dùng **một partition key chứa cả domain và hash**, không dùng domain làm partition key riêng vì miền default sẽ tập trung mọi chunk vào cùng item collection. Domain ID dài 1–64 ký tự `[a-z0-9_-]`, không chứa `#`; hash SHA-256 hex lowercase 64 ký tự; lưu hai thuộc tính riêng để index/rebuild không phải suy đoán khi parse. Encoding/validation là hợp đồng định dạng R4 đã chọn. Chunk SHA-256 vẫn tính trên dữ liệu gốc; footer/journal lưu cặp domain/hash riêng theo version.
 
-Page target nên theo **kích thước serialization thực tế**, không chỉ `5000 × 36 bytes`: attribute names, domain, hex/binary và overhead DynamoDB cũng tính vào 400 KB. Số chunk/page là giới hạn mềm cần đo. Index logical offset là trang/head nhỏ, không nhét toàn offset list vào head vượt item size.
+Page chia theo **kích thước serialization thực tế**, không theo số chunk: body nhị phân ≤384 KiB đã gồm domain, hash binary và checksum, item chỉ thêm key và `page_no` nên dưới 400 KB; khoảng 10919 ref mỗi page. Head chỉ giữ page_index (≤1024 page, ≤8 KiB), không giữ toàn offset list. Byte layout, quy tắc chia và fixture: [hợp đồng pack/sidecar/pages](contracts/pack-and-pages.md).
 
 ### 10.2 Commit, quota và LIST
 
