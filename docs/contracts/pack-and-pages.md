@@ -44,7 +44,7 @@ packs-index/{xx}/{pack_id}/{generation}.idx
 
 `xx` là 2 ký tự đầu của pack_id ngẫu nhiên (256 prefix, KT §4.1); adapter từ chối pack_id ngắn hơn 2 ký tự. Generation nằm trong key vì `PackRef` là cặp (pack_id, generation) và contract `PackStore` cho hai generation cùng pack_id tồn tại, xóa độc lập (promotion). Mọi lần ghi nội dung mới (pack mới, promotion, compaction) dùng generation mới; đổi storage class giữ nguyên key, generation và bytes. Sidecar luôn STANDARD.
 
-Identity vật lý của pack ở mọi nơi là cặp **(pack_id, generation)**: header/index, key S3, `PackRef`, location trong `Chunks`, cache key và item bảng `Packs` (partition key `pack_id`, sort key `generation`, KT §10.1). Mỗi generation có state, class, retention, live bytes riêng; không có item `Packs` chỉ theo pack_id.
+Identity vật lý của pack ở mọi nơi là cặp **(pack_id, generation)**: header/index, key S3, `PackRef`, location trong `Chunks`, cache key, item bảng `Packs` (partition key `pack_id`, sort key `generation`, KT §10.1) và Admin API mutation (`POST /packs/{id}/{generation}/restore|promote`, API §6.2). Mỗi generation có state, class, retention, live bytes riêng; không có item `Packs` hay thao tác thay đổi pack chỉ theo pack_id.
 
 ### 2.2 Bố cục
 

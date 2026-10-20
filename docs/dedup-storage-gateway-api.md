@@ -672,10 +672,10 @@ Không yêu cầu total=dup+revived+unique vì dup đếm occurrences còn reviv
 | P1 | GET | /stats | System admin; snapshot toàn hệ thống, công thức mục 6.3 |
 | P1 | GET | /buckets/{b}/stats | System admin; physical allocation phải ghi methodology, không là bill người dùng |
 | P1 | GET | /objects/layout?bucket={b}&key={key} | System admin; key query encode một lần, tránh ambiguity slash trong path |
-| P1 | GET | /packs | System admin, lọc state/storage_class/live_ratio_lt; pack có thể nhiều domain |
+| P1 | GET | /packs | System admin, lọc state/storage_class/live_ratio_lt; mỗi phần tử là một generation `(pack_id, generation)`; pack có thể nhiều domain |
 | P1 | GET | /packs/{id} | System admin: mọi generation của pack_id, mỗi generation state/class/restore expiry/retention/live bytes |
-| P1 | POST | /packs/{id}/restore | System admin; archive mới restore, trả job hoặc backend error; IR không cần |
-| P1 | POST | /packs/{id}/promote | System admin; chuyển canonical chunks sống sang Warm mới, gate/fence R1 |
+| P1 | POST | /packs/{id}/{generation}/restore | System admin; đúng một generation (`PackRef`), không tự chọn generation; generation không tồn tại 404 `pack_not_found`; archive mới restore, trả job hoặc backend error; IR không cần |
+| P1 | POST | /packs/{id}/{generation}/promote | System admin; đọc chunk canonical sống của đúng generation nguồn, viết generation Warm mới và trả `PackRef` mới; generation không tồn tại 404 `pack_not_found`; gate/fence R1 |
 | P1 | POST / GET | /jobs | System admin; type tiering/gc/compaction/scrub/purge_uploads/recover_uploads/journal_flush/recovery_checkpoint/cache_purge/drain |
 | P1 | GET / DELETE | /jobs/{id} | System admin; status hoặc yêu cầu cancellation |
 | P1 | GET | /cache/stats | System admin, scope=node/cluster, số liệu từng node và tổng có định nghĩa |
@@ -832,8 +832,8 @@ Lease hết hạn: worker mới resume checkpoint với fence mới hoặc báo 
   "chunk_occurrences": 1024,
   "chunk_occurrences_shared_with_other_objects": 987,
   "packs": [
-    { "pack_id": "7f3a...", "state": "warm", "storage_class": "STANDARD", "chunks": 512 },
-    { "pack_id": "c91b...", "state": "cold", "storage_class": "GLACIER", "chunks": 512 }
+    { "pack_id": "7f3a...", "generation": "0b41...", "state": "warm", "storage_class": "STANDARD", "chunks": 512 },
+    { "pack_id": "c91b...", "generation": "e27d...", "state": "cold", "storage_class": "GLACIER", "chunks": 512 }
   ]
 }
 ```
@@ -897,7 +897,7 @@ Fault types: fail_s3_put/get, ddb_throttle, delay, kill_after_n_chunks, corrupt_
 | policy get/set | /policy toàn hệ thống (system admin) |
 | bucket-policy get/set <bucket> | /buckets/b/policy, cache only |
 | layout <bucket> <key> | /objects/layout với query encode đúng |
-| pack ls/show/restore/promote | /packs/... |
+| pack ls, show <pack_id>, restore/promote <pack_id> <generation> | /packs, /packs/{id}, /packs/{id}/{generation}/restore\|promote |
 | job run <type> [--dry-run], ls/show/cancel | /jobs/... |
 | cache stats/purge --scope node\|cluster [--node id] | /cache/... có scope rõ |
 | cost report --scenario B --profile edge | /cost/report |
