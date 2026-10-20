@@ -21,6 +21,34 @@ type PackFactory func(*testing.T, func() time.Time) PackHarness
 
 func RunPacks(t *testing.T, newStore PackFactory) {
 	ctx := context.Background()
+
+	t.Run("cold pack cannot become Warm in place", func(t *testing.T) {
+		for _, cold := range []s.StorageClass{s.GlacierIR, s.Glacier} {
+			for _, warm := range []s.StorageClass{s.Standard, s.StandardIA} {
+				t.Run(string(cold)+"-to-"+string(warm), func(t *testing.T) {
+					now := NewFixture().Now
+					h := newStore(t, func() time.Time { return now })
+					info := NewFixture().Packs[0]
+					info.Size = 4
+					if err := h.Store.PutPack(ctx, info, strings.NewReader("data")); err != nil {
+						t.Fatal(err)
+					}
+					if err := h.Store.ChangeStorageClass(ctx, info.Ref, cold); err != nil {
+						t.Fatal(err)
+					}
+					before, err := h.Store.HeadPack(ctx, info.Ref)
+					if err != nil {
+						t.Fatal(err)
+					}
+					requireError(t, h.Store.ChangeStorageClass(ctx, info.Ref, warm), s.ErrInvalid)
+					after, err := h.Store.HeadPack(ctx, info.Ref)
+					if err != nil || after != before {
+						t.Fatal("rejected transition changed pack", after, err)
+					}
+				})
+			}
+		}
+	})
 	t.Run("immutable pack range and generation", func(t *testing.T) {
 		now := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 		h := newStore(t, func() time.Time { return now })
@@ -118,6 +146,7 @@ func RunPacks(t *testing.T, newStore PackFactory) {
 		}
 		_, err = h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
 		requireError(t, err, s.ErrCold)
+		requireError(t, h.Store.ChangeStorageClass(ctx, info.Ref, s.Standard), s.ErrInvalid)
 		if err := h.CompleteRestore(info.Ref, now.Add(time.Hour)); err != nil {
 			t.Fatal(err)
 		}
@@ -129,6 +158,29 @@ func RunPacks(t *testing.T, newStore PackFactory) {
 		r.Close()
 		if err != nil || string(got) != "data" {
 			t.Fatal("restore changed bytes", err)
+		}
+		before, err := h.Store.HeadPack(ctx, info.Ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, class := range []s.StorageClass{s.Standard, s.StandardIA, s.GlacierIR} {
+			requireError(t, h.Store.ChangeStorageClass(ctx, info.Ref, class), s.ErrInvalid)
+		}
+		if err := h.Store.ChangeStorageClass(ctx, info.Ref, s.Glacier); err != nil {
+			t.Fatal(err)
+		}
+		after, err := h.Store.HeadPack(ctx, info.Ref)
+		if err != nil || before != after {
+			t.Fatal("rejected promotion or same-class retry altered restore", after, err)
+		}
+		promoted := info
+		promoted.Ref.Generation = "promoted-generation"
+		if err := h.Store.PutPack(ctx, promoted, bytes.NewReader(got)); err != nil {
+			t.Fatal("new Warm generation", err)
+		}
+		warm, err := h.Store.HeadPack(ctx, promoted.Ref)
+		if err != nil || warm.Class != s.Standard || warm.Ref == before.Ref {
+			t.Fatal("promotion did not create separate Warm data", warm, err)
 		}
 		now = now.Add(time.Hour)
 		_, err = h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})

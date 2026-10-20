@@ -27,6 +27,7 @@ type Fixture struct {
 	Upload      *s.Completion
 }
 type MetadataHarness struct {
+	FailReconcile func(bool)
 	Store         s.MetadataStore
 	SetBucket     func(s.Bucket)
 	SetCredential func(s.Credential)
@@ -46,7 +47,7 @@ func (f Fixture) Chunk(domain string) s.Chunk {
 }
 func (f Fixture) Request(op string, revision uint64) s.CommitRequest {
 	object := s.ObjectKey{Bucket: f.Bucket.Name, BucketID: f.Bucket.ID, Key: "file"}
-	return s.CommitRequest{Head: s.ObjectHead{Version: s.ModelVersion, Object: object, Domain: f.Bucket.Domain, ManifestID: "manifest-" + op, Size: 4, ETag: "\"fixture-etag\"", ETagKind: "put-md5", Metadata: map[string]string{"content-type": "application/octet-stream"}, OpID: op}, ExpectedRevision: revision, UserID: "writer", CredentialID: "writer-key", ReservationID: "reservation-" + op, Writer: f.Lease.Fence, Event: s.OutboxEvent{Version: s.ModelVersion, ID: "event-" + op, HistoryID: "history-1", Epoch: 0, Entity: "Objects", Object: object, Revision: revision + 1, OpID: op, PayloadPointer: "journal/input/" + op, PayloadSHA256: strings.Repeat("b", 64)}}
+	return s.CommitRequest{ReservationRevision: 1, Head: s.ObjectHead{Version: s.ModelVersion, Object: object, Domain: f.Bucket.Domain, ManifestID: "manifest-" + op, Size: 4, ETag: "\"fixture-etag\"", ETagKind: "put-md5", Metadata: map[string]string{"content-type": "application/octet-stream"}, OpID: op}, ExpectedRevision: revision, UserID: "writer", CredentialID: "writer-key", ReservationID: "reservation-" + op, Writer: f.Lease.Fence, Event: s.OutboxEvent{Version: s.ModelVersion, ID: "event-" + op, HistoryID: "history-1", Epoch: 0, Entity: "Objects", Object: object, Revision: revision + 1, OpID: op, PayloadPointer: "journal/input/" + op, PayloadSHA256: strings.Repeat("b", 64)}}
 }
 func Prepare(t *testing.T, store s.MetadataStore, f Fixture, r s.CommitRequest, reserved int64) {
 	t.Helper()
@@ -59,7 +60,11 @@ func Prepare(t *testing.T, store s.MetadataStore, f Fixture, r s.CommitRequest, 
 	if err := store.WriteManifestPages(ctx, []s.ManifestPage{page}, r.Writer); err != nil {
 		t.Fatal(err)
 	}
-	reserve := s.Reservation{ID: r.ReservationID, OwnerID: f.Bucket.OwnerID, Object: r.Head.Object, Bytes: reserved, StagedBytes: r.Head.Size, Writer: r.Writer}
+	base, err := store.GetObject(ctx, r.Head.Object)
+	if err != nil && !errors.Is(err, s.ErrNotFound) {
+		t.Fatal(err)
+	}
+	reserve := s.Reservation{Version: s.ModelVersion, OpID: r.Head.OpID, BaseRevision: base.Revision, BaseSize: base.Size, State: s.ReservationActive, Revision: 1, Deadline: f.Now.Add(30 * time.Minute), ID: r.ReservationID, OwnerID: f.Bucket.OwnerID, Object: r.Head.Object, Bytes: reserved, StagedBytes: r.Head.Size, Writer: r.Writer}
 	if r.Receipt != nil {
 		reserve.UploadID = r.Receipt.UploadID
 	}
@@ -87,6 +92,8 @@ func NoPublication(t *testing.T, store s.MetadataStore, r s.CommitRequest) {
 }
 
 func RunMetadata(t *testing.T, newStore MetadataFactory) {
+	runReservations(t, newStore)
+	runQueries(t, newStore)
 	ctx := context.Background()
 	t.Run("domain isolation and canonical insert race", func(t *testing.T) {
 		f := NewFixture()
@@ -350,7 +357,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 		del.Head.Deleted = true
 		del.Head.ManifestID = ""
 		del.Head.Size = 0
-		if err := h.Store.ReserveLogicalQuota(ctx, s.Reservation{ID: del.ReservationID, OwnerID: "owner", Object: del.Head.Object, Writer: del.Writer}); err != nil {
+		if err := h.Store.ReserveLogicalQuota(ctx, s.Reservation{Version: s.ModelVersion, OpID: del.Head.OpID, BaseRevision: 2, BaseSize: 4, State: s.ReservationActive, Revision: 1, Deadline: f.Now.Add(30 * time.Minute), ID: del.ReservationID, OwnerID: "owner", Object: del.Head.Object, Writer: del.Writer}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := h.Store.DeleteObject(ctx, del); err != nil {
@@ -372,7 +379,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 	t.Run("reservation release idempotent and bounded", func(t *testing.T) {
 		f := NewFixture()
 		h := newStore(t, f)
-		r := s.Reservation{ID: "r", OwnerID: "owner", Object: f.Request("one", 0).Head.Object, Bytes: 4, StagedBytes: 4, Writer: f.Lease.Fence}
+		r := s.Reservation{Version: s.ModelVersion, OpID: "reserve-op", State: s.ReservationActive, Revision: 1, Deadline: f.Now.Add(30 * time.Minute), ID: "r", OwnerID: "owner", Object: f.Request("one", 0).Head.Object, Bytes: 4, StagedBytes: 4, Writer: f.Lease.Fence}
 		if err := h.Store.ReserveLogicalQuota(ctx, r); err != nil {
 			t.Fatal(err)
 		}
@@ -385,10 +392,11 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 		}
 		extra := r
 		extra.ID = "extra"
+		extra.OpID = "extra-op"
 		extra.Bytes = 5
 		requireError(t, h.Store.ReserveLogicalQuota(ctx, extra), s.ErrQuotaExceeded)
 		for i := 0; i < 2; i++ {
-			if err := h.Store.ReleaseLogicalQuota(ctx, r.ID, r.Writer); err != nil {
+			if err := h.Store.ReleaseLogicalQuota(ctx, s.ReservationRelease{ID: r.ID, OpID: r.OpID, ExpectedRevision: r.Revision, Writer: r.Writer}); err != nil {
 				t.Fatal(err)
 			}
 		}

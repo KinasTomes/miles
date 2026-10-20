@@ -13,6 +13,12 @@ import (
 type MetadataStore interface {
 	GetBucket(ctx context.Context, name string) (Bucket, error)
 	GetCredential(ctx context.Context, credentialID string) (Credential, error)
+	ListAccessibleBuckets(ctx context.Context, request BucketListRequest) (BucketListPage, error)
+	GetPolicy(ctx context.Context, revision uint64) (PolicySnapshot, error) // zero selects current.
+	PutPolicy(ctx context.Context, request PolicyUpdate) (PolicySnapshot, error)
+	ListObjects(ctx context.Context, request ListObjectsRequest) (ObjectListPage, error)
+	UpdateAccessStats(ctx context.Context, updates []PackAccess) error
+	ListPacksByState(ctx context.Context, request PackListRequest) (PackListPage, error)
 	Authorize(ctx context.Context, credentialID, bucket string) (Authorization, error)
 	GetChunks(ctx context.Context, keys []ChunkKey, consistent bool) (map[ChunkKey]Chunk, error)
 	PutChunkIfAbsent(ctx context.Context, chunk Chunk, writer WriterFence) (Chunk, bool, error)
@@ -25,7 +31,9 @@ type MetadataStore interface {
 	GetObject(ctx context.Context, object ObjectKey) (ObjectHead, error) // includes tombstones for CAS.
 	GetQuota(ctx context.Context, ownerID string) (LogicalQuota, error)
 	ReserveLogicalQuota(ctx context.Context, reservation Reservation) error
-	ReleaseLogicalQuota(ctx context.Context, reservationID string, writer WriterFence) error
+	GetReservation(ctx context.Context, reservationID string) (Reservation, error)
+	ClaimReservation(ctx context.Context, request ReservationClaim) (ReservationResolution, error)
+	ReleaseLogicalQuota(ctx context.Context, request ReservationRelease) error
 	CommitObject(ctx context.Context, request CommitRequest) (CommitResult, error)
 	DeleteObject(ctx context.Context, request CommitRequest) (CommitResult, error) // tombstone, never physical delete.
 	GetOutbox(ctx context.Context, eventID string) (OutboxEvent, error)

@@ -55,11 +55,11 @@ func (r CommitRequest) Validate() error {
 	} else if h.ManifestID == "" || h.ETag == "" {
 		return fmt.Errorf("%w: manifest/etag", ErrInvalid)
 	}
-	if r.UserID == "" || r.CredentialID == "" || r.ReservationID == "" {
+	if r.UserID == "" || r.CredentialID == "" || r.ReservationID == "" || r.ReservationRevision == 0 {
 		return fmt.Errorf("%w: commit authorization/reservation", ErrInvalid)
 	}
 	e := r.Event
-	if e.Version != ModelVersion || e.ID == "" || e.HistoryID == "" || e.OpID != h.OpID || e.Entity != "Objects" || e.Object != h.Object || e.PayloadPointer == "" || !sha256Hex.MatchString(e.PayloadSHA256) || e.Revision != r.ExpectedRevision+1 || e.Revision == 0 {
+	if e.Validate() != nil || e.OpID != h.OpID || e.Entity != "Objects" || e.Object != h.Object || e.Revision != r.ExpectedRevision+1 {
 		return fmt.Errorf("%w: authoritative outbox event", ErrInvalid)
 	}
 	if (r.Receipt == nil) != (r.Completion == nil) {
@@ -72,4 +72,23 @@ func (r CommitRequest) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Validate checks the shared durable event envelope, not the referenced payload.
+func (e OutboxEvent) Validate() error {
+	if e.Version != ModelVersion || e.ID == "" || e.HistoryID == "" || e.OpID == "" || e.Revision == 0 || e.PayloadPointer == "" || !sha256Hex.MatchString(e.PayloadSHA256) {
+		return fmt.Errorf("%w: authoritative outbox event", ErrInvalid)
+	}
+	switch e.Entity {
+	case "Objects":
+		if e.EntityID != "" {
+			return ErrInvalid
+		}
+		return e.Object.Validate()
+	case "SystemConfig":
+		if e.EntityID == "global-policy" && e.Object == (ObjectKey{}) {
+			return nil
+		}
+	}
+	return ErrInvalid
 }

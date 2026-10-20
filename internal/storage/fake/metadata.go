@@ -49,6 +49,9 @@ type Metadata struct {
 	receipts                          map[string]s.CompletedReceipt
 	commits                           map[string]committed
 	failBeforeCommit, failAfterCommit bool
+	failReconcile                     bool
+	policies                          map[uint64]s.PolicySnapshot
+	currentPolicy                     uint64
 }
 
 var _ s.MetadataStore = (*Metadata)(nil)
@@ -68,7 +71,7 @@ func NewMetadata(seed Seed) *Metadata {
 	if seed.Now == nil {
 		seed.Now = time.Now
 	}
-	m := &Metadata{now: seed.Now, buckets: map[string]s.Bucket{}, users: map[string]s.User{}, credentials: map[string]s.Credential{}, grants: map[[2]string]s.Grant{}, quotas: map[string]s.LogicalQuota{}, packs: map[s.PackRef]s.PackInfo{}, writers: map[string]s.WriterLease{}, uploads: map[string]s.Completion{}, chunks: map[s.ChunkKey]s.Chunk{}, manifests: map[string]map[uint32]s.ManifestPage{}, heads: map[s.ObjectKey]s.ObjectHead{}, reservations: map[string]s.Reservation{}, events: map[string]s.OutboxEvent{}, receipts: map[string]s.CompletedReceipt{}, commits: map[string]committed{}}
+	m := &Metadata{policies: map[uint64]s.PolicySnapshot{}, now: seed.Now, buckets: map[string]s.Bucket{}, users: map[string]s.User{}, credentials: map[string]s.Credential{}, grants: map[[2]string]s.Grant{}, quotas: map[string]s.LogicalQuota{}, packs: map[s.PackRef]s.PackInfo{}, writers: map[string]s.WriterLease{}, uploads: map[string]s.Completion{}, chunks: map[s.ChunkKey]s.Chunk{}, manifests: map[string]map[uint32]s.ManifestPage{}, heads: map[s.ObjectKey]s.ObjectHead{}, reservations: map[string]s.Reservation{}, events: map[string]s.OutboxEvent{}, receipts: map[string]s.CompletedReceipt{}, commits: map[string]committed{}}
 	for _, v := range seed.Buckets {
 		m.buckets[v.Name] = v
 	}
@@ -362,80 +365,6 @@ func (m *Metadata) GetQuota(ctx context.Context, id string) (s.LogicalQuota, err
 	}
 	return v, nil
 }
-func (m *Metadata) ReserveLogicalQuota(ctx context.Context, r s.Reservation) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := m.fence(r.Writer); err != nil {
-		return err
-	}
-	if err := r.Object.Validate(); err != nil {
-		return err
-	}
-	if r.ID == "" || r.Bytes < 0 || r.Bytes > s.MaxObjectBytes || r.StagedBytes < 0 || r.StagedBytes > s.MaxObjectBytes {
-		return s.ErrInvalid
-	}
-	if v, ok := m.reservations[r.ID]; ok {
-		if v == r {
-			return nil
-		}
-		return s.ErrConflict
-	}
-	b, ok := m.buckets[r.Object.Bucket]
-	if !ok || !b.Active || b.ID != r.Object.BucketID {
-		return s.ErrNotFound
-	}
-	if b.OwnerID != r.OwnerID {
-		return s.ErrInvalid
-	}
-	q, ok := m.quotas[r.OwnerID]
-	if !ok {
-		return s.ErrNotFound
-	}
-	if q.Limit < 0 || q.Used < 0 || q.Reserved < 0 || q.Staged < 0 || q.Used > q.Limit || q.Reserved > q.Limit-q.Used {
-		return s.ErrInvalid
-	}
-	if r.Bytes > q.Limit-q.Used-q.Reserved {
-		return s.ErrQuotaExceeded
-	}
-	if q.Staged >= q.Limit && (q.Staged-q.Limit > s.MaxObjectBytes || r.StagedBytes > s.MaxObjectBytes-(q.Staged-q.Limit)) {
-		return s.ErrQuotaExceeded
-	}
-	if q.Staged > int64(^uint64(0)>>1)-r.StagedBytes {
-		return s.ErrQuotaExceeded
-	}
-	q.Reserved += r.Bytes
-	q.Staged += r.StagedBytes
-	m.quotas[r.OwnerID] = q
-	m.reservations[r.ID] = r
-	return nil
-}
-func (m *Metadata) ReleaseLogicalQuota(ctx context.Context, id string, f s.WriterFence) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if err := m.fence(f); err != nil {
-		return err
-	}
-	r, ok := m.reservations[id]
-	if !ok {
-		return nil
-	}
-	if r.Writer != f {
-		return s.ErrFenced
-	}
-	q := m.quotas[r.OwnerID]
-	q.Reserved -= r.Bytes
-	q.Staged -= r.StagedBytes
-	m.quotas[r.OwnerID] = q
-	delete(m.reservations, id)
-	return nil
-}
-
 func (m *Metadata) manifest(h s.ObjectHead) error {
 	pages, ok := m.manifests[h.ManifestID]
 	if !ok {
@@ -504,6 +433,7 @@ func (m *Metadata) commit(ctx context.Context, r s.CommitRequest) (s.CommitResul
 	input := r
 	input.Writer = s.WriterFence{}
 	input.Completion = nil // takeover conditions are not immutable completion input.
+	input.ReservationRevision = 0
 	data, _ := json.Marshal(input)
 	digest := sha256.Sum256(data)
 	if done, ok := m.commits[r.Head.OpID]; ok {
@@ -523,8 +453,14 @@ func (m *Metadata) commit(ctx context.Context, r s.CommitRequest) (s.CommitResul
 	if !ok {
 		return s.CommitResult{}, s.ErrNotFound
 	}
-	if reservation.Object != r.Head.Object || reservation.OwnerID != auth.Bucket.OwnerID || reservation.Writer != r.Writer {
+	if reservation.Object != r.Head.Object || reservation.OwnerID != auth.Bucket.OwnerID || reservation.OpID != r.Head.OpID {
 		return s.CommitResult{}, s.ErrInvalid
+	}
+	if reservation.State != s.ReservationActive || reservation.Revision != r.ReservationRevision || reservation.Revision == ^uint64(0) {
+		return s.CommitResult{}, s.ErrConflict
+	}
+	if reservation.Writer != r.Writer || !m.now().Before(reservation.Deadline) {
+		return s.CommitResult{}, s.ErrFenced
 	}
 	if reservation.StagedBytes != r.Head.Size {
 		return s.CommitResult{}, s.ErrInvalid
@@ -575,7 +511,9 @@ func (m *Metadata) commit(ctx context.Context, r s.CommitRequest) (s.CommitResul
 	m.quotas[q.OwnerID] = q
 	m.heads[h.Object] = h
 	m.events[r.Event.ID] = r.Event
-	delete(m.reservations, r.ReservationID)
+	reservation.State = s.ReservationCommitted
+	reservation.Revision++
+	m.reservations[r.ReservationID] = reservation
 	m.commits[h.OpID] = committed{digest, copyOf(h)}
 	if m.failAfterCommit {
 		return s.CommitResult{}, fmt.Errorf("%w: injected lost acknowledgement", s.ErrUnavailable)

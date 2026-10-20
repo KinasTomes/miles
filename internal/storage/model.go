@@ -124,6 +124,7 @@ type PackInfo struct {
 	Class                                            StorageClass
 	RestoredUntil, ProtectedUntil, MinRetentionUntil time.Time
 	StateRevision                                    uint64
+	LastAccess                                       time.Time
 }
 type ChunkLocation struct {
 	Pack  PackRef
@@ -180,19 +181,35 @@ type LogicalQuota struct {
 	Limit, Used, Reserved, Staged int64
 	ActiveUploads                 int
 }
+type ReservationState string
+
+const (
+	ReservationActive    ReservationState = "Active"
+	ReservationCommitted ReservationState = "Committed"
+	ReservationReleased  ReservationState = "Released"
+)
+
 type Reservation struct {
-	ID, OwnerID string
-	UploadID    string
-	StagedBytes int64
-	Object      ObjectKey
-	Bytes       int64
-	Writer      WriterFence
+	Version      uint32
+	OpID         string
+	BaseRevision uint64
+	BaseSize     int64
+	Revision     uint64
+	State        ReservationState
+	Deadline     time.Time
+	ID, OwnerID  string
+	UploadID     string
+	StagedBytes  int64
+	Object       ObjectKey
+	Bytes        int64
+	Writer       WriterFence
 }
 type OutboxEvent struct {
 	Version                             uint32
 	ID, HistoryID                       string
 	Epoch                               uint64
 	Entity                              string
+	EntityID                            string
 	Object                              ObjectKey
 	Revision                            uint64
 	OpID, PayloadPointer, PayloadSHA256 string
@@ -209,6 +226,7 @@ type CompletedReceipt struct {
 	ExpiresAt                                                               time.Time
 }
 type CommitRequest struct {
+	ReservationRevision                 uint64
 	Head                                ObjectHead // Revision is assigned by the backend; must be zero on input.
 	ExpectedRevision                    uint64     // zero means absent, not a wildcard; tombstones have revisions.
 	UserID, CredentialID, ReservationID string
@@ -230,4 +248,92 @@ type RestoreRequest struct {
 type CacheKey struct {
 	Pack  PackRef
 	Range ByteRange
+}
+
+// Claims reconcile the durable operation outcome before transferring an orphaned
+// Active ledger. A committed result resolves the operation without a new owner.
+type ReservationClaim struct {
+	ID, OpID         string
+	ExpectedRevision uint64
+	Writer           WriterFence
+}
+type ReservationResolution struct {
+	Reservation Reservation
+	Committed   *CommitResult
+}
+type ReservationRelease struct {
+	ID, OpID         string
+	ExpectedRevision uint64
+	Writer           WriterFence
+}
+
+// Cursors below are INTERNAL scan state, never unsigned HTTP tokens. The API
+// layer owns opaque encoding/MAC/expiry and must validate it before using them.
+type BucketListRequest struct {
+	PrincipalID, After string
+	Limit              int
+}
+type BucketListPage struct {
+	Buckets   []Bucket
+	NextAfter string
+}
+type ListObjectsRequest struct {
+	PrincipalID, Bucket, BucketID, Prefix, Delimiter, StartAfter string
+	MaxKeys                                                      int
+	Cursor                                                       *ObjectListCursor
+}
+type ObjectListCursor struct {
+	PrincipalID, Bucket, BucketID, Prefix, Delimiter string
+	LastScannedKey, LastCommonPrefix                 string
+}
+type ObjectListPage struct {
+	Objects        []ObjectHead
+	CommonPrefixes []string
+	Next           *ObjectListCursor
+}
+type PackListRequest struct {
+	State string
+	After *PackRef
+	Limit int
+}
+type PackListPage struct {
+	Packs     []PackInfo
+	NextAfter *PackRef
+}
+type PackAccess struct {
+	Pack       PackRef
+	LastAccess time.Time
+}
+
+// MaxPolicyRevision is the approved JSON-safe revision domain (Clock/policy §4.1).
+const MaxPolicyRevision uint64 = 1<<53 - 1
+
+// Document is the complete canonical policy snapshot validated by internal/config,
+// not an unvalidated HTTP patch. Storage owns CAS/current/history/event atomicity;
+// policy field validation and merge semantics remain owned by config/policy.
+type PolicySnapshot struct {
+	Version  uint32
+	Revision uint64
+	Document []byte
+}
+type PolicyUpdate struct {
+	Candidate        PolicySnapshot
+	ExpectedRevision uint64
+	CredentialID     string
+	Writer           WriterFence
+	Event            *OutboxEvent // required for a change, absent on a semantic no-op.
+}
+
+// Promotions require a new Warm pack and location CAS, never a reverse class copy.
+func (c StorageClass) ValidateTransition(next StorageClass) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if err := next.Validate(); err != nil {
+		return err
+	}
+	if (c == Glacier && next != Glacier) || (c == GlacierIR && next != GlacierIR && next != Glacier) {
+		return fmt.Errorf("%w: Cold pack promotion requires a new Warm pack", ErrInvalid)
+	}
+	return nil
 }

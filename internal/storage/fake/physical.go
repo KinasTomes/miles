@@ -148,6 +148,15 @@ func (p *Packs) ChangeStorageClass(ctx context.Context, ref s.PackRef, class s.S
 	if !ok {
 		return s.ErrNotFound
 	}
+	if err := ref.Validate(); err != nil {
+		return err
+	}
+	if err := v.Info.Class.ValidateTransition(class); err != nil {
+		return err
+	}
+	if v.Info.Class == class {
+		return nil
+	}
 	v.Info.Class = class
 	v.Info.RestoredUntil = time.Time{}
 	v.Info.State = "Warm"
