@@ -543,7 +543,7 @@ UploadPart đã nhận khi Active nhưng freeze thắng trước publish trả `
 |---|---|
 | `completion_op_id` | op_id ổn định của lần Complete, cũng là event_id outbox |
 | `input_digest` | Digest canonical input |
-| `snapshot_digest` | Digest frozen part snapshot (format CompletionPages), không trả client |
+| `snapshot_digest` | SHA-256 hex của frozen part snapshot v1 ([format CompletionPages](contracts/pack-and-pages.md#36-completionpages)), không trả client |
 | `committed_at`, `receipt_expires_at` | `receipt_expires_at` = `committed_at` + 7 ngày |
 | `object_revision` | Revision head đã commit |
 | `response` | Location, Bucket, Key, ETag, checksum (COMPOSITE có hậu tố `-N`) và checksum type của CompleteMultipartUploadResult |

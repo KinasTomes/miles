@@ -1,0 +1,47 @@
+{
+  "note": "Pack format v1, docs/contracts/pack-and-pages.md section 2. packs: chunks are written in this order; raw_hex or raw_repeat is the raw content, stored_hex the stored bytes when they differ from raw (a zstd frame), hash overrides SHA-256(raw). expect pins the exact output: size and SHA-256 of the pack object, SHA-256 of the sidecar (byte-identical to the footer index), entry count, and pack_hex for the hand-checkable packs. Generated packs: large = 2048 entries in domain default; even i is raw with bytes SHA-256(\"large-i/0\") || SHA-256(\"large-i/1\") || ... cut to 1000+i bytes, odd i is zstd with raw = byte(i mod 256) repeated 4096+i times, stored as the one-block RLE frame 28b52ffd 60 <u16 LE n-256> <u24 LE n<<3|3> <byte>. max-entries = 16384 raw entries in domain default, entry i = u32 LE i; over-max-entries = the same with 16385. invalid: bytes from a writer that skipped validation; stage is where a verifier must reject them. corrupt: one change to a golden pack (target pack) or to its sidecar (target sidecar): xor flips bits of one byte (negative at counts from the end), truncate drops bytes from the end, patch overwrites index bytes (at counts from the start of the index, in the pack or the sidecar) and recomputes the index SHA-256 (a writer bug, not bit rot), read_as verifies under another PackRef. Stages: trailer, index_checksum, index, identity, header, blob_checksum, content.",
+  "packs": [
+    {"name": "small", "pack_id": "f640f20f74e9f58c276f8626ce36e64b", "generation": "49408ddab0d7f1028b027c36b43ba195", "chunks": [
+      {"domain": "default", "codec": "raw", "raw_hex": "4d696c6573207061636b20666f726d61742076310a"},
+      {"domain": "default", "codec": "zstd", "raw_repeat": {"byte": 0, "count": 4096}, "stored_hex": "28b52ffd60000f03800000"}
+    ], "expect": {"size": 370, "entries": 2, "pack_sha256": "5e46dd64c1d587fcbf6b19c3db4cd60282d004dbe56799d3c2df85e7e4478e69", "index_sha256": "e033ce57216ff7b9441feaebe81be7be7ebaeaa1a2a85c12e5e36ceb0d31b01e", "pack_hex": "4d494c455350414b010000002066363430663230663734653966353863323736663836323663653336653634622034393430386464616230643766313032386230323763333662343362613139354d696c6573207061636b20666f726d61742076310a28b52ffd60000f038000004d494c455349445801000000206636343066323066373465396635386332373666383632366365333665363462203439343038646461623064376631303238623032376333366234336261313935020000000764656661756c747d182adac4f4405160227f08ac57e49f9613abefe8781dfd9db5add7435e6442004e000000000000001500000015000000a424da2a0764656661756c74ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca70163000000000000000b00000000100000856e496792dc267c212ef86e6122209c9d9eb867bd09712f4b67bd37922a6156e60e72236e00000000000000ec000000010000004d494c4553454e44"}},
+    {"name": "mixed-domain", "pack_id": "d1ffc17832bce297f940002d0f068af9", "generation": "306f4de9797bf5326991fc1a1cac93fb", "chunks": [
+      {"domain": "default", "codec": "raw", "raw_hex": "73616d6520627974657320696e2074776f20646f6d61696e730a"},
+      {"domain": "tenant-b", "codec": "raw", "raw_hex": "73616d6520627974657320696e2074776f20646f6d61696e730a"},
+      {"domain": "tenant-b", "codec": "zstd", "raw_repeat": {"byte": 65, "count": 1000}, "stored_hex": "28b52ffd60e802431f0041"}
+    ], "expect": {"size": 464, "entries": 3, "pack_sha256": "ae29e215cc33403af1072a652868b469f8b3c01ee7922b619ec440683bbc399c", "index_sha256": "39980a6a44ffdf74a2d59a017fb71dae00a533e375f8e07d8fea85f4c542b2e1", "pack_hex": "4d494c455350414b0100000020643166666331373833326263653239376639343030303264306630363861663920333036663464653937393762663533323639393166633161316361633933666273616d6520627974657320696e2074776f20646f6d61696e730a73616d6520627974657320696e2074776f20646f6d61696e730a28b52ffd60e802431f00414d494c455349445801000000206431666663313738333262636532393766393430303032643066303638616639203330366634646539373937626635333236393931666331613163616339336662030000000764656661756c7458d4d2b8c228fa817086abbb77b4f7eabe0528e49d00addb42d1f8918c25681e004e000000000000001a0000001a000000b82dcc3f0874656e616e742d6258d4d2b8c228fa817086abbb77b4f7eabe0528e49d00addb42d1f8918c25681e0068000000000000001a0000001a000000b82dcc3f0874656e616e742d62c2e686823489ced2017f6059b8b239318b6364f6dcd835d0a519105a1eadd6e40182000000000000000b000000e80300009ac716229edacad5c71dce303dc428926348a7e7b14957aeed944c4b3b8645e7c557a58b8d000000000000002b010000010000004d494c4553454e44"}},
+    {"name": "large", "pack_id": "1aaa70ee7836d0d34a78daf1e86fe29b", "generation": "ae5a5391c5966d81e0f2629ba76eb6da", "recipe": "large", "expect": {"size": 2207960, "entries": 2048, "pack_sha256": "fc5ba67db6c20bcb69e3f8b0fd189985842c372a9a5467a413914e766ae66d16", "index_sha256": "81deabfdfe173660c33223adeb9bebeb3f7af65acaef9ccecb5a3a40e3de72b6"}},
+    {"name": "max entries", "pack_id": "116b3d9b2ff20afdc00140c4f0e44f1b", "generation": "eb2c8bcc0cb35112dc632197ecd1fadb", "recipe": "max-entries", "expect": {"size": 1065176, "entries": 16384, "pack_sha256": "13880f8ba6217dc7aecfdbdca2d36fcba09617d3f2039e46c1ed44f6bbd688f7", "index_sha256": "575c9067c26537546f67089013de37cb8ddcb31709bf9d8408e4e297a6c3bc95"}}
+  ],
+  "invalid": [
+    {"name": "empty pack", "pack_id": "p-invalid", "generation": "g1", "chunks": [], "stage": "index"},
+    {"name": "16385 entries", "pack_id": "p-invalid", "generation": "g1", "recipe": "over-max-entries", "stage": "index"},
+    {"name": "same domain and hash twice", "pack_id": "p-invalid", "generation": "g1", "chunks": [{"domain": "default", "codec": "raw", "raw_hex": "61"}, {"domain": "default", "codec": "raw", "raw_hex": "61"}], "stage": "index"},
+    {"name": "domain is not an identifier", "pack_id": "p-invalid", "generation": "g1", "chunks": [{"domain": "Default", "codec": "raw", "raw_hex": "61"}], "stage": "index"},
+    {"name": "pack id is not an identifier", "pack_id": "P/1", "generation": "g1", "chunks": [{"domain": "default", "codec": "raw", "raw_hex": "61"}], "stage": "index"},
+    {"name": "empty chunk", "pack_id": "p-invalid", "generation": "g1", "chunks": [{"domain": "default", "codec": "raw", "raw_hex": ""}], "stage": "index"},
+    {"name": "raw codec stores a different length", "pack_id": "p-invalid", "generation": "g1", "chunks": [{"domain": "default", "codec": "raw", "raw_hex": "61", "stored_hex": "6162"}], "stage": "index"},
+    {"name": "unknown codec", "pack_id": "p-invalid", "generation": "g1", "chunks": [{"domain": "default", "codec": "lz4", "raw_hex": "61"}], "stage": "index"},
+    {"name": "zstd frame decodes one byte short of raw_len", "pack_id": "p-invalid", "generation": "g1", "chunks": [{"domain": "default", "codec": "zstd", "raw_repeat": {"byte": 0, "count": 4096}, "stored_hex": "28b52ffd60ff0efb7f0000"}], "stage": "content"},
+    {"name": "hash is not SHA-256 of the content", "pack_id": "p-invalid", "generation": "g1", "chunks": [{"domain": "default", "codec": "raw", "raw_hex": "4d696c6573207061636b20666f726d61742076310a", "hash": "ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7"}], "stage": "content"}
+  ],
+  "corrupt": [
+    {"name": "last byte missing", "base": "small", "target": "pack", "truncate": 1, "stage": "trailer"},
+    {"name": "trailer version 2", "base": "small", "target": "pack", "xor": {"at": -12, "mask": 3}, "stage": "trailer"},
+    {"name": "trailer index offset off by one", "base": "small", "target": "pack", "xor": {"at": -24, "mask": 1}, "stage": "trailer"},
+    {"name": "footer index byte flipped", "base": "small", "target": "pack", "xor": {"at": 140, "mask": 1}, "stage": "index_checksum"},
+    {"name": "raw blob byte flipped", "base": "small", "target": "pack", "xor": {"at": 78, "mask": 1}, "stage": "blob_checksum"},
+    {"name": "zstd blob byte flipped", "base": "small", "target": "pack", "xor": {"at": 109, "mask": 1}, "stage": "blob_checksum"},
+    {"name": "header magic flipped", "base": "small", "target": "pack", "xor": {"at": 0, "mask": 1}, "stage": "header"},
+    {"name": "header generation flipped", "base": "small", "target": "pack", "xor": {"at": 46, "mask": 1}, "stage": "header"},
+    {"name": "pack read as another generation", "base": "small", "target": "pack", "read_as": {"pack_id": "f640f20f74e9f58c276f8626ce36e64b", "generation": "306f4de9797bf5326991fc1a1cac93fb"}, "stage": "identity"},
+    {"name": "sidecar truncated", "base": "small", "target": "sidecar", "truncate": 1, "stage": "index_checksum"},
+    {"name": "sidecar of another pack", "base": "mixed-domain", "target": "sidecar", "read_as": {"pack_id": "f640f20f74e9f58c276f8626ce36e64b", "generation": "49408ddab0d7f1028b027c36b43ba195"}, "stage": "identity"},
+    {"name": "sidecar with zero entries", "base": "small", "target": "sidecar", "patch": {"at": 78, "hex": "00000000"}, "stage": "index"},
+    {"name": "sidecar with unknown codec", "base": "small", "target": "sidecar", "patch": {"at": 122, "hex": "07"}, "stage": "index"},
+    {"name": "sidecar with a gap between blobs", "base": "small", "target": "sidecar", "patch": {"at": 184, "hex": "6400000000000000"}, "stage": "index"},
+    {"name": "sidecar raw entry with stored_len != raw_len", "base": "small", "target": "sidecar", "patch": {"at": 131, "hex": "16000000"}, "stage": "index"},
+    {"name": "sidecar entry_count one less than its entries", "base": "small", "target": "sidecar", "patch": {"at": 78, "hex": "01000000"}, "stage": "index"},
+    {"name": "footer leaves unindexed bytes before the index", "base": "small", "target": "pack", "patch": {"at": 192, "hex": "0a000000"}, "stage": "index"}
+  ]
+}
