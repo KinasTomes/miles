@@ -20,7 +20,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
-          cache: false # Bật khi dự án có dependency và go.sum.
+          cache: true
       - name: Format, vet, test and build
         run: make check
 
@@ -63,11 +63,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Install JSON Schema validator
-        run: |
-          python3 -m venv /tmp/miles-benchmark-contracts
-          /tmp/miles-benchmark-contracts/bin/pip install -r benchmarks/requirements.txt
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Validate pricing and negative contract cases
         run: |
-          /tmp/miles-benchmark-contracts/bin/python -B benchmarks/pricing.py
-          /tmp/miles-benchmark-contracts/bin/python -B -m unittest discover -s benchmarks/tests -v
+          go test ./internal/pricing ./cmd/pricingcheck
+          go run ./cmd/pricingcheck

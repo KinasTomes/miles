@@ -11,10 +11,10 @@ build:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/dsgctl ./cmd/dsgctl
 
 fmt:
-	$(GOFMT) -w cmd internal
+	$(GOFMT) -w cmd internal configs/pricing
 
 check-fmt:
-	@test -z "$$($(GOFMT) -l cmd internal)" || { echo "Chạy make fmt trước khi commit."; exit 1; }
+	@test -z "$$($(GOFMT) -l cmd internal configs/pricing)" || { echo "Chạy make fmt trước khi commit."; exit 1; }
 
 vet:
 	$(GO) vet ./...
