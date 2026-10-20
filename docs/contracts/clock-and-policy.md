@@ -75,7 +75,7 @@ Real adapter giữ monotonic reading riêng trước khi format/normalize UTC. `
 
 - `now.instant >= hard_deadline_instant` là expired. Hard deadline chốt lúc admission; idle traffic, retry, renewal hoặc config mới không gia hạn nó.
 - Sleep âm reject; zero kiểm cancellation rồi yield, không advance. Dương chờ deadline/cancellation. Khi cancel và timer cùng ready, kiểm lại cancellation/deadline trước side effect. Wakeup không cấp quyền thực hiện action.
-- Mất lease dừng stream/publish; read đã admit không cắt chỉ vì revoke, nhưng vẫn chịu deadline/lease. Transaction đã gửi không được timer rollback; unknown outcome phải reconcile bằng op_id/outbox/receipt.
+- Mất lease dừng local stream và dispatch side effect mới; read đã admit không cắt chỉ vì revoke, nhưng vẫn chịu deadline/lease. Transaction dispatch hợp lệ trước lease expiry có thể commit/settle sau expiry theo shared fence closure ordering, không bị timer rollback; unknown outcome phải reconcile bằng op_id/outbox/receipt trước takeover cấp new publication authority. Xem [R1 §8](r1-and-cache.md#8-lease-fencing-takeover-và-reconciliation).
 - Sau process suspend/resume, invalidate lease-use assumptions, revalidate/reacquire theo R1 trước tiếp tục. Không mặc định host monotonic timer phản ánh suspend như mong muốn.
 
 ### 3.3 Virtual scheduler và deterministic simulator
@@ -92,7 +92,8 @@ Mọi shared-time decision dùng khoảng UTC có kiểm chứng `[L,U]` bao đ�
 - Chỉ bắt đầu xét reclaim khi `L >= E + grace`; equality chỉ đủ time eligibility. Vẫn CAS state/fence và kiểm roots/pins/in-flight outcome. Grace5s không kéo dài quyền worker.
 - Unsynced source, bound unknown/stale/hết horizon hoặc vi phạm source bound: fail readiness và từ chối admission/action cần proof. Không xóa/nhả roots/gates đang bảo vệ unknown outcome.
 - Publish/renew/reclaim gắn đúng owner/revision/fence/incarnation. Timestamp client nhét vào condition không phải server-time check lúc commit. TTL là cleanup bất đồng bộ, không timer lease ([DynamoDB TTL](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html)).
-- W01-PHONG-02 (Phong) sở hữu acquire/renew/takeover, cách hình thành E và local lease-use budget; phải chứng minh hai owner không có khoảng quyền chồng nhau. W02-PHONG-03 và W04-PHONG-03 hiện thực/fault-test. W1 Clock chỉ chốt invariants/equality, không nhận đã có proof protocol.
+- **Đồng bộ quyết định Hưng W01-PHONG-02 Q6 — chờ xác minh tích hợp:** `U<E` cấp quyền dispatch side effect mới với lease/fence/incarnation hợp lệ, không yêu cầu transaction commit trước E. Mọi authoritative metadata publication kiểm shared fence closure và incarnation trong cùng transaction với mutation: LP trước closure giữ committed outcome kể cả sau E; LP sau closure fail fence condition. Takeover atomically close old authority, stabilize membership và reconcile mọi in-flight/unknown outcomes trước cấp new publication authority. Không dùng timeout/expiry làm no-commit; `L>=E+grace` vẫn chỉ reclaim eligibility, không extension.
+- W01-PHONG-02 (Phong) sở hữu acquire/renew/takeover, cách hình thành E và local lease-use budget; proof target là không có hai publication authorities có thể publish chồng nhau, tách dispatch permission, closure ordering, reclaim eligibility và operation outcome. W02-PHONG-03 và W04-PHONG-03 hiện thực/fault-test. W1 Clock chỉ chốt invariants/equality, không nhận đã có proof protocol.
 - S3 action unknown giữ durable Deleting/Transitioning theo KT §8.2; timestamp/fence metadata không hủy được request S3 đã gửi.
 
 ### 3.5 Protection và Restored admission
@@ -169,8 +170,8 @@ Nguồn KT §1.5–1.6 và API §6.1–6.3. Owner/admin sửa bucket cache; syst
 
 | Field | Default | Contract |
 |---|---|---|
-| cache.admit_on_write | true | Boolean; không thay durability/quyền |
-| cache.readahead_chunks | 4 | Integer>=0; 0 tắt prefetch; cap memory/chunks W02-PHONG-01 |
+| cache.admit_on_write | true | Boolean; false không chủ động admit từ write path, không tắt read cache; true best-effort khi final exact identity/physical bytes đầy đủ; không thay durability/quyền; R1 §11.1 |
+| cache.readahead_chunks | 4 | Integer>=0; 4 chunk phía trước không tính demand (review Hưng); 0 tắt prefetch; cap memory/chunks W02-PHONG-01 |
 | expected_revision | Không default | Hoặc If-Match; token rules §6 |
 | expected_bucket_id | Không default | Bắt buộc và check incarnation cùng update |
 
@@ -280,6 +281,7 @@ Thay timing cần rollout được review compatibility/drain; không rút ngắ
 | L02 | Heartbeat15s nhưng pause/suspend | Không suy lease còn sống từ schedule; resume invalidate assumptions, revalidate/reacquire |
 | L03 | L=E+5s−ε, E+5s, E+5s+ε | Trước grace chưa xét reclaim; bằng/sau chỉ time-eligible, vẫn CAS/roots/in-flight checks; không gia hạn worker rights |
 | L04 | Old fence/incarnation; S3 action unknown | Reject stale new action, giữ durable Deleting/Transitioning để reconcile; timestamp không hủy S3 request |
+| L05 | Valid dispatch U<E; metadata LP sau E trước closure / LP sau closure | Trước closure giữ committed outcome nếu conditions khác đạt; sau closure fail fence; reconcile mọi in-flight/unknown outcomes trước new publication authority, không strict commit-before-E |
 | S01 | Node skew ±(2s−ε), ±2s, ±(2s+ε) | Vượt2s fail readiness; equality không fail chỉ vì bound; <=2s vẫn cần proof đầy đủ |
 | S02 | Client SigV4 skew ±15m và vượt15m | API nhận <=15m; vượt RequestTimeTooSkewed; không dùng node bound2s thay client bound |
 | S03 | Unsynced clock; stale/unknown [L,U]; horizon hết | Fail readiness và refuse time-proof admission/action; giữ unknown-outcome roots/gates |
@@ -329,7 +331,7 @@ Thay timing cần rollout được review compatibility/drain; không rút ngắ
 |---|---|---|---|
 | OQ-01 | Reading/opaque Instant, Duration, ctx Sleep, equality, scheduler order/cancel/guard hữu hạn; internal/clock | W02-PHONG-01/03 — Phong; Hưng simulator consumer | Concrete Go types/cancellation/scheduler/guard pinned; deterministic/overflow/cancel vectors và adapter behavior verified |
 | OQ-02 | Logical record/revision separation; positive JSON-safe revision/bootstrap1/no-op; UTC RFC3339Nano/ns/conservative rounding | W01-HAI-01 — shared model Hải với consumer hiện hành; W02-PHONG-01/03 — Phong adapter; W01-PHONG-03 — R2 history/roots | Key/encoding/atomic transaction model reviewed; no heartbeat/epoch policy conflict; model handoff và SYNC-KT hoàn tất trước storage consumer freeze |
-| OQ-03 | Expired at E; U<E; L>=E+grace; unknown proof fail closed; suspend revalidation; timeout tie rule | W01-PHONG-02 — Phong protocol; W02-PHONG-03/W04-PHONG-03 — Phong code/faults, metadata consumer review Hải/Chiến | Acquire/renew/takeover/local-budget proof không overlap; uncertainty source/horizon validated; stale/late-action tests trước destructive enablement |
+| OQ-03 | Expired at E; U<E cho dispatch mới; L>=E+grace chỉ reclaim; publication theo atomic closure/incarnation, không strict commit-before-E; unknown proof fail closed | W01-PHONG-02 — Phong protocol; W02-PHONG-03/W04-PHONG-03 — Phong code/faults, metadata consumer review Hải/Chiến | Dispatch/local-budget và closure→stable membership→reconcile proof không overlap publication authorities; uncertainty horizon validated; late settlement/closure/suspend tests trước destructive enablement |
 | OQ-04 | D_hi/current interval, durable max protection, restored lower bound, revalidation/rounding | W02-PHONG-01/03 — Phong time-source/bound/tests; W01-PHONG-02 — R1 proof; W01-PHONG-03 — roots | Adapter bound thực sự bao UTC/drift horizon; fast/slow/stale/rounding vectors verified; không bật destructive path khi chưa đủ proof |
 | OQ-05 | Ratio ranges/exact arithmetic; positive ordered chunks; day24h UTC; zero age/read-ahead; existing defaults/allowlist | W01-HAI-03 — supported library contract (Chiến chunking/compression consumer hiện hành, Hải model review); W02-PHONG-01 — Phong caps/validator | Library-supported levels/FastCDC constraints, memory/prefetch/days caps và restore tier/class validation pinned; không nhận arbitrary values trước validator freeze |
 | OQ-06 | Nested supplied-field PUT, null/duplicate400, token/identity errors, no-op/CAS/retry rules | W02-CHIEN-02 — Chiến Admin wire/error clarification; W02-PHONG-01 — Phong config merge; W01-HAI-01/model và W04-HAI-01/metadata consumer review | SYNC-API xong; exact exhaustion error, canonical equality, retry/current/history/outbox transaction contract và vectors thống nhất trước API consumer freeze |
