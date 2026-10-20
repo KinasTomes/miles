@@ -4,7 +4,7 @@ Nguồn thiết kế: [KT v4 §13.1–13.4](../../docs/dedup-storage-gateway-arc
 
 - [pricing.schema.json](pricing.schema.json): JSON Schema Draft2020-12, version1, unknown fields bị reject.
 - [pricing.ap-southeast-1.example.json](pricing.ap-southeast-1.example.json): public gross On-Demand Singapore, `as_of=2026-10-19`. Không có account ID/ARN/hostname/credit nội bộ. File thực tế có thể đặt tên `pricing.json` ở cấu hình riêng, cùng schema.
-- [Validator](../../benchmarks/pricing.py): kiểm schema/date/source refs, ID unique, storage classes, tier bounds, gross normalization và mapping Region/location/usagetype/service/unit cho quote API. Dependency chỉ dùng cho tooling: `jsonschema==4.26.0`, không thêm Python dependency cho gateway Go.
+- [Go parser/validator](../../internal/pricing/catalog.go) và [business rules](../../internal/pricing/validate.go): kiểm schema/date/source refs, ID unique, storage classes, tier bounds, gross normalization và mapping Region/location/usagetype/service/unit cho quote API. Dùng `github.com/santhosh-tekuri/jsonschema/v6 v6.0.3` cho Draft 2020-12 với format assertions; bỏ môi trường Python riêng cho pricing. Schema được embed trực tiếp từ file gốc qua [schema.go](schema.go), không giữ bản sao hoặc cần source tree lúc chạy binary.
 
 ## Hợp đồng fields
 
@@ -37,17 +37,17 @@ Allowance chỉ là metadata theo **account/Region**, không theo table/bucket/s
 ## Validation và cách cập nhật quote
 
 ```bash
-python3 -m venv /tmp/miles-pricing-venv
-/tmp/miles-pricing-venv/bin/pip install -r benchmarks/requirements.txt
-/tmp/miles-pricing-venv/bin/python -B benchmarks/pricing.py
-/tmp/miles-pricing-venv/bin/python -B -m unittest discover -s benchmarks/tests -v
+go run ./cmd/pricingcheck
+go test ./internal/pricing ./cmd/pricingcheck
 # Kiểm một workload đã có giá cần thiết:
-/tmp/miles-pricing-venv/bin/python -B benchmarks/pricing.py --require-rate network.nat_hour
+go run ./cmd/pricingcheck --require-rate network.nat_hour
 # Phải fail cho tới khi EC2 instance quote được chọn/verify:
-/tmp/miles-pricing-venv/bin/python -B benchmarks/pricing.py --require-rate ec2.compute
+go run ./cmd/pricingcheck --require-rate ec2.compute
 ```
 
-Hiện validator có mapping Region đã kiểm chứng cho **ap-southeast-1** và30API rate IDs verified trong sample. Region/verified API ID mới bị reject tới khi bổ sung mapping có evidence; không tự suy prefix/location. Mỗi API quote phải khớp `regionCode`, `location`, usage type chính xác theo ID và Region, service/unit kỳ vọng trong `API_RATES` ở validator. Thêm test khi mở rộng mapping. Kiểm tra này không gọi AWS trong CI và không thay việc đối chiếu SKU/operation/volumeType với AWS khi refresh.
+Hiện validator có mapping Region đã kiểm chứng cho **ap-southeast-1** và30API rate IDs verified trong sample. Region/verified API ID mới bị reject tới khi bổ sung mapping có evidence; không tự suy prefix/location. Mỗi API quote phải khớp `regionCode`, `location`, usage type chính xác theo ID và Region, service/unit kỳ vọng trong `apiRates` ở validator. Thêm test khi mở rộng mapping. Kiểm tra này không gọi AWS trong CI và không thay việc đối chiếu SKU/operation/volumeType với AWS khi refresh.
+
+Cost/simulator consumers dùng chung `pricing.Parse(data, requiredRates...)` từ `internal/pricing`: trả `*Catalog` với structs `Rate`, `Tier`, `Source`, `StorageRule` hoặc lỗi; không trả catalog dùng dở khi validation fail. Decimal được giữ dạng string và so sánh bằng `math/big.Rat`, không qua `float64`. `--file` chọn catalog khác; `--require-rate` lặp được. CLI exit0 khi valid/help,1 khi lỗi file/contract/required rate,2 khi sai cú pháp. Binary embed schema nên dùng được ngoài repo với catalog path rõ ràng.
 
 Cost/simulator consumers dùng cùng contract này. Mỗi workload liệt kê required IDs và từ chối tính **complete total** khi thiếu giá/đơn vị/route, không silently skip; partial subtotal chỉ được báo với danh sách unpriced đi kèm. Parse decimal bằng exact decimal/rational. Không có phép tính tiền trong tooling hiện tại.
 
