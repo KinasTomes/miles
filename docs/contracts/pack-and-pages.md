@@ -99,7 +99,7 @@ Identity vật lý của pack ở mọi nơi là cặp **(pack_id, generation)**
 
 - `size = index_offset + index_len + 24`. Entry 0 bắt đầu ở `H`; entry i+1 bắt đầu ngay sau entry i; blob cuối kết thúc ở `index_offset`. Không gap, không overlap, không byte thừa sau entry cuối.
 - (domain, hash) duy nhất trong pack. Cùng hash ở hai domain là hai entry và hai blob (fixture `mixed-domain`).
-- raw: `stored_len = raw_len`, stored là raw. zstd: stored là đúng một frame RFC 8878, không dictionary, không byte sau frame, giải nén ra đúng `raw_len` byte; content checksum và single-segment tùy thư viện. Chọn raw/zstd theo policy (KT §19.1, W01-CHIEN-05); codec khác bị từ chối.
+- raw: `stored_len = raw_len`, stored là raw. zstd: stored là đúng một frame RFC 8878, không dictionary, không byte sau frame, giải nén ra đúng `raw_len` byte; content checksum và single-segment tùy thư viện. Chọn raw/zstd theo policy ([chunking/commit §4](chunking-and-commit.md#4-nén)); codec khác bị từ chối.
 - Không ghi pack rỗng. Writer đóng pack ở target bytes (32–64 MiB, W02-HAI-02) hoặc ở 16384 entries — chặn sidecar khổng lồ khi chunk nén rất tốt; index tối đa 1933490 byte (khoảng 1,85 MiB) với domain và ID 64 ký tự.
 
 ### 2.4 Đọc và kiểm tra
@@ -208,7 +208,7 @@ Mỗi lần freeze có hai stream bất biến, mỗi stream một `completion_i
 
 ### 3.7 Transaction
 
-Pages, sidecar và pack không nằm trong transaction (KT §9.0). Định dạng này chỉ thêm vào item trong transaction: head (`manifest_id`, `size`, `page_count`, `chunk_count`, `page_index` ≤ 8 KiB) và `Uploads` (hai pointer, digest, prepared manifest ≤ 8 KiB). Mỗi item dưới 400 KB nên transaction với tối đa 9 action luôn dưới 4 MB; contract hiện tại có tối đa 8 action (head, Users, QuotaReservations, Outbox, condition Credentials/Buckets/BucketGrants, thêm Uploads khi Complete), xa giới hạn 100 action. Danh sách action chính xác chốt ở W01-CHIEN-05.
+Pages, sidecar và pack không nằm trong transaction (KT §9.0). Định dạng này chỉ thêm vào item trong transaction: head (`manifest_id`, `size`, `page_count`, `chunk_count`, `page_index` ≤ 8 KiB) và `Uploads` (hai pointer, digest, prepared manifest ≤ 8 KiB). Transaction commit có tối đa 10 action ([chunking/commit §6.3](chunking-and-commit.md#63-transaction)); item lớn nhất là head và Uploads, các item còn lại chỉ là counter/condition nhỏ, nên tổng xa 4 MB và 100 action.
 
 ## 4. Golden fixtures
 
@@ -237,6 +237,6 @@ make check
 | W02-CHIEN-02, W04 multipart | Ghi input/snapshot stream và prepared manifest theo §3.5–3.6 |
 | W02-PHONG-02 | Read path: CRC-32C → giải nén → SHA-256, Range qua `page_index` |
 | W01-PHONG-03 | Sidecar chỉ cho inventory vật lý (§2.5); journal có thể nhúng nguyên body page |
-| W01-CHIEN-05 | `chunking.min_bytes ≥ 16 KiB`, codec raw/zstd, danh sách action transaction |
+| W01-CHIEN-05 | Đã chốt ở [chunking/commit](chunking-and-commit.md): sàn `chunking.min_bytes` 16 KiB (§2.1), codec raw/zstd (§4), danh sách action transaction (§6.3) |
 
 Sau freeze, format chỉ đổi bằng version mới, migration và review; fixture v1 giữ nguyên để reader còn đọc dữ liệu cũ.
