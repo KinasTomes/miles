@@ -1,0 +1,32 @@
+{
+  "note": "Codec choice, docs/contracts/chunking-and-commit.md section 4. decisions: stored_len is the length of the zstd frame the encoder produced for the raw chunk, null when compression is disabled (encoder not run) or the encoder failed. codec is the stored codec: zstd iff enabled, a frame exists and stored_len <= raw_len * (1 - min_saving_ratio) in exact decimal arithmetic, else raw. policy lists compression settings the validator must accept (valid) or reject.",
+  "decisions": [
+    {"name": "exactly 10 percent saving", "enabled": true, "min_saving_ratio": 0.1, "raw_len": 100, "stored_len": 90, "codec": "zstd"},
+    {"name": "one byte short of 10 percent", "enabled": true, "min_saving_ratio": 0.1, "raw_len": 100, "stored_len": 91, "codec": "raw"},
+    {"name": "1 MiB chunk at the floor of 90 percent", "enabled": true, "min_saving_ratio": 0.1, "raw_len": 1048576, "stored_len": 943718, "codec": "zstd"},
+    {"name": "1 MiB chunk one byte over", "enabled": true, "min_saving_ratio": 0.1, "raw_len": 1048576, "stored_len": 943719, "codec": "raw"},
+    {"name": "ratio 0 keeps an equal-size frame", "enabled": true, "min_saving_ratio": 0, "raw_len": 100, "stored_len": 100, "codec": "zstd"},
+    {"name": "ratio 0 rejects a larger frame", "enabled": true, "min_saving_ratio": 0, "raw_len": 100, "stored_len": 101, "codec": "raw"},
+    {"name": "ratio 0.999 at the limit", "enabled": true, "min_saving_ratio": 0.999, "raw_len": 1000, "stored_len": 1, "codec": "zstd"},
+    {"name": "ratio 0.999 one byte over", "enabled": true, "min_saving_ratio": 0.999, "raw_len": 1000, "stored_len": 2, "codec": "raw"},
+    {"name": "tiny chunk grows", "enabled": true, "min_saving_ratio": 0.1, "raw_len": 1, "stored_len": 10, "codec": "raw"},
+    {"name": "compression disabled", "enabled": false, "min_saving_ratio": 0.1, "raw_len": 1048576, "stored_len": null, "codec": "raw"},
+    {"name": "encoder error", "enabled": true, "min_saving_ratio": 0.1, "raw_len": 1048576, "stored_len": null, "codec": "raw"}
+  ],
+  "policy": [
+    {"name": "default", "codec": "zstd", "level": 3, "min_saving_ratio": 0.1, "valid": true},
+    {"name": "fastest", "codec": "zstd", "level": 1, "min_saving_ratio": 0.1, "valid": true},
+    {"name": "better", "codec": "zstd", "level": 7, "min_saving_ratio": 0.1, "valid": true},
+    {"name": "best", "codec": "zstd", "level": 11, "min_saving_ratio": 0.1, "valid": true},
+    {"name": "ratio 0", "codec": "zstd", "level": 3, "min_saving_ratio": 0, "valid": true},
+    {"name": "ratio 0.999", "codec": "zstd", "level": 3, "min_saving_ratio": 0.999, "valid": true},
+    {"name": "level 0", "codec": "zstd", "level": 0, "min_saving_ratio": 0.1, "valid": false},
+    {"name": "level 2 shares the fastest encoder", "codec": "zstd", "level": 2, "min_saving_ratio": 0.1, "valid": false},
+    {"name": "level 4 shares the default encoder", "codec": "zstd", "level": 4, "min_saving_ratio": 0.1, "valid": false},
+    {"name": "level 19", "codec": "zstd", "level": 19, "min_saving_ratio": 0.1, "valid": false},
+    {"name": "raw is not a policy codec", "codec": "raw", "level": 3, "min_saving_ratio": 0.1, "valid": false},
+    {"name": "unknown codec", "codec": "lz4", "level": 3, "min_saving_ratio": 0.1, "valid": false},
+    {"name": "ratio 1", "codec": "zstd", "level": 3, "min_saving_ratio": 1, "valid": false},
+    {"name": "negative ratio", "codec": "zstd", "level": 3, "min_saving_ratio": -0.1, "valid": false}
+  ]
+}
