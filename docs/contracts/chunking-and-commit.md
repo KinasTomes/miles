@@ -133,9 +133,9 @@ Vòng lặp kết thúc trước hard deadline; mỗi conflict nghĩa là writer
 
 ### 6.1 op_id
 
-- `op_id` là 16 byte ngẫu nhiên, 32 hex, sinh lúc admission và ghi vào `QuotaReservations` trước mọi ghi vật lý. Mọi retry nội bộ của request dùng cùng op_id; client gửi lại HTTP request là op mới (last writer wins). DeleteObjects: một op_id mỗi key. Complete: `completion_op_id` sinh lúc CAS Active → Completing, takeover dùng lại (API §4.3).
-- Mỗi transaction authoritative ghi đúng một Outbox event; `event_id` suy ra xác định từ op_id (API §4.3.1 hiện dùng chính op_id; encoding cuối do W01-PHONG-03 chốt) và Put có điều kiện `attribute_not_exists`. Vì vậy một op_id commit tối đa một lần, kể cả khi recompute với head revision mới.
-- `ClientRequestToken` = `{op_id}-{attempt}` (≤ 36 ký tự). Retry kết quả chưa rõ giữ token và tham số; conflict đã xác định mới recompute và tăng `attempt` (KT §9.0).
+- `op_id` là 16 byte ngẫu nhiên, 32 hex, sinh lúc admission và ghi vào `QuotaReservations` trước mọi ghi vật lý. Mọi retry nội bộ của request dùng cùng op_id; client gửi lại HTTP request là op mới (last writer wins). DeleteObjects: một op_id mỗi key. Multipart: op_id sinh lúc CreateMultipartUpload cùng reservation ledger của upload và là `completion_op_id` của mọi lần freeze/takeover (API §4.3 gắn nó vào upload khi CAS Active → Completing). Mở lại Active không commit nên event chưa tồn tại; lần freeze sau dùng lại op_id và ledger mà vẫn commit tối đa một lần.
+- Mỗi transaction authoritative ghi đúng một Outbox event; `event_id` suy ra xác định từ op_id (API §4.3.1 hiện dùng chính op_id; encoding cuối do W01-PHONG-03 chốt) và Put có điều kiện `attribute_not_exists`. Cùng điều kiện ledger `Active` ở revision đang giữ (§6.3 action 3), một op_id commit tối đa một lần, kể cả khi recompute với head revision mới, attempt cũ đến muộn hoặc token đã hết hạn.
+- `ClientRequestToken` = op_id nối `attempt` dạng 4 hex lowercase, luôn đúng 36 ký tự (giới hạn DynamoDB), `attempt` 0..65535. Mỗi bộ tham số transaction mới (recompute, freeze lại, conflict tạm thời) tăng `attempt`; retry kết quả chưa rõ giữ token và tham số (KT §9.0). Hết 65535 attempt thì dừng, 503, giữ reservation; với backoff trong deadline 30 phút không chạm tới. Token chỉ chống áp lặp trong cửa sổ 10 phút của DynamoDB; ngoài cửa sổ, điều kiện Outbox và ledger mới là bảo đảm. Fixture: `commit.json` → `tokens` (attempt 0, 999, 1000, 65535, 65536 và op_id sai).
 
 ### 6.2 Thứ tự bền vững — PUT
 
@@ -191,21 +191,56 @@ Insert/CAS chunk:
 
 Fixture: `commit.json` → `transactions` (7 kịch bản, kiểm không trùng item, ≤ 100 action, đúng một event).
 
-### 6.4 Kết quả chưa rõ
+### 6.4 Kết quả, reconcile và cleanup
 
-- Timeout/mất ACK: retry cùng token và tham số. Transaction bị hủy vì điều kiện Outbox → op đã commit: đọc consistent `Outbox[event_id]`, trả kết quả cũ (revision từ event, ETag đã biết), không cộng quota lần hai. Hủy vì `Objects` revision → chưa commit: đọc lại head, tính lại `D`, token mới. Hủy vì quyền/bucket/quota → lỗi API (§2.2.3, §2.6), release reservation.
-- Metadata không đọc được: 503, giữ reservation, pin và roots; không suy ra chưa commit từ timeout hay từ head thiếu (shared storage, `ErrUnavailable`).
+Transaction §6.3 chỉ commit khi `Outbox[event_id]` chưa có và ledger `Active` ở revision writer đang giữ; commit đổi ledger sang `Committed`. Vì vậy ledger còn `Active` ở revision đó và chưa có event, đọc sau một phản hồi xác định, là bằng chứng chưa commit; release đổi revision ledger nên attempt cũ đến muộn cũng không commit được sau đó.
+
+1. Thành công: đã commit.
+2. Chưa rõ (timeout, 5xx, mất kết nối, `TransactionInProgressException`): retry cùng token và tham số, backoff, tới khi có phản hồi xác định hoặc hết deadline. Hết deadline: 503, giữ reservation, pin và roots; sweeper claim khi lease hết (shared storage, reservation lifecycle).
+3. Mọi phản hồi khác (`TransactionCanceledException` với bất kỳ tập lý do nào, `IdempotentParameterMismatch`): **reconcile theo op_id trước**, không dựa vào lý do hủy hay thứ tự của chúng. Đọc consistent `Outbox[event_id]`, `QuotaReservations[reservation_id]` (Complete thêm receipt trong `Uploads`):
+
+| Kết quả đọc | Kết luận | Hành động |
+|---|---|---|
+| Không đọc được | Chưa rõ | 503, giữ reservation, pin, roots |
+| Có event, ledger `Committed` cho op_id, hoặc receipt có `completion_op_id` | Đã commit | Trả kết quả gốc (revision từ event, ETag đã biết hoặc response trong receipt); không recompute, không cộng quota, không release |
+| Ledger không còn `Active` ở revision đang giữ, fence writer không còn hiện hành, hoặc upload không còn `Completing` | Mất quyền sở hữu | Dừng, 503; không publish, không release (owner mới claim và reconcile) |
+| Ledger `Active` ở revision đang giữ, không có event | Chưa commit | Phân loại bên dưới |
+
+Phân loại bằng đọc consistent lại, theo thứ tự cố định: credential hoặc user caller không active → `AccessDenied`; bucket sai `bucket_id` hoặc không active → `NoSuchBucket`; grant mất write → `AccessDenied`; head khác revision expected → đọc lại head, tính lại `D`, attempt mới; quota không đủ → `QuotaExceeded`; mọi điều kiện đều đúng (`TransactionConflict` tạm thời) → attempt mới.
+
+Ví dụ: A commit nhưng mất ACK, B ghi đè, A retry sau cửa sổ token. Điều kiện `Objects`, ledger và `Outbox` cùng fail; reconcile thấy event của A nên trả revision của A, quota không đổi lần hai. Phân loại theo action fail đầu tiên sẽ recompute hoặc trả lỗi dù A đã thành công.
+
+Cleanup khi chưa commit:
+
+| Phân loại | PUT, Copy, DELETE | Complete của client | Complete takeover |
+|---|---|---|---|
+| `QuotaExceeded` | Release (API §2.6) | Mở lại Active, giữ ledger và counters (API §2.6, §4.3.1 dòng 13) | Như client; upload đã hết hạn thì Aborting + release (API §4.3 bước 4) |
+| `AccessDenied` | Release (API §2.2.3) | Mở lại Active, giữ ledger và counters (API §4.3.1 dòng 12) | Aborting + release (API §2.2.3, §4.3 bước 4) |
+| `NoSuchBucket` | Release | Aborting + release; phòng thủ, vì DeleteBucket từ chối khi còn upload hoạt động (API §4.2) | Aborting + release |
+
+- Release: một transaction CAS ledger `Active@R → Released@R+1`, `reserved −= r`, `staged −= s` (shared storage, release); Aborting thêm `active_uploads −= 1` và CAS `Uploads` sang `Aborting`.
+- Mở lại Active: CAS `Uploads` `Completing → Active` dưới completion fence; ledger giữ `Active@R`, counters giữ nguyên. Client retry Complete freeze lại và commit với cùng op_id, cùng ledger.
 - Complete: retry cùng input kiểm receipt trước (API §4.3.1); takeover dùng `completion_op_id`.
+
+Fixture: `commit.json` → `scenarios` (13 kịch bản: mất ACK rồi retry cùng token; mất ACK, ghi đè, retry sau cửa sổ token; head conflict rồi recompute; PUT quá quota và grant bị thu hồi; Complete quá quota giữ reservation rồi retry thành công; Complete takeover quá quota; Complete client/takeover sau thu hồi grant; Complete khi bucket mất; mất fence; metadata không đọc được; tombstone). Mỗi bước kiểm kết quả, revision, số transaction đã gửi; cuối kịch bản kiểm head, counters owner, ledger, upload và event.
 
 ### 6.5 Complete, Copy, Delete
 
-- Complete: chunk đã bền qua UploadPart (§6.2 bước 1–6 cho part pages + publish part head). Complete freeze, ghi CompletionPages, prepared manifest (pages mới, manifest_id mới), pin location hiện hành, rồi transaction §6.3 có action 10 (API §4.3).
+- Complete: chunk đã bền qua UploadPart (§6.2 bước 1–6 cho part pages + publish part head). Complete freeze, ghi CompletionPages, prepared manifest (pages mới, manifest_id mới), pin location hiện hành, rồi transaction §6.3 có action 10 với op_id của upload (§6.1, API §4.3).
 - Copy: cùng miền chỉ ghi manifest mới từ refs nguồn đã pin; khác miền theo §5 ở miền đích; commit như PUT.
 - DELETE: không có bước chunk/pages; transaction §6.3 với tombstone.
 
 ### 6.6 Refcount
 
-Refcount không nằm trong transaction §6.3 (KT §9.0: không đưa hàng nghìn update vào commit). Worker đọc Outbox theo op_id: `+` số lần xuất hiện mỗi key trong manifest mới, `−` trong manifest bị thay (overwrite/delete); gộp theo key trước khi ghi (một Update cho hash lặp, giảm hot key KT §17); lưu tiến độ theo op_id. Crash giữa update và tiến độ có thể áp lại tối đa một lô; GC đối soát dưới R1 là nguồn đúng và refcount không bao giờ là quyền xóa (KT §8.1). Event cần mang manifest bị thay (§8).
+Refcount không nằm trong transaction §6.3 (KT §9.0: không đưa hàng nghìn update vào commit). Mỗi event `Objects` được áp đúng một lần theo lô:
+
+- Delta mỗi key = số lần xuất hiện trong manifest mới − trong manifest bị thay (overwrite/delete; event mang cả hai manifest_id, §8). Bỏ delta 0, sắp key theo partition key `domain#hash`, cắt lô 99 key. Manifest bất biến nên lô `b` luôn cùng nội dung khi replay; hash lặp chỉ thành một Update (giảm hot key, KT §17).
+- Lô `b` là một `TransactWriteItems` tối đa 100 action: Update `Outbox[event_id]` điều kiện `refcount_next = b` (thiếu = 0), đặt `b + 1`; Update từng `Chunks[domain#hash]` điều kiện `attribute_exists`, `ADD refcount delta`. Điều kiện tiến độ nằm cùng transaction với delta nên lô áp đúng một lần dù crash sau commit trước ACK, replay nhiều lần, hay worker cũ gửi lại lô đã áp; không cần `ClientRequestToken`. Phản hồi khác thành công: đọc consistent `refcount_next` rồi tiếp tục từ đó; `TransactionConflict` thì retry.
+- Refcount là số nguyên có dấu, không có điều kiện chống âm: event DELETE có thể được xử lý trước event PUT tạo tham chiếu nên giá trị âm tạm thời; guard chống âm sẽ làm lô kẹt mãi. Giá trị đúng khi mọi event đã áp; GC không bao giờ xóa theo refcount (KT §8.1).
+- Thiếu row `Chunks` là vi phạm bất biến (manifest bị thay vẫn là root tới khi outbox xử lý xong, KT §8.1): dừng worker, báo động; không để `ADD` tạo row mới.
+- `refcount_next` là thuộc tính tiến độ trên item Outbox, như export state; payload event vẫn bất biến. Không dọn item Outbox trước khi `refcount_next` bằng số lô.
+
+Fixture: `commit.json` → `refcount` (xóa về 0 rồi crash và replay, 150 key hai lô crash sau từng lô và gửi lại, overwrite gộp hash lặp, DELETE xử lý trước PUT).
 
 ## 7. Fixtures và test
 
@@ -213,9 +248,9 @@ Refcount không nằm trong transaction §6.3 (KT §9.0: không đưa hàng ngh�
 |---|---|
 | `chunking.json` | Digest bảng gear, mask theo avg, 11 ca chunk (rỗng, 1 byte, đúng `min`, `min + 1`, stream 16 MiB, chèn/xóa 1 byte, toàn 0, block lặp, tham số nhỏ, cố định) với độ dài và SHA-256 từng chunk; identity hai miền; 10 ca validator chunking |
 | `compression.json` | 11 quyết định codec (biên 10%, 1 MiB, ratio 0 và 0.999, chunk nhỏ, tắt nén, encoder lỗi); 14 ca validator compression |
-| `commit.json` | 18 ca lookup; action transaction cho put owner/grantee, delete, complete owner/grantee, chunk insert/CAS |
+| `commit.json` | 18 ca lookup; action của 7 transaction; 13 kịch bản commit (§6.4); 7 token; 4 kịch bản refcount |
 
-`internal/engine/contract_test.go` chạy mọi fixture qua hàm tham chiếu (chunker, validator, chọn codec, lookup, dựng transaction), so từng chunk, kiểm biên `[min, max]`, số chunk đổi khi chèn/xóa, partition key qua `storage.ChunkKey`, và bất biến DynamoDB của từng transaction. Input stream: `SHA-256(seed ‖ u64be(k))` nối nhau, cắt đúng độ dài. Một implementation JavaScript viết riêng (gear hash bằng hai nửa 32 bit) cho cùng mọi chunk của 11 ca.
+`internal/engine/contract_test.go` chạy chunking/nén/lookup/action qua hàm tham chiếu (chunker, validator, chọn codec, lookup, dựng transaction), so từng chunk, kiểm biên `[min, max]`, số chunk đổi khi chèn/xóa, partition key qua `storage.ChunkKey`, và bất biến DynamoDB của từng transaction. `internal/engine/commit_test.go` mô hình điều kiện và hiệu ứng transaction §6.3, writer §6.4 (token, reconcile, phân loại, cleanup), token §6.1 và lô refcount §6.6. Input stream: `SHA-256(seed ‖ u64be(k))` nối nhau, cắt đúng độ dài. Một implementation JavaScript viết riêng (gear hash bằng hai nửa 32 bit) cho cùng mọi chunk của 11 ca.
 
 ```bash
 go test ./internal/engine
@@ -229,10 +264,10 @@ make check
 | W02-HAI-01 | Chunker/hasher §2–3, zstd §4 (thêm dependency klauspost, pin version), Bloom/LRU §5.1; chạy `chunking.json`/`compression.json` rồi xóa reference tương ứng trong `contract_test.go` |
 | W02-PHONG-01 | Validator `chunking`/`compression` theo §2.1/§4.2 và các ca `policy` |
 | W02-HAI-02 | Pack writer §5.3; thêm port đăng ký `Packs` Uploading → Warm (hiện `MetadataStore` chỉ có `GetPacks`) |
-| W02-HAI-03, W04-HAI-01 | Badger/DynamoDB: transaction §6.3, insert/CAS kèm Outbox, `ALL_OLD` cho winner, token §6.1, xử lý §6.4; chạy `transactions` |
+| W02-HAI-03, W04-HAI-01 | Badger/DynamoDB: transaction §6.3, insert/CAS kèm Outbox, `ALL_OLD` cho winner, token §6.1, reconcile và cleanup §6.4; chạy `transactions`, `scenarios`, `tokens` |
 | W03-HAI-01 | Write path §5–6.2, I1, bảng crash |
 | W01-PHONG-02 | `PinLocations` kiểm `location_revision`; item `Leases` trong điều kiện commit/insert/CAS |
-| W01-PHONG-03, W04-HAI-02 | Encoding event identity; entity `Chunks` (`OutboxEvent.Validate` hiện chỉ nhận `Objects`/`SystemConfig`); payload event `Objects` mang manifest bị thay cho refcount |
-| W05-HAI-01 | Refcount delta §6.6, đối soát `live_bytes`/refcount, dọn orphan §5.5 |
+| W01-PHONG-03, W04-HAI-02 | Encoding event identity; entity `Chunks` (`OutboxEvent.Validate` hiện chỉ nhận `Objects`/`SystemConfig`); payload event `Objects` mang manifest mới và manifest bị thay; thuộc tính `refcount_next`, không dọn Outbox trước khi refcount xong (§6.6); op_id upload sinh lúc Create, mở lại Active giữ ledger (§6.1, §6.4) |
+| W05-HAI-01 | Refcount worker §6.6, chạy `refcount`; đối soát `live_bytes`/refcount, dọn orphan §5.5 |
 
 Đổi thuật toán, gear, mask hoặc giới hạn tham số sau freeze chỉ làm giảm dedup với dữ liệu cũ, không làm hỏng dữ liệu; vẫn cần version mới (`fastcdc-v2`) và review vì fixture v1 phải giữ nguyên.

@@ -1,5 +1,5 @@
 {
-  "note": "Dedup lookup and commit transactions, docs/contracts/chunking-and-commit.md sections 5-6. lookup: what PUT/UploadPart does for a (domain, hash) given the consistent Chunks row (found=false: absent) and the state/class of its canonical pack generation; pin=rejected means R1 refused to protect that resource. reuse = reference the existing location after the pin, insert = write a blob then PutChunkIfAbsent, revive = write a Warm blob then CAS the location. transactions: exact DynamoDB TransactWriteItems actions per operation, conditions in the contract table. Fixture identities: bucket demo (bucket_id bucket-1, owner owner), grantee writer, key file, credential <caller>-key, reservation r-1, op_id op-1 (also the outbox event_id), writer lease lease-1, upload upload-1, pack pack-a generation gen-1, chunk default#SHA-256(hello).",
+  "note": "Dedup lookup and commit transactions, docs/contracts/chunking-and-commit.md sections 5-6. lookup: what PUT/UploadPart does for a (domain, hash) given the consistent Chunks row (found=false: absent) and the state/class of its canonical pack generation; pin=rejected means R1 refused to protect that resource. reuse = reference the existing location after the pin, insert = write a blob then PutChunkIfAbsent, revive = write a Warm blob then CAS the location. transactions: exact DynamoDB TransactWriteItems actions per operation, conditions in the contract table. Fixture identities: bucket demo (bucket_id bucket-1, owner owner), grantee writer, key file, credential <caller>-key, reservation r-1, op_id op-1 (also the outbox event_id), writer lease lease-1, upload upload-1, pack pack-a generation gen-1, chunk default#SHA-256(hello). scenarios: one object key; state is the authoritative items the commit transaction touches (head of the key, owner counters, one reservation ledger per op with its r/s, upload state, outbox events as op -> committed head revision). Each op's writer follows section 6.4: commit reads the head consistent and sends a new parameter set (expected forces a stale expected revision with base 0), retry resends the last parameter set and token; lose_ack applies the transaction but the writer sees an unknown outcome; token_expired makes DynamoDB treat the token as new; set changes state outside the writer (limit, revoke credential/user/bucket/grant, fence_lost of an op, unavailable metadata). expect checks the outcome, the head revision returned, the number of TransactWriteItems the writer has sent, and optionally state; final is the whole state after the last step. tokens: ClientRequestToken for (op_id, attempt), null when invalid. refcount: worker batches of section 6.6; fill generates keys prefix000..prefix(count-1) with that refcount (state) or +1 each (event); apply reads progress then runs batches, crash_after stops right after that batch committed; resend sends that batch number without reading progress first.",
   "lookup": [
     {"name": "absent", "found": false, "action": "insert"},
     {"name": "warm standard", "found": true, "state": "Warm", "class": "STANDARD", "action": "reuse"},
@@ -77,5 +77,125 @@
       {"table": "Packs", "item": "pack-a/gen-1", "op": "ConditionCheck"},
       {"table": "Leases", "item": "lease-1", "op": "ConditionCheck"},
       {"table": "Outbox", "item": "op-1", "op": "Put"}]}
-  ]
+  ],
+  "scenarios": [
+    {"name": "lost ack retried with the same token",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 0, "reserved": 40, "staged": 40, "active_uploads": 0}, "ledgers": {"a": {"state": "Active", "revision": 1, "r": 40, "s": 40}}, "upload": "", "events": {}},
+     "ops": {"a": {"operation": "put", "caller": "owner", "size": 40}},
+     "steps": [
+       {"commit": "a", "lose_ack": true, "expect": {"result": "unknown", "attempts": 1}},
+       {"retry": "a", "expect": {"result": "committed", "revision": 1, "attempts": 2}}],
+     "final": {"head": {"revision": 1, "size": 40, "op": "a"}, "owner": {"limit": 100, "used": 40, "reserved": 0, "staged": 0, "active_uploads": 0}, "ledgers": {"a": {"state": "Committed", "revision": 2, "r": 40, "s": 40}}, "upload": "", "events": {"a": 1}}},
+    {"name": "lost ack, overwrite, retry after the token window",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 0, "reserved": 50, "staged": 50, "active_uploads": 0}, "ledgers": {"a": {"state": "Active", "revision": 1, "r": 40, "s": 40}, "b": {"state": "Active", "revision": 1, "r": 10, "s": 10}}, "upload": "", "events": {}},
+     "ops": {"a": {"operation": "put", "caller": "owner", "size": 40}, "b": {"operation": "put", "caller": "writer", "size": 10}},
+     "steps": [
+       {"commit": "a", "lose_ack": true, "expect": {"result": "unknown", "attempts": 1}},
+       {"commit": "b", "expect": {"result": "committed", "revision": 2, "attempts": 1}},
+       {"retry": "a", "token_expired": true, "expect": {"result": "already_committed", "revision": 1, "attempts": 2, "owner": {"limit": 100, "used": 10, "reserved": 0, "staged": 0, "active_uploads": 0}}}],
+     "final": {"head": {"revision": 2, "size": 10, "op": "b"}, "owner": {"limit": 100, "used": 10, "reserved": 0, "staged": 0, "active_uploads": 0}, "ledgers": {"a": {"state": "Committed", "revision": 2, "r": 40, "s": 40}, "b": {"state": "Committed", "revision": 2, "r": 10, "s": 10}}, "upload": "", "events": {"a": 1, "b": 2}}},
+    {"name": "head conflict proved uncommitted recomputes",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 0, "reserved": 50, "staged": 50, "active_uploads": 0}, "ledgers": {"a": {"state": "Active", "revision": 1, "r": 40, "s": 40}, "b": {"state": "Active", "revision": 1, "r": 10, "s": 10}}, "upload": "", "events": {}},
+     "ops": {"a": {"operation": "put", "caller": "owner", "size": 40}, "b": {"operation": "put", "caller": "owner", "size": 10}},
+     "steps": [
+       {"commit": "b", "expect": {"result": "committed", "revision": 1, "attempts": 1}},
+       {"commit": "a", "expected": 0, "expect": {"result": "committed", "revision": 2, "attempts": 2}}],
+     "final": {"head": {"revision": 2, "size": 40, "op": "a"}, "owner": {"limit": 100, "used": 40, "reserved": 0, "staged": 0, "active_uploads": 0}, "ledgers": {"a": {"state": "Committed", "revision": 2, "r": 40, "s": 40}, "b": {"state": "Committed", "revision": 2, "r": 10, "s": 10}}, "upload": "", "events": {"a": 2, "b": 1}}},
+    {"name": "put over quota releases the reservation",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 0, "reserved": 40, "staged": 40, "active_uploads": 0}, "ledgers": {"a": {"state": "Active", "revision": 1, "r": 40, "s": 40}}, "upload": "", "events": {}},
+     "ops": {"a": {"operation": "put", "caller": "owner", "size": 40}},
+     "steps": [
+       {"set": {"limit": 30}},
+       {"commit": "a", "expect": {"result": "QuotaExceeded", "attempts": 1}}],
+     "final": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 30, "used": 0, "reserved": 0, "staged": 0, "active_uploads": 0}, "ledgers": {"a": {"state": "Released", "revision": 2, "r": 40, "s": 40}}, "upload": "", "events": {}}},
+    {"name": "grantee put after grant revoke releases the reservation",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 0, "reserved": 40, "staged": 40, "active_uploads": 0}, "ledgers": {"a": {"state": "Active", "revision": 1, "r": 40, "s": 40}}, "upload": "", "events": {}},
+     "ops": {"a": {"operation": "put", "caller": "writer", "size": 40}},
+     "steps": [
+       {"set": {"revoke": "grant"}},
+       {"commit": "a", "expect": {"result": "AccessDenied", "attempts": 1}}],
+     "final": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 0, "reserved": 0, "staged": 0, "active_uploads": 0}, "ledgers": {"a": {"state": "Released", "revision": 2, "r": 40, "s": 40}}, "upload": "", "events": {}}},
+    {"name": "complete over quota keeps the reservation, then retries",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 80, "reserved": 60, "staged": 60, "active_uploads": 1}, "ledgers": {"c": {"state": "Active", "revision": 1, "r": 60, "s": 60}}, "upload": "Completing", "events": {}},
+     "ops": {"c": {"operation": "complete", "caller": "writer", "size": 60}},
+     "steps": [
+       {"commit": "c", "expect": {"result": "QuotaExceeded", "attempts": 1, "upload": "Active", "owner": {"limit": 100, "used": 80, "reserved": 60, "staged": 60, "active_uploads": 1}, "ledgers": {"c": {"state": "Active", "revision": 1, "r": 60, "s": 60}}}},
+       {"set": {"limit": 140}},
+       {"commit": "c", "expect": {"result": "committed", "revision": 1, "attempts": 2}}],
+     "final": {"head": {"revision": 1, "size": 60, "op": "c"}, "owner": {"limit": 140, "used": 140, "reserved": 0, "staged": 0, "active_uploads": 0}, "ledgers": {"c": {"state": "Committed", "revision": 2, "r": 60, "s": 60}}, "upload": "Completed", "events": {"c": 1}}},
+    {"name": "takeover complete over quota reopens Active",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 80, "reserved": 60, "staged": 60, "active_uploads": 1}, "ledgers": {"c": {"state": "Active", "revision": 1, "r": 60, "s": 60}}, "upload": "Completing", "events": {}},
+     "ops": {"c": {"operation": "complete", "caller": "writer", "size": 60, "takeover": true}},
+     "steps": [
+       {"commit": "c", "expect": {"result": "QuotaExceeded", "attempts": 1}}],
+     "final": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 80, "reserved": 60, "staged": 60, "active_uploads": 1}, "ledgers": {"c": {"state": "Active", "revision": 1, "r": 60, "s": 60}}, "upload": "Active", "events": {}}},
+    {"name": "client complete after grant revoke reopens Active",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 200, "used": 80, "reserved": 60, "staged": 60, "active_uploads": 1}, "ledgers": {"c": {"state": "Active", "revision": 1, "r": 60, "s": 60}}, "upload": "Completing", "events": {}},
+     "ops": {"c": {"operation": "complete", "caller": "writer", "size": 60}},
+     "steps": [
+       {"set": {"revoke": "grant"}},
+       {"commit": "c", "expect": {"result": "AccessDenied", "attempts": 1}}],
+     "final": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 200, "used": 80, "reserved": 60, "staged": 60, "active_uploads": 1}, "ledgers": {"c": {"state": "Active", "revision": 1, "r": 60, "s": 60}}, "upload": "Active", "events": {}}},
+    {"name": "takeover complete after grant revoke aborts",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 200, "used": 80, "reserved": 60, "staged": 60, "active_uploads": 1}, "ledgers": {"c": {"state": "Active", "revision": 1, "r": 60, "s": 60}}, "upload": "Completing", "events": {}},
+     "ops": {"c": {"operation": "complete", "caller": "writer", "size": 60, "takeover": true}},
+     "steps": [
+       {"set": {"revoke": "grant"}},
+       {"commit": "c", "expect": {"result": "AccessDenied", "attempts": 1}}],
+     "final": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 200, "used": 80, "reserved": 0, "staged": 0, "active_uploads": 0}, "ledgers": {"c": {"state": "Released", "revision": 2, "r": 60, "s": 60}}, "upload": "Aborting", "events": {}}},
+    {"name": "complete on a deleted bucket aborts",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 200, "used": 80, "reserved": 60, "staged": 60, "active_uploads": 1}, "ledgers": {"c": {"state": "Active", "revision": 1, "r": 60, "s": 60}}, "upload": "Completing", "events": {}},
+     "ops": {"c": {"operation": "complete", "caller": "owner", "size": 60}},
+     "steps": [
+       {"set": {"revoke": "bucket"}},
+       {"commit": "c", "expect": {"result": "NoSuchBucket", "attempts": 1}}],
+     "final": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 200, "used": 80, "reserved": 0, "staged": 0, "active_uploads": 0}, "ledgers": {"c": {"state": "Released", "revision": 2, "r": 60, "s": 60}}, "upload": "Aborting", "events": {}}},
+    {"name": "writer that lost its fence keeps the reservation",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 0, "reserved": 40, "staged": 40, "active_uploads": 0}, "ledgers": {"a": {"state": "Active", "revision": 1, "r": 40, "s": 40}}, "upload": "", "events": {}},
+     "ops": {"a": {"operation": "put", "caller": "owner", "size": 40}},
+     "steps": [
+       {"set": {"fence_lost": "a"}},
+       {"commit": "a", "expect": {"result": "ServiceUnavailable", "attempts": 1}}],
+     "final": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 0, "reserved": 40, "staged": 40, "active_uploads": 0}, "ledgers": {"a": {"state": "Active", "revision": 1, "r": 40, "s": 40}}, "upload": "", "events": {}}},
+    {"name": "metadata unavailable keeps the reservation",
+     "state": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 0, "reserved": 40, "staged": 40, "active_uploads": 0}, "ledgers": {"a": {"state": "Active", "revision": 1, "r": 40, "s": 40}}, "upload": "", "events": {}},
+     "ops": {"a": {"operation": "put", "caller": "owner", "size": 40}},
+     "steps": [
+       {"set": {"unavailable": true}},
+       {"commit": "a", "expect": {"result": "ServiceUnavailable", "attempts": 1}}],
+     "final": {"head": {"revision": 0, "size": 0, "op": ""}, "owner": {"limit": 100, "used": 0, "reserved": 40, "staged": 40, "active_uploads": 0}, "ledgers": {"a": {"state": "Active", "revision": 1, "r": 40, "s": 40}}, "upload": "", "events": {}}},
+    {"name": "delete writes a tombstone",
+     "state": {"head": {"revision": 1, "size": 40, "op": "x"}, "owner": {"limit": 100, "used": 40, "reserved": 0, "staged": 0, "active_uploads": 0}, "ledgers": {"d": {"state": "Active", "revision": 1, "r": 0, "s": 0}}, "upload": "", "events": {}},
+     "ops": {"d": {"operation": "delete", "caller": "owner", "size": 0}},
+     "steps": [
+       {"commit": "d", "expect": {"result": "committed", "revision": 2, "attempts": 1}}],
+     "final": {"head": {"revision": 2, "size": 0, "op": "d", "deleted": true}, "owner": {"limit": 100, "used": 0, "reserved": 0, "staged": 0, "active_uploads": 0}, "ledgers": {"d": {"state": "Committed", "revision": 2, "r": 0, "s": 0}}, "upload": "", "events": {"d": 2}}}
+  ],
+  "tokens": [
+    {"op_id": "5f2b8c0e9d1a4e7f8b3c6d2a1e0f9b8c", "attempt": 0, "token": "5f2b8c0e9d1a4e7f8b3c6d2a1e0f9b8c0000"},
+    {"op_id": "5f2b8c0e9d1a4e7f8b3c6d2a1e0f9b8c", "attempt": 999, "token": "5f2b8c0e9d1a4e7f8b3c6d2a1e0f9b8c03e7"},
+    {"op_id": "5f2b8c0e9d1a4e7f8b3c6d2a1e0f9b8c", "attempt": 1000, "token": "5f2b8c0e9d1a4e7f8b3c6d2a1e0f9b8c03e8"},
+    {"op_id": "5f2b8c0e9d1a4e7f8b3c6d2a1e0f9b8c", "attempt": 65535, "token": "5f2b8c0e9d1a4e7f8b3c6d2a1e0f9b8cffff"},
+    {"op_id": "5f2b8c0e9d1a4e7f8b3c6d2a1e0f9b8c", "attempt": 65536, "token": null},
+    {"op_id": "5F2B8C0E9D1A4E7F8B3C6D2A1E0F9B8C", "attempt": 0, "token": null},
+    {"op_id": "5f2b8c0e9d1a4e7f8b3c6d2a1e0f9b8", "attempt": 0, "token": null}
+  ],
+  "refcount": [
+    {"name": "delete to zero, crash after the batch, replay",
+     "chunks": {"x": 1}, "events": {"del": {"remove": {"x": 1}}},
+     "steps": [{"apply": "del", "crash_after": 0}, {"apply": "del"}, {"apply": "del"}, {"resend": "del", "batch": 0}],
+     "expect": {"chunks": {"x": 0}, "progress": {"del": 1}, "batches": {"del": 1}}},
+    {"name": "150 keys in two batches, crash after each",
+     "chunks": {}, "fill": {"prefix": "k", "count": 150, "refcount": 0}, "events": {"put": {"fill": {"prefix": "k", "count": 150}}},
+     "steps": [{"apply": "put", "crash_after": 0}, {"apply": "put", "crash_after": 1}, {"apply": "put"}, {"resend": "put", "batch": 0}, {"resend": "put", "batch": 1}],
+     "expect": {"chunks": {}, "fill": {"prefix": "k", "count": 150, "refcount": 1}, "progress": {"put": 2}, "batches": {"put": 2}}},
+    {"name": "overwrite nets repeated hashes per key",
+     "chunks": {"x": 3, "y": 0}, "events": {"over": {"add": {"x": 1, "y": 2}, "remove": {"x": 3}}},
+     "steps": [{"apply": "over"}, {"resend": "over", "batch": 0}],
+     "expect": {"chunks": {"x": 1, "y": 2}, "progress": {"over": 1}, "batches": {"over": 1}}},
+    {"name": "delete processed before its put",
+     "chunks": {"x": 0}, "events": {"put": {"add": {"x": 1}}, "del": {"remove": {"x": 1}}},
+     "steps": [{"apply": "del"}, {"apply": "put"}],
+     "expect": {"chunks": {"x": 0}, "progress": {"del": 1, "put": 1}, "batches": {"del": 1, "put": 1}}}
+   ]
 }
