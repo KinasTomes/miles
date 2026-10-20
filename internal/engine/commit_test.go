@@ -354,9 +354,9 @@ func TestRefcountBatches(t *testing.T) {
 			Fill   *keyFill
 			Events map[string]refEvent
 			Steps  []struct {
-				Apply, Resend string
-				CrashAfter    *int `json:"crash_after"`
-				Batch         int
+				Apply, Resend, Cleanup string
+				CrashAfter             *int `json:"crash_after"`
+				Batch                  int
 			}
 			Expect struct {
 				Chunks            map[string]int64
@@ -368,6 +368,7 @@ func TestRefcountBatches(t *testing.T) {
 	load(t, "commit.json", &f)
 	for _, c := range f.Refcount {
 		t.Run(c.Name, func(t *testing.T) {
+			// progress holds refcount_next of every Outbox item that exists; the commit wrote 0.
 			chunks, progress, batches := map[string]int64{}, map[string]int{}, map[string][][]keyDelta{}
 			for k, v := range c.Chunks {
 				chunks[k] = v
@@ -377,10 +378,12 @@ func TestRefcountBatches(t *testing.T) {
 			}
 			for op, e := range c.Events {
 				batches[op] = refBatches(e)
+				progress[op] = 0
 			}
-			// exec is one transaction: Outbox refcount_next = b → b+1 and every Chunks update, or nothing.
+			// exec is one transaction: Outbox attribute_exists(event_id) and refcount_next = b → b+1,
+			// plus every Chunks update, or nothing. A missing item never matches and is never recreated.
 			exec := func(op string, b int) bool {
-				if progress[op] != b {
+				if next, ok := progress[op]; !ok || next != b {
 					return false
 				}
 				for _, kd := range batches[op][b] {
@@ -394,25 +397,32 @@ func TestRefcountBatches(t *testing.T) {
 				progress[op] = b + 1
 				return true
 			}
+			// run reads refcount_next consistent; a missing item means the event was finished and cleaned up.
 			run := func(op string, crashAfter *int) {
-				for b := progress[op]; b < len(batches[op]); b++ {
-					if !exec(op, b) {
-						b = progress[op] - 1 // canceled: re-read progress.
-						continue
+				for {
+					b, ok := progress[op]
+					if !ok || b == len(batches[op]) {
+						return
 					}
-					if crashAfter != nil && b == *crashAfter {
+					if exec(op, b) && crashAfter != nil && b == *crashAfter {
 						return
 					}
 				}
 			}
 			for _, s := range c.Steps {
-				if s.Resend != "" {
+				switch {
+				case s.Cleanup != "":
+					// Delete Outbox condition refcount_next = number of batches.
+					if progress[s.Cleanup] == len(batches[s.Cleanup]) {
+						delete(progress, s.Cleanup)
+					}
+				case s.Resend != "":
 					if !exec(s.Resend, s.Batch) {
 						run(s.Resend, nil)
 					}
-					continue
+				default:
+					run(s.Apply, s.CrashAfter)
 				}
-				run(s.Apply, s.CrashAfter)
 			}
 			want := map[string]int64{}
 			for k, v := range c.Expect.Chunks {

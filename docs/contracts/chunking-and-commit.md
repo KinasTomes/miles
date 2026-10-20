@@ -170,7 +170,7 @@ Một `TransactWriteItems` (Badger: một transaction đọc/ghi cùng các key)
 | 1 | `Objects[bucket, key]` | Put | `revision = expected`; expected 0 thì `attribute_not_exists` (tombstone có revision) | Head hoặc tombstone, `revision = expected + 1`, op_id |
 | 2 | `Users[owner]` | Update | `used + D + (reserved − r) ≤ limit`, `reserved ≥ r`, `staged ≥ s`; caller là owner thì thêm `status = active` | `used += D`, `reserved −= r`, `staged −= s`; Complete thêm `active_uploads −= 1` |
 | 3 | `QuotaReservations[reservation_id]` | Update | `state = Active`, `revision`, op_id, writer fence, deadline chưa qua (bound Clock) | `state = Committed`, `revision + 1` |
-| 4 | `Outbox[event_id]` | Put | `attribute_not_exists` | Event `Objects`: history_id/recovery_epoch, object + bucket_id, revision mới, op_id, pointer/SHA-256 payload |
+| 4 | `Outbox[event_id]` | Put | `attribute_not_exists` | Event `Objects`: history_id/recovery_epoch, object + bucket_id, revision mới, op_id, pointer/SHA-256 payload; `refcount_next = 0` (§6.6) |
 | 5 | `Credentials[access_key_id]` | ConditionCheck | `status = active` | |
 | 6 | `Users[caller]`, khi caller ≠ owner | ConditionCheck | `status = active` | |
 | 7 | `Buckets[bucket]` | ConditionCheck | `bucket_id` lúc admission, `state = active` | |
@@ -235,12 +235,12 @@ Fixture: `commit.json` → `scenarios` (13 kịch bản: mất ACK rồi retry c
 Refcount không nằm trong transaction §6.3 (KT §9.0: không đưa hàng nghìn update vào commit). Mỗi event `Objects` được áp đúng một lần theo lô:
 
 - Delta mỗi key = số lần xuất hiện trong manifest mới − trong manifest bị thay (overwrite/delete; event mang cả hai manifest_id, §8). Bỏ delta 0, sắp key theo partition key `domain#hash`, cắt lô 99 key. Manifest bất biến nên lô `b` luôn cùng nội dung khi replay; hash lặp chỉ thành một Update (giảm hot key, KT §17).
-- Lô `b` là một `TransactWriteItems` tối đa 100 action: Update `Outbox[event_id]` điều kiện `refcount_next = b` (thiếu = 0), đặt `b + 1`; Update từng `Chunks[domain#hash]` điều kiện `attribute_exists`, `ADD refcount delta`. Điều kiện tiến độ nằm cùng transaction với delta nên lô áp đúng một lần dù crash sau commit trước ACK, replay nhiều lần, hay worker cũ gửi lại lô đã áp; không cần `ClientRequestToken`. Phản hồi khác thành công: đọc consistent `refcount_next` rồi tiếp tục từ đó; `TransactionConflict` thì retry.
+- Lô `b` là một `TransactWriteItems` tối đa 100 action: Update `Outbox[event_id]` điều kiện `attribute_exists(event_id) AND refcount_next = b`, đặt `b + 1`; Update từng `Chunks[domain#hash]` điều kiện `attribute_exists`, `ADD refcount delta`. Commit đã ghi `refcount_next = 0` (§6.3 action 4) nên lô đầu không cần nhánh "thiếu thuộc tính"; item Outbox không tồn tại thì điều kiện luôn sai, Update không tạo lại item và delta không được áp (UpdateItem mặc định tạo item mới khi thiếu, điều kiện `attribute_exists` chặn việc đó). Điều kiện tiến độ nằm cùng transaction với delta nên lô áp đúng một lần dù crash sau commit trước ACK, replay nhiều lần, worker cũ gửi lại lô đã áp, hay retry đến sau khi event đã được dọn; không cần `ClientRequestToken`. Phản hồi khác thành công: đọc consistent item Outbox; không còn item thì event đã xử lý xong và được dọn, dừng; còn item thì tiếp tục từ `refcount_next`; `TransactionConflict` thì retry.
 - Refcount là số nguyên có dấu, không có điều kiện chống âm: event DELETE có thể được xử lý trước event PUT tạo tham chiếu nên giá trị âm tạm thời; guard chống âm sẽ làm lô kẹt mãi. Giá trị đúng khi mọi event đã áp; GC không bao giờ xóa theo refcount (KT §8.1).
 - Thiếu row `Chunks` là vi phạm bất biến (manifest bị thay vẫn là root tới khi outbox xử lý xong, KT §8.1): dừng worker, báo động; không để `ADD` tạo row mới.
-- `refcount_next` là thuộc tính tiến độ trên item Outbox, như export state; payload event vẫn bất biến. Không dọn item Outbox trước khi `refcount_next` bằng số lô.
+- `refcount_next` là thuộc tính tiến độ trên item Outbox, như export state; payload event vẫn bất biến. Dọn item Outbox (sau retention/export/checkpoint) là Delete có điều kiện `refcount_next = số lô`, nên không dọn khi refcount chưa xong.
 
-Fixture: `commit.json` → `refcount` (xóa về 0 rồi crash và replay, 150 key hai lô crash sau từng lô và gửi lại, overwrite gộp hash lặp, DELETE xử lý trước PUT).
+Fixture: `commit.json` → `refcount` (xóa về 0 rồi crash và replay, 150 key hai lô crash sau từng lô và gửi lại, overwrite gộp hash lặp, DELETE xử lý trước PUT, retry lô 0 đến muộn sau khi event đã dọn, dọn bị từ chối khi còn lô).
 
 ## 7. Fixtures và test
 
@@ -248,7 +248,7 @@ Fixture: `commit.json` → `refcount` (xóa về 0 rồi crash và replay, 150 k
 |---|---|
 | `chunking.json` | Digest bảng gear, mask theo avg, 11 ca chunk (rỗng, 1 byte, đúng `min`, `min + 1`, stream 16 MiB, chèn/xóa 1 byte, toàn 0, block lặp, tham số nhỏ, cố định) với độ dài và SHA-256 từng chunk; identity hai miền; 10 ca validator chunking |
 | `compression.json` | 11 quyết định codec (biên 10%, 1 MiB, ratio 0 và 0.999, chunk nhỏ, tắt nén, encoder lỗi); 14 ca validator compression |
-| `commit.json` | 18 ca lookup; action của 7 transaction; 13 kịch bản commit (§6.4); 7 token; 4 kịch bản refcount |
+| `commit.json` | 18 ca lookup; action của 7 transaction; 13 kịch bản commit (§6.4); 7 token; 6 kịch bản refcount |
 
 `internal/engine/contract_test.go` chạy chunking/nén/lookup/action qua hàm tham chiếu (chunker, validator, chọn codec, lookup, dựng transaction), so từng chunk, kiểm biên `[min, max]`, số chunk đổi khi chèn/xóa, partition key qua `storage.ChunkKey`, và bất biến DynamoDB của từng transaction. `internal/engine/commit_test.go` mô hình điều kiện và hiệu ứng transaction §6.3, writer §6.4 (token, reconcile, phân loại, cleanup), token §6.1 và lô refcount §6.6. Input stream: `SHA-256(seed ‖ u64be(k))` nối nhau, cắt đúng độ dài. Một implementation JavaScript viết riêng (gear hash bằng hai nửa 32 bit) cho cùng mọi chunk của 11 ca.
 
@@ -267,7 +267,7 @@ make check
 | W02-HAI-03, W04-HAI-01 | Badger/DynamoDB: transaction §6.3, insert/CAS kèm Outbox, `ALL_OLD` cho winner, token §6.1, reconcile và cleanup §6.4; chạy `transactions`, `scenarios`, `tokens` |
 | W03-HAI-01 | Write path §5–6.2, I1, bảng crash |
 | W01-PHONG-02 | `PinLocations` kiểm `location_revision`; item `Leases` trong điều kiện commit/insert/CAS |
-| W01-PHONG-03, W04-HAI-02 | Encoding event identity; entity `Chunks` (`OutboxEvent.Validate` hiện chỉ nhận `Objects`/`SystemConfig`); payload event `Objects` mang manifest mới và manifest bị thay; thuộc tính `refcount_next`, không dọn Outbox trước khi refcount xong (§6.6); op_id upload sinh lúc Create, mở lại Active giữ ledger (§6.1, §6.4) |
+| W01-PHONG-03, W04-HAI-02 | Encoding event identity; entity `Chunks` (`OutboxEvent.Validate` hiện chỉ nhận `Objects`/`SystemConfig`); payload event `Objects` mang manifest mới và manifest bị thay; `refcount_next = 0` khi tạo event, Delete Outbox có điều kiện `refcount_next = số lô` (§6.6); op_id upload sinh lúc Create, mở lại Active giữ ledger (§6.1, §6.4) |
 | W05-HAI-01 | Refcount worker §6.6, chạy `refcount`; đối soát `live_bytes`/refcount, dọn orphan §5.5 |
 
 Đổi thuật toán, gear, mask hoặc giới hạn tham số sau freeze chỉ làm giảm dedup với dữ liệu cũ, không làm hỏng dữ liệu; vẫn cần version mới (`fastcdc-v2`) và review vì fixture v1 phải giữ nguyên.
