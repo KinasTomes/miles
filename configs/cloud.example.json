@@ -1,0 +1,6 @@
+{
+  "profile": "cloud",
+  "mode": "runtime",
+  "health_address": "127.0.0.1:9100",
+  "shutdown_seconds": 1800
+}
