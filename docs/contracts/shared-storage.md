@@ -88,6 +88,12 @@ Claim does not extend the original deadline or change op/base/upload binding. An
 
 **Cache review synchronization — selected pending integration verification:** [R1 §11–12](r1-and-cache.md) records best-effort `Cache.Put` (full/oversized/admission bypass may return nil; invalid input/cancellation remain errors), same-key different-bytes integrity conflict (no silent overwrite; evict/report the exact generation), and resident-only `Evict`; strong purge belongs to downstream job coordination. Write admission uses final exact physical identity/complete bytes and is never a durability/publication dependency. Read safety pins exact PackRef/generation for generation-level retirement; no range-pin requirement is added. Shared Go types/ports are unchanged. The current fake silently replaces same-key bytes and has no bounded admission policy; it is not evidence of these selected behaviors. Conflict error mapping, fixture/adapter changes and consumer compatibility remain a separate integration review item within the same PR, not implemented by this wording update.
 
+## R2 handoff — selected W1, integration pending
+
+[R2 OQ-01–09](r2-recovery.md#2-source-precedence-và-decision-register) chọn mutation/event identity, projections, closure receipts/proof tree, S3 completion-marker discovery và exact-generation retention. `OpID` của transaction là mutation_id; final object/receipt/reservation giữ original logical op_id, child mutations có parent binding và event_id history-scoped riêng. Không đổi existing Go signatures/fixtures trong docs update này.
+
+W2+ mở rộng shared models/ports/validation tại boundary hiện có cho registry/attempt/outcome, producer/epoch closure, enumeration/export/seal/checkpoint; không tạo recovery MetadataStore trùng. Existing `OutboxEvent.Validate`/fakes chưa hỗ trợ đủ inventory, R2 field/byte schemas hoặc distributed closure. Production transaction phải atomically check authority/attempt revision và write entity effects/outbox/committed outcome, account tổng action/byte limits; reference suite hiện tại không chứng minh protocol này. Giữ R1 dispatch/closure và reservation/receipt semantics; serializer goldens/adapter fault proofs theo [R2 §18](r2-recovery.md#18-decisions-và-freezeenablement-gates).
+
 ## Reusing the suite
 
 The [reference wiring](../../internal/storage/contracttest/reference_test.go) demonstrates each factory. `RunMetadata`, `RunPacks`, `RunCache` invoke only their storage port plus explicit **fixture control hooks**. Supply a fresh isolated namespace/database per subtest and clean it with `t.Cleanup`.
