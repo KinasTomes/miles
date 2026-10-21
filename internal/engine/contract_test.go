@@ -8,11 +8,13 @@ package engine
 // fixtures; its tests then replace these functions.
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"math/bits"
 	"os"
@@ -246,14 +248,14 @@ func TestChunkingVectors(t *testing.T) {
 	}
 	load(t, "chunking.json", &f)
 	table := make([]byte, 0, 256*8)
-	for _, g := range gear {
+	for _, g := range fastCDCGear {
 		table = binary.BigEndian.AppendUint64(table, g)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(table)); got != f.Gear.SHA256 || fmt.Sprintf("%016x", gear[0]) != f.Gear.First || fmt.Sprintf("%016x", gear[255]) != f.Gear.Last {
+	if got := fmt.Sprintf("%x", sha256.Sum256(table)); got != f.Gear.SHA256 || fmt.Sprintf("%016x", fastCDCGear[0]) != f.Gear.First || fmt.Sprintf("%016x", fastCDCGear[255]) != f.Gear.Last {
 		t.Fatalf("gear table sha256 %s", got)
 	}
 	for _, m := range f.Masks {
-		small, large := masks(m.Avg)
+		small, large := fastCDCMasks(m.Avg)
 		if fmt.Sprintf("%016x", small) != m.Small || fmt.Sprintf("%016x", large) != m.Large {
 			t.Errorf("masks(%d) = %016x %016x", m.Avg, small, large)
 		}
@@ -262,16 +264,25 @@ func TestChunkingVectors(t *testing.T) {
 	for _, c := range f.Cases {
 		t.Run(c.Name, func(t *testing.T) {
 			p, ok := f.Params[c.Params]
-			if !ok || !validChunking(p) {
+			actual := ChunkingParams{Min: p.Min, Avg: p.Avg, Max: p.Max}
+			if !ok || actual.Validate() != nil {
 				t.Fatalf("params %q", c.Params)
 			}
 			data := c.Input.bytes(t)
+			chunker, err := NewChunker(bytes.NewReader(data), "default", actual)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var got []chunkVector
-			for len(data) > 0 {
-				n := cut(data, p)
-				h := sha256.Sum256(data[:n])
-				got = append(got, chunkVector{n, hex.EncodeToString(h[:])})
-				data = data[n:]
+			for {
+				chunk, err := chunker.Next(t.Context())
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, chunkVector{len(chunk.Bytes), chunk.Key.Hash})
 			}
 			if len(got) != len(c.Chunks) {
 				t.Fatalf("%d chunks, want %d", len(got), len(c.Chunks))
@@ -310,13 +321,17 @@ func TestChunkingVectors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pk, err := storage.ChunkKey{Domain: id.Domain, Hash: id.Hash}.PartitionKey()
-		if h := sha256.Sum256(raw); err != nil || hex.EncodeToString(h[:]) != id.Hash || pk != id.PartitionKey {
+		key, err := HashChunk(id.Domain, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pk, err := key.PartitionKey()
+		if err != nil || key.Hash != id.Hash || pk != id.PartitionKey {
 			t.Errorf("identity %s: pk %q err %v", id.Domain, pk, err)
 		}
 	}
 	for _, c := range f.Policy {
-		if got := validChunking(c.params); got != c.Valid {
+		if got := (ChunkingParams{Min: c.Min, Avg: c.Avg, Max: c.Max}).Validate() == nil; got != c.Valid {
 			t.Errorf("chunking policy %s: valid=%v", c.Name, got)
 		}
 	}
@@ -365,7 +380,7 @@ func TestCommitVectors(t *testing.T) {
 	}
 	load(t, "commit.json", &f)
 	for _, l := range f.Lookup {
-		if got := lookup(l.Found, l.State, l.Class, l.Pin == "rejected"); got != l.Action {
+		if got := DecideLookup(l.Found, l.State, storage.StorageClass(l.Class), l.Pin != "rejected"); string(got) != l.Action {
 			t.Errorf("lookup %s: %s, want %s", l.Name, got, l.Action)
 		}
 	}
