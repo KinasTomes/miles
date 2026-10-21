@@ -35,7 +35,7 @@ func EvaluateRead(in ReadInput) (Decision, error) {
 		if !ok {
 			return d, err
 		}
-		if !in.UTC.Trusted {
+		if !in.UTC.Trusted || !in.UTC.validated {
 			d.Reason = MissingEvidence
 			return d, nil
 		}
@@ -59,6 +59,10 @@ func EvaluateRead(in ReadInput) (Decision, error) {
 			return d, e
 		}
 		// Separate additions avoid duration overflow in remaining+margin.
+		if err := validateUTCBinding(u, in.Request); err != nil {
+			d.Reason = InvalidEvidence
+			return d, err
+		}
 		required := u.Upper.UTC().Add(remaining).Add(120 * time.Second)
 		if !validUTC(required) {
 			d.Reason = InvalidEvidence

@@ -92,7 +92,7 @@ func EvaluateProtection(in ProtectionInput) (ProtectionDecision, error) {
 			return invalid()
 		}
 	}
-	if in.Precision == 0 || !in.UTC.Trusted {
+	if in.Precision == 0 || !in.UTC.Trusted || !in.UTC.validated {
 		d.Reason = MissingEvidence
 		return d, nil
 	}
@@ -111,6 +111,10 @@ func EvaluateProtection(in ProtectionInput) (ProtectionDecision, error) {
 	}
 	remaining, err := in.Request.Deadline.Sub(in.Request.Now)
 	if err != nil {
+		d.Reason = InvalidEvidence
+		return d, err
+	}
+	if err := validateUTCBinding(u, in.Request); err != nil {
 		d.Reason = InvalidEvidence
 		return d, err
 	}

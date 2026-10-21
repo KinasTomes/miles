@@ -59,14 +59,19 @@ type Request struct {
 	Cancelled bool
 }
 
-// UTCProof is a PROPOSAL: [Lower,Upper] already includes sample age, drift,
-// precision and error THROUGH Horizon. It describes UTC at Request.Now, not at
-// an earlier sample. Trusted requires external validation; no skew default or
-// provider is supplied here. A point interval requires equally explicit proof.
+// UTCProof là kết quả ValidateUTCSample, binding đúng Request.Now và Horizon.
+// Lower/Upper bao precision/error/drift qua toàn hard deadline. Trusted được giữ
+// để tương thích API proposal, nhưng tự đặt true không tạo validated proof.
+// Không sửa fields hoặc dùng lại khi Now đổi: phải validate sample lại.
+// Production provenance/bound proof vẫn thuộc adapter, chưa tích hợp OS/chrony.
 type UTCProof struct {
-	Trusted      bool
-	Lower, Upper time.Time
-	Horizon      clock.Instant
+	Trusted                bool
+	Lower, Upper           time.Time
+	Horizon                clock.Instant
+	validated              bool
+	boundNow               clock.Instant
+	boundLower, boundUpper time.Time
+	boundHorizon           clock.Instant
 }
 type ReadFacts struct {
 	// Logical refers to the bound read view, not the current object head: a

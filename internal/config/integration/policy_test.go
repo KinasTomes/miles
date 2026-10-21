@@ -293,7 +293,14 @@ func TestPinnedEvaluatorsParityAndEvidence(t *testing.T) {
 			t.Fatal(e)
 		}
 		request := policy.Request{Now: now, Deadline: deadline}
-		utc := policy.UTCProof{Trusted: true, Lower: wall.Add(-time.Second), Upper: wall, Horizon: deadline}
+		makeUTC := func(upper time.Time) policy.UTCProof {
+			p, e := policy.ValidateUTCSample(policy.UTCSource{ID: "test", Provenance: "modeled", RestartID: "run", Verified: policy.Valid}, policy.UTCSample{SourceID: "test", Provenance: "modeled", RestartID: "run", Observed: now, ValidThrough: deadline, Lower: upper.Add(-time.Second), Upper: upper, Precision: policy.DurationBound{Known: true}, MeasurementError: policy.DurationBound{Known: true}, NodeSkew: policy.DurationBound{Known: true}, Drift: policy.DriftBound{Known: true}, Sync: policy.Valid}, request)
+			if e != nil {
+				t.Fatal(e)
+			}
+			return p
+		}
+		utc := makeUTC(wall)
 		pack := storage.PackInfo{Version: 1, Ref: storage.PackRef{ID: "p", Generation: "g"}, Size: 100, State: "Restored", Class: storage.Glacier, StateRevision: 1, RestoredUntil: wall.Add(3 * time.Minute)}
 		read := policy.ReadInput{Request: request, UTC: utc, Pack: pack, Facts: policy.ReadFacts{Logical: policy.Valid, Metadata: policy.Valid, Authority: policy.Valid, PinCoverage: policy.Valid, Physical: policy.Valid}, RestoreVerified: policy.Valid}
 		write := policy.WriteInput{Request: request, Operation: policy.PUT, Authority: policy.Valid, Metadata: policy.Valid, ReusePins: policy.Valid, Packs: []storage.PackInfo{pack}}
@@ -358,6 +365,7 @@ func TestPinnedEvaluatorsParityAndEvidence(t *testing.T) {
 			t.Fatal(e)
 		}
 		protect.UTC.Upper = wall.Add(time.Hour)
+		protect.UTC = makeUTC(wall.Add(time.Hour))
 		b, e := c.EvaluateProtection(protect)
 		if e != nil || !b.Target.After(a.Target) {
 			t.Fatal(a, b, e)

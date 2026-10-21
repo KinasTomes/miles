@@ -32,7 +32,18 @@ func fixture(t *testing.T) ReadInput {
 	if e != nil {
 		t.Fatal(e)
 	}
-	return ReadInput{Policy: PinnedPolicy{Snapshot: s, RequiredRevision: 3}, Request: Request{Now: now, Deadline: deadline}, Pack: storage.PackInfo{Version: storage.ModelVersion, Ref: storage.PackRef{ID: "a", Generation: "g"}, Size: 100, StateRevision: 1, State: "Cold", Class: storage.GlacierIR}, Facts: ReadFacts{Valid, Valid, Valid, Valid, Valid}, UTC: UTCProof{Trusted: true, Lower: wall, Upper: wall, Horizon: deadline}, RestoreVerified: Valid}
+	r := Request{Now: now, Deadline: deadline}
+	return ReadInput{Policy: PinnedPolicy{Snapshot: s, RequiredRevision: 3}, Request: r, Pack: storage.PackInfo{Version: storage.ModelVersion, Ref: storage.PackRef{ID: "a", Generation: "g"}, Size: 100, StateRevision: 1, State: "Cold", Class: storage.GlacierIR}, Facts: ReadFacts{Valid, Valid, Valid, Valid, Valid}, UTC: testUTC(t, r, wall, wall), RestoreVerified: Valid}
+}
+
+// Nguồn modeled explicit cho tests; không thay provenance adapter production.
+func testUTC(t *testing.T, r Request, lower, upper time.Time) UTCProof {
+	t.Helper()
+	p, e := ValidateUTCSample(UTCSource{ID: "test", Provenance: "modeled", RestartID: "run", Verified: Valid}, UTCSample{SourceID: "test", Provenance: "modeled", RestartID: "run", Observed: r.Now, ValidThrough: r.Deadline, Lower: lower, Upper: upper, Precision: DurationBound{Known: true}, MeasurementError: DurationBound{Known: true}, NodeSkew: DurationBound{Known: true}, Drift: DriftBound{Known: true}, Sync: Valid}, r)
+	if e != nil {
+		t.Fatal(e)
+	}
+	return p
 }
 func assertDecision(t *testing.T, in ReadInput, v Verdict, r Reason, wantErr bool) {
 	t.Helper()
@@ -127,6 +138,7 @@ func TestRestoreProofFailures(t *testing.T) {
 	i := restored(t)
 	i.UTC.Lower = i.UTC.Lower.Add(-time.Second)
 	i.UTC.Upper = i.UTC.Upper.Add(time.Second)
+	i.UTC = testUTC(t, i.Request, i.UTC.Lower, i.UTC.Upper)
 	assertDecision(t, i, Denied, RestoreRequired, false)
 }
 func writeFixture(t *testing.T) WriteInput {
@@ -257,6 +269,7 @@ func TestRuntimeSimulatorSameEvaluator(t *testing.T) {
 	i.Request.Now = virtual.Now().Instant
 	i.Request.Deadline, _ = i.Request.Now.Add(time.Minute)
 	i.UTC.Horizon = i.Request.Deadline
+	i.UTC = testUTC(t, i.Request, i.UTC.Lower, i.UTC.Upper)
 	baseline, e := EvaluateRead(i)
 	if e != nil {
 		t.Fatal(e)
@@ -387,6 +400,7 @@ func TestRestoredClockParityRegression(t *testing.T) {
 				in.Request = Request{Now: now, Deadline: deadline}
 				in.UTC.Horizon = deadline
 				in.UTC.Lower = in.UTC.Upper.Add(-time.Second)
+				in.UTC = testUTC(t, in.Request, in.UTC.Lower, in.UTC.Upper)
 				in.Pack.RestoredUntil = in.UTC.Upper.Add(budget).Add(120 * time.Second).Add(offset)
 				got, err := EvaluateRead(in)
 				if err != nil {
@@ -434,6 +448,7 @@ func TestRestoredClockParityRegression(t *testing.T) {
 			}
 			in.Request = Request{Now: realNow, Deadline: deadline}
 			in.UTC.Horizon = deadline
+			in.UTC = testUTC(t, in.Request, in.UTC.Lower, in.UTC.Upper)
 			tc.change(&in)
 			got, err := EvaluateRead(in)
 			if !errors.Is(err, clock.ErrDomain) || got.Verdict != Indeterminate || got.Reason != InvalidEvidence || got.Actions != nil {

@@ -99,6 +99,7 @@ func TestProtectionUTCAndPrecision(t *testing.T) {
 	i := protectionFixture(t)
 	i.UTC.Lower = i.UTC.Lower.Add(-time.Second)
 	i.UTC.Upper = i.UTC.Upper.Add(time.Second + 1)
+	i.UTC = testUTC(t, i.Request, i.UTC.Lower, i.UTC.Upper)
 	i.Precision = time.Second
 	d, e := EvaluateProtection(i)
 	want := i.UTC.Upper.Add(time.Minute + 15*time.Minute).Truncate(time.Second).Add(time.Second)
@@ -114,6 +115,7 @@ func TestProtectionUTCAndPrecision(t *testing.T) {
 	// Remaining budget is measured from the supplied monotonic Now, not admission.
 	i = protectionFixture(t)
 	i.Request.Now, _ = i.Request.Now.Add(10 * time.Second)
+	i.UTC = testUTC(t, i.Request, i.UTC.Lower, i.UTC.Upper)
 	d, e = EvaluateProtection(i)
 	if e != nil || !d.Minimum.Equal(i.UTC.Upper.Add(50*time.Second+15*time.Minute)) {
 		t.Fatal(d, e)
@@ -123,6 +125,7 @@ func TestProtectionUTCAndPrecision(t *testing.T) {
 	i = protectionFixture(t)
 	i.UTC.Upper = last.Add(-16 * time.Minute)
 	i.UTC.Lower = i.UTC.Upper
+	i.UTC = testUTC(t, i.Request, i.UTC.Lower, i.UTC.Upper)
 	d, e = EvaluateProtection(i)
 	if e != nil || !d.Minimum.Equal(last) {
 		t.Fatal(d, e)
@@ -284,6 +287,7 @@ func TestProtectionPrecisionLatticeRegression(t *testing.T) {
 				i.Precision = tc.tick
 				i.UTC.Upper = raw.Add(-16 * time.Minute)
 				i.UTC.Lower = i.UTC.Upper
+				i.UTC = testUTC(t, i.Request, i.UTC.Lower, i.UTC.Upper)
 				i.Pack.ProtectedUntil = raw.Add(oldOffset)
 				expectedTarget, validTarget := oracleProtectionCeil(i.Pack.ProtectedUntil, tc.tick)
 				if valid && validTarget && minimum.After(expectedTarget) {
