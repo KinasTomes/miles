@@ -10,6 +10,8 @@ import (
 	"github.com/KinasTomes/miles/internal/config"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
@@ -52,7 +54,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	return app.Run(ctx, c, d, stderr)
 }
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "miles:", err)
 		os.Exit(1)
 	}
