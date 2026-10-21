@@ -2,112 +2,28 @@ package engine
 
 // tests/fixtures/engine pins FastCDC v1, chunk identity, codec choice, dedup
 // lookup and commit transactions of docs/contracts/chunking-and-commit.md.
-// No production chunker, codec or DynamoDB adapter exists yet (W02-HAI-01,
-// W03-HAI-01, W04-HAI-01), so these tests run every fixture through reference
-// functions written from that document. Production code must pass the same
-// fixtures; its tests then replace these functions.
+// Chunking, compression and lookup vectors exercise production code. Commit
+// transactions retain their W1 reference until the backend work in W02/W04.
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
-	"math/bits"
 	"os"
 	"testing"
 
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
-const (
-	minChunkFloor = 16 << 10 // keeps a 100 GiB object within 1024 manifest pages (pack-and-pages §3.4).
-	maxChunkCap   = 16 << 20 // bounds the per-stream chunk buffer.
-)
-
 type params struct {
 	Min int `json:"min_bytes"`
 	Avg int `json:"avg_bytes"`
 	Max int `json:"max_bytes"`
-}
-
-// gear[i] is the big-endian u64 of the first 8 bytes of SHA-256 of the single byte i.
-var gear = func() (g [256]uint64) {
-	for i := range g {
-		h := sha256.Sum256([]byte{byte(i)})
-		g[i] = binary.BigEndian.Uint64(h[:8])
-	}
-	return g
-}()
-
-// masks select the top log2(avg)+2 and log2(avg)-2 bits (normalization level 2).
-func masks(avg int) (small, large uint64) {
-	b := bits.TrailingZeros(uint(avg))
-	return ^uint64(0) << (64 - (b + 2)), ^uint64(0) << (64 - (b - 2))
-}
-
-// cut returns the length of the next chunk of b, len(b) > 0.
-func cut(b []byte, p params) int {
-	n := len(b)
-	if n <= p.Min {
-		return n
-	}
-	if n > p.Max {
-		n = p.Max
-	}
-	normal := min(p.Avg, n)
-	small, large := masks(p.Avg)
-	var fp uint64
-	i := p.Min
-	for ; i < normal; i++ {
-		fp = fp<<1 + gear[b[i]]
-		if fp&small == 0 {
-			return i
-		}
-	}
-	for ; i < n; i++ {
-		fp = fp<<1 + gear[b[i]]
-		if fp&large == 0 {
-			return i
-		}
-	}
-	return n
-}
-
-func validChunking(p params) bool {
-	return p.Min >= minChunkFloor && p.Min <= p.Avg && p.Avg <= p.Max && p.Max <= maxChunkCap && p.Avg&(p.Avg-1) == 0
-}
-
-// zstdLevels are the four distinct encoders of klauspost/compress/zstd EncoderLevelFromZstd.
-var zstdLevels = map[int]bool{1: true, 3: true, 7: true, 11: true}
-
-func validCompression(codec string, level int, ratio *big.Rat) bool {
-	return codec == "zstd" && zstdLevels[level] && ratio.Sign() >= 0 && ratio.Cmp(big.NewRat(1, 1)) < 0
-}
-
-// storedCodec keeps the zstd frame iff stored <= raw*(1-ratio), exactly.
-func storedCodec(enabled bool, ratio *big.Rat, raw int64, stored *int64) string {
-	if !enabled || stored == nil {
-		return "raw"
-	}
-	limit := new(big.Rat).Mul(big.NewRat(raw, 1), new(big.Rat).Sub(big.NewRat(1, 1), ratio))
-	if big.NewRat(*stored, 1).Cmp(limit) <= 0 {
-		return "zstd"
-	}
-	return "raw"
-}
-
-// lookup is the PUT/UploadPart decision for one (domain, hash).
-func lookup(found bool, state, class string, pinRejected bool) string {
-	if !found {
-		return "insert"
-	}
-	readable := state == "Warm" || state == "Cold" && class == "GLACIER_IR"
-	if readable && !pinRejected {
-		return "reuse"
-	}
-	return "revive"
 }
 
 type action struct{ Table, Item, Op string }
@@ -246,14 +162,14 @@ func TestChunkingVectors(t *testing.T) {
 	}
 	load(t, "chunking.json", &f)
 	table := make([]byte, 0, 256*8)
-	for _, g := range gear {
+	for _, g := range fastCDCGear {
 		table = binary.BigEndian.AppendUint64(table, g)
 	}
-	if got := fmt.Sprintf("%x", sha256.Sum256(table)); got != f.Gear.SHA256 || fmt.Sprintf("%016x", gear[0]) != f.Gear.First || fmt.Sprintf("%016x", gear[255]) != f.Gear.Last {
+	if got := fmt.Sprintf("%x", sha256.Sum256(table)); got != f.Gear.SHA256 || fmt.Sprintf("%016x", fastCDCGear[0]) != f.Gear.First || fmt.Sprintf("%016x", fastCDCGear[255]) != f.Gear.Last {
 		t.Fatalf("gear table sha256 %s", got)
 	}
 	for _, m := range f.Masks {
-		small, large := masks(m.Avg)
+		small, large := fastCDCMasks(m.Avg)
 		if fmt.Sprintf("%016x", small) != m.Small || fmt.Sprintf("%016x", large) != m.Large {
 			t.Errorf("masks(%d) = %016x %016x", m.Avg, small, large)
 		}
@@ -262,16 +178,25 @@ func TestChunkingVectors(t *testing.T) {
 	for _, c := range f.Cases {
 		t.Run(c.Name, func(t *testing.T) {
 			p, ok := f.Params[c.Params]
-			if !ok || !validChunking(p) {
+			actual := ChunkingParams{Min: p.Min, Avg: p.Avg, Max: p.Max}
+			if !ok || actual.Validate() != nil {
 				t.Fatalf("params %q", c.Params)
 			}
 			data := c.Input.bytes(t)
+			chunker, err := NewChunker(bytes.NewReader(data), "default", actual)
+			if err != nil {
+				t.Fatal(err)
+			}
 			var got []chunkVector
-			for len(data) > 0 {
-				n := cut(data, p)
-				h := sha256.Sum256(data[:n])
-				got = append(got, chunkVector{n, hex.EncodeToString(h[:])})
-				data = data[n:]
+			for {
+				chunk, err := chunker.Next(t.Context())
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, chunkVector{len(chunk.Bytes), chunk.Key.Hash})
 			}
 			if len(got) != len(c.Chunks) {
 				t.Fatalf("%d chunks, want %d", len(got), len(c.Chunks))
@@ -310,13 +235,17 @@ func TestChunkingVectors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pk, err := storage.ChunkKey{Domain: id.Domain, Hash: id.Hash}.PartitionKey()
-		if h := sha256.Sum256(raw); err != nil || hex.EncodeToString(h[:]) != id.Hash || pk != id.PartitionKey {
+		key, err := HashChunk(id.Domain, raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pk, err := key.PartitionKey()
+		if err != nil || key.Hash != id.Hash || pk != id.PartitionKey {
 			t.Errorf("identity %s: pk %q err %v", id.Domain, pk, err)
 		}
 	}
 	for _, c := range f.Policy {
-		if got := validChunking(c.params); got != c.Valid {
+		if got := (ChunkingParams{Min: c.Min, Avg: c.Avg, Max: c.Max}).Validate() == nil; got != c.Valid {
 			t.Errorf("chunking policy %s: valid=%v", c.Name, got)
 		}
 	}
@@ -341,12 +270,14 @@ func TestCompressionVectors(t *testing.T) {
 	}
 	load(t, "compression.json", &f)
 	for _, d := range f.Decisions {
-		if got := storedCodec(d.Enabled, rat(t, d.MinSavingRatio), d.RawLen, d.StoredLen); got != d.Codec {
+		got, err := StoredCodec(d.Enabled, rat(t, d.MinSavingRatio), d.RawLen, d.StoredLen)
+		if err != nil || got != d.Codec {
 			t.Errorf("%s: codec %s, want %s", d.Name, got, d.Codec)
 		}
 	}
 	for _, p := range f.Policy {
-		if got := validCompression(p.Codec, p.Level, rat(t, p.MinSavingRatio)); got != p.Valid {
+		policy := CompressionPolicy{Enabled: true, Codec: p.Codec, Level: p.Level, MinSavingRatio: rat(t, p.MinSavingRatio)}
+		if got := policy.Validate() == nil; got != p.Valid {
 			t.Errorf("compression policy %s: valid=%v", p.Name, got)
 		}
 	}
@@ -365,7 +296,7 @@ func TestCommitVectors(t *testing.T) {
 	}
 	load(t, "commit.json", &f)
 	for _, l := range f.Lookup {
-		if got := lookup(l.Found, l.State, l.Class, l.Pin == "rejected"); got != l.Action {
+		if got := DecideLookup(l.Found, l.State, storage.StorageClass(l.Class), l.Pin != "rejected"); string(got) != l.Action {
 			t.Errorf("lookup %s: %s, want %s", l.Name, got, l.Action)
 		}
 	}
