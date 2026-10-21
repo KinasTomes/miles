@@ -154,5 +154,15 @@ func TestProductionRangeReadAndBuilderLimits(t *testing.T) {
 		if err != nil || !bytes.Equal(raw, fixtureBlobs(t, c)[i].raw) {
 			t.Fatalf("chunk %d: %v", i, err)
 		}
+		chunk := storage.Chunk{Version: storage.ModelVersion, Key: e.Key, RawBytes: int64(e.RawLength),
+			LocationRevision: 1, Location: e.Location(ref)}
+		canonical, err := ReadCanonicalChunk(ctx, store, chunk)
+		if err != nil || !bytes.Equal(canonical, raw) {
+			t.Fatalf("canonical chunk %d: %v", i, err)
+		}
+		chunk.Location.CRC32C ^= 1
+		if _, err := ReadCanonicalChunk(ctx, store, chunk); err == nil {
+			t.Fatal("bad canonical CRC accepted")
+		}
 	}
 }

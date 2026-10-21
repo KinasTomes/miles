@@ -65,7 +65,7 @@ type Entry struct {
 }
 
 func (e Entry) Location(ref storage.PackRef) storage.ChunkLocation {
-	return storage.ChunkLocation{Pack: ref, Range: storage.ByteRange{Offset: int64(e.Offset), Length: int64(e.StoredLen)}, Codec: e.Codec}
+	return storage.ChunkLocation{Pack: ref, Range: storage.ByteRange{Offset: int64(e.Offset), Length: int64(e.StoredLen)}, Codec: e.Codec, CRC32C: e.CRC32C}
 }
 
 func NewRef() (storage.PackRef, error) {
@@ -369,6 +369,17 @@ func ReadBlobRange(ctx context.Context, store storage.PackStore, ref storage.Pac
 		return nil, err
 	}
 	return ReadBlob(e, stored)
+}
+
+// ReadCanonicalChunk is the normal GET path: the canonical Chunks row carries
+// the CRC and exact range, so no footer fetch is needed on each chunk read.
+func ReadCanonicalChunk(ctx context.Context, store storage.PackStore, chunk storage.Chunk) ([]byte, error) {
+	if err := chunk.Validate(); err != nil || chunk.RawBytes > engine.MaxChunkBytes || chunk.Location.Range.Length > MaxPackBytes {
+		return nil, storage.ErrInvalid
+	}
+	e := Entry{Key: chunk.Key, Codec: chunk.Location.Codec, Offset: uint64(chunk.Location.Range.Offset),
+		StoredLen: uint32(chunk.Location.Range.Length), RawLength: uint32(chunk.RawBytes), CRC32C: chunk.Location.CRC32C}
+	return ReadBlobRange(ctx, store, chunk.Location.Pack, e)
 }
 
 func readRange(ctx context.Context, store storage.PackStore, ref storage.PackRef, span storage.ByteRange) ([]byte, error) {
