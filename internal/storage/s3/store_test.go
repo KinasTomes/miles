@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -28,11 +30,13 @@ type object struct {
 }
 
 type fakeAPI struct {
-	mu      sync.Mutex
-	objects map[string]object
-	failed  error
-	lostAck bool
-	puts    int
+	mu              sync.Mutex
+	objects         map[string]object
+	failed          error
+	lostAck         bool
+	puts            int
+	restoreCalls    int
+	lastRestoreDays int32
 }
 
 func newFakeAPI() *fakeAPI { return &fakeAPI{objects: make(map[string]object)} }
@@ -133,6 +137,8 @@ func (f *fakeAPI) RestoreObject(ctx context.Context, in *awss3.RestoreObjectInpu
 	if in.RestoreRequest == nil || in.RestoreRequest.Days == nil || *in.RestoreRequest.Days <= 0 {
 		return nil, errors.New("invalid restore")
 	}
+	f.restoreCalls++
+	f.lastRestoreDays = *in.RestoreRequest.Days
 	o.restore = `ongoing-request="true"`
 	f.objects[*in.Key] = o
 	return &awss3.RestoreObjectOutput{}, nil
@@ -254,8 +260,21 @@ func TestPackStoreFaultAndClassBoundaries(t *testing.T) {
 	if _, err := store.RangeGet(ctx, ref, storage.ByteRange{Length: 4}); !errors.Is(err, storage.ErrCold) {
 		t.Fatalf("archive not cold: %v", err)
 	}
+	tooManyDays := int64(math.MaxInt32) + 1
+	if err := store.Restore(ctx, ref, storage.RestoreRequest{Days: int(tooManyDays), Tier: "Standard"}); !errors.Is(err, storage.ErrInvalid) || api.restoreCalls != 0 {
+		t.Fatalf("out-of-range restore reached backend: %v calls=%d", err, api.restoreCalls)
+	}
+	if strconv.IntSize > 32 {
+		wrapsPositive := (int64(1) << 32) + 1
+		if err := store.Restore(ctx, ref, storage.RestoreRequest{Days: int(wrapsPositive), Tier: "Standard"}); !errors.Is(err, storage.ErrInvalid) || api.restoreCalls != 0 {
+			t.Fatalf("positive wrap reached backend: %v calls=%d", err, api.restoreCalls)
+		}
+	}
 	if err := store.Restore(ctx, ref, storage.RestoreRequest{Days: 1, Tier: "Standard"}); err != nil {
 		t.Fatal(err)
+	}
+	if api.restoreCalls != 1 || api.lastRestoreDays != 1 {
+		t.Fatalf("valid restore changed request: calls=%d days=%d", api.restoreCalls, api.lastRestoreDays)
 	}
 	if _, err := store.RangeGet(ctx, ref, storage.ByteRange{Length: 4}); !errors.Is(err, storage.ErrCold) {
 		t.Fatalf("restore acceptance wrongly implies readability: %v", err)

@@ -35,7 +35,15 @@ new version, compatibility/migration review, and continued v1 reader tests.
   canonical metadata carries the footer entry's stored-blob CRC so normal GET
   needs only the chunk range, not footer I/O. Badger/DynamoDB serializers and
   Phong's read path must persist/use this field. A missing/incorrect CRC fails
-  verification; no legacy production data is asserted to exist.
+  verification; no legacy production data is asserted to exist. The shared
+  metadata contract exercises nonzero and zero CRC through insert, lookup and
+  location CAS. Serializers must require field presence even when the valid CRC
+  value is zero; do not use `omitempty` or silently default a missing field.
+  Revive/compaction/promotion must publish the CRC of the newly stored bytes
+  atomically with pack ref, range, codec and location revision. R2
+  location_set/checkpoint/replay must preserve that same field. These are
+  handoff requirements for the metadata/read/R2 owners, not claims that those
+  production backends or consumers are implemented in this PR.
 - `s3.Store.ReadVerifiedSidecar` is the selected narrow inventory extension:
   it reads and validates a STANDARD sidecar independently of a Cold pack,
   without widening the shared `PackStore` interface prematurely. It does not

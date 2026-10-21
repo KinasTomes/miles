@@ -212,7 +212,7 @@ func (r *cursor) id() string  { return string(r.take(int(r.u8()))) }
 
 // Trailer locates the footer index without reading the complete pack.
 func Trailer(tail []byte, size int64) (uint64, uint32, error) {
-	if len(tail) != TrailerBytes || size < TrailerBytes || string(tail[16:]) != "MILESEND" {
+	if len(tail) != TrailerBytes || size < TrailerBytes || size > MaxPackBytes || string(tail[16:]) != "MILESEND" {
 		return 0, 0, invalid("trailer", "missing trailer")
 	}
 	offset, length, version := packLE.Uint64(tail), packLE.Uint32(tail[8:]), packLE.Uint32(tail[12:])
@@ -246,6 +246,12 @@ func ParseIndex(index []byte, want storage.PackRef) ([]Entry, uint64, error) {
 		return nil, 0, invalid("identity", "index identity mismatch")
 	}
 	next := uint64(len(packHeader(want)))
+	// A sidecar is useful without the pack, but it must not describe an
+	// object larger than a reader or the physical store can accept.
+	maxBlobEnd := uint64(MaxPackBytes - len(index) - TrailerBytes)
+	if next > maxBlobEnd {
+		return nil, 0, invalid("index", "pack header and index exceed size limit")
+	}
 	seen := make(map[storage.ChunkKey]struct{}, count)
 	entries := make([]Entry, 0, count)
 	for i := uint32(0); i < count; i++ {
@@ -267,7 +273,8 @@ func ParseIndex(index []byte, want storage.PackRef) ([]Entry, uint64, error) {
 		}
 		if _, duplicate := seen[e.Key]; e.Key.Validate() != nil || duplicate || e.Offset != next ||
 			e.StoredLen == 0 || e.RawLength == 0 || e.RawLength > engine.MaxChunkBytes ||
-			e.Codec == "raw" && e.StoredLen != e.RawLength {
+			e.Codec == "raw" && e.StoredLen != e.RawLength ||
+			uint64(e.StoredLen) > maxBlobEnd-next {
 			return nil, 0, invalid("index", "invalid entry %d", i)
 		}
 		seen[e.Key] = struct{}{}
@@ -282,8 +289,8 @@ func ParseIndex(index []byte, want storage.PackRef) ([]Entry, uint64, error) {
 
 // Inspect verifies a complete readable pack, including every stored blob.
 func Inspect(data []byte, want storage.PackRef) ([]Entry, []byte, error) {
-	if len(data) < TrailerBytes {
-		return nil, nil, invalid("trailer", "short pack")
+	if len(data) < TrailerBytes || len(data) > MaxPackBytes {
+		return nil, nil, invalid("trailer", "invalid pack size")
 	}
 	offset, length, err := Trailer(data[len(data)-TrailerBytes:], int64(len(data)))
 	if err != nil {
@@ -318,15 +325,16 @@ func ReadBlob(e Entry, stored []byte) ([]byte, error) {
 	}
 	raw := stored
 	if e.Codec == "zstd" {
-		if err := oneFrame(stored); err != nil {
+		if err := oneFrame(stored, e.RawLength); err != nil {
 			return nil, invalid("content", "zstd frame: %v", err)
 		}
-		decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(engine.MaxChunkBytes))
+		decoder, err := zstd.NewReader(bytes.NewReader(stored),
+			zstd.WithDecoderMaxMemory(engine.MaxChunkBytes), zstd.WithDecoderConcurrency(1))
 		if err != nil {
 			return nil, err
 		}
 		defer decoder.Close()
-		raw, err = decoder.DecodeAll(stored, nil)
+		raw, err = decodeRawBounded(decoder, e.RawLength)
 		if err != nil {
 			return nil, invalid("content", "zstd decode: %v", err)
 		}
@@ -411,15 +419,30 @@ func readRange(ctx context.Context, store storage.PackStore, ref storage.PackRef
 
 func sha256Bytes(b []byte) []byte { sum := sha256.Sum256(b); return sum[:] }
 
+func decodeRawBounded(reader io.Reader, rawLength uint32) ([]byte, error) {
+	raw := make([]byte, rawLength)
+	if _, err := io.ReadFull(reader, raw); err != nil {
+		return nil, err
+	}
+	// A one-byte probe both detects excess output and forces the decoder to
+	// finish the frame, including its optional checksum.
+	var extra [1]byte
+	n, err := io.ReadFull(reader, extra[:])
+	if n != 0 || err != io.EOF {
+		return nil, fmt.Errorf("output exceeds raw length or has invalid trailer: %v", err)
+	}
+	return raw, nil
+}
+
 // oneFrame rejects concatenated/skippable frames, dictionaries and trailing
-// bytes; DecodeAll alone accepts concatenated frames.
-func oneFrame(stored []byte) error {
+// bytes before streaming decode, which alone could accept multiple frames.
+func oneFrame(stored []byte, rawLength uint32) error {
 	var h zstd.Header
 	if err := h.Decode(stored); err != nil {
 		return err
 	}
 	if h.Skippable || h.DictionaryID != 0 || h.WindowSize > engine.MaxChunkBytes ||
-		h.HasFCS && h.FrameContentSize > engine.MaxChunkBytes {
+		h.HasFCS && h.FrameContentSize > uint64(rawLength) {
 		return fmt.Errorf("unsupported zstd frame: skip=%v dict=%d window=%d fcs=%d", h.Skippable, h.DictionaryID, h.WindowSize, h.FrameContentSize)
 	}
 	p := h.HeaderSize

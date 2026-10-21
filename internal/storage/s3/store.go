@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -276,7 +277,8 @@ func (s *Store) ChangeStorageClass(ctx context.Context, ref storage.PackRef, nex
 }
 
 func (s *Store) Restore(ctx context.Context, ref storage.PackRef, request storage.RestoreRequest) error {
-	if request.Days <= 0 || request.Tier != "Standard" && request.Tier != "Bulk" && request.Tier != "Expedited" {
+	if request.Days <= 0 || request.Days > math.MaxInt32 ||
+		request.Tier != "Standard" && request.Tier != "Bulk" && request.Tier != "Expedited" {
 		return storage.ErrInvalid
 	}
 	info, err := s.HeadPack(ctx, ref)

@@ -95,6 +95,38 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 	runReservations(t, newStore)
 	runQueries(t, newStore)
 	ctx := context.Background()
+	t.Run("location CRC survives insert lookup and CAS", func(t *testing.T) {
+		f := NewFixture()
+		h := newStore(t, f)
+		chunk := f.Chunk("default")
+		chunk.Location.CRC32C = 0xe3069283
+		inserted, won, err := h.Store.PutChunkIfAbsent(ctx, chunk, f.Lease.Fence)
+		if err != nil || !won || inserted.Location.CRC32C != chunk.Location.CRC32C {
+			t.Fatalf("insert lost stored-byte CRC: won=%v chunk=%+v err=%v", won, inserted, err)
+		}
+		check := func(want s.ChunkLocation, revision uint64) {
+			t.Helper()
+			got, err := h.Store.GetChunks(ctx, []s.ChunkKey{chunk.Key}, true)
+			if err != nil || got[chunk.Key].Location != want || got[chunk.Key].LocationRevision != revision {
+				t.Fatalf("location round-trip: got=%+v err=%v, want=%+v revision=%d", got[chunk.Key], err, want, revision)
+			}
+		}
+		check(chunk.Location, 1)
+		next := chunk.Location
+		next.Pack = f.Packs[1].Ref
+		next.CRC32C = 0 // Zero is a valid CRC, not a missing field.
+		updated, err := h.Store.CompareAndSwapChunkLocation(ctx, chunk.Key, 1, next, f.Lease.Fence)
+		if err != nil || updated.Location != next || updated.LocationRevision != 2 {
+			t.Fatalf("CAS lost zero CRC: chunk=%+v err=%v", updated, err)
+		}
+		check(next, 2)
+		next.CRC32C = 0x12345678
+		updated, err = h.Store.CompareAndSwapChunkLocation(ctx, chunk.Key, 2, next, f.Lease.Fence)
+		if err != nil || updated.Location != next || updated.LocationRevision != 3 {
+			t.Fatalf("CAS lost replacement CRC: chunk=%+v err=%v", updated, err)
+		}
+		check(next, 3)
+	})
 	t.Run("domain isolation and canonical insert race", func(t *testing.T) {
 		f := NewFixture()
 		h := newStore(t, f)

@@ -112,7 +112,7 @@ Identity vật lý của pack ở mọi nơi là cặp **(pack_id, generation)**
 ### 2.5 Ghi, ánh xạ model và rebuild
 
 - Thứ tự: PUT pack, PUT sidecar, rồi mới insert/CAS `Chunks` (KT §5.1). Retry cùng generation phải gửi cùng bytes (`PackStore` trả conflict nếu khác). `PackInfo.Size` = size object.
-- Entry ánh xạ thẳng sang `storage.Chunk`: `Key{domain, hex(hash)}`, `RawBytes = raw_len`, `Location{Pack: PackRef{pack_id, generation}, Range{offset, stored_len}, Codec}`. Test kiểm mọi entry golden qua `storage.Chunk.Validate`.
+- Entry ánh xạ thẳng sang `storage.Chunk`: `Key{domain, hex(hash)}`, `RawBytes = raw_len`, `Location{Pack: PackRef{pack_id, generation}, Range{offset, stored_len}, Codec, CRC32C: crc32c}`. CRC-32C thuộc stored bytes của location hiện hành, không suy từ raw hash; insert/CAS location phải lưu CRC cùng pack/range/codec và revision. Test kiểm mọi entry golden qua `storage.Chunk.Validate`.
 - Sidecar đủ để dựng inventory (domain, hash) → các bản sao vật lý mà không restore pack Cold. Sidecar **không** có: canonical winner, `location_revision`, refcount, namespace/manifest (journal/checkpoint R2, W01-PHONG-03), state/class/restore (HEAD S3). Rebuild không chọn bản sao chỉ vì sidecar có hash (KT §9.1).
 - Quét orphan: list `packs/` cho PackRef từ key; Range `[0, H)` kiểm header khi cần.
 
