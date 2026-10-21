@@ -13,14 +13,9 @@ import (
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
-// These resource values/tiers are TEST DEPENDENCIES ONLY, not project-approved
-// deployment defaults. Production construction must supply reviewed decisions.
+// Dùng cùng bộ caps DSG đã chốt; các test riêng vẫn inject limits khác.
 func testPolicyLimits() c.PolicyLimits {
-	return c.PolicyLimits{
-		MaxJSONBytes: 8192, MaxDecimalDigits: 128, MaxDecimalExponent: 256,
-		MaxColdAfterDays: 1000, MaxAutoRestoreDays: 30, MaxReadaheadChunks: 64,
-		RestoreTiers: []c.RestoreTierRule{{Class: storage.GlacierIR, Tier: "Standard"}, {Class: storage.Glacier, Tier: "Standard"}, {Class: storage.Glacier, Tier: "Bulk"}},
-	}
+	return c.DSGPolicyLimits()
 }
 
 func validator(t *testing.T) c.PolicyValidator {

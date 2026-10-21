@@ -139,11 +139,11 @@ Giữ defaults KT §19.1/API §13.3; API §6.3 cung cấp wire field names. Khô
 | tiering.enabled | boolean | true | Strict boolean |
 | tiering.warm_storage_class | enum | STANDARD | STANDARD hoặc STANDARD_IA |
 | tiering.cold_storage_class | enum | GLACIER_IR | P1: GLACIER_IR hoặc GLACIER; DEEP_ARCHIVE P2 |
-| tiering.cold_after_days | integer | 30 | >=0; 0 chỉ bỏ age gate; duration overflow reject; cap W02-PHONG-01 |
+| tiering.cold_after_days | integer | 30 | 0..1000; 0 chỉ bỏ age gate; duration overflow reject; caps DSG đã chốt |
 | tiering.min_pack_live_ratio | number | 0.8 | Finite [0,1]; exact decimal arithmetic |
 | tiering.auto_restore | boolean | true | Không bypass expiry/preflight khi false |
-| tiering.auto_restore_days | integer | 1 | >0; cap W02-PHONG-01; không tự tính backend expiry |
-| tiering.auto_restore_tier | enum | Standard | Giữ P1/class-compatible allowlist nguồn; adapter/validator phải pin supported values trước freeze, không arbitrary string |
+| tiering.auto_restore_days | integer | 1 | 1..30; caps DSG đã chốt; không tự tính backend expiry |
+| tiering.auto_restore_tier | enum | Standard | Phân biệt hoa/thường: GLACIER nhận Expedited/Standard/Bulk; GLACIER_IR chỉ Standard để tương thích schema/default; xem caps bên dưới |
 | compression.enabled | boolean | true | Không đổi codec chunk cũ |
 | compression.codec | enum | zstd | Không tự mở codec mới; raw là stored fallback |
 | compression.level | integer | 3 | Library-supported range theo W01-HAI-03; validator không nhận tùy ý khi chưa pin |
@@ -154,7 +154,22 @@ Giữ defaults KT §19.1/API §13.3; API §6.3 cung cấp wire field names. Khô
 
 Policy age: 1 ngày =24h UTC, không calendar/DST; đủ age khi age>=configured duration (cần conservative time proof nếu shared timestamps). Tách Days của restore request với expiry thực tế backend. Saving: `stored <= raw*(1-saving)`; live ratio: `live/total >= threshold`, total=0/unknown không chia và không tự eligible.
 
-Normalize JSON decimal một lần lúc load snapshot thành số học chính xác; so nhân chéo có overflow checking, không epsilon float. JSON vẫn number như nguồn. Không gọi ns epsilon cho ratio; ratio vectors dùng rational ticks riêng. Integer/duration overflow, unknown/null/duplicate fields, wrong types/scope, unsupported enums reject trước mutation. Supported zstd/FastCDC thuộc W01-HAI-03 và implementation tương ứng (consumer hiện hành Chiến; Hải giữ model review). Memory/prefetch/day caps cụ thể thuộc W02-PHONG-01: pin supported range/budget và tests trước freeze; constraint chưa chốt không có nghĩa chấp nhận mọi giá trị. Caps DSG không được gọi là AWS limits.
+Normalize JSON decimal một lần lúc load snapshot thành số học chính xác; so nhân chéo có overflow checking, không epsilon float. JSON vẫn number như nguồn. Không gọi ns epsilon cho ratio; ratio vectors dùng rational ticks riêng. Integer/duration overflow, unknown/null/duplicate fields, wrong types/scope, unsupported enums reject trước mutation. Supported zstd/FastCDC thuộc W01-HAI-03 và implementation tương ứng (consumer hiện hành Chiến; Hải giữ model review).
+
+**Quyết định Lead Hưng — W02-PHONG-01, Review Fix 1:** caps sau đã chốt, không còn chờ chọn giá trị. Đây là giới hạn tài nguyên/sản phẩm **DSG**, không phải AWS service limits:
+
+| Giới hạn | Giá trị |
+|---|---|
+| MaxJSONBytes | 8192 bytes, áp cả input JSON và complete candidate trước publication |
+| MaxDecimalDigits | 128 chữ số trên coefficient đã normalize, không đếm dấu hoặc zeros đã bỏ |
+| MaxDecimalExponent | Normalized exponent trong [-256, 256] |
+| cold_after_days | 0..1000 |
+| auto_restore_days | 1..30 |
+| readahead_chunks | 0..64 |
+
+Bộ dùng chung: `internal/config.DSGPolicyLimits()`; consumer truyền vào `NewPolicyValidator`, tests vẫn inject custom budgets. Không có runtime endpoint/config service mới hoặc fallback khi thiếu dependency. Ratio ranges không đổi: exponent nằm trong cap chưa đủ để ratio hợp lệ. Defaults, FastCDC bounds, zstd levels và revision/CAS semantics không đổi.
+
+Allowlist P1 phân biệt đúng chữ hoa/thường: GLACIER nhận `Expedited`, `Standard`, `Bulk`; GLACIER_IR chỉ nhận `Standard` trong global schema để giữ default tương thích. IR đọc trực tiếp, không phát RestoreObject. DEEP_ARCHIVE/class/tier khác ngoài P1 bị reject, kể cả custom allowlist cố mở rộng ngoài P1. Expedited không bảo đảm backend restore thành công và không tự bật/mua provisioned capacity. Backend acceptance, UTC proof, authority/fencing, persistence/distributed correctness vẫn là integration gates chưa được caps này chứng minh.
 
 ### 4.3 Bucket cache policy
 
@@ -171,7 +186,7 @@ Nguồn KT §1.5–1.6 và API §6.1–6.3. Owner/admin sửa bucket cache; syst
 | Field | Default | Contract |
 |---|---|---|
 | cache.admit_on_write | true | Boolean; false không chủ động admit từ write path, không tắt read cache; true best-effort khi final exact identity/physical bytes đầy đủ; không thay durability/quyền; R1 §11.1 |
-| cache.readahead_chunks | 4 | Integer>=0; 4 chunk phía trước không tính demand (review Hưng); 0 tắt prefetch; cap memory/chunks W02-PHONG-01 |
+| cache.readahead_chunks | 4 | Integer 0..64 theo caps DSG đã chốt; 4 chunk phía trước không tính demand (review Hưng); 0 tắt prefetch |
 | expected_revision | Không default | Hoặc If-Match; token rules §6 |
 | expected_bucket_id | Không default | Bắt buộc và check incarnation cùng update |
 
@@ -333,7 +348,7 @@ Thay timing cần rollout được review compatibility/drain; không rút ngắ
 | OQ-02 | Logical record/revision separation; positive JSON-safe revision/bootstrap1/no-op; UTC RFC3339Nano/ns/conservative rounding | W01-HAI-01 — shared model Hải với consumer hiện hành; W02-PHONG-01/03 — Phong adapter; W01-PHONG-03 — R2 history/roots | Key/encoding/atomic transaction model reviewed; no heartbeat/epoch policy conflict; model handoff và SYNC-KT hoàn tất trước storage consumer freeze |
 | OQ-03 | Expired at E; U<E cho dispatch mới; L>=E+grace chỉ reclaim; publication theo atomic closure/incarnation, không strict commit-before-E; unknown proof fail closed | W01-PHONG-02 — Phong protocol; W02-PHONG-03/W04-PHONG-03 — Phong code/faults, metadata consumer review Hải/Chiến | Dispatch/local-budget và closure→stable membership→reconcile proof không overlap publication authorities; uncertainty horizon validated; late settlement/closure/suspend tests trước destructive enablement |
 | OQ-04 | D_hi/current interval, durable max protection, restored lower bound, revalidation/rounding | W02-PHONG-01/03 — Phong time-source/bound/tests; W01-PHONG-02 — R1 proof; W01-PHONG-03 — roots | Adapter bound thực sự bao UTC/drift horizon; fast/slow/stale/rounding vectors verified; không bật destructive path khi chưa đủ proof |
-| OQ-05 | Ratio ranges/exact arithmetic; positive ordered chunks; day24h UTC; zero age/read-ahead; existing defaults/allowlist | W01-HAI-03 — supported library contract (Chiến chunking/compression consumer hiện hành, Hải model review); W02-PHONG-01 — Phong caps/validator | Library-supported levels/FastCDC constraints, memory/prefetch/days caps và restore tier/class validation pinned; không nhận arbitrary values trước validator freeze |
+| OQ-05 | Ratio ranges/exact arithmetic; positive ordered chunks; day24h UTC; zero age/read-ahead; defaults không đổi. Review Fix 1: caps DSG JSON/normalized decimal/days/read-ahead và P1 restore class/tier đã chốt tại §4.2 | W01-HAI-03 — supported library contract (Chiến chunking/compression consumer hiện hành, Hải model review); W02-PHONG-01 — Phong validator/tests | Không còn pending numeric caps/allowlist nêu tại §4.2; vẫn cần library/consumer compatibility, backend acceptance và production resource/distributed evidence trước freeze |
 | OQ-06 | Nested supplied-field PUT, null/duplicate400, token/identity errors, no-op/CAS/retry rules | W02-CHIEN-02 — Chiến Admin wire/error clarification; W02-PHONG-01 — Phong config merge; W01-HAI-01/model và W04-HAI-01/metadata consumer review | SYNC-API xong; exact exhaustion error, canonical equality, retry/current/history/outbox transaction contract và vectors thống nhất trước API consumer freeze |
 | OQ-07 | Startup limits snapshot, no hot timing endpoint, pinned active budgets, compatibility/drain rollout | W02-PHONG-01 — Phong startup validation; W02-HUNG-03/W04-HUNG-01 — Hưng config/ops rollout consumers | Version/compatibility/drain protocol reviewed; evidence policy/limits revisions và existing leases/cuts an toàn; chưa chứng minh thì dừng rollout |
 | OQ-08 | Package boundaries, one evaluator, node snapshot cache, history/jobs/cut retention | W02-PHONG-01/03 — Phong config/history contract; W04-HUNG-02 — Hưng jobs; W01-PHONG-03/W05-PHONG-03 — Phong roots/cleanup | History encoding/atomicity, job-resume exact revision, refresh applied-revision evidence, bounded-item storage và roots cleanup verified; SYNC-KT trước consumer freeze |

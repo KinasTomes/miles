@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"time"
-	"unicode/utf8"
 
 	"github.com/KinasTomes/miles/internal/storage"
 )
@@ -15,10 +14,9 @@ type RestoreTierRule struct {
 	Tier  string
 }
 
-// PolicyLimits is a required dependency, NOT a set of newly approved defaults.
-// The caller must supply reviewed numeric budgets and class/tier combinations.
-// No production limits/allowlist is supplied here. Construction checks presence
-// and shape, not whether a lead has actually approved the supplied values.
+// PolicyLimits là dependency explicit. DSGPolicyLimits cung cấp caps P1 đã chốt;
+// tests/consumer có thể inject budgets riêng hoặc allowlist hẹp hơn trong P1.
+// Constructor không tự điền defaults cho dependency thiếu hoặc historical data.
 type PolicyLimits struct {
 	MaxJSONBytes       int
 	MaxDecimalDigits   int
@@ -41,7 +39,7 @@ func NewPolicyValidator(limits PolicyLimits) (PolicyValidator, error) {
 	}
 	tiers := make(map[RestoreTierRule]struct{}, len(limits.RestoreTiers))
 	for _, rule := range limits.RestoreTiers {
-		if rule.Tier == "" || !utf8.ValidString(rule.Tier) || rule.Class != storage.GlacierIR && rule.Class != storage.Glacier {
+		if !supportedRestoreTier(rule) {
 			return PolicyValidator{}, ErrPolicyDeferred
 		}
 		tiers[rule] = struct{}{}
