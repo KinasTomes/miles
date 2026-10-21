@@ -1,12 +1,12 @@
-# W01-PHONG-03 — Draft R2 Recovery Epoch & Retention Roots Contract
+# W01-PHONG-03 — R2 Recovery Epoch & Retention Roots Contract
 
 ## 1. Status, scope và checklist mapping
 
-**Status: Contract proposal — Ready for Review. Owner: Phong. Chưa Approved/Frozen.** Ready for Review mô tả PR workflow, không phê duyệt proposals hoặc freeze gates. Baseline: `main` / `origin/main` tại `56133b00f114464a66ea18dee9c21a29e3dc0f1b`, fetch lại khi bắt đầu Phase 2. Branch tài liệu: `docs/W01-PHONG-03-r2-recovery`. Chỉ tài liệu này thay đổi; không implementation, shared Go changes hoặc Miles mutation.
+**Status: Đã chọn thiết kế W1 — chờ xác minh tích hợp và review độc lập; chưa Frozen/production verified. Owner: Phong.** OQ-01–09 được chốt theo chỉ đạo lead trong follow-up của PR #16; không ghi nhận thay approval của impacted consumers. Baseline nguồn: `main` tại `56133b00f114464a66ea18dee9c21a29e3dc0f1b`. Branch: `docs/W01-PHONG-03-r2-recovery`. Thay đổi tài liệu R2 và các đoạn nguồn liên quan ở KT/API/ENGINE/SHARED; không sửa Go models/ports/fixtures hoặc trạng thái Miles.
 
 Task chính thức: [W01-PHONG-03 — Thiết kế R2 recovery epoch và retention roots](https://miles.extase.dev/tasks/W01-PHONG-03). Task snapshot đọc ở Phase 1: Phong, W01, Todo/Ready, checklist0/3, chưa evidence; không suy ra trạng thái live từ snapshot. Hard prerequisites W01-CHIEN-04, W01-CHIEN-05 và W01-PHONG-02 được board ghi Done lúc đọc. Đây là contract W1, không thay thế implementation/fault evidence của downstream tasks.
 
-| Checklist nguồn | Mapping draft |
+| Checklist nguồn | Mapping contract |
 |---|---|
 | Chốt event identity, authoritative entities, history_id, epoch membership/seal và checkpoint descriptor | §4–12; OQ-01..06/09 |
 | Chốt recovery catalog/chain, các cut đầy đủ24h + buffer/anchor và dữ liệu phải giữ khi GC | §11–14; OQ-06..08 |
@@ -17,7 +17,7 @@ Phạm vi: event/outbox boundaries, producer/epoch membership, export/seal/check
 
 ## 2. Source precedence và decision register
 
-Nhãn: **SOURCE** = yêu cầu/decision trong tài liệu hiện có (giữ trạng thái review của nguồn); **FACT** = Go/source hiện hữu; **PROPOSAL** = chi tiết mới của draft; **REVIEW REQUIRED** = chưa đủ căn cứ/proof để freeze. Các logical fields/state names dưới đây không phải Go types hoặc wire encoding đã tồn tại. Từ “phải” trong PROPOSAL mô tả điều kiện của phương án để reviewer đánh giá, không chuyển thành approval.
+Nhãn: **SOURCE** = yêu cầu nguồn; **FACT** = Go/source hiện hữu; **DECISION W1** = lựa chọn thiết kế đã chốt; **INTEGRATION REQUIRED** = schema/golden/backend evidence còn phải xác minh trước gate tương ứng. Logical fields/state names không tự trở thành Go types hoặc serializer đã tồn tại. Chốt thiết kế không thay approval độc lập, format freeze hoặc chứng minh implementation.
 
 | Ref | Source và phạm vi |
 |---|---|
@@ -33,19 +33,21 @@ Nhãn: **SOURCE** = yêu cầu/decision trong tài liệu hiện có (giữ tr�
 
 API quyết định wire behavior; KT quyết định system safety. CLOCK/R1/SHARED cụ thể hóa phạm vi của mình; ENGINE/FORMAT là dependencies đang có contract/reference fixtures, không bằng chứng production. Conflict phải được resolve và đồng bộ nguồn, không tự coi draft này override nguồn. Q6 R1 đã chọn dispatch permission + closure ordering; không tái đưa strict commit-before-E. Request/reservation deadline và current authorization conditions vẫn độc lập, không tự bỏ hoặc kéo dài.
 
-### Decision register — tất cả Pending Review
+### Decision register — đã chọn W1, chờ xác minh tích hợp
 
-| ID | Problem | Options | Recommended PROPOSAL | Trade-offs | Owner / reviewer | Consequence khi chưa quyết định | Status |
-|---|---|---|---|---|---|---|---|
-| OQ-01 | Request có nhiều chunk/control mutations; op_id/event_id scope chưa đủ rõ | A event_id=request op_id; B transaction/mutation identity history-scoped; C child events nhiều records | B: stable mutation ID cho mỗi authoritative transaction, liên kết logical op; deterministic event ID, §5 | Durable identity binding và sửa handoff; tránh collision/multiple effects cùng request | Phong / Hưng, Hải/Chiến metadata/engine | Chưa freeze keys, idempotency hoặc event fixtures | Pending Review |
-| OQ-02 | Entity/field inventory và transient/derived/lifecycle projections còn thiếu | A dump mọi fields; B explicit projections; Packs/intents journal hoặc external reconcile inventory | B, inventory §4; destructive intent cần durable reconciliation evidence | Nhiều schema hơn, tránh resurrect counters/leases; intent coverage cần proof | Phong / Hưng, Hải metadata/GC, Chiến auth/MP | Chưa chứng minh recovery state đầy đủ/security audit | Pending Review |
-| OQ-03 | Một transaction đổi nhiều records nhưng một event | A transaction bundle; B multiple events + atomic descriptor | A: one event bundle, full effects/dependencies, §6 | Payload pages lớn; replay cần atomic visibility/completeness | Phong / Hưng, Hải/Chiến engine/metadata | Chưa freeze payload/replay causality | Pending Review |
-| OQ-04 | Chưa có R2 byte schema/caps | A canonical JSON envelope; B binary riêng; C extend page kinds hiện có | A cho R2 metadata/descriptors, nhúng body FORMAT khi phù hợp, §7 | Canonicalization/size accounting cần golden; không sửa kinds1–4 ngầm | Phong / Hưng, Chiến format, Hải adapters | Chưa freeze serializer/version/checksum/limits | Pending Review |
-| OQ-05 | Timeout/expiry không chứng minh in-flight quiescence | A stable registered producer cohort + bounded closure receipts; B explicit per-mutation ledger thêm | A baseline với registered mutation membership; B nếu A không đủ proof, §8–9 | Metadata writes/transaction condition contention; correctness trước throughput | Phong / Hưng, Hải metadata, coordination consumer | Chưa enable close/destructive integration hoặc claim exact membership | Pending Review |
-| OQ-06 | Export/seal/checkpoint/catalog unknown publication, genesis/history change | A immutable objects+conditional create+fenced pointer CAS; B mutable latest objects | A; verified chain/explicit catalog, §10–12 | Nhiều manifests/pages; CAS/reconciliation lặp lại | Phong / Hưng jobs/ops, Hải storage | Chưa freeze publication/recovery discovery | Pending Review |
-| OQ-07 | Historical namespace phải còn physical payload sau GC/compaction | A exact-generation retention; B verified replacement mapping | A baseline, B optimization sau proof, §13–14 | Storage cao hơn nhưng roots dễ audit; B phức tạp | Phong / Hưng, Hải GC/compaction | Chưa enable cleanup theo R2 hoặc công bố supported coverage thiếu proof | Pending Review |
-| OQ-08 | PITR mixed tables, security projection, uploads/counters/readiness | A checkpoint+sealed replay staging reference; B audited PITR seed+reconcile | A reference semantics; B vẫn ưu tiên vận hành theo KT khi chứng minh cùng target, §15 | Rebuild tốn I/O; PITR cần proof tương đương, không silently đổi KT priority | Phong / Hưng ops, Hải metadata, Chiến auth/MP | Chưa ready recovery hoặc khẳng định RPO/RTO | Pending Review |
-| OQ-09 | Models/ports/fixtures thiếu; wording lease/event khác nhau | A extend reviewed shared boundary; B recovery store trùng | A, delta handoff §17; source sync riêng | Phối hợp nhiều consumers, không bypass shared storage | Phong / Hưng, Hải/Chiến | Chưa freeze consumer contracts hoặc nhận model đã hỗ trợ đầy đủ | Pending Review |
+| ID | Lựa chọn đã chốt | Lý do / trade-off | Owner / impacted reviewers | Gate còn lại |
+|---|---|---|---|---|
+| OQ-01 | B: history-scoped mutation identity; exact event-ID formula và parent binding, §5 | Tránh collision giữa các chunk mutations; thêm durable binding | Phong / Hưng, Hải/Chiến metadata/engine | Identity/attempt/golden compatibility |
+| OQ-02 | B: explicit projections; write-ahead destructive intent evidence ngoài DB, §4 | Không resurrect runtime rights; thêm maintenance I/O | Phong / Hưng, Hải GC, Chiến auth/MP | Field schemas, intent inventory/reconciliation |
+| OQ-03 | A: one transaction → one complete event bundle, §6 | Atomic logical effects; paging và staged replay | Phong / Hải/Chiến metadata/engine | Bundle schema, replay/progress fault tests |
+| OQ-04 | A: RFC8785/JCS metadata, R2 v1/caps riêng, FORMAT attachments giữ nguyên, §7 | Dùng canonicalization có sẵn; cần conformance/golden | Phong / Chiến format, Hải adapters | Exact field schemas và byte goldens W2 |
+| OQ-05 | A: frozen cohort + existing mutation registry + terminal closure receipts/proof tree, §8–9 | Không giant transaction hoặc ledger song song; thêm metadata writes | Phong / Hưng, Hải coordination/metadata | Distributed closure/abort/takeover proof |
+| OQ-06 | A: immutable artifacts/completion markers, fenced DB pointers, provisioning-only history catalog, §10–12 | DB-independent discovery; thêm bounded markers/listing | Phong / Hưng ops, Hải storage | Publication/discovery/retention fault tests |
+| OQ-07 | A: exact-generation retention; chưa dùng replacement mapping, §13–14 | Tốn storage hơn, coverage dễ audit | Phong / Hải GC/compaction, Hưng | Root/support/time-bound integration proof |
+| OQ-08 | A reference replay; B PITR ưu tiên khi chứng minh tương đương target, §15 | Fail closed khi mixed tables chưa chứng minh đúng; thêm rebuild I/O | Phong / Hưng ops, Hải metadata, Chiến auth/MP | Recovery/security/counter drills |
+| OQ-09 | A: extend shared boundary; source sync cùng thay đổi tài liệu, §17 | Không duplicate store/types; cần phối hợp consumers | Phong / Hưng, Hải/Chiến | Shared models/ports/fixtures và consumer review |
+
+Không OQ nào còn chờ chọn phương án. Gate còn lại là deliverables/verification theo §18, không phải đã chạy hoặc đã được các reviewer trên approve.
 
 ## 3. R2 invariants
 
@@ -66,11 +68,11 @@ API quyết định wire behavior; KT quyết định system safety. CLOCK/R1/SH
 | R2-I11 | Sidecar/cache không thay authoritative namespace, canonical winner hoặc recovery completeness |
 | R2-I12 | Recovery không resurrect old authority/credentials/active uploads; security/counters audit trước readiness |
 
-**PROPOSAL obligations:** mutation IDs không collision; bundle replay preserves transaction effects; registration→dispatch→closure có proof; membership/payload enumeration đủ; roots cover tất cả advertised cuts. Invariants là contract requirements, chưa là theorem/backend evidence. Fake mutex/fixed clock không chứng minh distributed correctness.
+**DECISION W1 obligations:** mutation IDs không collision; bundle replay preserves transaction effects; registration→dispatch→closure có proof; membership/payload enumeration đủ; roots cover tất cả advertised cuts. Invariants là contract requirements, chưa là theorem/backend evidence. Fake mutex/fixed clock không chứng minh distributed correctness.
 
 ## 4. Authoritative entity/field inventory
 
-KT §9.0/9.1/10.1 yêu cầu journal mọi authoritative change. **PROPOSAL OQ-02** phân projection để checkpoint/replay không copy nhầm runtime/derived fields:
+KT §9.0/9.1/10.1 yêu cầu journal mọi authoritative change. **DECISION W1 OQ-02** phân projection để checkpoint/replay không copy nhầm runtime/derived fields:
 
 | Entity / record group | Recovery projection cần đủ | Fields không replay như execution rights / special handling |
 |---|---|---|
@@ -82,20 +84,26 @@ KT §9.0/9.1/10.1 yêu cầu journal mọi authoritative change. **PROPOSAL OQ-0
 | SystemConfig policy/history | Complete immutable history revisions còn roots và current pointer, limits/config bindings cần phục hồi | Policy revision không chứa/đè recovery epoch/fence; historical job cần exact policy revision |
 | Completed receipts | Upload/bucket/key/initiator/op/input binding, response/checksum, committed_at/original expiry | Receipt không giữ payload làm root; không restart7day TTL khi restore |
 | Uploads/parts/completion pages/reservations | Đủ proof phân biệt committed/unknown/nonterminal và cleanup; transient roots lúc service chạy | Không phục hồi Active/old lease; reconcile Complete trước abort; counters không double-release |
-| Packs lifecycle/destructive intents | Durable closed states/intents và backend observations đủ reconcile late DELETE/COPY | Actual class/restore expiry HEAD backend; old lease/state không tự cấp rights; intent journal coverage REVIEW REQUIRED |
+| Packs lifecycle/destructive intents | Durable closed states/intents và backend observations đủ reconcile late DELETE/COPY | Actual class/restore expiry HEAD backend; old lease/state không tự cấp rights; write-ahead S3 intent trước destructive dispatch theo §4.1 |
 | Outbox/outcome ledgers | Stable event/payload, history/epoch/binding/outcome proof; refcount/export progress theo retention | Progress không là immutable event body; imported old operation không tự authorize retry |
 | RecoveryEpochs/seals/checkpoints/catalog | History-scoped chain, exact membership, base/target refs và checksums | Bootstrap/control metadata có protocol riêng, không recursively journal mỗi seal thành event của chính seal |
 | Jobs/nodes/leases/access stats | Policy revisions còn cần và durable mutation reconciliation dependencies | Không replay active ownership; heartbeat/read/access/progress không authoritative namespace snapshot |
 
 **FACT GO:** `OutboxEvent` có envelope fields nhưng không full event payload; Validate chỉ chấp nhận Objects và SystemConfig/global-policy. `ObjectHead`/`ManifestPage` chưa chứa đầy đủ FORMAT head fields; model comment không thay source format. `MetadataStore` chỉ có GetOutbox, không recovery enumeration/close/seal/checkpoint ports. §17 là handoff, không tuyên bố đã có những schema này.
 
-Field-level projections, tombstone rules cho control entities, receipt-as-bundle-effect và lifecycle intent coverage là **REVIEW REQUIRED OQ-02/03**. Không bỏ intent unknown chỉ vì nó không nằm trong authoritative entity list tóm tắt của KT.
+Mọi authoritative projection có identity/incarnation/revision và explicit delete/tombstone semantics; control-entity deletes không được bỏ ordering cần cho retained replay. Completed receipt là effect của final commit bundle, không event độc lập. Exact field schemas/byte goldens thuộc gate W2. Historical projection chỉ giữ facts đã journal cần cho replay/audit, không claim biết mọi transient upload field chưa từng được journal.
+
+### 4.1 Destructive intent evidence ngoài DB (OQ-02)
+
+Trước dispatch S3 DELETE hoặc destructive class COPY, persist stable intent ID (UUID32hex), history/incarnation, exact resource/generation, action và input digest trong metadata closure protocol **và** immutable S3 write-ahead record `recovery/intents/{history_id}/{intent_id}/prepared.json`. Record được conditional-create/verify trước side effect; completion evidence immutable riêng chỉ xuất khi outcome đã reconcile. Maintenance I/O này không thêm synchronous S3 journal round trip vào mỗi PUT.
+
+Disaster recovery enumerate đủ pagination các intent prefixes của histories/workers liên quan, gồm intents **sau target cut**. Chọn cut cũ không hủy DELETE đã gửi sau cut. Isolate old workers; HEAD thấy object tồn tại chưa chứng minh late DELETE không còn đang bay. Unknown giữ resource closed tới terminal I/O/outcome proof; không restore old execution rights. Intent evidence chỉ cleanup sau outcome/isolation/retention và mọi recovery dependencies đã discharge. Backend proof của late-action reconciliation vẫn là gate production.
 
 ## 5. Event identity và idempotency
 
-**SOURCE conflict:** KT §9.0 event_id theo `(history_id, op_id, entity/action)`; ENGINE §6.1 nói suy ra từ op_id và giao encoding cuối W01-PHONG-03. Cùng request có nhiều Chunks mutations nên tuple thiếu mutation discriminator có thể collision. API/current fixtures dùng op_id trong một số object outcomes. **REVIEW REQUIRED OQ-01/09**, không tự đổi wire/model field meanings.
+**DECISION W1 OQ-01/09:** `op_id` của mỗi authoritative transaction là mutation identity; operation cha có `logical_op_id`. Final object/Complete transaction dùng mutation_id = logical_op_id, giữ reservation/receipt lifetime hiện hữu. Child chunk mutations có mutation IDs riêng. KT/API/ENGINE được đồng bộ wording trong cùng thay đổi; Go/fixtures cũ vẫn là FACT/reference, không chứng minh encoding R2 đã implemented.
 
-**PROPOSAL conceptual identities (không tạo Go types):**
+**DECISION W1 conceptual identities (không tạo Go types):**
 
 | Identity | Scope / retry rule |
 |---|---|
@@ -106,11 +114,19 @@ Field-level projections, tombstone rules cho control entities, receipt-as-bundle
 | event identity | Deterministic, history-scoped từ transaction/mutation identity và domain-separated entity/action binding; không chứa mutable fence/attempt/epoch để retry không tạo event thứ hai |
 | entity identity/revision | Object dùng bucket_id+key; Chunk domain/hash+location revision; control entity dùng stable ID/incarnation+revision; độc lập transaction ID |
 
-Exact byte encoding/hash và cách map mutation identity vào shared `OpID` hiện hữu **chưa chốt**. Có thể reuse logical op_id cho sole final head transaction, còn chunk mutations cần child identity. Parent/child binding và retry after known CAS conflict phải có fixtures trước freeze. Không derive ID chỉ từ chunk hash (nhiều valid location mutations) hoặc revision mới lấy sau timeout.
+**Identity encoding đã chốt:** history UUID và mutation_id là128-bit, encode32 hex lowercase; `logical_op_id` giữ quy tắc ENGINE. Event ID là64 hex lowercase SHA-256 của UTF-8 [JCS/RFC8785](https://www.rfc-editor.org/rfc/rfc8785) array:
 
-Prepared attempt payload có thể khác khi known conflict đổi old manifest/base revision. Mỗi payload immutable có key/digest riêng; event ID ổn định nhưng chỉ winning transaction công bố pointer của attempt thắng. Retry unknown không rewrite payload hoặc áp candidate mới. Conflict đã committed phải trả original result; changed logical input không reuse identity. History mới không replay old in-flight logical op như được cấp authority mới.
+```text
+["miles-r2-event-v1", history_id, mutation_id, entity_kind, action]
+```
 
-### Protocol P1 — Prepare và publish authoritative bundle (PROPOSAL)
+Entity kinds theo inventory §4; action enum v1 gồm `object_commit` (head/tombstone), `location_set` (insert/revive/location CAS), `entity_put`, `entity_delete`. Entity identity và immutable logical scope được bind bền cùng mutation registration; ID reuse cho unrelated entity/operation là conflict. Attempt-specific input digest nằm ở attempt binding, không nhầm với logical scope của upload Complete. Chunk insert→CAS do known conflict vẫn là cùng intended `location_set`; thay logical mutation mới cần ID mới. Không derive ID chỉ từ hash hoặc revision lấy lại sau timeout.
+
+Child events mang `logical_op_id` và transaction `OpID = mutation_id`; final head/receipt/reservation vẫn dùng cùng original op_id. Token = mutation_id32hex + attempt4hex, giữ limit/overflow ENGINE. Recompute chỉ sau known no-commit và serialized attempt-revision CAS; publication check exact attempt revision để late old attempt không thắng sau attempt transition. Unknown giữ nguyên token/parameters. Fence/attempt/recovery epoch không thuộc event ID; registry/outbox chống lặp ngoài cửa sổ token10phút.
+
+Prepared attempt payload có thể khác khi known conflict đổi old manifest/base revision. Mỗi payload immutable có key/digest riêng; event ID ổn định nhưng chỉ winning transaction công bố pointer của attempt thắng. Retry unknown không rewrite payload hoặc áp candidate mới. Conflict đã committed phải trả original result; unrelated logical operation không reuse identity. Complete được API cho reopen Active sau known no-commit có thể freeze parts/input mới với original completion_op_id nhưng completion/attempt revision mới; old attempt đã bị serialize-out, unknown attempt không được đổi input. History mới không replay old in-flight logical op như được cấp authority mới.
+
+### Protocol P1 — Prepare và publish authoritative bundle (DECISION W1)
 
 | Property | Contract |
 |---|---|
@@ -123,7 +139,7 @@ Prepared attempt payload có thể khác khi known conflict đổi old manifest/
 | Failure | Known no-commit after safe closure/ledger proof mới resume/release; unavailable giữ roots/ledger. LP sau closure fails fence; no double effect |
 | Invariants | R2-I01/02/03/05/06/10; R1 no-overlap |
 
-New child mutation journal/outcome binding cần bounded-item encoding/handoff; local RAM map không đủ. Registering identity trước dispatch và no-commit proof là **OQ-01/05/09**, chưa claimed implemented.
+Child mutation registration/outcome là durable metadata binding theo P3/P4, local RAM map không đủ. Publication atomically check authority/attempt revision, write entity effects/outbox và committed mutation outcome. Concrete bounded-item encoding/ports/tests thuộc §17–18; chưa claimed implemented.
 
 Durable prepared payload có thể nằm trong immutable shared metadata/pages theo producer contract; không bắt buộc flush journal lên S3 trước mỗi object commit. Physical pack/sidecar durability vẫn là prerequisite riêng. S3 journal materialization thuộc asynchronous P6; không thêm synchronous S3 journal round trip vào mỗi PUT (KT §9.0).
 
@@ -133,20 +149,20 @@ Control-plane mutation như global-policy update vẫn cần đúng quyền, pro
 
 **SOURCE ENGINE §6:** one Outbox event/authoritative transaction; Object bundle bao head/tombstone, logical quota/reservation, optional Completed state/receipt. Chunks CAS có outbox riêng. Refcount batches nằm ngoài commit; `refcount_next` mutation cùng delta transaction; old/new manifests cần giữ đến khi consumers xong.
 
-**PROPOSAL OQ-03 payload completeness:** bundle ghi transaction/mutation identity, schema/projection version, history/epoch, effects inventory với entity identity/revision/incarnation, deterministic dependencies và immutable payload refs. Complete receipt là effect cùng bundle, không event độc lập chưa được nguồn cho phép. Objects payload mang metadata+new manifest và old manifest identity/bodies cần refcount. Không journal raw secret hoặc replay derived counter deltas thay recomputation.
+**DECISION W1 OQ-03 payload completeness:** bundle ghi transaction/mutation identity, schema/projection version, history/epoch, effects inventory với entity identity/revision/incarnation, deterministic dependencies và immutable payload refs. Complete receipt là effect cùng bundle, không event độc lập chưa được nguồn cho phép. Objects payload mang metadata+new manifest và old manifest identity/bodies cần refcount. Không journal raw secret hoặc replay derived counter deltas thay recomputation.
 
 Replay không công bố intermediate bundle state ra service/checkpoint. Logical ordering per entity không đủ nếu cùng transaction có nhiều records: apply all effects vào staging projection hoặc verify full bundle before checkpoint-visible commit. Duplicate cùng identity/digest là no-op; same identity khác digest là integrity conflict, stop. Older entity revisions không overwrite newer/tombstone; bucket incarnation khác không trộn. Không giả mọi revision gap đều missing event: revision domains/projections phải được inventory định nghĩa; gap expected/unknown cần fail completeness audit, không skip mù.
 
 Causal graph: bucket identity trước object/grant; manifests và required location data trước declaring object reconstructible; receipt gắn final commit; policy history tồn tại trước job revision use. Không dùng flush order làm graph. Source và destination copy events có thể qua nhiều epochs; recovery chỉ replay tới cut, kiểm reference dependencies của toàn cut. Event orphan chunk insert không tự tạo object namespace.
 
-### Protocol P2 — Replay sealed input (PROPOSAL)
+### Protocol P2 — Replay sealed input (DECISION W1)
 
 | Property | Contract |
 |---|---|
 | Preconditions | Verified base checkpoint, contiguous sealed chain cùng selected history tới target, complete exact event descriptors, staging/gated namespace |
 | Inputs | Base+target IDs, schemas/projections, event bundles/digests/dependencies |
 | Authoritative state | Immutable source chain; staged reconstructed entity state và replay progress |
-| Atomic boundary / LP | Logical bundle apply all-or-none trong staging với idempotency progress; với bundle vượt backend transaction size, build hidden shadow state rồi publish bounded completion pointer. Exact encoding REVIEW REQUIRED; không partial visible apply |
+| Atomic boundary / LP | Logical bundle apply all-or-none trong staging với idempotency progress; với bundle vượt backend transaction size, build hidden shadow state rồi publish bounded completion pointer. Byte schemas/goldens thuộc W2; không partial visible apply |
 | Success | Deterministic target projection; current service chưa ready chỉ vì replay xong; checkpoint/recovery publication có LP riêng |
 | Retry / unknown | Resume only from verified bundle progress; unknown local apply reconcile before repeating; immutable event equality kiểm trước dedup |
 | Failure | Missing dependency/page/schema, conflicting digest/incarnation hoặc unsupported projection dừng; không choose latest timestamp |
@@ -154,30 +170,32 @@ Causal graph: bucket identity trước object/grant; manifests và required loca
 
 P2 reconstructs historical authoritative projection trước khi P12 áp recovery normalization. Không disable credential, abort upload hoặc cấp new authority khi đang dựng periodic historical checkpoint; historical transient records có thể được giữ cho audit/replay theo projection đã review nhưng không được thực thi như active runtime. New-history normalized genesis là loại base khác có provenance riêng, không giả làm checkpoint của old history.
 
-Reference replay semantics không giả DynamoDB atomic bundle kích thước tùy ý. Bundle paging/hidden state/progress retention và dependency ordering **OQ-03/04/08** trước implementation freeze.
+Reference replay semantics không giả DynamoDB atomic bundle kích thước tùy ý. Bundle paging/hidden state/progress retention và dependency ordering theo OQ-03/04/08 phải có schema/golden và fault evidence trước implementation enablement.
 
 ## 7. Payload serialization, versioning và checksum
 
 **SOURCE:** payload pointers dưới backend item limits; pages hoàn tất trước commit; unknown versions reject; event pages/descriptors checksum; immutable S3 objects conditional-create. FORMAT v1 `MILESPAG` kinds1–4 và body≤384KiB chỉ dành manifest/part/completion, không tự áp thành journal format. SHARED ModelVersion=1 không đồng nghĩa mọi binary schema version1.
 
-**PROPOSAL OQ-04:** dedicated R2 envelope/descriptor version, canonical UTF-8 JSON metadata và exact existing binary page bodies khi nhúng. Canonicalization must pin field ordering, integer domain, strings/object keys (không tự Unicode normalize), null/absent, duplicate/unknown fields và hash coverage. Chưa chọn canonical library/spec, magic hoặc new size caps; REVIEW REQUIRED trước golden encoding. Không hash Go maps/pretty JSON hoặc arbitrary serializer output.
+**DECISION W1 OQ-04:** R2 metadata dùng UTF-8 [RFC8785/JCS](https://www.rfc-editor.org/rfc/rfc8785), schema riêng `r2_version=1`; không tự thêm binary magic hoặc page kinds vào FORMAT. Duplicate keys, invalid Unicode, unknown field/kind/version reject; không Unicode normalize. Integers thuộc0..2^53−1, revisions positive; nonfinite/fractional counters reject. Timestamp UTC theo CLOCK, absent/null theo explicit field schema, không tự coi tương đương.
+
+SHA-256 hash canonical **body bytes**; checksum ở parent reference/wrapper, không hash self-digest đệ quy. Length là UTF-8 byte count. Canonical metadata page/descriptor/marker≤256KiB; inventory-tree fanout≤256, depth≤8, page indices/counts/length arithmetic checked trước allocate. Đây là caps thiết kế R2, không là AWS limits hoặc benchmark. Inventory chia deterministic pages/tree; không giant descriptor. Existing FORMAT binary bodies giữ exact bytes và limits riêng, referenced như attachments; không base64 nhét page384KiB vào metadata256KiB. Full field schemas và conformance/positive/negative byte goldens là gate W2, chưa có serializer implementation.
 
 | Artifact | Nội dung cần bind / verify |
 |---|---|
 | Event payload pages | Parent event/mutation/history, page number, byte length, body checksum; complete stream digest/order |
 | Event completion descriptor | Event envelope identity, effects/projection version, page count/list hoặc manifest-tree pointer, full length/digest |
 | Membership pages | History/epoch, ordered unique event identities + descriptor digests, total count/checksum |
-| Seal | Closed epoch/cut, exact membership descriptor, previous seal hash, version/self digest |
+| Seal | Closed epoch/cut, exact membership descriptor, previous seal hash, version; digest ở parent/marker |
 | Checkpoint pages/descriptor | Base/target identity, projection schemas, entity/page inventories, root coverage, full completion digest |
-| Catalog | Selected history/incarnation/base and discovery bindings, version, concurrency token; no raw secret |
+| Completion markers / catalog | Exact artifact reference/digest, history/epoch hoặc checkpoint binding; catalog binds selected history/incarnation/genesis, version; no raw secret |
 
-Deterministic paging và bounded hierarchical manifests cho large inventories; count đơn lẻ không đủ, unordered listings không phải membership. Bounds checked trước allocate; mọi bytes phải parse/validate, thiếu/truncated/trailing bytes fail. Numeric/page-count/size caps thuộc review, không chép384KiB thành new R2 S3 limit. Backend transaction≤100actions/4MB và item<400KB vẫn là constraints nguồn, serialized attribute accounting riêng.
+Deterministic paging và bounded hierarchical manifests cho large inventories; count đơn lẻ không đủ, unordered listings không phải membership. Bounds checked trước allocate; mọi bytes phải parse/validate, thiếu/truncated/trailing bytes fail. Áp caps R2 đã chọn ở trên và semantic inventory bounds; không chép384KiB thành new R2 S3 limit. Backend transaction≤100actions/4MB và item<400KB vẫn là constraints nguồn, serialized attribute accounting riêng.
 
 Retry same immutable key chỉ chấp nhận exact bytes/digest; khác bytes conflict/report, không overwrite. Checksum là integrity/completeness binding, không thay auth/fence. Journal/sidecar/checkpoints/seals/catalog ở S3 Standard theo API §2.1/KT, không tự tier cùng pack bytes.
 
 ## 8. Epoch lifecycle và producer registration
 
-**SOURCE KT §9.1:** Open/Closed/Sealed persisted record; Closing là workflow barrier trong proposal, không tự freeze stored enum. Epoch0 bao đủ bootstrap từ base rỗng; recovery history mới có audited base genesis theo §12/15. Heartbeat, readers, access stats, job progress không cần đóng như authoritative producers; mọi write làm đổi recoverable projection thì có.
+**SOURCE KT §9.1:** Open/Closed/Sealed persisted record; Closing là workflow barrier của thiết kế W1, chưa là Go stored enum. Initial-history epoch0 bao đủ bootstrap từ base rỗng; recovery history mới có audited base genesis theo §12/15. Heartbeat, readers, access stats, job progress không cần đóng như authoritative producers; mọi write làm đổi recoverable projection thì có.
 
 ```mermaid
 stateDiagram-v2
@@ -190,7 +208,7 @@ stateDiagram-v2
     Sealed --> [*]
 ```
 
-### Protocol P3 — Register producer/mutation (PROPOSAL OQ-05)
+### Protocol P3 — Register producer/mutation (DECISION W1 OQ-05)
 
 | Property | Contract |
 |---|---|
@@ -203,20 +221,20 @@ stateDiagram-v2
 | Failure | Closing reject producer mới, kể cả dùng ID/epoch của producer khác để lách gate. Existing producer không thuộc cohort, stale authority/binding, attachment closed hoặc epoch Closed: reject new mutation. Publication sau fence closure fails transaction condition; registration đã thành công không bypass fence |
 | Invariants | R2-I03/05/06/10 |
 
-Closing gate chỉ đóng new producer admission; admitted healthy cohort vẫn có thể đăng ký mutation tiếp theo trong bound epoch E để hoàn thành request, khi producer attachment/authority còn hợp lệ. Mỗi dispatch mới vẫn cần bounded U<E_lease; registration không kéo dài lease/deadline. Không cho new mutation sau attachment closure hoặc publication LP sau fence closure. Đóng attachment trước stable mutation enumeration; chưa được mark producer drained nếu còn in-flight/unknown outcome chưa settle/reconcile bằng authoritative proof. Bounded mutation descriptors, registration write cost và proof mọi engine/control paths tham gia **REVIEW REQUIRED**, không chỉ list Nodes alive hoặc Scan leases đang đổi.
+Closing gate chỉ đóng new producer admission; admitted healthy cohort vẫn có thể đăng ký mutation tiếp theo trong bound epoch E để hoàn thành request, khi producer attachment/authority còn hợp lệ. Mỗi dispatch mới vẫn cần bounded U<E_lease; registration không kéo dài lease/deadline. Không cho new mutation sau attachment closure hoặc publication LP sau fence closure. Đóng attachment trước stable mutation enumeration; chưa được mark producer drained nếu còn in-flight/unknown outcome chưa settle/reconcile bằng authoritative proof. Mutation registry giữ stable ID/input/attempt/outcome và retained producer cohort membership; không xóa producer records khi E chưa seal, kể cả producer đã finished. Concrete metadata adapter phải chứng minh mọi engine/control path tham gia; không dùng Nodes alive hoặc Scan leases đang đổi làm cohort.
 
 ## 9. Closure proof, stable membership và takeover
 
 Tách **producer cohort membership** (ai có thể publish vào E) và **event membership** (những transactions thực sự commit vào E). Closing cố định tập producers, không tự cố định tập mutations/events: admitted producers còn được attach mutations theo P3 tới attachment closure. Producer registration ổn định chưa chứng minh all events đã nhìn thấy nếu late transaction còn có thể commit.
 
-### Protocol P4 — Close epoch (PROPOSAL OQ-05)
+### Protocol P4 — Close epoch (DECISION W1 OQ-05)
 
 | Property | Contract |
 |---|---|
 | Preconditions | Epoch E Open, valid recovery job owner/fence/time proof, all authoritative publishers enforce same shared closure/history/epoch boundary |
 | Inputs | History/E, expected current-epoch/gate/job revisions, stable close ID, configured close budget120s |
 | Authoritative state | Gate, cohort/mutation membership, producer fences/outcomes, RecoveryEpochs[E], current epoch |
-| Atomic boundary / LP | Acquire Closing gate CAS fixes producer cohort; permit existing cohort mutations theo P3 trong drain. Close từng producer attachment, ổn định mutation membership và settle/reconcile mọi in-flight/unknown outcome bằng authoritative proof trước final transaction. Final transaction validates immutable quiescence proof bound gate/epoch/revisions, writes E Closed/cut and advances current E+1; LP this transaction. All publication conditions serialize with this boundary |
+| Atomic boundary / LP | Acquire Closing gate CAS fixes producer cohort; permit existing cohort mutations theo P3 trong drain. Close từng producer attachment, ổn định mutation membership và settle/reconcile mọi in-flight/unknown outcome bằng authoritative proof trước final transaction. Final transaction validates immutable quiescence proof bound gate/epoch/revisions, writes E Closed/cut and advances current E+1; LP this transaction. All publication conditions serialize with producer closure; final epoch transaction consumes generation-bound proof |
 | Success | No additional event can commit into E; gate may reopen for E+1 after confirmed Closed/current pointer; outbox E membership retained |
 | Retry / unknown | Same close ID reads E/current/gate authoritative tuple. Unknown final commit giữ admission gated cho đến resolve, không assume E Open rồi reopen |
 | Failure | Before final LP, budget hết chưa quiesce: abort close, E stays Open, release global gate safely. Healthy writer không bị kill; unknown roots/resource closures vẫn giữ. Không “undo” Closed hoặc reopen destructive unknown resource |
@@ -224,9 +242,19 @@ Tách **producer cohort membership** (ai có thể publish vào E) và **event m
 
 Quiescence proof cần: complete cohort; mỗi admitted producer đã hoàn tất hoặc authority đã close an toàn; mutation attachments closed, membership stable; mọi in-flight/unknown outcomes settle/reconcile bằng authoritative proof; actual committed outbox vẫn retained. Healthy producer còn làm việc thì chờ hoặc abort close theo budget. Lease expiry, timeout và absent event/outcome read không tự chứng minh no-commit. Lost producer chỉ reclaim-eligible khi L>=E_lease+grace; CAS close old publication authority, reconcile trước new authority. Không equate epoch number E với lease expiry E_lease.
 
-**REVIEW REQUIRED:** concrete quiescence certificate/aggregate encoding chưa có trong shared models. Không condition-check hàng nghìn producer rows trong một transaction hoặc coi counter=0 tự đủ proof. Cần monotone, revision-bound durable completion evidence và proof không có unregistered dispatch; reviewer chọn bounded summary protocol hoặc explicit per-mutation ledger. Nếu chưa chứng minh, close feature blocked; không bỏ điều kiện này để đạt120s.
+### 9.1 Bounded closure certificate đã chọn (OQ-05)
 
-### Protocol P5 — Takeover producer/export/seal job (PROPOSAL)
+1. Closing CAS bind `close_id`, gate revision, history/E và coordinator fence. Producer registration cùng gate boundary; retained base-table cohort membership bây giờ immutable và enumerate consistent đủ pagination.
+2. Admitted healthy cohort tiếp tục P3. Healthy producer hoàn tất rồi close attachments và publication authority. Lost producer theo R1 time eligibility/closure; không kill healthy request để đạt120s. Attachments/publication check đúng producer authority và attempt revisions.
+3. Sau closure, consistent enumerate stable mutation registry. Mutation committed có atomic outcome/outbox; no-commit chỉ kết luận khi publication authority đã closed và authoritative outcome read xác nhận chưa commit. Nếu unavailable/unknown chưa resolve thì không tạo terminal receipt.
+4. Immutable producer closure receipt bind history/E/close_id, producer authority revision, exact mutation-membership digest và mọi outcomes. Receipt terminal trong close generation; không cấp lại publication authority cho producer trong generation ấy.
+5. Trusted close worker ghép **exact frozen cohort** và toàn receipts thành immutable paged proof tree theo §7. Completed proof-root record bind gate revision/close_id, cohort digest/count, receipt tree digest/count và E. Counts/hash không thay việc verify mọi leaf; DB không tự chứng minh completeness chỉ từ một digest.
+6. Final bounded transaction condition-check expected gate/close_id/E, current coordinator fence và completed proof-root; ghi E Closed/cut_at + current E+1. Không condition-check từng producer, số actions cuối không tăng theo cohort. Mọi leaf đã terminal và new registration bị gate chặn nên proof không bị late publication làm stale.
+7. Abort trước Closed LP qua CAS đúng close_id: E Open; unknown roots và closed authority vẫn giữ. Resume phải qua authority mới theo R1, không reopen old fence. Gate revision đổi làm stale final/proof-root CAS thất bại. Unknown final transaction giữ admission gated tới khi đọc được E/current/gate tuple nhất quán.
+
+Shared models/byte schema và distributed proof tests còn gate §18: >100 producers, register/Closing, attach/closure, cả hai commit/closure orderings, lost ACK/token expiry, abort/stale proof và crash giữa tree levels. Không thêm ledger subsystem song song với registry/outcome binding OQ-01; không coi counter=0 hoặc fake mutex là proof.
+
+### 9.2 Protocol P5 — Takeover producer/export/seal job (DECISION W1)
 
 | Property | Contract |
 |---|---|
@@ -243,7 +271,7 @@ Valid pre-E_lease dispatch có thể commit sau E_lease nếu LP trước shared
 
 ## 10. Export, seal và unknown outcomes
 
-### Protocol P6 — Export event (PROPOSAL cụ thể hóa KT §9.0–9.1)
+### Protocol P6 — Export event (DECISION W1 cụ thể hóa KT §9.0–9.1)
 
 | Property | Contract |
 |---|---|
@@ -256,20 +284,20 @@ Valid pre-E_lease dispatch có thể commit sau E_lease nếu LP trước shared
 | Failure | Missing payload/page/descriptor giữ unexported, roots; conflicting bytes report integrity; không substitute pointer/mark success dựa upload submit |
 | Invariants | R2-I01/02/03/07/09 |
 
-### Protocol P7 — Enumerate và seal (PROPOSAL OQ-04/05/06)
+### Protocol P7 — Enumerate và seal (DECISION W1 OQ-04/05/06)
 
 | Property | Contract |
 |---|---|
 | Preconditions | E Closed confirmed, event membership immutable, no cleanup removes E members, valid seal job fence, verified predecessor seal/genesis |
 | Inputs | History/E/cut, base-table scan cursor, exact IDs/descriptors, predecessor hash, expected epoch revision |
 | Authoritative state | Closed E/current history, retained Outbox(E), immutable membership pages/event descriptors/seal, metadata seal pointer |
-| Atomic boundary / LP | Full consistent base Outbox pagination over immutable E (not GSI); build sorted unique membership pages with IDs+descriptor digests and count/hash. Conditional-create verified seal after every member complete. CAS publish Sealed/pointer under epoch/job/history conditions; LP metadata publication. Durable seal exists before this LP; discovery/recovery must verify full seal chain, not rely on DB status alone |
+| Atomic boundary / LP | Full consistent base Outbox pagination over immutable E (not GSI); build sorted unique membership pages with IDs+descriptor digests and count/hash. Conditional-create verified content-addressed seal then completion marker theo §12 after every member complete. CAS publish Sealed/pointer under epoch/job/history conditions; LP metadata publication. Durable artifacts/marker exist before this LP; recovery verifies full chain/coverage, không chỉ DB status |
 | Success | Exact stable set matches every durable event descriptor, predecessor chain complete; E is supported only with required retained data coverage (§13–14) |
 | Retry / unknown | Crash/lost ACK lookup immutable artifacts and pointer; same content idempotent, disagreement fail closed; new worker uses same E membership |
 | Failure | One missing event/page, chain gap, stale fence/history, incomplete enumeration: no seal publication. Empty E still requires explicit verified empty membership and valid predecessor, not scan timeout |
 | Invariants | R2-I02/03/06/07/08/09/10 |
 
-Durable S3 seal may complete before DB ACK/pointer; recovery may only use it if catalog/history selection and full chain/artifact verification succeed. DB loss with merely Closed/incomplete payload falls back to preceding complete seal. Exactly how catalog discovers available valid seals without trusting newest filename is **OQ-06**; this draft không hứa recovery finds every unattested orphan seal.
+Durable S3 completion marker có thể tồn tại trước DB pointer ACK; recovery dùng đường discovery §12 và chỉ nhận cut khi full chain/artifact/coverage verify đạt. DB mất khi chỉ Closed hoặc thiếu marker/payload thì fallback preceding complete seal; không tự promote orphan artifact chưa có completion marker.
 
 Never delete Outbox E membership before seal; mark exported alone does not permit cleanup. Refcount progress và retained outcome proof cũng là independent blockers. Export progress, seal pointer, checkpoint pointer và current-history catalog are different publications; không một boolean “done” chung.
 
@@ -277,16 +305,16 @@ Never delete Outbox E membership before seal; mark exported alone does not permi
 
 **SOURCE KT §9.1:** checkpoint ngoài barrier từ previous checkpoint+contiguous sealed replay; contains namespace/manifests, security/config, location winners, unexpired receipts; recompute quota/refcount. Không Scan mutable tables thành snapshot.
 
-**PROPOSAL descriptor logical fields (REVIEW REQUIRED OQ-04/06/08):** explicit projection mode/version phân biệt periodic historical checkpoint với new-history recovery genesis; schema version; checkpoint ID/history/incarnation provenance; base checkpoint ID/digest; target epoch/cut and terminal seal hash; included contiguous epoch range; bounded page inventory/tree (key/index/length/count/hash); entity inventory/counts; logical roots+physical coverage descriptor; full completion digest. Historical mode binds old history/target cut; genesis mode binds new history/incarnation và audited source-cut provenance, không claim là snapshot lịch sử của old history. Counts/checksums bind exact contents, not substitutes for namespace consistency audit. Mode labels chỉ là logical semantics; encoding/versions/caps/canonical bytes vẫn OQ-04/OQ-08, chưa freeze.
+**DECISION W1 descriptor logical fields (INTEGRATION REQUIRED OQ-04/06/08):** explicit projection mode/version phân biệt periodic historical checkpoint với new-history recovery genesis; schema version; checkpoint ID/history/incarnation provenance; base checkpoint ID/digest; target epoch/cut and terminal seal hash; included contiguous epoch range; bounded page inventory/tree (key/index/length/count/hash); entity inventory/counts; logical roots+physical coverage descriptor; full completion digest. Historical mode binds old history/target cut; genesis mode binds new history/incarnation và audited source-cut provenance, không claim là snapshot lịch sử của old history. Counts/checksums bind exact contents, not substitutes for namespace consistency audit. Projection modes v1 là `historical` và `recovery_genesis`; caps/canonicalization theo §7, exact field/byte goldens còn gate W2.
 
-### Protocol P8 — Build/publish checkpoint (PROPOSAL)
+### Protocol P8 — Build/publish checkpoint (DECISION W1)
 
 | Property | Contract |
 |---|---|
 | Preconditions | Periodic historical checkpoint: verified base+target chain, P2 historical replay complete, roots coverage valid, job authority/current history; chưa áp recovery security/terminal normalization |
 | Inputs | Stable checkpoint ID, historical projection mode/version, base/target IDs and digests, staged historical entity/root pages, expected pointer revision |
 | Authoritative state | Immutable source graph and output snapshot pages/descriptor; checkpoint metadata pointer |
-| Atomic boundary / LP | Write/verify all immutable output pages and descriptor first; fenced CAS publish exact checkpoint pointer. LP pointer commit. S3 body not atomic with pointer; no page hidden behind unverified completion |
+| Atomic boundary / LP | Write/verify immutable output pages/descriptor then checkpoint completion marker theo §12; fenced CAS publish exact checkpoint pointer. LP DB pointer commit. S3 marker không atomic/fenced cùng DB; chỉ tham chiếu full verified immutable checkpoint |
 | Success | Periodic checkpoint phản ánh chính xác authoritative state tại target cut, giữ credential status/revision như lịch sử, không tự disable/abort; consumers có thể replay later seals của đúng history/projection mà không live DB scan. Runtime rights vẫn không được cấp từ historical snapshot |
 | Retry / unknown | Same ID/content retry; reconcile pointer after lost ACK, do not switch to newest named artifact; conflicting identity/digest blocks |
 | Failure | Replay gap, missing roots, unavailable payload, schema mismatch or stale job: do not publish; keep source anchor/chain until valid replacement proof |
@@ -298,9 +326,23 @@ Historical checkpoint raw state và recovery installation là hai bước riêng
 
 **SOURCE:** S3 `recovery/active-history.json` selects history; catalog CAS If-Match ETag (first If-None-Match:*); online exporter không đổi catalog history. Chain binds predecessor seal, không trộn same epoch number across histories. Epoch0 bootstrap đầy đủ; post-recovery history/incarnation mới và base checkpoint từ audited cut (KT §9.1, API §6.4).
 
-**PROPOSAL OQ-06:** catalog binds format version, history/service incarnation, genesis/base checkpoint descriptor+digest và verified discovery root cho seal/checkpoint chain. Current-history selection tách khỏi mutable per-job progress. How discovery root advances while online exporter cannot change history selection, exact object paths and post-recovery epoch0/base binding are REVIEW REQUIRED; không silently grant exporter provisioning role. No speculative new public endpoint.
+**DECISION W1 OQ-06:** catalog binds `r2_version`, history/service incarnation và immutable genesis descriptor/digest. Nó không chứa mutable latest seal/checkpoint pointer; chỉ offline provisioning được đổi history bằng If-Match/If-None-Match. Online jobs ghi immutable artifacts/completion markers trong selected history và fenced DB progress/pointers, không được sửa history catalog.
 
-### Protocol P9 — Select chain / publish recovery history (PROPOSAL)
+### 12.1 DB-independent discovery
+
+| Record | Address / binding |
+|---|---|
+| Epoch completion marker | `journal/epochs/{H}/{E}/complete.json`, E là decimal không leading zeros; bind H/E, exact content-addressed seal key/digest |
+| Checkpoint completion marker | `checkpoints/{H}/{checkpoint_id}/complete.json`; checkpoint_id UUID32hex; bind descriptor key/digest, H/genesis provenance, projection mode và terminal epoch/seal hash |
+| Destructive intent evidence | `recovery/intents/{H}/{intent_id}/prepared.json` và immutable completion evidence; §4.1, không chỉ selected-cut events |
+
+Markers fixed slots là discovery records riêng, không đổi content-addressed seal/page body paths của KT. Conditional-create và verify same bytes khi retry; khác digest cùng slot fail integrity. Canonical seal/marker không chứa worker attempt/fence/processing timestamp làm retries của cùng completed input khác bytes; cut_at/membership/predecessor vẫn bind immutable Closed record. S3 không enforce metadata fence: late old worker chỉ được thêm cùng valid immutable artifact vào old-history path, không đổi catalog/new history. Artifact completeness/semantic validation vẫn bắt buộc, checksum đơn lẻ không chứng minh input hợp lệ.
+
+Recovery enumerate checkpoint completion markers đủ prefix pagination để lấy **candidates**; không lấy filename/LastModified làm authority. Verify history/genesis provenance, projection mode, descriptor/pages và root coverage, chọn compatible base không sau explicit target. Sau pruning không buộc replay từ genesis: giữ genesis identity/provenance và ít nhất một discoverable verified anchor cho mỗi protected target; anchor có thể cũ hơn24h. Từ base terminal epoch/hash đọc contiguous epoch markers tới target, verify predecessor hash, exact membership, all event pages/entity dependencies và physical coverage. First missing/corrupt link dừng; không skip epoch. Empty epoch vẫn có explicit empty membership/marker. Listing không là completeness proof, pointer DB không thay marker.
+
+Initial history: empty base + epoch0 journal đầy đủ bootstrap. Recovered history: audited normalized genesis (`recovery_genesis`) là explicit base trước epoch0; epoch0 ghi mutations của history mới, không splice old seal chain. Provisioning giữ immutable catalog revisions dưới `recovery/histories/{H}/catalog-{sha256}.json` trước active-history CAS để old protected histories còn discoverable; explicit old-H recovery verify catalog/provenance đó, không chọn history theo timestamp. Same-H conflicting descriptors/chains fail closed và operator audit. Root cleanup phải giữ marker/anchor/provenance tương ứng mọi protected target.
+
+### 12.2 Protocol P9 — Select chain / publish recovery history (DECISION W1)
 
 | Property | Contract |
 |---|---|
@@ -313,38 +355,38 @@ Historical checkpoint raw state và recovery installation là hai bước riêng
 | Failure | Missing/multiple/contradictory catalog/chain, base incomplete, KMS unavailable, old destructive unknown: not ready; operator explicit selection/audit needed |
 | Invariants | R2-I02/08/09/10/11/12 |
 
-Selecting chain: verify catalog-selected history → trusted base/genesis descriptor và projection mode/version → contiguous seals to explicit target → every member/descriptor/page → entity dependencies/roots. Not sort filenames/timestamps or replay later unsealed/open events. New history base is explicit audited normalized genesis, not historical snapshot/link spliced into old seal chain. Old-history cuts còn protected phải giữ addressable history/base/discovery roots; catalog đổi history không tự rút nghĩa vụ retention. Exact cross-history selection protocol vẫn **OQ-06/07**.
+Selecting chain: verify catalog-selected history → trusted base/genesis descriptor và projection mode/version → contiguous seals to explicit target → every member/descriptor/page → entity dependencies/roots. Not sort filenames/timestamps or replay later unsealed/open events. New history base is explicit audited normalized genesis, not historical snapshot/link spliced into old seal chain. Old-history cuts còn protected phải giữ addressable history/base/discovery roots; catalog đổi history không tự rút nghĩa vụ retention. Cross-history selection dùng retained immutable history catalogs và markers theo §12.1; không tự follow old operation vào history mới.
 
 ## 13. Supported cuts và 24h retention
 
 **SOURCE KT §9.1/API defaults:** supported recovery points là complete cuts trong24h, thêm10m GC buffer, anchor trước biên và mọi dependency còn cần. PITR configured1day; actual Earliest/LatestRestorableDateTime vẫn constrain selection. Cadence không guarantee một cut tại mọi giờ/giây.
 
-**PROPOSAL:** enumerate supported set S bằng verified (history,epoch,cut,seal) descriptors, with complete replay+payload coverage. Không advertise cut chỉ vì nó recent hoặc Sealed flag. S/support index là biểu diễn nghĩa vụ coverage, không là quyền tùy ý chọn subset để GC: checkpoint C2 mới không loại cut C1 còn trong protected window. Mọi cut còn trong window hoặc còn retention/recovery references tiếp tục protected dù latest checkpoint/catalog pointer đã đổi. Anchor A phải không sau oldest target cần phục hồi; retain A và all contiguous seals/pages, manifests, physical generations và payload dependencies tới every protected target. Nếu no cut trong window hoặc target ngoài support, report unsupported/stale, không quietly gọi old anchor là fresh supported cut. Wall cut timestamp phục vụ selection/age, never event ordering.
+**DECISION W1:** enumerate supported set S bằng verified (history,epoch,cut,seal) descriptors, with complete replay+payload coverage. Không advertise cut chỉ vì nó recent hoặc Sealed flag. S/support index là biểu diễn nghĩa vụ coverage, không là quyền tùy ý chọn subset để GC: checkpoint C2 mới không loại cut C1 còn trong protected window. Mọi cut còn trong window hoặc còn retention/recovery references tiếp tục protected dù latest checkpoint/catalog pointer đã đổi. Anchor A phải không sau oldest target cần phục hồi; retain A và all contiguous seals/pages, manifests, physical generations và payload dependencies tới every protected target. Nếu no cut trong window hoặc target ngoài support, report unsupported/stale, không quietly gọi old anchor là fresh supported cut. Wall cut timestamp phục vụ selection/age, never event ordering.
 
 Two separate facts: sealed metadata completeness và recoverable physical coverage. Missing/corrupted payload của protected cut là integrity incident, không normal support withdrawal: báo degraded/failed coverage và giữ retention obligation/remaining roots, không xóa entry khỏi index để hợp thức hóa GC hoặc sửa seal để che lỗi. Incident không biến broken cut thành recoverable; report thực tế chưa phục hồi được trong khi giữ nghĩa vụ bảo vệ/repair. Record actual latest supported cut, export lag và cut age riêng; publication/cost/reporting không hứa RPO60s hoặc1h.
 
-**Removal eligibility:** chỉ loại cut khi có authoritative proof đúng reviewed support policy, expiry ngoài protected window với conservative time bound, dependency closure và active recovery references đã được xét đầy đủ. Nếu còn cut/anchor/consumer khác phụ thuộc artifacts, removal một cut không giải phóng artifacts đó. No cut/support-index removal tự tạo no-root proof; root/watermark publication phải bảo toàn mọi nghĩa vụ còn sống kể cả qua history switch. Encoding/time-bound/root-summary proof vẫn OQ-06/07; chưa có proof thì giữ cut và skip cleanup. Giữ source24h+10m+anchor; elapsed time không là independent deletion authority.
+**Removal eligibility:** chỉ loại cut khi có authoritative proof đúng reviewed support policy, expiry ngoài protected window với conservative time bound, dependency closure và active recovery references đã được xét đầy đủ. Nếu còn cut/anchor/consumer khác phụ thuộc artifacts, removal một cut không giải phóng artifacts đó. No cut/support-index removal tự tạo no-root proof; root/watermark publication phải bảo toàn mọi nghĩa vụ còn sống kể cả qua history switch. Retention snapshot dùng immutable paged protected-cut/anchor/root inventory và revision-bound summary theo P10; adapter/time-bound proof chưa đạt thì giữ cut và skip cleanup. Giữ source24h+10m+anchor; elapsed time không là independent deletion authority.
 
-### Protocol P10 — Advance retention/support watermark (PROPOSAL)
+### Protocol P10 — Advance retention/support watermark (DECISION W1)
 
 | Property | Contract |
 |---|---|
 | Preconditions | New checkpoint/chain/payload closure verified; valid time bound, retention job authority. Proposed set preserves every still-protected cut; each removed cut has policy/expiry/dependency/active-recovery eligibility proof, không chỉ newer checkpoint |
 | Inputs | Expected support/watermark revision, previous and proposed supported/protected sets/anchors, per-removal eligibility evidence, full dependency/root digest, job fence |
 | Authoritative state | Retention/support obligations và index, chain/checkpoint pointers, active recovery/R1/outcome roots; obligation không mất vì index entry bị bỏ |
-| Atomic boundary / LP | Revision-bound CAS validates preservation/removal eligibility và publishes support/root snapshot before delete eligibility. GC admission serializes with obligations/root updates, không chỉ đọc proposed index; no full root-list single transaction assumption. Concrete bounded root-summary protocol REVIEW REQUIRED |
+| Atomic boundary / LP | Revision-bound CAS validates preservation/removal eligibility và publishes support/root snapshot before delete eligibility. GC admission serializes with obligations/root updates, không chỉ đọc proposed index; no full root-list single transaction assumption. Trusted retention worker verifies immutable paged inventory và completed summary bound expected support/policy/R1 admission revisions; final CAS binds summary root, không condition-check toàn root list. Any concurrent admission/root change invalidates expected revision; adapter proof còn gate §18 |
 | Success | Every protected cut retains immutable namespace/manifests/physical payload/anchor/chain closure; C2 không withdraw C1 trong window. Old anchor/artifact removable only when no protected cut/consumer needs it và independent cleanup predicates đạt |
 | Retry / unknown | Same expected revision reconcile; unknown watermark cannot justify cleanup; moving clock/policy không giảm granted protection |
 | Failure | Missing removal proof, premature withdrawal, stale/unknown clock bound, active references hoặc CAS conflict: retain, skip cleanup. Missing/corrupted payload là integrity incident giữ remaining obligations, không normal withdrawal |
 | Invariants | R2-I03/08/09/10 |
 
-Time pruning phải conservative theo CLOCK [§3.4](clock-and-policy.md#34-shared-utc-uncertainty-và-lease-safety), không chỉ local now−24h. Exact rounding, anchor selection under uncertainty và cleanup observation horizon **OQ-07**; chưa chọn công thức wall timestamp như correctness proof.
+Time pruning dùng verified lower bound L theo CLOCK [§3.4](clock-and-policy.md#34-shared-utc-uncertainty-và-lease-safety): chỉ expiry-eligible khi `L >= protected_until`, deadline persist round-up, không round-down hoặc giảm protection đã cấp. Cut timestamp phải có conservative upper bound để tính24h+10m; nếu chưa bound được thì chưa prune. Anchor không sau oldest required target; uncertainty, overflow, stale bound hoặc root/policy revision đổi ⇒ retain/revalidate. Age eligibility vẫn phải AND mọi P11 predicates; clock adapter/horizon proof là gate implementation.
 
 ## 14. Anchor, physical roots và GC safety
 
 **SOURCE KT §8/9.1:** roots beyond committed heads; retirement giữ pack/pages/sidecar ít nhất24h+10m và mọi reader/writer/upload/recovery/minimum-retention dependencies. Sidecar chỉ physical inventory, không namespace/canonical winner (FORMAT §2.5). Refcount/age/TTL không là delete authority.
 
-**PROPOSAL OQ-07 baseline:** retain exact PackRef/generation selected by each supported cut's reconstructed canonical location state. Manifest chỉ giữ domain/hash/raw length, nên root proof phải nối logical manifest refs với historical location winners, không dùng current Chunks table để đại diện mọi cut. Class change không đổi content generation; actual read eligibility/restore vẫn phải audit.
+**DECISION W1 OQ-07 baseline:** retain exact PackRef/generation selected by each supported cut's reconstructed canonical location state. Manifest chỉ giữ domain/hash/raw length, nên root proof phải nối logical manifest refs với historical location winners, không dùng current Chunks table để đại diện mọi cut. Class change không đổi content generation; actual read eligibility/restore vẫn phải audit.
 
 | Root owner | Logical references giữ | Physical generations/artifacts giữ |
 |---|---|---|
@@ -356,16 +398,16 @@ Time pruning phải conservative theo CLOCK [§3.4](clock-and-policy.md#34-share
 | Active recovery/audit | Selected source graph và staged verified reconstruction | Keep source+destination until install/readiness/outcome confirmed |
 | Completed receipt | Response/binding/original expiry | Receipt alone không payload root; historical object roots vẫn có thể giữ data riêng |
 
-Compaction creates new durable pack/sidecar then location CAS; it cannot delete old generation simply because current head now uses new location. Alternative verified replacement requires durable cut→same-domain/hash equivalent mapping, complete decode/SHA verification and retention handoff before old delete. Không choose any same-hash candidate across domains or trust sidecar alone. Alternative not selected/implemented by draft.
+Compaction creates new durable pack/sidecar then location CAS; it cannot delete old generation simply because current head now uses new location. Alternative verified replacement requires durable cut→same-domain/hash equivalent mapping, complete decode/SHA verification and retention handoff before old delete. Không choose any same-hash candidate across domains or trust sidecar alone. OQ-07 chọn exact-generation baseline; replacement mapping không thuộc implementation baseline này.
 
-### Protocol P11 — Cleanup generation/pages/outbox (PROPOSAL)
+### Protocol P11 — Cleanup generation/pages/outbox (DECISION W1)
 
 | Property | Contract |
 |---|---|
 | Preconditions | Support/root snapshot valid và preservation/removal eligibility confirmed theo P10, mọi protected-cut dependencies discharged cho candidate; no R1/upload/recovery/outcome dependencies; time/protection/provider minimum retention achieved; valid maintenance authority |
 | Inputs | Exact resource identity, expected lifecycle/root/support revisions, fenced delete job and durable intent |
 | Authoritative state | Retention roots/watermarks, resource admission/pins, lifecycle Deleting/Transitioning, outcome/refcount progress |
-| Atomic boundary / LP | Under R1 serialize roots/pins/admission with retirement and durable Deleting intent; LP metadata closure. Physical S3 DELETE later, not atomically fenced; finalize deletion only after backend outcome reconciled |
+| Atomic boundary / LP | Under R1 serialize roots/pins/admission with retirement and durable Deleting intent; LP metadata closure. Persist/verify immutable write-ahead intent theo §4.1 trước destructive S3 dispatch; S3 không atomically fenced. Finalize deletion chỉ sau backend outcome reconcile |
 | Success | No supported cut/current reader loses required data; deleted artifact no longer dependency; cleanup progress idempotent |
 | Retry / unknown | Unknown delete keeps durable resource closed; new worker reconciles same action. Unknown pointer/root progress does not authorize deletion |
 | Failure | Any missing proof, replacement uncertainty, active recovery, refcount unfinished or class retention unmet: skip. No reopening Warm after timeout |
@@ -375,7 +417,7 @@ Cleanup predicate is AND: all logical/physical dependencies discharged for mọi
 
 ## 15. Recovery security, uploads và counters
 
-### Protocol P12 — Recover/install/readiness (PROPOSAL cụ thể hóa KT §9.1/API §6.4)
+### Protocol P12 — Recover/install/readiness (DECISION W1 cụ thể hóa KT §9.1/API §6.4)
 
 | Property | Contract |
 |---|---|
@@ -390,20 +432,22 @@ Cleanup predicate is AND: all logical/physical dependencies discharged for mọi
 
 SOURCE operational priority remains PITR when usable; choose restore point not after target and reconcile all tables to same cut through complete chain. S3 checkpoint+sealed replay is reference reconstruction. PITR multi-table mixed state is not a valid snapshot automatically; adapter must prove projection equals target and does not retain later/unjustified rows. No inverse replay/rollback algorithm invented here; unavailable equivalence proof blocks that PITR install, not license to open service (OQ-08).
 
-**Recovery installation normalization, không áp vào periodic historical checkpoint:** sau historical rebuild và trước readiness, thực hiện các bước dưới đây. New-history recovery genesis chứa audited normalized result với source history/cut provenance; không được trình bày như historical checkpoint của old history. Descriptor mode/version/encoding vẫn OQ-04/OQ-08.
+**Recovery installation normalization, không áp vào periodic historical checkpoint:** sau historical rebuild và trước readiness, thực hiện các bước dưới đây. New-history recovery genesis chứa audited normalized result với source history/cut provenance; không được trình bày như historical checkpoint của old history. Descriptor modes và canonicalization theo §7/11; complete field schemas/goldens còn gate W2.
 
 1. Disable every restored bearer/SigV4 credential regardless active-at-cut; clear auth cache. Persist only ciphertext/hash, never secret plaintext; audit users/grants. Operator explicitly issues new credentials after audit via approved bootstrap path.
 2. Do not restore old lease/job ownership. New history/service incarnation, DB conditions and provisioning/catalog binding prevent old metadata publication; old S3 destructive calls still require reconciliation before resource readmission.
-3. Reconcile Completed receipt/outcome before abort classification. Preserve committed response and original expiry; no replay creates head again after later delete/overwrite. Receipt expiry at recovery time and provenance policy need OQ-08 fixtures, never restart7days from recovery.
+3. Reconcile Completed receipt/outcome before abort classification. Preserve committed response and original expiry; no replay creates head again after later delete/overwrite. Original receipt expiry vẫn áp tại recovery-time với valid Clock proof; expired receipt không authorize retry. Provenance giữ source history/cut; không restart7days từ recovery. Equality/uncertainty fixtures là gate W2.
 4. Nonterminal uploads do not become Active. Abort controlled, reconcile unknown Complete and retire parts/input/snapshots only after roots/outcome retention allow. Do not double-release a ledger imported for audit.
-5. Reconstruct used logical bytes by owner from recovered live heads; recompute refcount/live_bytes from validated references. Reserved/staged and active-upload counters reset/release after all nonterminal uploads normalized; used is **not** reset0. Pending historical refcount delta must not be reapplied on top of recomputed counts; projection/progress rebasing requires OQ-02/08 handoff.
+5. Reconstruct used logical bytes by owner from recovered live heads; recompute refcount/live_bytes from validated references. Reserved/staged and active-upload counters reset/release after all nonterminal uploads normalized; used is **not** reset0. Pending historical refcount delta không apply lên recomputed counts: normalized genesis bắt đầu derived-count baseline mới, old-history refcount work chỉ giữ audit/retention, không enqueue lại vào new-history workers. Rebase phải có adapter/fault proof trước readiness.
 6. Actual backend class/restore expiry via HEAD/reconcile; inventory sidecar cannot reconstruct Objects/permissions/manifests/canonical revisions. Missing canonical may use same-domain/hash verified surviving candidate only per KT; Cold verification restore impacts RTO. Cache is never audit proof.
+
+Live-DB takeover và disaster restore có outcome scope khác nhau: live-DB unknown Complete vẫn reconcile authoritative ledger trước release. Khi mất DB, chỉ reconstruct selected complete cut; không đòi chứng minh mọi commit trong open/unsealed epochs sau cut mà metadata đã mất. Các outcomes đó nằm ngoài RPO được chọn, ghi rõ trong audit; không retry/reapply dưới history mới. Physical destructive intents sau cut vẫn phải enumerate/reconcile theo §4.1 vì có thể chạm retained bytes. Không coi mất metadata là bằng chứng old S3 request chưa dispatch.
 
 Readiness gates: explicit supported source and complete chain; deterministic entity/reference completeness; required physical coverage/audit; destructive unknowns resolved; credential disable/auth audit; uploads/counters normalized; old authority isolated; valid clock/proof sources; new base/history/incarnation/catalog match; operator audit complete. Successful checksum on sidecars or replay progress100% alone is insufficient.
 
 ## 16. Fault timelines và test vectors
 
-All below **PROPOSAL**, no execution evidence. Stable mutation membership/no-commit proof remains review obligation. Deterministic model tests supplement, not replace, backend transaction/fault and recovery drills.
+Các fault vectors dưới đây là acceptance của **DECISION W1**, chưa là execution evidence. Stable mutation membership/no-commit proof remains review obligation. Deterministic model tests supplement, not replace, backend transaction/fault and recovery drills.
 
 ### Timeline A — In-flight commit after lease expiry
 
@@ -444,7 +488,7 @@ sequenceDiagram
     N->>M: Claim new authority after reconciliation
     N->>M: Enumerate exact retained membership E
     N->>S: Verify or finish every payload and descriptor
-    N->>S: Conditional create membership and seal
+    N->>S: Conditional create membership seal and completion marker
     N->>M: Fenced CAS publish verified seal pointer
     Note over M,S: Missing any member prevents complete seal
 ```
@@ -495,6 +539,15 @@ sequenceDiagram
 | F25 | Credential K active@revision R tại cut C | Periodic checkpoint C được build rồi recovery từ C | Historical snapshot giữ active@R, không disable; installation mới disable trước readiness, normalize uploads/counters/authority | Audit normalized state và publish new-history genesis riêng; không sửa historical checkpoint | I04/08/10/12; checkpoint/auth/recovery |
 | F26 | Historical descriptor và normalized genesis có mode/version khác | Replay/chain dùng nhầm genesis như checkpoint old history | Reject mode/provenance/history mismatch; no silent historical-state rewrite | Select compatible base/chain hoặc fail closed theo OQ-04/OQ-08 schema | I04/08/10/12; format/replay |
 | F27 | Authorized global-policy producer, no object quota reservation/pack | P1 publication checks áp cho control-plane update | Không yêu cầu artificial object ledger/physical pack; vẫn atomically check policy CAS/authorization/producer closure/history/epoch và write policy/history/outbox. Mutation có reservation vẫn giữ deadline/quota constraints | Reconcile policy outcome theo stable identity; no partial metadata/outbox | I01/03/05/06/10; config/metadata |
+| F28 | Same parent request, two child chunk mutations | Retry/known conflict/takeover | Distinct child IDs; unknown retry giữ identity/input; unrelated operation reuse reject | Verify §18.1 và serialized attempt transition | I01/03/04; engine/metadata |
+| F29 | Cohort >100 producers, proof tree nhiều pages | Crash/abort rồi stale final CAS | No giant transaction; old close_id/proof không advance E | Reconcile current gate/epoch, rebuild đúng generation | I05/06/07/10; coordinator |
+| F30 | Cut/marker complete, DB pointer ACK unknown | DB bị mất | Discover exact S3 marker/verified chain không cần DB flag | Verify catalog/anchor/membership/payload | I02/07/08; ops/exporter |
+| F31 | Older checkpoint anchor ngoài24h còn needed | New checkpoint và cleanup | Old protected target vẫn discover được base/markers | Retain provenance/anchor tới dependency discharge | I08/09; retention |
+| F32 | Same epoch marker slot | Retry từ old/new worker với differing bytes | Integrity conflict; no overwrite/latest-writer choice | Retain artifacts, audit stable Closed inputs | I03/07/10; storage |
+| F33 | R2 metadata256KiB hoặc tree depth/fanout boundary | Oversize/overflow/truncated/unknown field | Reject before unsafe allocation/publication; FORMAT attachment giữ limit riêng | Exact byte/negative goldens W2 | I02/07; format |
+| F34 | Historical target trước destructive intent | DB loss sau dispatch DELETE/COPY | Post-cut physical action không bị bỏ khỏi audit | Enumerate write-ahead intents, isolate old workers, keep unknown resource closed | I09/10/12; GC/ops |
+| F35 | Commit có thể ở unsealed epoch sau target, DB đã mất | Normalize disaster restore | No indefinite request tìm outcome đã mất; no replay vào new history; RPO scope explicit | Rebuild selected cut, reconcile physical intents độc lập; live-DB takeover vẫn reconcile ledger | I03/08/12; MP/ops |
+| F36 | Complete validation/quota failure đã known no-commit, API reopen Active | Parts/input thay đổi rồi freeze lại | Giữ completion_op_id/event identity; new completion/attempt revision serialize-out old attempt; unknown không được thay input | Verify reopen/refreeze và lost ACK separately; committed receipt giữ original response | I01/03/04; MP/metadata |
 
 Additional boundaries for downstream vectors: empty epoch/genesis; repeated entity revision with differing content; bucket ABA; exactly window edge/anchor older than24h; receipt original expiry equality; stale/unknown clock bound; failed page length/allocation checks; unsupported version; missing KMS key; pending destructive DELETE after recovery; more members/pages than one transaction; DB loss after partial seal upload. Expected outcomes must distinguish blocked/unknown/unverified from success.
 
@@ -502,7 +555,7 @@ Evidence per vector: source/build/config revision, input identities/digests, fau
 
 ## 17. Cross-team handoff
 
-**PROPOSAL / REVIEW REQUIRED OQ-09:** extend shared boundary after decisions, not introduce duplicate stores/types. Current source has envelope/CommitRequest/GetOutbox and fakes, not coordinator/exporter/replay implementation. Names below describe existing task boundaries or source logical operations, not new methods added by this document.
+**DECISION W1 OQ-09:** extend shared boundary theo decisions này; models/ports/fixtures còn INTEGRATION REQUIRED, không introduce duplicate stores/types. Current source has envelope/CommitRequest/GetOutbox and fakes, not coordinator/exporter/replay implementation. Names below describe existing task boundaries or source logical operations, not new methods added by this document.
 
 | Consumer / owner | Handoff needed | Gap / validation obligation |
 |---|---|---|
@@ -515,23 +568,42 @@ Evidence per vector: source/build/config revision, input identities/digests, fau
 | Hải — GC/compaction/refcount consumers | P10/P11 cut roots, exact generations, watermark and progress cleanup | Refcount_next/outcome/export/retention conjunction; historical-cut recovery after GC |
 | Clock/config/simulator consumers | Time predicates, immutable policy history/limits roots | No policy revision/epoch mixing, conservative cleanup horizon, shared evaluator not authority provider |
 
-Specific integration issues: ENGINE §6.1 event_id currently op_id-derived; KT includes history/entity/action. ENGINE crash table “no event→release” requires authoritative closed/ledger-serialized proof, not arbitrary absent read. API/KT lease/deadline wording needs alignment with R1 Q6 without changing request/reservation deadlines. SHARED logical models lack complete FORMAT head/entity schemas; R2 serializer cannot silently assume fields exist. Keep these sync deltas explicit in review; no unrelated source edits in this phase.
+**Source sync trong commit này:** KT §9.0/9.1, API §2.6/4.3.1, ENGINE §5.4/6.1/crash reconciliation và SHARED handoff trỏ về selected identity/closure/discovery/projection contract. Không thay Go signatures hay cố làm fixtures reference cũ thành production evidence. W2 phải extend Outbox/registration/outcome/parent binding, verify transaction-size accounting và cập nhật identity/serializer/adapter fixtures cùng implementation; không bypass MetadataStore. Request/reservation deadlines giữ nguyên; R1 Q6 dispatch/closure semantics không đổi.
 
 Observability handoff: API metrics oldest_unexported_age_seconds, recovery_cut_age_seconds, gc_gate_duration_seconds and backend request/error counters. Report sealed/supported cut vs checkpoint/export lag separately. Proposed redacted diagnostics include history/incarnation/epoch/job/op IDs, bundle/membership digests, pointer revisions, unknown reason and root proof; no secrets/object-user high-cardinality metric labels. Cost includes retained/dead/anchor bytes, journal/pages/retries/restore and KMS, not just live canonical payload (KT §13).
 
-## 18. Open Questions và freeze criteria
+## 18. Decisions và freeze/enablement gates
 
-OQ-01..09 giữ nguyên IDs và **Pending Review** tại §2. Recommended proposals không tự trở thành Approved. Protocol-level REVIEW REQUIRED không được bỏ qua chỉ vì task prerequisites đã Done hoặc PR đã merge.
+OQ-01–09 đã chọn ở §2, IDs giữ để trace rationale/handoff. Không còn pending option selection. Independent consumer review, byte schema/golden và backend proof chưa được ghi là đạt chỉ vì decisions được chốt hoặc PR merge.
 
-Before format/consumer freeze:
+| Mốc | Deliverables còn phải đạt | Owner / proof |
+|---|---|---|
+| W1 contract review | Review choices/protocols/source sync/fault vectors trong PR; field projection và ownership explicit | Phong, lead và impacted consumer reviews thực tế |
+| W2 format freeze | Complete versioned field schemas, bounds/canonicalization, exact positive/negative byte goldens cho event/membership/seal/checkpoint/catalog/markers; parent/child IDs và historical/genesis modes compatible | Phong + format/metadata/auth consumers; chưa chỉ định serializer library hoặc claim goldens đã chạy |
+| Production enablement | Shared ports/adapters, clock horizon, closure certificate, root/GC admission, publication/discovery, intent reconciliation và recovery security/counters pass contract/fault/drill evidence | Owners §17, actual backend; docs/fake-only success không thay proof |
 
-1. Hưng và impacted consumers record choices OQ-01..09, rationale và source-sync deltas; update all tables/protocols/diagrams/vectors affected. Exact byte schema/key changes require serialization/golden review, không chỉ chấp thuận prose.
-2. Prove new-producer Open admission tách existing admitted mutation registration trong Closing; attachment closure cấm mutation mới; publication conditions serialize với authority/epoch closure; mọi admitted producer và in-flight/unknown outcomes settle/reconcile bằng authoritative proof trước Closed/new authority. Concrete bounded quiescence certificate reviewed; timeout/lease expiry/absence read never substitute proof.
-3. Pin inventory, mutation/event identity, one-bundle transaction semantics, causal replay, field projections, receipt policy và derived-progress rebasing. No collisions/partial visible bundle/source conflicts left unresolved.
-4. Pin page/descriptor/seal/checkpoint/catalog schemas, canonicalization, versions, bounded limits và conditional publication/outcome protocols. Unknown S3/DB ACKs covered; genesis/discovery/current-history roles unambiguous.
-5. Retention coverage proof cho mọi still-protected cut dù checkpoint/index/catalog đã đổi; removal eligibility binds policy/expiry/dependency/active-recovery proof. Exact generations baseline, anchor/chain và R1/policy/outbox/refcount/receipt distinctions reviewed với GC; no index-removal/age-only deletion hoặc normal withdrawal vì corrupt payload.
-6. Review historical checkpoint giữ exact authoritative status/revision; recovery installation mới normalize security/uploads/counters; new-history genesis riêng với projection mode/version/provenance. Pin PITR equivalence/reference rebuild, old-worker/S3 isolation và DB/catalog/genesis readiness. Missing namespace despite sidecars remains failure.
-7. Shared models/ports/fixtures handoff explicit; no duplicate types/MetadataStore. Backend implementation enablement requires actual contract/fault/recovery/time-bound evidence, not documentation/fake-only success.
-8. Validate this document links/anchors/Mermaid/terminology/diff; docs-only scope. Independent review/CI/current-PR evidence and task completion recorded only when real artifacts exist. No auto freeze/Done.
+Required acceptance:
 
-**PR readiness:** tài liệu đề xuất sẵn sàng cho Pull Request thông thường (Ready for Review) theo yêu cầu người dùng. OQ-01–09 vẫn Pending Review; PR workflow không là approval hoặc freeze. Chưa đủ freeze/production enablement; chưa có proof implementation hoặc RPO/RTO claim. Thay đổi chỉ gồm `docs/contracts/r2-recovery.md`, không source/Go/models/ports hoặc Miles mutation.
+1. All authoritative paths register before dispatch, publication check shared authority/history/epoch và exact attempt revision; zero unregistered dispatch. >100 producers close bằng bounded final transaction, complete proof tree; abort/stale proof và takeover không overlap authority.
+2. One bundle giữ đủ effects/dependencies; identity/input/digest conflicts, tombstones/incarnations và replay progress không resurrect/double effects. Counter baseline rebase không reapply old work.
+3. Serialization follows §7; page/tree/attachment bounds được kiểm trước allocate. Byte/schema changes qua consumer review trước freeze, không sửa kinds1–4 ngầm.
+4. S3 completion markers + retained catalogs/anchors cho phép discover verified chain khi DB mất, kể cả lost pointer ACK và anchor cũ hơn24h; không dùng mutable latest timestamp, GSI hoặc partial listing làm proof.
+5. Every protected cut giữ namespace/manifests/generations/payload/anchor/chain/discovery dù index/catalog/checkpoint đổi; eligibility binds conservative expiry và independent roots. Missing payload là incident, không normal withdrawal. GC summary/admission revisions serialize đúng.
+6. Historical checkpoint giữ exact authoritative status/revision; recovery genesis normalized riêng. Disable credentials, normalize uploads/counters, isolate old authority và reconcile destructive intents cả sau cut; PITR chỉ ready khi tương đương target reference.
+7. Models/ports/fixtures thực hiện tại shared boundary; preserve request deadlines, receipt expiry và API response semantics. Exact identity examples bên dưới không chứng minh backend hoặc full RFC conformance.
+8. Validate local links/anchors/Mermaid/terminology/diff, CI và reviewer evidence thật. Không tự đánh dấu task Done, production verified hoặc Approved/Frozen.
+
+### 18.1 Identity examples
+
+ASCII inputs: H=`11111111111111111111111111111111`, parent=`22222222222222222222222222222222`, childA=`33333333333333333333333333333333`, childB=`44444444444444444444444444444444`; new H=`55555555555555555555555555555555`.
+
+| Binding | Expected event_id theo §5 |
+|---|---|
+| H, parent, Objects, object_commit | `8ad1cfa9e409f3f3a1304885a8773fde9c800e38498c4dda3bee4e00af874710` |
+| H, childA, Chunks, location_set | `fd84b169c3d257abc420d41cb92c52ece67d232578db103e9fac38c06faa4fa6` |
+| H, childB, Chunks, location_set | `a8e6e7dc2d3eab0cebf7b2df3c0ef15aca553316fa59eada3a8515a10f463954` |
+| new H, parent, Objects, object_commit | `8734f34e67ad26e27d9685fdbd627d084bd404c67fa463198c8f3243389facae` |
+
+Same binding retry giữ digest; changing child/history đổi digest; attempt/fence không thuộc identity. Token với attempt65535 kết thúc `ffff`, dài36; attempt65536 reject theo ENGINE. Đã self-check các ASCII string-array examples này; full JCS conformance, enum/field schemas và adapter behavior vẫn thuộc gates trên.
+
+**PR readiness:** thiết kế W1 OQ-01–09 đã được chọn theo lead instruction và source wording được đồng bộ. Chờ independent review và gates ở trên; không claim Frozen/production verified hoặc RPO/RTO đạt. Commit chỉ thay docs, không Go/models/ports/fixtures hoặc Miles mutation.

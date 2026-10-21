@@ -110,7 +110,7 @@ Pack được đóng theo pack-and-pages §2.3 (32–64 MiB hoặc 16384 entry) 
 
 ### 5.4 Insert, CAS và race
 
-Mỗi insert/CAS là một transaction 4 action (§6.3) có Outbox event location riêng, op_id mới mỗi lần thử, cùng op_id khi retry kết quả chưa rõ.
+Mỗi intended insert/location CAS mutation có op_id riêng, bind durable với logical parent theo [R2 §5](r2-recovery.md#5-event-identity-và-idempotency). Retry unknown giữ op_id/token/params; known CAS conflict của cùng intended `location_set` chỉ advance serialized attempt revision. Transaction lõi4action ở §6.3 là reference trước R2 registry integration, không phải action budget cuối của production adapter.
 
 | Bước | Kết quả | Tiếp theo |
 |---|---|---|
@@ -134,7 +134,7 @@ Vòng lặp kết thúc trước hard deadline; mỗi conflict nghĩa là writer
 ### 6.1 op_id
 
 - `op_id` là 16 byte ngẫu nhiên, 32 hex, sinh lúc admission và ghi vào `QuotaReservations` trước mọi ghi vật lý. Mọi retry nội bộ của request dùng cùng op_id; client gửi lại HTTP request là op mới (last writer wins). DeleteObjects: một op_id mỗi key. Multipart: op_id sinh lúc CreateMultipartUpload cùng reservation ledger của upload và là `completion_op_id` của mọi lần freeze/takeover (API §4.3 gắn nó vào upload khi CAS Active → Completing). Mở lại Active không commit nên event chưa tồn tại; lần freeze sau dùng lại op_id và ledger mà vẫn commit tối đa một lần.
-- Mỗi transaction authoritative ghi đúng một Outbox event; `event_id` suy ra xác định từ op_id (API §4.3.1 hiện dùng chính op_id; encoding cuối do W01-PHONG-03 chốt) và Put có điều kiện `attribute_not_exists`. Cùng điều kiện ledger `Active` ở revision đang giữ (§6.3 action 3), một op_id commit tối đa một lần, kể cả khi recompute với head revision mới, attempt cũ đến muộn hoặc token đã hết hạn.
+- Mỗi transaction authoritative ghi đúng một Outbox event; event_id = SHA-256 của JCS identity array theo [R2 §5](r2-recovery.md#5-event-identity-và-idempotency), có history/mutation/entity/action, không là literal op_id. Final head/Complete mutation_id = original logical op_id; chunk mutations dùng child mutation_id riêng và parent binding. Put condition `attribute_not_exists` cùng ledger/attempt conditions bảo đảm at-most-once ngoài token window. `completion_op_id` vẫn là logical/final-mutation identity; Go/fixtures cũ chưa implement R2 identity encoding.
 - `ClientRequestToken` = op_id nối `attempt` dạng 4 hex lowercase, luôn đúng 36 ký tự (giới hạn DynamoDB), `attempt` 0..65535. Mỗi bộ tham số transaction mới (recompute, freeze lại, conflict tạm thời) tăng `attempt`; retry kết quả chưa rõ giữ token và tham số (KT §9.0). Hết 65535 attempt thì dừng, 503, giữ reservation; với backoff trong deadline 30 phút không chạm tới. Token chỉ chống áp lặp trong cửa sổ 10 phút của DynamoDB; ngoài cửa sổ, điều kiện Outbox và ledger mới là bảo đảm. Fixture: `commit.json` → `tokens` (attempt 0, 999, 1000, 65535, 65536 và op_id sai).
 
 ### 6.2 Thứ tự bền vững — PUT
@@ -152,7 +152,7 @@ Vòng lặp kết thúc trước hard deadline; mỗi conflict nghĩa là writer
 
 | Crash sau bước | Bền vững | Object mới | Phục hồi |
 |---|---|---|---|
-| 1 | Reservation Active | Không | Hết lease: claim, không có event của op_id → release (shared storage, reservation lifecycle) |
+| 1 | Reservation Active | Không | Close old publication authority, ổn định membership và reconcile authoritative outcome theo R1/R2 trước release; expiry hoặc absent event trước closure không đủ |
 | 4, giữa pack/sidecar | `Packs` Uploading, có thể có object S3 | Không | Pack orphan: hết protection, GC dọn theo inventory S3 + `Packs` |
 | 4, sau một phần insert/CAS | Row `Chunks` canonical | Không | Chunk dedup được; GC root scan quyết pack/chunk |
 | 6 | Một phần hoặc đủ pages | Không | Manifest orphan, xóa theo KT §8.3 |
@@ -163,7 +163,7 @@ Mọi nhánh lỗi trước bước 8 để object cũ nguyên vẹn (overwrite)
 
 ### 6.3 Transaction
 
-Một `TransactWriteItems` (Badger: một transaction đọc/ghi cùng các key). Item đã có action ghi thì gộp điều kiện vào action đó, vì DynamoDB từ chối hai action trên một item (API §2.2.3).
+Bảng dưới là transaction lõi của reference fixtures hiện hữu, chưa gồm R2 registry/outcome integration ở [R2 §5/8/9](r2-recovery.md#9-closure-proof-stable-membership-và-takeover). W2 adapter phải thêm atomic authority/attempt/outcome binding và account tổng actions/bytes; không claim4actions là đủ cho protocol mới. Một `TransactWriteItems` (Badger: một transaction đọc/ghi cùng các key). Item đã có action ghi thì gộp điều kiện vào action đó, vì DynamoDB từ chối hai action trên một item (API §2.2.3).
 
 | # | Item | Action | Điều kiện | Ghi |
 |---|---|---|---|---|
@@ -244,6 +244,8 @@ Fixture: `commit.json` → `refcount` (xóa về 0 rồi crash và replay, 150 k
 
 ## 7. Fixtures và test
 
+Các commit fixtures/model bên dưới dùng abbreviated reference op/event IDs và core transaction actions; không phải R2 serializer/golden hoặc proof registry/closure. R2 §18 liệt kê gate cập nhật fixtures/ports cùng implementation; identity examples R2 đã chốt trong tài liệu không làm code reference cũ thành implementation mới.
+
 | File | Nội dung |
 |---|---|
 | `chunking.json` | Digest bảng gear, mask theo avg, 11 ca chunk (rỗng, 1 byte, đúng `min`, `min + 1`, stream 16 MiB, chèn/xóa 1 byte, toàn 0, block lặp, tham số nhỏ, cố định) với độ dài và SHA-256 từng chunk; identity hai miền; 10 ca validator chunking |
@@ -267,7 +269,7 @@ make check
 | W02-HAI-03, W04-HAI-01 | Badger/DynamoDB: transaction §6.3, insert/CAS kèm Outbox, `ALL_OLD` cho winner, token §6.1, reconcile và cleanup §6.4; chạy `transactions`, `scenarios`, `tokens` |
 | W03-HAI-01 | Write path §5–6.2, I1, bảng crash |
 | W01-PHONG-02 | `PinLocations` kiểm `location_revision`; item `Leases` trong điều kiện commit/insert/CAS |
-| W01-PHONG-03, W04-HAI-02 | Encoding event identity; entity `Chunks` (`OutboxEvent.Validate` hiện chỉ nhận `Objects`/`SystemConfig`); payload event `Objects` mang manifest mới và manifest bị thay; `refcount_next = 0` khi tạo event, Delete Outbox có điều kiện `refcount_next = số lô` (§6.6); op_id upload sinh lúc Create, mở lại Active giữ ledger (§6.1, §6.4) |
+| W01-PHONG-03, W04-HAI-02 | Event identity đã chốt [R2 §5](r2-recovery.md#5-event-identity-và-idempotency); W2+ triển khai parent/mutation/outcome binding và update fixtures; entity `Chunks` (`OutboxEvent.Validate` hiện chỉ nhận `Objects`/`SystemConfig`); payload event `Objects` mang manifest mới và manifest bị thay; `refcount_next = 0` khi tạo event, Delete Outbox có điều kiện `refcount_next = số lô` (§6.6); op_id upload sinh lúc Create, mở lại Active giữ ledger (§6.1, §6.4) |
 | W05-HAI-01 | Refcount worker §6.6, chạy `refcount`; đối soát `live_bytes`/refcount, dọn orphan §5.5 |
 
 Đổi thuật toán, gear, mask hoặc giới hạn tham số sau freeze chỉ làm giảm dedup với dữ liệu cũ, không làm hỏng dữ liệu; vẫn cần version mới (`fastcdc-v2`) và review vì fixture v1 phải giữ nguyên.
