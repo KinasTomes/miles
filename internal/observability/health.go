@@ -12,16 +12,19 @@ const maxProbeAge = 5 * time.Second
 // Health caches dependency/clock observations; HTTP requests never run probes.
 // Draining is an independent process gate, not a replacement for R1 admission.
 type Health struct {
-	mu        sync.RWMutex
-	checkedAt time.Time
-	usable    bool
-	probe     func(context.Context) error
-	draining  func() bool
-	now       func() time.Time
+	started     time.Time
+	development bool
+	failures    uint64
+	mu          sync.RWMutex
+	checkedAt   time.Time
+	usable      bool
+	probe       func(context.Context) error
+	draining    func() bool
+	now         func() time.Time
 }
 
-func NewHealth(probe func(context.Context) error, draining func() bool) *Health {
-	return &Health{probe: probe, draining: draining, now: time.Now}
+func NewHealth(probe func(context.Context) error, draining func() bool, development bool) *Health {
+	return &Health{probe: probe, draining: draining, now: time.Now, started: time.Now(), development: development}
 }
 func (h *Health) Ready() bool {
 	if h.draining != nil && h.draining() {
@@ -40,6 +43,9 @@ func (h *Health) refresh(ctx context.Context) {
 	h.mu.Lock()
 	h.checkedAt = start
 	h.usable = usable
+	if !usable {
+		h.failures++
+	}
 	h.mu.Unlock()
 }
 
@@ -69,6 +75,7 @@ func (h *Health) Handler() http.Handler {
 		}
 		status(w, http.StatusOK, "ok\n")
 	})
+	mux.HandleFunc("GET /metrics", h.metrics)
 	return mux
 }
 func status(w http.ResponseWriter, code int, body string) {

@@ -29,7 +29,7 @@ func Run(ctx context.Context, c config.Startup, d Dependencies, output io.Writer
 func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencies, admission *Admission, output io.Writer) error {
 	defer ln.Close()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	h := observability.NewHealth(d.Probe, admission.Draining)
+	h := observability.NewHealth(d.Probe, admission.Draining, c.Mode == "dev")
 	probeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	probeDone := make(chan struct{})

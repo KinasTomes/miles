@@ -19,7 +19,7 @@ func TestHealthReadinessAndCache(t *testing.T) {
 			return errors.New("secret backend detail")
 		}
 		return nil
-	}, func() bool { return draining })
+	}, func() bool { return draining }, true)
 	h.now = func() time.Time { return now }
 	handler := h.Handler()
 	get := func(path string, want int) {
@@ -63,13 +63,13 @@ func TestHealthReadinessAndCache(t *testing.T) {
 	if r.Code != 405 {
 		t.Fatal(r.Code)
 	}
-	if NewHealth(nil, nil).Ready() {
+	if NewHealth(nil, nil, false).Ready() {
 		t.Fatal("missing proof must fail closed")
 	}
 }
 func TestCanceledProbeCannotPublishReady(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	h := NewHealth(func(context.Context) error { cancel(); return nil }, nil)
+	h := NewHealth(func(context.Context) error { cancel(); return nil }, nil, true)
 	h.refresh(ctx)
 	if h.Ready() {
 		t.Fatal("canceled observation published readiness")
