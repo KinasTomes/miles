@@ -356,12 +356,14 @@ func TestCompressionVectors(t *testing.T) {
 	}
 	load(t, "compression.json", &f)
 	for _, d := range f.Decisions {
-		if got := storedCodec(d.Enabled, rat(t, d.MinSavingRatio), d.RawLen, d.StoredLen); got != d.Codec {
+		got, err := StoredCodec(d.Enabled, rat(t, d.MinSavingRatio), d.RawLen, d.StoredLen)
+		if err != nil || got != d.Codec {
 			t.Errorf("%s: codec %s, want %s", d.Name, got, d.Codec)
 		}
 	}
 	for _, p := range f.Policy {
-		if got := validCompression(p.Codec, p.Level, rat(t, p.MinSavingRatio)); got != p.Valid {
+		policy := CompressionPolicy{Enabled: true, Codec: p.Codec, Level: p.Level, MinSavingRatio: rat(t, p.MinSavingRatio)}
+		if got := policy.Validate() == nil; got != p.Valid {
 			t.Errorf("compression policy %s: valid=%v", p.Name, got)
 		}
 	}
