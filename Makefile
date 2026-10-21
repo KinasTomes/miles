@@ -3,7 +3,7 @@ GOFMT ?= gofmt
 VERSION ?= dev
 LDFLAGS := -X github.com/KinasTomes/miles/internal/buildinfo.Version=$(VERSION)
 
-.PHONY: build fmt check-fmt vet test check
+.PHONY: build fmt check-fmt vet test check run-dev test-local
 
 build:
 	mkdir -p bin
@@ -21,5 +21,12 @@ vet:
 
 test:
 	$(GO) test ./...
+	python3 -B -m unittest discover -s scripts/tests -v
 
 check: check-fmt vet test build
+
+run-dev: build
+	./bin/miles -config configs/dev.json
+
+test-local:
+	python3 -B scripts/local_test.py

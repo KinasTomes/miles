@@ -1,0 +1,17 @@
+# Ephemeral fixtures only. No host data/credentials, persistent volumes or public ports.
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:3.3.0@sha256:d89f8fcc6b1a39cb35976c248ed42a28c66ae00dc043099210f5571e42648ab4
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb", "-disableTelemetry"]
+    ports:
+      - target: 8000
+        host_ip: 127.0.0.1
+        published: "0"
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xms64m -Xmx256m"
+  s3:
+    image: motoserver/moto:5.1.15@sha256:8860b18917e1ee4d067df19a406ae95dc26037e6965d5b499e1cffd33755b914
+    ports:
+      - target: 5000
+        host_ip: 127.0.0.1
+        published: "0"

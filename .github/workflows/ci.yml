@@ -23,8 +23,8 @@ jobs:
           cache: true
       - name: Format, vet, test and build
         run: make check
-      - name: Storage contract race checks
-        run: go test -race ./internal/storage/...
+      - name: Storage and runtime race checks
+        run: go test -race ./internal/storage/... ./internal/config ./internal/app ./internal/observability ./cmd/miles
 
   terraform-check:
     runs-on: ubuntu-24.04
