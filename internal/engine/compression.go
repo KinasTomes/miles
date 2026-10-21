@@ -37,7 +37,7 @@ func StoredCodec(enabled bool, ratio *big.Rat, rawLen int64, storedLen *int64) (
 	if !enabled || storedLen == nil {
 		return "raw", nil
 	}
-	if *storedLen < 0 {
+	if *storedLen <= 0 {
 		return "", fmt.Errorf("%w: stored length", storage.ErrInvalid)
 	}
 	// stored * denominator <= raw * (denominator - numerator).
@@ -67,6 +67,7 @@ type Compressor struct {
 	decoder *zstd.Decoder
 	encode  func([]byte) ([]byte, error)
 	failed  bool
+	closed  bool
 }
 
 func NewCompressor(policy CompressionPolicy) (*Compressor, error) {
@@ -98,9 +99,10 @@ func NewCompressor(policy CompressionPolicy) (*Compressor, error) {
 }
 
 func (c *Compressor) Close() {
-	if c == nil {
+	if c == nil || c.closed {
 		return
 	}
+	c.closed = true
 	if c.encoder != nil {
 		c.encoder.Close()
 	}
@@ -110,8 +112,8 @@ func (c *Compressor) Close() {
 }
 
 func (c *Compressor) Encode(chunk Chunk) (EncodedChunk, error) {
-	if c == nil {
-		return EncodedChunk{}, fmt.Errorf("%w: nil compressor", storage.ErrInvalid)
+	if c == nil || c.closed {
+		return EncodedChunk{}, fmt.Errorf("%w: nil or closed compressor", storage.ErrInvalid)
 	}
 	if len(chunk.Bytes) == 0 || len(chunk.Bytes) > MaxChunkBytes {
 		return EncodedChunk{}, fmt.Errorf("%w: raw chunk size", storage.ErrInvalid)

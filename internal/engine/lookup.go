@@ -170,6 +170,9 @@ func (l LookupIndex) Candidate(key storage.ChunkKey) (storage.Chunk, bool, error
 // Bloom filter is negative or an LRU candidate exists. The returned row still
 // needs an R1 location pin before reuse by a writer.
 func (l LookupIndex) Canonical(ctx context.Context, key storage.ChunkKey) (storage.Chunk, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return storage.Chunk{}, false, err
+	}
 	if err := key.Validate(); err != nil {
 		return storage.Chunk{}, false, err
 	}
@@ -178,6 +181,9 @@ func (l LookupIndex) Canonical(ctx context.Context, key storage.ChunkKey) (stora
 	}
 	rows, err := l.Store.GetChunks(ctx, []storage.ChunkKey{key}, true)
 	if err != nil {
+		return storage.Chunk{}, false, err
+	}
+	if err := ctx.Err(); err != nil {
 		return storage.Chunk{}, false, err
 	}
 	row, ok := rows[key]

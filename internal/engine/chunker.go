@@ -89,6 +89,7 @@ func (c *Chunker) Next(ctx context.Context) (Chunk, error) {
 	for len(buf) < p.Max {
 		if len(buf)&4095 == 0 {
 			if err := ctx.Err(); err != nil {
+				c.done = true
 				return Chunk{}, err
 			}
 		}
@@ -98,6 +99,7 @@ func (c *Chunker) Next(ctx context.Context) (Chunk, error) {
 			break
 		}
 		if err != nil {
+			c.done = true
 			return Chunk{}, err
 		}
 		i := len(buf)
@@ -109,6 +111,7 @@ func (c *Chunker) Next(ctx context.Context) (Chunk, error) {
 			}
 			if fp&mask == 0 {
 				if err := c.reader.UnreadByte(); err != nil {
+					c.done = true
 					return Chunk{}, err
 				}
 				break
@@ -119,11 +122,17 @@ func (c *Chunker) Next(ctx context.Context) (Chunk, error) {
 	if len(buf) == 0 {
 		return Chunk{}, io.EOF
 	}
+	if err := ctx.Err(); err != nil {
+		c.done = true
+		return Chunk{}, err
+	}
 	if c.offset > storage.MaxObjectBytes-int64(len(buf)) {
+		c.done = true
 		return Chunk{}, fmt.Errorf("%w: object exceeds size limit", storage.ErrInvalid)
 	}
 	key, err := HashChunk(c.domain, buf)
 	if err != nil {
+		c.done = true
 		return Chunk{}, err
 	}
 	out := Chunk{Bytes: buf, Key: key, Offset: c.offset}

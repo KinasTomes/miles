@@ -2,10 +2,8 @@ package engine
 
 // tests/fixtures/engine pins FastCDC v1, chunk identity, codec choice, dedup
 // lookup and commit transactions of docs/contracts/chunking-and-commit.md.
-// No production chunker, codec or DynamoDB adapter exists yet (W02-HAI-01,
-// W03-HAI-01, W04-HAI-01), so these tests run every fixture through reference
-// functions written from that document. Production code must pass the same
-// fixtures; its tests then replace these functions.
+// Chunking, compression and lookup vectors exercise production code. Commit
+// transactions retain their W1 reference until the backend work in W02/W04.
 
 import (
 	"bytes"
@@ -16,100 +14,16 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"math/bits"
 	"os"
 	"testing"
 
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
-const (
-	minChunkFloor = 16 << 10 // keeps a 100 GiB object within 1024 manifest pages (pack-and-pages §3.4).
-	maxChunkCap   = 16 << 20 // bounds the per-stream chunk buffer.
-)
-
 type params struct {
 	Min int `json:"min_bytes"`
 	Avg int `json:"avg_bytes"`
 	Max int `json:"max_bytes"`
-}
-
-// gear[i] is the big-endian u64 of the first 8 bytes of SHA-256 of the single byte i.
-var gear = func() (g [256]uint64) {
-	for i := range g {
-		h := sha256.Sum256([]byte{byte(i)})
-		g[i] = binary.BigEndian.Uint64(h[:8])
-	}
-	return g
-}()
-
-// masks select the top log2(avg)+2 and log2(avg)-2 bits (normalization level 2).
-func masks(avg int) (small, large uint64) {
-	b := bits.TrailingZeros(uint(avg))
-	return ^uint64(0) << (64 - (b + 2)), ^uint64(0) << (64 - (b - 2))
-}
-
-// cut returns the length of the next chunk of b, len(b) > 0.
-func cut(b []byte, p params) int {
-	n := len(b)
-	if n <= p.Min {
-		return n
-	}
-	if n > p.Max {
-		n = p.Max
-	}
-	normal := min(p.Avg, n)
-	small, large := masks(p.Avg)
-	var fp uint64
-	i := p.Min
-	for ; i < normal; i++ {
-		fp = fp<<1 + gear[b[i]]
-		if fp&small == 0 {
-			return i
-		}
-	}
-	for ; i < n; i++ {
-		fp = fp<<1 + gear[b[i]]
-		if fp&large == 0 {
-			return i
-		}
-	}
-	return n
-}
-
-func validChunking(p params) bool {
-	return p.Min >= minChunkFloor && p.Min <= p.Avg && p.Avg <= p.Max && p.Max <= maxChunkCap && p.Avg&(p.Avg-1) == 0
-}
-
-// zstdLevels are the four distinct encoders of klauspost/compress/zstd EncoderLevelFromZstd.
-var zstdLevels = map[int]bool{1: true, 3: true, 7: true, 11: true}
-
-func validCompression(codec string, level int, ratio *big.Rat) bool {
-	return codec == "zstd" && zstdLevels[level] && ratio.Sign() >= 0 && ratio.Cmp(big.NewRat(1, 1)) < 0
-}
-
-// storedCodec keeps the zstd frame iff stored <= raw*(1-ratio), exactly.
-func storedCodec(enabled bool, ratio *big.Rat, raw int64, stored *int64) string {
-	if !enabled || stored == nil {
-		return "raw"
-	}
-	limit := new(big.Rat).Mul(big.NewRat(raw, 1), new(big.Rat).Sub(big.NewRat(1, 1), ratio))
-	if big.NewRat(*stored, 1).Cmp(limit) <= 0 {
-		return "zstd"
-	}
-	return "raw"
-}
-
-// lookup is the PUT/UploadPart decision for one (domain, hash).
-func lookup(found bool, state, class string, pinRejected bool) string {
-	if !found {
-		return "insert"
-	}
-	readable := state == "Warm" || state == "Cold" && class == "GLACIER_IR"
-	if readable && !pinRejected {
-		return "reuse"
-	}
-	return "revive"
 }
 
 type action struct{ Table, Item, Op string }
