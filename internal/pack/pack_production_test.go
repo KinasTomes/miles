@@ -6,31 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"hash/crc32"
+	"math/big"
 	"testing"
 
+	"github.com/KinasTomes/miles/internal/engine"
 	"github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/fake"
 )
-
-func fixtureBlobs(t *testing.T, c packCase) []blob {
-	t.Helper()
-	out := recipe(c.Recipe)
-	for _, s := range c.Chunks {
-		raw := unhex(t, s.RawHex)
-		if s.RawRepeat != nil {
-			raw = bytes.Repeat([]byte{s.RawRepeat.Byte}, s.RawRepeat.Count)
-		}
-		b := blob{domain: s.Domain, codec: codecs[s.Codec], raw: raw, stored: raw, hash: sha256.Sum256(raw)}
-		if s.StoredHex != "" {
-			b.stored = unhex(t, s.StoredHex)
-		}
-		if s.Hash != "" {
-			copy(b.hash[:], unhex(t, s.Hash))
-		}
-		out = append(out, b)
-	}
-	return out
-}
 
 func TestProductionGoldenPacks(t *testing.T) {
 	for _, c := range load(t).Packs {
@@ -76,7 +59,20 @@ func TestProductionRejectsCorruption(t *testing.T) {
 	for _, c := range f.Corrupt {
 		t.Run(c.Name, func(t *testing.T) {
 			base := bases[c.Base]
-			data, sidecar := base.build(t)
+			builder, err := NewBuilder(storage.PackRef{ID: base.PackID, Generation: base.Generation})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, item := range fixtureBlobs(t, base) {
+				if err := builder.Add(Blob{Key: storage.ChunkKey{Domain: item.domain, Hash: hex.EncodeToString(item.hash[:])},
+					Codec: codecNames[item.codec], RawLength: uint32(len(item.raw)), Stored: item.stored}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			data, sidecar, _, err := builder.Finish()
+			if err != nil {
+				t.Fatal(err)
+			}
 			b := bytes.Clone(data)
 			if c.Target == "sidecar" {
 				b = bytes.Clone(sidecar)
@@ -102,12 +98,25 @@ func TestProductionRejectsCorruption(t *testing.T) {
 			if c.ReadAs != nil {
 				ref = storage.PackRef{ID: c.ReadAs.PackID, Generation: c.ReadAs.Generation}
 			}
-			var err error
+			err = nil
 			if c.Target == "sidecar" {
 				_, _, err = ParseIndex(b, ref)
 			} else {
 				_, _, err = Inspect(b, ref)
 			}
+			var formatErr *FormatError
+			if !errors.As(err, &formatErr) || formatErr.Stage != c.Stage {
+				t.Fatalf("stage %v, want %s", err, c.Stage)
+			}
+		})
+	}
+}
+
+func TestProductionInvalidPacks(t *testing.T) {
+	for _, c := range load(t).Invalid {
+		t.Run(c.Name, func(t *testing.T) {
+			data, _ := malformedPack(c.PackID, c.Generation, fixtureBlobs(t, c))
+			_, _, err := Inspect(data, storage.PackRef{ID: c.PackID, Generation: c.Generation})
 			var formatErr *FormatError
 			if !errors.As(err, &formatErr) || formatErr.Stage != c.Stage {
 				t.Fatalf("stage %v, want %s", err, c.Stage)
@@ -133,8 +142,11 @@ func TestProductionRangeReadAndBuilderLimits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := builder.Add(builder.blobs[0]); err == nil {
-		t.Fatal("duplicate chunk accepted")
+	if err := builder.Add(builder.blobs[0]); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("finalized generation changed: %v", err)
+	}
+	if _, _, _, err := builder.Finish(); !errors.Is(err, storage.ErrConflict) {
+		t.Fatalf("generation re-encoded after finish: %v", err)
 	}
 	ctx := context.Background()
 	store := fake.NewPacks(nil)
@@ -164,5 +176,76 @@ func TestProductionRangeReadAndBuilderLimits(t *testing.T) {
 		if _, err := ReadCanonicalChunk(ctx, store, chunk); err == nil {
 			t.Fatal("bad canonical CRC accepted")
 		}
+	}
+}
+
+func TestProductionEntryCapAndSingleFrame(t *testing.T) {
+	ref := storage.PackRef{ID: "ab000000000000000000000000000001", Generation: "cd000000000000000000000000000001"}
+	builder, err := NewBuilder(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range recipe("max-entries") {
+		if err := builder.Add(Blob{Key: storage.ChunkKey{Domain: item.domain, Hash: hex.EncodeToString(item.hash[:])},
+			Codec: "raw", RawLength: uint32(len(item.raw)), Stored: item.stored}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !builder.Ready() {
+		t.Fatal("entry cap did not close pack")
+	}
+	extra := []byte("new chunk")
+	sum := sha256.Sum256(extra)
+	if err := builder.Add(Blob{Key: storage.ChunkKey{Domain: "default", Hash: hex.EncodeToString(sum[:])},
+		Codec: "raw", RawLength: uint32(len(extra)), Stored: extra}); !errors.Is(err, ErrFull) {
+		t.Fatalf("entry beyond cap: %v", err)
+	}
+	frame := rle(0x42, 4096)
+	key := storage.ChunkKey{Domain: "default", Hash: digest(bytes.Repeat([]byte{0x42}, 4096))}
+	stored := append(bytes.Clone(frame), frame...)
+	e := Entry{Key: key, Codec: "zstd", StoredLen: uint32(len(stored)), RawLength: 8192,
+		CRC32C: crc32.Checksum(stored, crc32.MakeTable(crc32.Castagnoli))}
+	if _, err := ReadBlob(e, stored); err == nil {
+		t.Fatal("concatenated zstd frames accepted")
+	}
+}
+
+func TestEngineZstdPackRoundTrip(t *testing.T) {
+	raw := bytes.Repeat([]byte("compressible chunk\n"), 10000)
+	key, err := engine.HashChunk("default", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressor, err := engine.NewCompressor(engine.CompressionPolicy{Enabled: true, Codec: "zstd", Level: 3,
+		MinSavingRatio: big.NewRat(1, 10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer compressor.Close()
+	encoded, err := compressor.Encode(engine.Chunk{Key: key, Bytes: raw})
+	if err != nil || encoded.Codec != "zstd" {
+		t.Fatalf("encode: %s %v", encoded.Codec, err)
+	}
+	ref, err := NewRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := NewBuilder(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.Add(Blob{Key: encoded.Key, Codec: encoded.Codec, RawLength: uint32(encoded.RawBytes), Stored: encoded.Bytes}); err != nil {
+		t.Fatal(err)
+	}
+	data, _, entries, err := builder.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Inspect(data, ref); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := ReadBlob(entries[0], data[entries[0].Offset:entries[0].Offset+uint64(entries[0].StoredLen)])
+	if err != nil || !bytes.Equal(decoded, raw) {
+		t.Fatalf("decoded real zstd frame: %v", err)
 	}
 }

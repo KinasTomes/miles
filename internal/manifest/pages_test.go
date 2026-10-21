@@ -371,10 +371,11 @@ type corruptCase struct {
 }
 
 type fixture struct {
-	Manifests []pageCase    `json:"manifests"`
-	Streams   []pageCase    `json:"streams"`
-	Invalid   []pageCase    `json:"invalid"`
-	Corrupt   []corruptCase `json:"corrupt"`
+	FormatVersion int           `json:"format_version"`
+	Manifests     []pageCase    `json:"manifests"`
+	Streams       []pageCase    `json:"streams"`
+	Invalid       []pageCase    `json:"invalid"`
+	Corrupt       []corruptCase `json:"corrupt"`
 }
 
 func load(t *testing.T) fixture {
@@ -386,6 +387,9 @@ func load(t *testing.T) fixture {
 	var f fixture
 	if err := json.Unmarshal(data, &f); err != nil {
 		t.Fatal(err)
+	}
+	if f.FormatVersion != formatVersion {
+		t.Fatalf("fixture version %d, expected %d", f.FormatVersion, formatVersion)
 	}
 	return f
 }

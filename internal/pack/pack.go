@@ -88,11 +88,12 @@ func packHeader(ref storage.PackRef) []byte {
 // Builder accumulates one bounded pack. A caller finishes it and starts a new
 // generation when Add returns ErrFull or Ready becomes true.
 type Builder struct {
-	ref    storage.PackRef
-	blobs  []Blob
-	seen   map[storage.ChunkKey]struct{}
-	stored int
-	index  int
+	ref      storage.PackRef
+	blobs    []Blob
+	seen     map[storage.ChunkKey]struct{}
+	stored   int
+	index    int
+	finished bool
 }
 
 func NewBuilder(ref storage.PackRef) (*Builder, error) {
@@ -108,6 +109,9 @@ func (b *Builder) Ready() bool { return b.stored >= TargetBytes || len(b.blobs) 
 func (b *Builder) Add(blob Blob) error {
 	if b == nil {
 		return invalid("index", "nil builder")
+	}
+	if b.finished {
+		return storage.ErrConflict
 	}
 	if err := validateBlob(blob); err != nil {
 		return err
@@ -148,6 +152,9 @@ func (b *Builder) Finish() (packBytes, sidecar []byte, entries []Entry, err erro
 	if b == nil || len(b.blobs) == 0 {
 		return nil, nil, nil, invalid("index", "empty pack")
 	}
+	if b.finished {
+		return nil, nil, nil, storage.ErrConflict
+	}
 	packBytes = make([]byte, 0, len(packHeader(b.ref))+b.stored+b.index+TrailerBytes)
 	packBytes = append(packBytes, packHeader(b.ref)...)
 	sidecar = appendPackID(appendPackID(packLE.AppendUint32([]byte("MILESIDX"), Version), b.ref.ID), b.ref.Generation)
@@ -180,6 +187,7 @@ func (b *Builder) Finish() (packBytes, sidecar []byte, entries []Entry, err erro
 	packBytes = packLE.AppendUint32(packBytes, uint32(len(sidecar)))
 	packBytes = packLE.AppendUint32(packBytes, Version)
 	packBytes = append(packBytes, "MILESEND"...)
+	b.finished = true
 	return packBytes, sidecar, entries, nil
 }
 
@@ -412,7 +420,7 @@ func oneFrame(stored []byte) error {
 	}
 	if h.Skippable || h.DictionaryID != 0 || h.WindowSize > engine.MaxChunkBytes ||
 		h.HasFCS && h.FrameContentSize > engine.MaxChunkBytes {
-		return errors.New("unsupported zstd frame")
+		return fmt.Errorf("unsupported zstd frame: skip=%v dict=%d window=%d fcs=%d", h.Skippable, h.DictionaryID, h.WindowSize, h.FrameContentSize)
 	}
 	p := h.HeaderSize
 	for {
