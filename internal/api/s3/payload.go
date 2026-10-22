@@ -202,36 +202,47 @@ func (p *Payload) DecodeXML(v any, limit int64) error {
 	return nil
 }
 
-// decodeDocument unmarshals the root element of an XML document into v and
-// reports whether data is that document and nothing else. xml.Unmarshal stops
-// after the first element, so the tokens around it are checked here: no
-// second root, text, DOCTYPE, misplaced XML declaration or syntax error.
+// decodeDocument reports whether data is exactly one XML document and, if so,
+// unmarshals its root element into v. encoding/xml skips processing
+// instructions and directives and stops after the first element, so every
+// token of the document, nested ones included, is checked first: one root, no
+// text outside it, no DOCTYPE or other directive anywhere, an XML declaration
+// only as the first token, and no syntax error.
 func decodeDocument(data []byte, v any) bool {
 	d := xml.NewDecoder(bytes.NewReader(data))
-	root := false
+	depth, roots := 0, 0
 	for i := 0; ; i++ {
 		tok, err := d.Token()
+		if err == io.EOF {
+			break
+		}
 		if err != nil {
-			return err == io.EOF && root
+			return false
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
-			if root || d.DecodeElement(v, &t) != nil {
-				return false
+			if depth == 0 {
+				roots++
 			}
-			root = true
+			depth++
+		case xml.EndElement:
+			depth--
 		case xml.CharData:
-			if len(bytes.Trim(t, " \t\r\n")) > 0 {
+			if depth == 0 && len(bytes.Trim(t, " \t\r\n")) > 0 {
 				return false
 			}
 		case xml.ProcInst:
-			if t.Target == "xml" && i > 0 {
+			if strings.EqualFold(t.Target, "xml") && i > 0 {
 				return false
 			}
 		case xml.Directive:
 			return false
 		}
+		if roots > 1 {
+			return false
+		}
 	}
+	return roots == 1 && xml.Unmarshal(data, v) == nil
 }
 
 // awsChunked decodes an aws-chunked body (API v2 2.2.2): chunks

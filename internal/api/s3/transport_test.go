@@ -470,6 +470,7 @@ func TestDecodeXML(t *testing.T) {
 	}{
 		{"valid", valid, "", ""},
 		{"declaration, comments and whitespace", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- a -->" + valid + "\n<!-- b -->\r\n\t", "", ""},
+		{"comment and processing instruction inside", `<CompleteMultipartUpload><!-- c --><?pi data?><Part><?pi data?><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>`, "", ""},
 		{"not XML", `{"Parts":[]}`, "", ErrMalformedXML},
 		{"empty", "", "", ErrMalformedXML},
 		{"other root element", `<Delete><Object><Key>k</Key></Object></Delete>`, "", ErrMalformedXML},
@@ -479,6 +480,10 @@ func TestDecodeXML(t *testing.T) {
 		{"text before root", "junk" + valid, "", ErrMalformedXML},
 		{"declaration after root", valid + `<?xml version="1.0"?>`, "", ErrMalformedXML},
 		{"DOCTYPE", `<!DOCTYPE CompleteMultipartUpload>` + valid, "", ErrMalformedXML},
+		{"declaration inside root", `<CompleteMultipartUpload><?xml version="1.0"?><Part><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>`, "", ErrMalformedXML},
+		{"declaration inside Part", `<CompleteMultipartUpload><Part><?xml version="1.0"?><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>`, "", ErrMalformedXML},
+		{"DOCTYPE inside root", `<CompleteMultipartUpload><!DOCTYPE CompleteMultipartUpload><Part><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>`, "", ErrMalformedXML},
+		{"declaration inside root with wrong Content-MD5", `<CompleteMultipartUpload><?xml version="1.0"?><Part><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>`, "1B2M2Y8AsgTpgAmY7PhCfg==", ErrBadDigest},
 		{"not XML with wrong Content-MD5", `{"Parts":[]}`, "1B2M2Y8AsgTpgAmY7PhCfg==", ErrBadDigest},
 		{"second root with wrong Content-MD5", valid + `<Other/>`, "1B2M2Y8AsgTpgAmY7PhCfg==", ErrBadDigest},
 		{"over the limit", valid + strings.Repeat(" ", 200), "", ErrEntityTooLarge},
