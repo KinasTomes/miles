@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"regexp"
 
 	s "github.com/KinasTomes/miles/internal/storage"
@@ -18,6 +19,67 @@ const ObjectPage byte = 1
 const PartPage byte = 2
 
 var validID = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+
+// RefCapacity is the mandatory greedy page capacity for this owner/domain.
+func RefCapacity(owner, domain string) (int, error) {
+	if !validID.MatchString(owner) || !validID.MatchString(domain) {
+		return 0, s.ErrInvalid
+	}
+	return (MaxPageBytes - 67 - len(owner) - len(domain)) / 36, nil
+}
+
+// Paginate consumes a stream ending in io.EOF and emits greedy pages. It retains
+// at most one page of refs; emitted slices belong to the receiver. After any
+// error, previously emitted pages are orphans and must not be published.
+func Paginate(kind byte, owner, domain string, next func() (s.ChunkRef, error), emit func(s.ManifestPage) error) error {
+	capacity, err := RefCapacity(owner, domain)
+	if err != nil || next == nil || emit == nil || (kind != ObjectPage && kind != PartPage) {
+		return s.ErrInvalid
+	}
+	var number uint32
+	var offset int64
+	refs := make([]s.ChunkRef, 0, capacity)
+	flush := func() error {
+		if number >= MaxPages {
+			return s.ErrInvalid
+		}
+		p := s.ManifestPage{Version: 1, ManifestID: owner, Domain: domain, Number: number, Chunks: refs}
+		if _, err := Encode(kind, p); err != nil {
+			return err
+		}
+		if err := emit(p); err != nil {
+			return err
+		}
+		number++
+		refs = make([]s.ChunkRef, 0, capacity)
+		return nil
+	}
+	for {
+		r, err := next()
+		if err == io.EOF {
+			if len(refs) > 0 {
+				return flush()
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if r.Key.Validate() != nil || r.Key.Domain != domain || r.RawBytes <= 0 || r.RawBytes > int64(^uint32(0)) || r.LogicalOffset != offset || offset > s.MaxObjectBytes-r.RawBytes {
+			return s.ErrInvalid
+		}
+		if kind == PartPage && offset+r.RawBytes > 5<<30 {
+			return s.ErrInvalid
+		}
+		refs = append(refs, r)
+		offset += r.RawBytes
+		if len(refs) == capacity {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+}
 
 // Encode binds the body to its kind, owner and page number. Empty objects have
 // zero pages; an empty reference page is not a valid frozen-format record.
@@ -43,6 +105,9 @@ func Encode(kind byte, p s.ManifestPage) ([]byte, error) {
 		payload = append(payload, hash...)
 		payload = binary.LittleEndian.AppendUint32(payload, uint32(r.RawBytes))
 		offset += r.RawBytes
+	}
+	if kind == PartPage && offset > 5<<30 {
+		return nil, s.ErrInvalid
 	}
 	b := binary.LittleEndian.AppendUint32([]byte("MILESPAG"), s.ModelVersion)
 	b = append(b, kind, byte(len(p.ManifestID)))
@@ -103,6 +168,9 @@ func Decode(b []byte, kind byte, owner string, number uint32) (s.ManifestPage, e
 		p.Chunks = append(p.Chunks, s.ChunkRef{Key: s.ChunkKey{Domain: domain, Hash: hex.EncodeToString(refs[:32])}, RawBytes: raw, LogicalOffset: int64(offset)})
 		offset += uint64(raw)
 		refs = refs[36:]
+	}
+	if kind == PartPage && offset > 5<<30 {
+		return invalid()
 	}
 	return p, nil
 }

@@ -14,6 +14,10 @@ type outcome struct {
 	Digest [32]byte
 	Head   s.ObjectHead
 }
+type manifestSeal struct {
+	OpID      string
+	PageCount uint32
+}
 
 func (m *Store) CommitObject(ctx context.Context, r s.CommitRequest) (s.CommitResult, error) {
 	if r.Head.Deleted {
@@ -115,7 +119,17 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		}
 		h := r.Head
 		if !r.Head.Deleted {
+			sealed, err := exists(t, key("manifest-seals", h.ManifestID))
+			if err != nil {
+				return err
+			}
+			if sealed {
+				return s.ErrConflict
+			}
 			if err := validateManifest(ctx, t, &h); err != nil {
+				return err
+			}
+			if err := put(t, key("manifest-seals", h.ManifestID), manifestSeal{h.OpID, h.PageCount}); err != nil {
 				return err
 			}
 		} else if h.PageCount != 0 || h.ChunkCount != 0 || len(h.PageIndex) != 0 {
@@ -180,7 +194,11 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 				return err
 			}
 		}
-		result = s.CommitResult{Head: h}
+		owned, err := get[outcome](t, key("outcomes", h.OpID))
+		if err != nil {
+			return err
+		}
+		result = s.CommitResult{Head: owned.Head}
 		return nil
 	})
 	if err != nil {

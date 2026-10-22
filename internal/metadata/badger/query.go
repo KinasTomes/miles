@@ -10,6 +10,7 @@ import (
 )
 
 var _ s.MetadataStore = (*Store)(nil)
+var _ s.ManifestPageReader = (*Store)(nil)
 var stopScan = errors.New("page full")
 
 func activeUser(t *db.Txn, id string) error {

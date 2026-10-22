@@ -36,6 +36,7 @@ Unknown schema versions fail closed. Future schema changes require migration.
 | packs/writers | Pack+generation / lease ID | Physical state/protection/access fields; current lease and incarnation/epoch |
 | heads | Bucket+incarnation+key | Complete head or tombstone, monotonic revision, operation ID, manifest descriptor |
 | pages | Manifest ID+page number | Exact `MILESPAG` binary body, not JSON |
+| manifest-seals | Manifest ID | Publishing operation ID and page count; forbids appending pages or reusing the manifest for another publication |
 | quotas | Owner | Limit, Used, Reserved, Staged, ActiveUploads |
 | reservations | Reservation ID | Operation/object/owner/upload binding, base size/revision, bytes, staged bytes, state, deadline, writer, revision |
 | reservation-ops | Operation ID | Unique reservation identity, including terminal records |
@@ -56,6 +57,12 @@ snapshot, validates domain, page sequence, logical offsets, referenced chunk raw
 sizes and total object size, then publishes the head. Missing pages/chunks or bad
 descriptors prevent publication; already staged pages remain unreferenced orphans.
 No physical pack/S3 calls happen in a metadata transaction.
+
+Use `manifest.Paginate` for greedy streaming construction. Every non-final page
+must be full, and commit rejects non-greedy splits. A successful publication seals
+the manifest in the same transaction (including an empty manifest). Identical
+page retries remain legal, but appending another page or reusing the owner ID for
+another publication conflicts. Fresh owner IDs are required for overwrite/copy.
 
 `ObjectHead.PageCount`, `ChunkCount`, and `PageIndex` are derived and persisted by
 this adapter. An entirely omitted/zero descriptor requests derivation for existing

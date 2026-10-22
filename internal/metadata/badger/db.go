@@ -3,6 +3,7 @@
 package badger
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -48,6 +49,13 @@ func Open(o Options) (*Store, error) {
 	err = m.update(context.Background(), func(t *db.Txn) error {
 		v, err := get[uint32](t, "schema")
 		if errors.Is(err, s.ErrNotFound) {
+			it := t.NewIterator(db.DefaultIteratorOptions)
+			it.Rewind()
+			populated := it.Valid()
+			it.Close()
+			if populated {
+				return fmt.Errorf("%w: missing schema in populated database", s.ErrUnavailable)
+			}
 			return put(t, "schema", uint32(1))
 		}
 		if err != nil {
@@ -126,11 +134,18 @@ func get[T any](t *db.Txn, k string) (T, error) {
 	}
 	err = item.Value(func(b []byte) error {
 		var r record
-		if json.Unmarshal(b, &r) != nil || r.Schema != 1 || len(r.Value) == 0 {
+		if json.Unmarshal(b, &r) != nil || r.Schema != 1 || len(r.Value) == 0 || bytes.Equal(bytes.TrimSpace(r.Value), []byte("null")) {
 			return fmt.Errorf("%w: corrupt record %s", s.ErrUnavailable, k)
 		}
 		if err := json.Unmarshal(r.Value, &v); err != nil {
 			return fmt.Errorf("%w: decode %s: %v", s.ErrUnavailable, k, err)
+		}
+		if c, ok := any(&v).(*s.Chunk); ok {
+			// Required CRC field: omitted/null must not silently become valid zero.
+			var fields struct{ Location struct{ CRC32C *uint32 } }
+			if json.Unmarshal(r.Value, &fields) != nil || fields.Location.CRC32C == nil || c.Validate() != nil || chunkKey(c.Key) != k {
+				return fmt.Errorf("%w: corrupt chunk record", s.ErrUnavailable)
+			}
 		}
 		return nil
 	})

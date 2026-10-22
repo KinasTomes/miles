@@ -40,6 +40,12 @@ type MetadataStore interface {
 	GetCompletionReceipt(ctx context.Context, uploadID string) (CompletedReceipt, error)
 }
 
+// ManifestPageReader is the optional bounded-memory read extension. Callers use
+// the committed head's PageCount/PageIndex and validate offsets against the head.
+type ManifestPageReader interface {
+	GetManifestPage(context.Context, string, uint32) (ManifestPage, error)
+}
+
 // PackStore provides physical I/O, NOT authorization, GC safety or S3 fencing.
 // Callers must hold R1 protection; class changes/deletes require durable
 // Transitioning/Deleting metadata and reconciliation before reopening admission.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 
 	"github.com/KinasTomes/miles/internal/manifest"
 	s "github.com/KinasTomes/miles/internal/storage"
@@ -184,6 +185,13 @@ func (m *Store) WriteManifestPages(ctx context.Context, pages []s.ManifestPage, 
 			if !errors.Is(err, s.ErrNotFound) {
 				return err
 			}
+			sealed, err := exists(t, key("manifest-seals", p.ManifestID))
+			if err != nil {
+				return err
+			}
+			if sealed {
+				return s.ErrConflict
+			}
 			return backend(t.Set([]byte(k), b))
 		})
 		if err != nil {
@@ -201,10 +209,12 @@ func walkPages(ctx context.Context, t *db.Txn, id string, fn func(s.ManifestPage
 		if count >= manifest.MaxPages {
 			return s.ErrInvalid
 		}
-		var number uint32
-		if _, err := fmt.Sscanf(k[len(key("pages", id))+1:], "%08x", &number); err != nil {
+		suffix := k[len(key("pages", id))+1:]
+		parsed, err := strconv.ParseUint(suffix, 16, 32)
+		if err != nil || len(suffix) != 8 {
 			return s.ErrInvalid
 		}
+		number := uint32(parsed)
 		b, err := pageBytes(t, k)
 		if err != nil {
 			return err
@@ -224,7 +234,21 @@ func walkPages(ctx context.Context, t *db.Txn, id string, fn func(s.ManifestPage
 func (m *Store) GetManifest(ctx context.Context, id string) ([]s.ManifestPage, error) {
 	var out []s.ManifestPage
 	err := m.view(ctx, func(t *db.Txn) error {
-		return walkPages(ctx, t, id, func(p s.ManifestPage) error { out = append(out, p); return nil })
+		err := walkPages(ctx, t, id, func(p s.ManifestPage) error { out = append(out, p); return nil })
+		if errors.Is(err, s.ErrNotFound) {
+			seal, sealErr := get[manifestSeal](t, key("manifest-seals", id))
+			if sealErr == nil {
+				if seal.PageCount != 0 {
+					return s.ErrUnavailable
+				}
+				out = []s.ManifestPage{}
+				return nil
+			}
+			if !errors.Is(sealErr, s.ErrNotFound) {
+				return sealErr
+			}
+		}
+		return err
 	})
 	return out, err
 }
@@ -262,11 +286,20 @@ func (m *Store) GetObject(ctx context.Context, k s.ObjectKey) (s.ObjectHead, err
 	return v, err
 }
 func validateManifest(ctx context.Context, t *db.Txn, h *s.ObjectHead) error {
+	capacity, err := manifest.RefCapacity(h.ManifestID, h.Domain)
+	if err != nil {
+		return err
+	}
 	var offset int64
 	var number uint32
 	var chunks uint64
 	var index []uint64
-	err := walkPages(ctx, t, h.ManifestID, func(p s.ManifestPage) error {
+	previousRefs := capacity
+	err = walkPages(ctx, t, h.ManifestID, func(p s.ManifestPage) error {
+		if previousRefs != capacity {
+			return s.ErrInvalid
+		}
+		previousRefs = len(p.Chunks)
 		if p.Number != number || p.Domain != h.Domain {
 			return s.ErrInvalid
 		}
