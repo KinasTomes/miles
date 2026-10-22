@@ -1,6 +1,6 @@
-# W02-HAI-02 — serialization review / freeze record
+# Pack serialization review / freeze record
 
-Date: 2026-10-21. Base: `origin/main` at `2227fe3` (W02-HAI-01 merged).
+Task: W02-HAI-02. Date: 2026-10-21. Base: `origin/main` at `2227fe3` (W02-HAI-01 merged).
 Status: **pack/footer/sidecar v1 candidate ready for independent review**; not a
 claim that the team has approved a global freeze or that live AWS integration
 has passed. No binary golden was regenerated from the production writer.

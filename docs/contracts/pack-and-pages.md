@@ -1,6 +1,6 @@
 # Định dạng pack, sidecar và pages v1 — W01-CHIEN-04
 
-Trạng thái: thiết kế v1 đã có production codec pack/footer/sidecar trong `internal/pack` (W02-HAI-02); format pages vẫn được kiểm bằng reference tests và thuộc W02-HAI-03/W04. Freeze chính thức của nhóm cần review độc lập theo [freeze record](w02-hai-02-format-freeze.md). Task Miles `W01-CHIEN-04` (nguồn `W01-HAI-02`, A02/A09/A11), phụ thuộc `W01-HUNG-04` (Done). Nguồn: [kiến trúc §4, §5, §9.0, §10](../dedup-storage-gateway-architecture.md), [API §4.3.1](../dedup-storage-gateway-api.md), [shared storage](shared-storage.md).
+Trạng thái: thiết kế v1 đã có production codec pack/footer/sidecar trong `internal/pack` (W02-HAI-02); format pages vẫn được kiểm bằng reference tests và thuộc W02-HAI-03/W04. Freeze chính thức của nhóm cần review độc lập theo [freeze record](pack-format-freeze.md). Task Miles `W01-CHIEN-04` (nguồn `W01-HAI-02`, A02/A09/A11), phụ thuộc `W01-HUNG-04` (Done). Nguồn: [kiến trúc §4, §5, §9.0, §10](../dedup-storage-gateway-architecture.md), [API §4.3.1](../dedup-storage-gateway-api.md), [shared storage](shared-storage.md).
 
 | Checklist W1 | Mục | Fixture |
 |---|---|---|

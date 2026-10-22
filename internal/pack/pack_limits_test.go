@@ -5,10 +5,10 @@ import (
 	"crypto/sha256"
 	"errors"
 	"hash/crc32"
-	"io"
 	"testing"
 
 	"github.com/KinasTomes/miles/internal/storage"
+	"github.com/klauspost/compress/zstd"
 )
 
 func TestReadBlobZstdOutputBudget(t *testing.T) {
@@ -37,18 +37,50 @@ func TestReadBlobZstdOutputBudget(t *testing.T) {
 			}
 		})
 	}
-	// This is an output-budget assertion, not merely a final length check:
-	// a malformed raw_len=1 may consume at most one extra decoded byte.
-	input := bytes.NewReader(bytes.Repeat([]byte{'x'}, 16<<20))
-	if _, err := decodeRawBounded(input, 1); err == nil || input.Size()-int64(input.Len()) != 2 {
-		t.Fatalf("output budget not enforced: consumed=%d err=%v", input.Size()-int64(input.Len()), err)
+}
+
+func TestReadBlobZstdWindowAllocationBudget(t *testing.T) {
+	raw := bytes.Repeat([]byte{'x'}, 16<<20)
+	var encoded bytes.Buffer
+	encoder, err := zstd.NewWriter(&encoded, zstd.WithWindowSize(8<<20), zstd.WithEncoderConcurrency(1))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got, err := decodeRawBounded(bytes.NewReader([]byte{'x'}), 1); err != nil || string(got) != "x" {
-		t.Fatalf("exact output rejected: %q %v", got, err)
+	if _, err := encoder.Write(raw); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := decodeRawBounded(bytes.NewReader(nil), 1); !errors.Is(err, io.EOF) {
-		t.Fatalf("short output: %v", err)
+	if err := encoder.Close(); err != nil {
+		t.Fatal(err)
 	}
+	stored := encoded.Bytes()
+	var header zstd.Header
+	if err := header.Decode(stored); err != nil || header.HasFCS || header.WindowSize != 8<<20 {
+		t.Fatalf("probe must have no FCS and an 8 MiB window: %+v err=%v", header, err)
+	}
+	e := Entry{Key: storage.ChunkKey{Domain: "default", Hash: digest(raw)}, Codec: "zstd",
+		StoredLen: uint32(len(stored)), RawLength: uint32(len(raw)), CRC32C: crc32.Checksum(stored, crcTable)}
+	// Establish that the frame itself is valid before misdeclaring raw_len.
+	if got, err := ReadBlob(e, stored); err != nil || !bytes.Equal(got, raw) {
+		t.Fatalf("valid large-window frame rejected: %v", err)
+	}
+	e.RawLength = 1
+	result := testing.Benchmark(func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			got, err := ReadBlob(e, stored)
+			var formatErr *FormatError
+			if got != nil || !errors.As(err, &formatErr) || formatErr.Stage != "content" {
+				b.Fatalf("oversized frame accepted: bytes=%d err=%v", len(got), err)
+			}
+		}
+	})
+	// Measure the real decoder, including a fresh decoder per call. Allow
+	// scratch-space overhead but reject allocation of the advertised window.
+	const maxAllocatedBytes = 2 << 20
+	if allocated := result.AllocedBytesPerOp(); allocated > maxAllocatedBytes {
+		t.Fatalf("decoder allocated %d bytes/op for raw_len=1; budget=%d", allocated, maxAllocatedBytes)
+	}
+	t.Logf("no-FCS frame: stored=%d bytes, allocated=%d bytes/op", len(stored), result.AllocedBytesPerOp())
 }
 
 func TestParseIndexRejectsOversizedPackInventory(t *testing.T) {

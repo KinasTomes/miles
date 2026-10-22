@@ -328,13 +328,15 @@ func ReadBlob(e Entry, stored []byte) ([]byte, error) {
 		if err := oneFrame(stored, e.RawLength); err != nil {
 			return nil, invalid("content", "zstd frame: %v", err)
 		}
-		decoder, err := zstd.NewReader(bytes.NewReader(stored),
-			zstd.WithDecoderMaxMemory(engine.MaxChunkBytes), zstd.WithDecoderConcurrency(1))
+		decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(engine.MaxChunkBytes),
+			zstd.WithDecoderConcurrency(1), zstd.WithDecodeAllCapLimit(true))
 		if err != nil {
 			return nil, err
 		}
 		defer decoder.Close()
-		raw, err = decodeRawBounded(decoder, e.RawLength)
+		// Enforce the per-entry budget inside the decoder. Streaming readers
+		// can allocate a full window before an outer reader limits output.
+		raw, err = decoder.DecodeAll(stored, make([]byte, 0, e.RawLength))
 		if err != nil {
 			return nil, invalid("content", "zstd decode: %v", err)
 		}
@@ -419,23 +421,8 @@ func readRange(ctx context.Context, store storage.PackStore, ref storage.PackRef
 
 func sha256Bytes(b []byte) []byte { sum := sha256.Sum256(b); return sum[:] }
 
-func decodeRawBounded(reader io.Reader, rawLength uint32) ([]byte, error) {
-	raw := make([]byte, rawLength)
-	if _, err := io.ReadFull(reader, raw); err != nil {
-		return nil, err
-	}
-	// A one-byte probe both detects excess output and forces the decoder to
-	// finish the frame, including its optional checksum.
-	var extra [1]byte
-	n, err := io.ReadFull(reader, extra[:])
-	if n != 0 || err != io.EOF {
-		return nil, fmt.Errorf("output exceeds raw length or has invalid trailer: %v", err)
-	}
-	return raw, nil
-}
-
 // oneFrame rejects concatenated/skippable frames, dictionaries and trailing
-// bytes before streaming decode, which alone could accept multiple frames.
+// bytes before decode, which alone could accept multiple frames.
 func oneFrame(stored []byte, rawLength uint32) error {
 	var h zstd.Header
 	if err := h.Decode(stored); err != nil {
