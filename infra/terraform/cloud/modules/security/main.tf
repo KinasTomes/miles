@@ -11,6 +11,13 @@ resource "aws_kms_key" "runtime" {
       Principal = { AWS = "arn:aws:iam::${var.account_id}:root" }
       Action    = "kms:*"
       Resource  = "*"
+      }, {
+      Sid       = "EncryptRuntimeLogs"
+      Effect    = "Allow"
+      Principal = { Service = "logs.${var.region}.amazonaws.com" }
+      Action    = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
+      Resource  = "*"
+      Condition = { ArnEquals = { "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${var.region}:${var.account_id}:log-group:/${var.name}/runtime" } }
     }]
   })
 }
@@ -34,8 +41,10 @@ resource "aws_ssm_parameter" "config" {
 resource "aws_cloudwatch_log_group" "runtime" {
   name              = "/${var.name}/runtime"
   retention_in_days = 14
+  kms_key_id        = aws_kms_key.runtime.arn
 }
 output "kms_key_arn" { value = aws_kms_key.runtime.arn }
 output "secret_arn" { value = aws_secretsmanager_secret.runtime.arn }
 output "parameter_arn" { value = aws_ssm_parameter.config.arn }
 output "log_group_arn" { value = aws_cloudwatch_log_group.runtime.arn }
+output "log_group_name" { value = aws_cloudwatch_log_group.runtime.name }

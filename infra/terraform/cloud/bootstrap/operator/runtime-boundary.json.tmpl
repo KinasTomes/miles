@@ -145,6 +145,54 @@
       "Resource": [
         "arn:aws:autoscaling:ap-southeast-1:ACCOUNT_ID:autoScalingGroup:*:autoScalingGroupName/miles-dev-*"
       ]
+    },
+    {
+      "Sid": "RegisterDevNode",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:UpdateInstanceInformation"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
+    },
+    {
+      "Sid": "AgentChannels",
+      "Effect": "Allow",
+      "Action": [
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
+    },
+    {
+      "Sid": "VerifySessionLogEncryption",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogGroups"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
     }
   ]
 }
