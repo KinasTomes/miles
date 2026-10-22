@@ -138,8 +138,9 @@ Hợp đồng của parser/xác thực S3. `tests/fixtures/s3/transport.json` gi
 
 - Request không có chữ ký trả `AccessDenied` (DSG không có truy cập ẩn danh); header `Authorization: AWS ...` (SigV2) trả `NotImplemented` như presigned SigV2; thuật toán khác `AWS4-HMAC-SHA256` (gồm SigV4a), scope sai Region/ngày/service, `x-amz-content-sha256` ngoài bảng mục 2.2 trả `InvalidArgument`. Credential backend lỗi trả `InternalError`.
 - Presigned có `X-Amz-Date` sau đồng hồ server quá 15 phút trả `RequestTimeTooSkewed`; payload hash là `x-amz-content-sha256` nếu có, không thì `UNSIGNED-PAYLOAD`.
-- Chunk không ký mang extension trả `InvalidRequest`. Checksum header của CompleteMultipartUpload là checksum object nên decoder không so với body XML; PutObject/UploadPart không gửi algorithm thì decoder tính CRC64NVME.
-- Body XML (`Payload.DecodeXML`) được đọc hết trước khi parse nên lỗi bước 4 xếp trước `MalformedXML`; body dài hơn giới hạn handler truyền vào trả `EntityTooLarge`.
+- Chunk không ký mang extension trả `InvalidRequest`. Checksum header của CompleteMultipartUpload là checksum object nên decoder không so với body XML; Complete gửi `x-amz-trailer` trả `InvalidRequest` (checksum object gửi bằng header, không bằng trailer). PutObject/UploadPart không gửi algorithm thì decoder tính CRC64NVME.
+- Checksum đã gửi luôn được kiểm, không phụ thuộc giá trị: header `x-amz-checksum-<alg>` hoặc trailer rỗng hay không phải Base64 của digest đúng độ dài của algorithm trả `InvalidRequest` (giá trị hợp lệ nhưng sai vẫn `BadDigest`); header `Content-MD5` có mặt, kể cả rỗng, được so và sai trả `BadDigest`.
+- Body XML (`Payload.DecodeXML`) được đọc hết trước khi parse nên lỗi bước 4 xếp trước `MalformedXML`; body dài hơn giới hạn handler truyền vào trả `EntityTooLarge`. Body phải là đúng một document: một root, ngoài root chỉ có XML declaration ở đầu, comment, processing instruction và khoảng trắng; root thứ hai, text, DOCTYPE hoặc lỗi cú pháp sau root trả `MalformedXML`.
 
 ### 2.2.3 Danh tính, snapshot quyền và binding upload — hợp đồng W1
 

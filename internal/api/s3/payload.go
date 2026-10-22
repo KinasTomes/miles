@@ -52,10 +52,11 @@ type Payload struct {
 	sha256    hash.Hash // x-amz-content-sha256 is a hex digest
 	wantSHA   []byte
 	md5       hash.Hash // Content-MD5 was sent, or the operation has an MD5 ETag
+	checkMD5  bool      // Content-MD5 was sent, even empty
 	wantMD5   string
 	sum       hash.Hash
 	algorithm string // upper case, as in API v2 2.7
-	wantSum   string // x-amz-checksum-<alg> header; a trailer value replaces it
+	wantSum   []byte // digest of the x-amz-checksum-<alg> header; nil when not sent
 }
 
 // newPayload wraps the body of a request resolved to op. s is nil only when
@@ -64,18 +65,28 @@ type Payload struct {
 func newPayload(r *http.Request, op Operation, s *signer) *Payload {
 	p := &Payload{src: r.Body}
 	var hashes []io.Writer
-	alg, want := requestChecksum(r.Header)
+	alg, want, sent := requestChecksum(r.Header)
 	switch {
+	case op == CompleteMultipartUpload && r.Header.Get("X-Amz-Trailer") != "":
+		p.err = &Error{Code: ErrInvalidRequest, Message: "CompleteMultipartUpload takes the object checksum as an x-amz-checksum-<algorithm> header, not as a trailer."}
+		return p
 	case op == CompleteMultipartUpload:
-		alg, want = "", "" // its checksum headers describe the object, not the XML body
+		alg, sent = "", false // its checksum headers describe the object, not the XML body
 	case alg == "" && (op == PutObject || op == UploadPart):
 		alg = "crc64nvme" // stored when the client names no algorithm (API v2 2.7)
 	}
 	if alg != "" {
-		p.sum, p.algorithm, p.wantSum = checksumHashes[alg](), strings.ToUpper(alg), want
+		p.sum, p.algorithm = checksumHashes[alg](), strings.ToUpper(alg)
 		hashes = append(hashes, p.sum)
 	}
-	if p.wantMD5 = r.Header.Get("Content-Md5"); p.wantMD5 != "" || op == PutObject || op == UploadPart {
+	if sent {
+		var ok bool
+		if p.wantSum, ok = checksumDigest(alg, want); !ok {
+			p.err = &Error{Code: ErrInvalidRequest, Message: "Value for x-amz-checksum-" + alg + " header is invalid."}
+		}
+	}
+	p.checkMD5, p.wantMD5 = len(r.Header.Values("Content-Md5")) > 0, r.Header.Get("Content-Md5")
+	if p.checkMD5 || op == PutObject || op == UploadPart {
 		p.md5 = md5.New()
 		hashes = append(hashes, p.md5)
 	}
@@ -86,27 +97,35 @@ func newPayload(r *http.Request, op Operation, s *signer) *Payload {
 	}
 	p.hashes = io.MultiWriter(hashes...)
 	if strings.HasPrefix(mode, "STREAMING-") {
-		p.chunked, p.err = newAWSChunked(r, mode, s)
-		p.src = p.chunked
+		var err error
+		p.chunked, err = newAWSChunked(r, mode, s)
+		p.src, p.err = p.chunked, cmp.Or(p.err, err)
 	}
 	return p
 }
 
 // requestChecksum returns the checksum algorithm a request names, in lower
-// case, and the value of its x-amz-checksum-<alg> header; a trailer value
-// only arrives after the body. Resolve has already rejected unsupported
-// algorithms and requests naming more than one.
-func requestChecksum(h http.Header) (alg, value string) {
+// case, and the value of its x-amz-checksum-<alg> header with whether that
+// header was sent; a trailer value only arrives after the body. Resolve has
+// already rejected unsupported algorithms and requests naming more than one.
+func requestChecksum(h http.Header) (alg, value string, sent bool) {
 	if t := h.Get("X-Amz-Trailer"); t != "" {
-		return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(t)), "x-amz-checksum-"), ""
+		return strings.TrimPrefix(strings.ToLower(strings.TrimSpace(t)), "x-amz-checksum-"), "", false
 	}
 	for name, values := range h {
 		a, ok := strings.CutPrefix(strings.ToLower(name), "x-amz-checksum-")
 		if ok && a != "algorithm" && a != "mode" && a != "type" {
-			return a, values[0]
+			return a, values[0], true
 		}
 	}
-	return strings.ToLower(cmp.Or(h.Get("X-Amz-Sdk-Checksum-Algorithm"), h.Get("X-Amz-Checksum-Algorithm"))), ""
+	return strings.ToLower(cmp.Or(h.Get("X-Amz-Sdk-Checksum-Algorithm"), h.Get("X-Amz-Checksum-Algorithm"))), "", false
+}
+
+// checksumDigest decodes a checksum value of alg: the base64 of a digest of
+// the algorithm's size. An empty value is not one.
+func checksumDigest(alg, value string) ([]byte, bool) {
+	b, err := base64.StdEncoding.Strict().DecodeString(value)
+	return b, err == nil && len(b) == checksumHashes[alg]().Size()
 }
 
 func (p *Payload) Read(b []byte) (int, error) {
@@ -131,14 +150,14 @@ func (p *Payload) verify() *Error {
 	if p.sha256 != nil && !bytes.Equal(p.sha256.Sum(nil), p.wantSHA) {
 		return &Error{Code: ErrXAmzContentSHA256Mismatch}
 	}
-	if p.wantMD5 != "" && base64.StdEncoding.EncodeToString(p.md5.Sum(nil)) != p.wantMD5 {
+	if p.checkMD5 && base64.StdEncoding.EncodeToString(p.md5.Sum(nil)) != p.wantMD5 {
 		return &Error{Code: ErrBadDigest}
 	}
 	want := p.wantSum
-	if p.chunked != nil && p.chunked.value != "" {
+	if p.chunked != nil && p.chunked.value != nil {
 		want = p.chunked.value
 	}
-	if p.sum != nil && want != "" && base64.StdEncoding.EncodeToString(p.sum.Sum(nil)) != want {
+	if want != nil && !bytes.Equal(p.sum.Sum(nil), want) {
 		return &Error{Code: ErrBadDigest, Message: "The " + p.algorithm + " checksum you specified did not match the calculated checksum."}
 	}
 	return nil
@@ -167,7 +186,9 @@ func (p *Payload) Checksum() (algorithm string, digest []byte) {
 
 // DecodeXML reads the whole payload, then unmarshals it into v, so a payload
 // error ranks before MalformedXML. A payload longer than limit bytes is
-// EntityTooLarge and is not read further.
+// EntityTooLarge and is not read further. The payload must be exactly one XML
+// document: one root element, with only an XML declaration first, comments,
+// processing instructions and whitespace around it.
 func (p *Payload) DecodeXML(v any, limit int64) error {
 	data, err := io.ReadAll(io.LimitReader(p, limit+1))
 	switch {
@@ -175,10 +196,42 @@ func (p *Payload) DecodeXML(v any, limit int64) error {
 		return err
 	case int64(len(data)) > limit:
 		return &Error{Code: ErrEntityTooLarge, Message: fmt.Sprintf("The XML body exceeds %d bytes.", limit)}
-	case xml.Unmarshal(data, v) != nil:
+	case !decodeDocument(data, v):
 		return &Error{Code: ErrMalformedXML}
 	}
 	return nil
+}
+
+// decodeDocument unmarshals the root element of an XML document into v and
+// reports whether data is that document and nothing else. xml.Unmarshal stops
+// after the first element, so the tokens around it are checked here: no
+// second root, text, DOCTYPE, misplaced XML declaration or syntax error.
+func decodeDocument(data []byte, v any) bool {
+	d := xml.NewDecoder(bytes.NewReader(data))
+	root := false
+	for i := 0; ; i++ {
+		tok, err := d.Token()
+		if err != nil {
+			return err == io.EOF && root
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if root || d.DecodeElement(v, &t) != nil {
+				return false
+			}
+			root = true
+		case xml.CharData:
+			if len(bytes.Trim(t, " \t\r\n")) > 0 {
+				return false
+			}
+		case xml.ProcInst:
+			if t.Target == "xml" && i > 0 {
+				return false
+			}
+		case xml.Directive:
+			return false
+		}
+	}
 }
 
 // awsChunked decodes an aws-chunked body (API v2 2.2.2): chunks
@@ -196,7 +249,7 @@ type awsChunked struct {
 	chunkSig  string    // signature the current chunk claims
 	chunkSum  hash.Hash // SHA-256 of the current chunk data, when signed
 	prev      string    // previous signature in the chain
-	value     string    // trailer checksum value, set at the end
+	value     []byte    // decoded trailer checksum; nil when there is no trailer
 	err       error     // sticky; io.EOF after the trailer
 }
 
@@ -346,7 +399,12 @@ func (c *awsChunked) readTrailer() error {
 	if name != c.trailer {
 		return invalidChunked("the aws-chunked trailer must be " + cmp.Or(c.trailer, "empty") + ", got " + cmp.Or(name, "none"))
 	}
-	c.value = value
+	if c.trailer != "" {
+		var ok bool
+		if c.value, ok = checksumDigest(strings.TrimPrefix(c.trailer, "x-amz-checksum-"), value); !ok {
+			return invalidChunked("Value for " + c.trailer + " trailing header is invalid.")
+		}
+	}
 	if _, err := c.r.ReadByte(); err != io.EOF {
 		if err == nil {
 			return invalidChunked("bytes follow the aws-chunked trailer")

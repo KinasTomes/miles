@@ -6,12 +6,16 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
+	"fmt"
+	"hash/crc32"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"slices"
 	"strings"
 	"testing"
@@ -207,6 +211,78 @@ func must[T any](v T, err error) T {
 	return v
 }
 
+// editAWSChunked replaces old with new, in pairs, in the aws-chunked body of
+// c and sends it again as one HTTP chunk.
+func editAWSChunked(t *testing.T, c *transportCase, pairs ...string) {
+	t.Helper()
+	inner, err := io.ReadAll(httputil.NewChunkedReader(strings.NewReader(c.Body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(inner)
+	for i := 0; i < len(pairs); i += 2 {
+		if !strings.Contains(body, pairs[i]) {
+			t.Fatalf("aws-chunked body has no %q", pairs[i])
+		}
+		body = strings.Replace(body, pairs[i], pairs[i+1], 1)
+	}
+	c.Body = fmt.Sprintf("%x\r\n%s\r\n0\r\n\r\n", len(body), body)
+}
+
+// A checksum trailer x-amz-trailer names is always checked: an empty or
+// malformed value is InvalidRequest, never a checksum left out.
+func TestTrailerChecksumValue(t *testing.T) {
+	f := loadTransport(t)
+	const trailer = "x-amz-checksum-crc64nvme:Y53hf1fT3M4="
+	for _, tc := range []struct {
+		name  string
+		pairs []string
+		want  ErrorCode
+	}{
+		{"unchanged", []string{trailer, trailer}, ""},
+		{"empty value", []string{trailer, "x-amz-checksum-crc64nvme:"}, ErrInvalidRequest},
+		{"empty value, payload changed", []string{trailer, "x-amz-checksum-crc64nvme:", "Miles", "Niles"}, ErrInvalidRequest},
+		{"value not base64", []string{trailer, "x-amz-checksum-crc64nvme:Y53hf1fT3M4"}, ErrInvalidRequest},
+		{"value of a CRC32 digest", []string{trailer, "x-amz-checksum-crc64nvme:1kLfoA=="}, ErrInvalidRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := f.find(t, "cli-put-default")
+			editAWSChunked(t, &c, tc.pairs...)
+			rec, got := serve(t, f.router(activeUser), c)
+			if code := errorCode(rec); code != tc.want || tc.want == "" && (rec.Code != http.StatusOK || got == nil) {
+				t.Errorf("response %d %s, want %q", rec.Code, code, tc.want)
+			}
+		})
+	}
+}
+
+// A checksum header or Content-MD5 that is sent is always checked, even
+// empty; a malformed checksum value is InvalidRequest.
+func TestChecksumHeaderValue(t *testing.T) {
+	for _, tc := range []struct {
+		name, header, value string
+		want                ErrorCode
+	}{
+		{"checksum matches", "X-Amz-Checksum-Crc32", "1kLfoA==", ""},
+		{"checksum differs", "X-Amz-Checksum-Crc32", "AAAAAA==", ErrBadDigest},
+		{"checksum empty", "X-Amz-Checksum-Crc32", "", ErrInvalidRequest},
+		{"checksum not base64", "X-Amz-Checksum-Crc32", "1kLfoA", ErrInvalidRequest},
+		{"checksum of another digest size", "X-Amz-Checksum-Crc32", "Y53hf1fT3M4=", ErrInvalidRequest},
+		{"Content-MD5 matches", "Content-Md5", "/gHOKn+6yPr67XyYKgTiKQ==", ""},
+		{"Content-MD5 empty", "Content-Md5", "", ErrBadDigest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPut, "/demo/k", strings.NewReader("demo"))
+			r.Header.Set("X-Amz-Content-Sha256", unsignedPayload)
+			r.Header.Set(tc.header, tc.value)
+			_, err := io.ReadAll(newPayload(r, PutObject, nil))
+			if code := codeOf(err); code != tc.want || err != nil && code == "" {
+				t.Errorf("error %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // Requests broken before the body: auth format, missing or unsupported
 // signing algorithm, credential state and the rank of router errors.
 func TestAuthenticationErrors(t *testing.T) {
@@ -320,9 +396,9 @@ func TestOperationWithoutHandler(t *testing.T) {
 	}
 }
 
-// chunkedPayload is an unsigned aws-chunked PutObject body of decoded length
-// 4 with a CRC32 trailer; headers override or, when empty, remove its headers.
-func chunkedPayload(body string, headers map[string]string) *Payload {
+// chunkedPayload is an unsigned aws-chunked body of op, decoded length 4 with
+// a CRC32 trailer; headers override or, when empty, remove its headers.
+func chunkedPayload(op Operation, body string, headers map[string]string) *Payload {
 	r := httptest.NewRequest(http.MethodPut, "/demo/k", strings.NewReader(body))
 	for k, v := range map[string]string{
 		"X-Amz-Content-Sha256":         streamingUnsignedTrailer,
@@ -337,7 +413,7 @@ func chunkedPayload(body string, headers map[string]string) *Payload {
 			r.Header.Set(k, v)
 		}
 	}
-	return newPayload(r, PutObject, nil)
+	return newPayload(r, op, nil)
 }
 
 func codeOf(err error) ErrorCode {
@@ -370,7 +446,7 @@ func TestAWSChunkedFraming(t *testing.T) {
 		{"no decoded length", "4\r\ndemo\r\n" + trailer, map[string]string{"X-Amz-Decoded-Content-Length": ""}, ErrInvalidRequest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := chunkedPayload(tc.body, tc.headers)
+			p := chunkedPayload(PutObject, tc.body, tc.headers)
 			data, err := io.ReadAll(p)
 			if code := codeOf(err); code != tc.want || err != nil && code == "" {
 				t.Fatalf("error %v, want %q", err, tc.want)
@@ -383,7 +459,9 @@ func TestAWSChunkedFraming(t *testing.T) {
 }
 
 // DecodeXML reads the whole body first, so payload errors rank before
-// MalformedXML.
+// MalformedXML, then accepts exactly one document: one root element with
+// only an XML declaration first, comments, processing instructions and
+// whitespace around it.
 func TestDecodeXML(t *testing.T) {
 	const valid = `<CompleteMultipartUpload><Part><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>`
 	for _, tc := range []struct {
@@ -391,9 +469,18 @@ func TestDecodeXML(t *testing.T) {
 		want                   ErrorCode
 	}{
 		{"valid", valid, "", ""},
+		{"declaration, comments and whitespace", "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- a -->" + valid + "\n<!-- b -->\r\n\t", "", ""},
 		{"not XML", `{"Parts":[]}`, "", ErrMalformedXML},
 		{"empty", "", "", ErrMalformedXML},
+		{"other root element", `<Delete><Object><Key>k</Key></Object></Delete>`, "", ErrMalformedXML},
+		{"second root", valid + `<Other/>`, "", ErrMalformedXML},
+		{"text after root", valid + "junk", "", ErrMalformedXML},
+		{"unclosed tag after root", valid + "<", "", ErrMalformedXML},
+		{"text before root", "junk" + valid, "", ErrMalformedXML},
+		{"declaration after root", valid + `<?xml version="1.0"?>`, "", ErrMalformedXML},
+		{"DOCTYPE", `<!DOCTYPE CompleteMultipartUpload>` + valid, "", ErrMalformedXML},
 		{"not XML with wrong Content-MD5", `{"Parts":[]}`, "1B2M2Y8AsgTpgAmY7PhCfg==", ErrBadDigest},
+		{"second root with wrong Content-MD5", valid + `<Other/>`, "1B2M2Y8AsgTpgAmY7PhCfg==", ErrBadDigest},
 		{"over the limit", valid + strings.Repeat(" ", 200), "", ErrEntityTooLarge},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -403,7 +490,8 @@ func TestDecodeXML(t *testing.T) {
 				r.Header.Set("Content-MD5", tc.contentMD5)
 			}
 			var doc struct {
-				Parts []struct{ PartNumber int } `xml:"Part"`
+				XMLName xml.Name                   `xml:"CompleteMultipartUpload"`
+				Parts   []struct{ PartNumber int } `xml:"Part"`
 			}
 			err := newPayload(r, CompleteMultipartUpload, nil).DecodeXML(&doc, 200)
 			if code := codeOf(err); code != tc.want || err != nil && code == "" {
@@ -411,6 +499,26 @@ func TestDecodeXML(t *testing.T) {
 			}
 			if tc.want == "" && (len(doc.Parts) != 1 || doc.Parts[0].PartNumber != 1) {
 				t.Errorf("decoded %+v", doc)
+			}
+		})
+	}
+}
+
+// The checksum headers of CompleteMultipartUpload describe the object, not
+// the XML body, so a checksum trailer has no meaning there and is rejected,
+// whatever its value.
+func TestCompleteChecksumTrailer(t *testing.T) {
+	const doc = `<CompleteMultipartUpload><Part><PartNumber>1</PartNumber></Part></CompleteMultipartUpload>`
+	crc := base64.StdEncoding.EncodeToString(binary.BigEndian.AppendUint32(nil, crc32.ChecksumIEEE([]byte(doc))))
+	for _, value := range []string{crc, "AAAAAA=="} {
+		t.Run(value, func(t *testing.T) {
+			body := fmt.Sprintf("%x\r\n%s\r\n0\r\nx-amz-checksum-crc32:%s\r\n\r\n", len(doc), doc, value)
+			p := chunkedPayload(CompleteMultipartUpload, body, map[string]string{"X-Amz-Decoded-Content-Length": fmt.Sprint(len(doc))})
+			var v struct {
+				Parts []struct{ PartNumber int } `xml:"Part"`
+			}
+			if err := p.DecodeXML(&v, 1<<20); codeOf(err) != ErrInvalidRequest {
+				t.Errorf("error %v, want InvalidRequest", err)
 			}
 		})
 	}
