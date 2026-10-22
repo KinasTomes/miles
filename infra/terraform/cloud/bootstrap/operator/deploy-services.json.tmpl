@@ -132,7 +132,11 @@
         "logs:PutRetentionPolicy",
         "logs:TagLogGroup",
         "logs:TagResource",
-        "logs:UntagResource"
+        "logs:UntagResource",
+        "logs:AssociateKmsKey",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:DescribeLogStreams"
       ],
       "Resource": [
         "arn:aws:logs:ap-southeast-1:ACCOUNT_ID:log-group:/miles-dev/runtime",
@@ -167,6 +171,45 @@
       "Resource": [
         "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/miles-dev/bootstrap-config"
       ]
+    },
+    {
+      "Sid": "ProvisionEncryptedDataServices",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateGrant"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "Bool": {
+          "kms:GrantIsForAWSResource": "true"
+        }
+      }
+    },
+    {
+      "Sid": "UseDevSessionKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:GenerateDataKey",
+        "kms:Decrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
     }
   ]
 }

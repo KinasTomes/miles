@@ -1,0 +1,50 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DeleteSessionEgress",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteNatGateway",
+        "ec2:ReleaseAddress",
+        "ec2:DeleteRoute",
+        "ec2:DeleteVpcEndpoints",
+        "ec2:DeleteSecurityGroup"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:natgateway/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:elastic-ip/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:route-table/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc-endpoint/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "ReadAndDeleteDevLoadBalancer",
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:DeleteLoadBalancer",
+        "elasticloadbalancing:DeleteTargetGroup",
+        "elasticloadbalancing:DeleteListener",
+        "elasticloadbalancing:DescribeTags"
+      ],
+      "Resource": [
+        "arn:aws:elasticloadbalancing:ap-southeast-1:ACCOUNT_ID:loadbalancer/app/miles-dev/*",
+        "arn:aws:elasticloadbalancing:ap-southeast-1:ACCOUNT_ID:targetgroup/miles-dev-s3/*",
+        "arn:aws:elasticloadbalancing:ap-southeast-1:ACCOUNT_ID:listener/app/miles-dev/*/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
+    }
+  ]
+}

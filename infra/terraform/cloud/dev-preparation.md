@@ -1,62 +1,76 @@
 # Chuẩn bị môi trường AWS dev
 
-Ngày kiểm tra: 2026-10-22. Phần IAM operator/deploy đã được bootstrap; hạ tầng
-workload chưa apply. W03-HUNG-01 chưa hoàn tất.
+Ngày kiểm tra: 2026-10-22. IAM operator/deploy đã bootstrap trước đó; các policy
+mở rộng trong lượt này chưa gắn lên AWS. **Không apply workload, chưa Done W03-HUNG-01.**
 
-## Kết quả đã kiểm tra
+## Đã chuẩn bị
 
-- Operator có MFA, đã đổi mật khẩu, không có access key. CLI profile `miles-dev`
-  dùng session `miles-dev-deploy`; deployment identity gate PASS.
-- Role đọc được VPC/security groups/log groups tại Singapore; EC2 Sydney bị từ chối.
-- Terraform validate PASS; 11 mock plan tests PASS, gồm từ chối boundary khác account
-  và kiểm cả hai runtime role nhận boundary. Năm Python tests PASS.
-- Fresh local foundation plan NAT: 46 creates, không sửa/xóa; hai runtime role
-  có boundary. State bootstrap plan: 5 creates. Không phải remote-state/drift check.
-- Quyền IAM đã qua Access Analyzer và các ca simulator nêu ở
-  [operator bootstrap](bootstrap/operator/README.md). Chưa thử apply thực tế.
+S3 versioned/SSE-KMS/private, 20 DDB tables có PITR/deletion protection, một EC2
+private dùng image AL2023 ARM64 đã pin, root 8 GiB theo phiên và data EBS 20 GiB giữ
+lại. Không format ổ, seed metadata/secret, cài app hay tự chạy lifecycle AWS.
+Admin shell dùng Session Manager với log/data channel mã hóa; không public SSH,
+Admin hoặc metrics. [Schema và ảnh hưởng adapter](metadata-tables.md),
+[quy trình bật/nghỉ](dev-sessions.md).
 
-Config thật nằm ngoài Git, gồm account input, Singapore, single NAT, ALB tắt,
-CIDR client/admin rỗng và runtime boundary. Backend dự kiến dùng profile
-`miles-dev`, S3 encryption và native lockfile. Bucket backend chưa được tạo.
-Full plan, mật khẩu, authorization code và raw credentials không là PR artifact.
+`paused=true` thu hồi compute và paid networking, giữ data/key/state. Chạy bình
+thường theo phiên; chưa có lịch tự bật, automatic shutdown hoặc hard spending cap.
+AWS Budgets là cảnh báo có độ trễ. Không coi stopped EC2 là đã dừng mọi phí.
 
-## Dự toán công khai để review
+## Bằng chứng và giới hạn
 
-Nguồn: AWS Price List API, location `Asia Pacific (Singapore)`, đọc 2026-10-22.
-Public On-Demand USD, chưa tính thuế/credit; đây là phép tính theo giả định sử dụng,
-không phải hóa đơn hoặc giá trọn gói cho workload.
+- Operator MFA/no access key và CLI role đã kiểm ở bước bootstrap; identity gate PASS.
+- Full fresh empty-state plan: active single-NAT Warm **76 creates**, paused **70
+  creates**. Đây là hai plan từ rỗng, không phải diff pause/resume của AWS thật.
+- Full plan dùng root session **chỉ đọc** để resolve AMI khi deploy role chưa nhận
+  DescribeImages mới. Không apply bằng root. Provider qua profile credential_process
+  được kiểm riêng bằng paused plan dưới deploy role.
+- Terraform validate và 21 tests PASS; 11 Python tests PASS. Mọi mock apply/cleanup
+  không gọi AWS.
+- Mock lifecycle kiểm active→pause→resume và interface→pause; giữ S3/DDB/EBS/key/IAM.
+  Các diff mock pause/resume được đối chiếu với gate chỉ đổi session resources.
+- Access Analyzer không có findings cho policy review; IAM simulator kiểm tạo
+  compute bị giới hạn size/IMDS/private/pinned image, teardown chỉ đúng Miles/dev,
+  từ chối xóa datastore/volume/key và từ chối runtime IAM/state access.
+- Full policy baseline sinh bằng IAM Policy Autopilot 0.3.0 từ private active plan;
+  được refine theo IAM path, tài nguyên thực, bounds và teardown operations.
+  Không coi simulation/plan là chứng minh mọi API apply đã có đủ quyền.
 
-| Thành phần | Đơn giá |
+Config thật và full plan nằm ngoài Git, file 0600/thư mục 0700. Bản riêng giữ
+`paused=true`, `enable_compute=true`, NAT dự kiến, ALB tắt, AMI đã kiểm tra ở
+Singapore và boundary. Backend bucket chưa được tạo; profile CLI gốc giữ nguyên,
+profile phụ `miles-dev-terraform` dùng credential_process, không lưu raw keys.
+
+## Dự toán để review
+
+Public On-Demand USD, Singapore, AWS Price List API ngày 2026-10-22, chưa thuế/credit.
+Đơn giá: NAT 0,059 USD/giờ + 0,059 USD/GB; IPv4 0,005 USD/giờ; t4g.small Linux
+0,0212 USD/giờ; gp3 0,096 USD/GiB-tháng; KMS 1 USD/key-tháng; secret metadata
+0,40 USD/secret-tháng. Nguồn dịch vụ:
+[VPC](https://aws.amazon.com/vpc/pricing/), [EC2](https://aws.amazon.com/ec2/pricing/on-demand/),
+[EBS](https://aws.amazon.com/ebs/pricing/), [KMS](https://aws.amazon.com/kms/pricing/),
+[Secrets](https://aws.amazon.com/secrets-manager/pricing/).
+
+Ví dụ giữ 20 GiB data + một key + một secret cả tháng; EC2/NAT/IPv4/root 8 GiB
+chỉ tồn tại trong phiên. Decimal, quy ước tháng 730 giờ cho ước lượng root disk:
+
+| Giờ chạy/tháng | Fixed estimate USD |
 |---|---:|
-| NAT Gateway | 0,059 USD/giờ + 0,059 USD/GB xử lý |
-| Public IPv4 của NAT | 0,005 USD/giờ |
-| EC2 t4g.small Linux | 0,0212 USD/giờ |
-| EBS gp3 | 0,096 USD/GiB-tháng |
-| KMS key | 1 USD/key-tháng |
-| Secrets Manager | 0,40 USD/secret-tháng |
+| 0 — đã pause | 3,32 |
+| 24 | 5,39 |
+| 96 | 11,60 |
+| 730 | 66,28 |
 
-Giả định giữ một KMS key và một secret cả tháng; NAT/IP và EC2 chỉ chạy theo số giờ
-trong bảng. Ví dụ Warm thêm một t4g.small và 20 GiB gp3 giữ cả tháng; EC2/EBS này
-chưa được khai báo trong foundation hiện có. Tính bằng Decimal, làm tròn 2 chữ số:
+Công thức: 3,32 + (0,059 + 0,005 + 0,0212) × giờ + 8 × 0,096 × giờ / 730.
+**Chưa gồm** S3/DDB storage/requests/PITR, logs, KMS/secret requests, NAT data,
+Internet/cross-AZ transfer, snapshots, ALB hoặc state storage. Không phải tổng bill
+hay cam kết trần chi phí. CPU credits standard có thể throttle thay vì tính surplus.
+Interface mode 9 services × 2 AZ riêng endpoint-hours khoảng 170,82 USD/730 giờ,
+chưa data processing; không phù hợp để treo dev liên tục trong lúc chờ W2.
 
-| Phương án | 24 giờ/tháng | 96 giờ/tháng | 730 giờ/tháng |
-|---|---:|---:|---:|
-| Foundation: 1 NAT + IPv4 + key + secret | 2,94 | 7,54 | 48,12 |
-| Ví dụ Warm: foundation + EC2 + EBS | 5,36 | 11,50 | 65,52 |
+## Trước khi đề nghị Done
 
-Foundation = (0,059 + 0,005) × giờ + 1 + 0,40.
-Warm = foundation + 0,0212 × giờ + 20 × 0,096.
-
-Chưa gồm request/storage S3/DynamoDB, PITR, logs, KMS/Secrets API calls,
-NAT data, Internet/cross-AZ transfer hoặc CPU surplus credits. Không giả định
-Free Tier/credit. Mốc 96 giờ là ví dụ, chưa có cơ chế tự tắt hoặc hard spending cap.
-Ngừng EC2 không dừng phí NAT/EIP/EBS/key/secret.
-
-## Trước khi triển khai tính phí
-
-Chốt số giờ chạy và chi phí; hoàn thiện quyền và plan teardown phần mạng tính phí
-mà vẫn giữ state/data/KMS. Apply state bootstrap rồi kiểm locking/backend thực.
-Review remote plan dưới đúng role trước apply foundation. Bổ sung data bucket,
-DynamoDB, compute và runtime config theo phạm vi task; không coi 46 tài nguyên
-foundation là môi trường Warm đã chạy. ALB vẫn cần domain/certificate/CIDR thật
-nếu quyết định đưa HTTPS vào phạm vi triển khai.
+Review schema vật lý với adapter; review/cấp policy mới, budget cho phiên và saved
+plan thực. Sau khi được duyệt apply: kiểm state locking/backend, SSM Online/log
+stream, mount đúng data volume, permissions/API routes, S3/DDB smoke operations,
+sentinel/hash qua pause/resume và inventory/chi phí sau thu hồi. App/SigV4/storage
+integration phụ thuộc phần W2/W3 của nhóm; chưa có evidence Cloud chạy thật.

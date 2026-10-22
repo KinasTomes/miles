@@ -22,6 +22,10 @@ không chứa thông tin account thật. Config, plan và credential nằm ngoà
 | MilesDevDeployRuntimeRoles | deploy-runtime-roles.json.tmpl | deploy role |
 | MilesDevDeployServices | deploy-services.json.tmpl | deploy role |
 | MilesDevDeployState | deploy-state.json.tmpl | deploy role |
+| MilesDevDeployData | deploy-data.json.tmpl | deploy role (review draft) |
+| MilesDevDeployCompute | deploy-compute.json.tmpl | deploy role (review draft) |
+| MilesDevDeploySessions | deploy-sessions.json.tmpl | deploy role (review draft) |
+| MilesDevDeployTeardown | deploy-teardown.json.tmpl | deploy role (review draft) |
 | MilesDevRuntimeBoundary | runtime-boundary.json.tmpl | boundary của gateway/jobs |
 
 Boundary không phải identity policy cấp quyền cho deploy role. Nó giới hạn các
@@ -38,7 +42,7 @@ DeleteObject chỉ cho `.tflock`, không cho state object.
 
 ## Nguồn policy và kiểm tra
 
-Baseline sinh từ hai private empty-state plans bằng
+Baseline foundation/state và full Warm sinh từ private empty-state plans bằng
 [iam-policy-autopilot](https://github.com/awslabs/iam-policy-autopilot) **0.3.0**:
 
 ```bash
@@ -51,6 +55,10 @@ uvx iam-policy-autopilot@0.3.0 generate-policies "$PRIVATE_DIR/foundation-plan.j
   --region ap-southeast-1 --account "$AWS_ACCOUNT_ID" --resource-cutoff 100 --pretty
 uvx iam-policy-autopilot@0.3.0 generate-policies "$PRIVATE_DIR/state-plan.json" \
   --region ap-southeast-1 --account "$AWS_ACCOUNT_ID" --resource-cutoff 100 --pretty
+python3 infra/terraform/cloud/scripts/plan-local.py --mode nat --var-file "$DEV_VARS" \
+  --policy-plan-json "$PRIVATE_DIR/warm-active-plan.json"
+uvx iam-policy-autopilot@0.3.0 generate-policies "$PRIVATE_DIR/warm-active-plan.json" \
+  --region ap-southeast-1 --account "$AWS_ACCOUNT_ID" --resource-cutoff 100 --pretty
 ```
 
 Baseline được review lại: bỏ quyền service tùy chọn không dùng, sửa IAM path,
@@ -58,7 +66,7 @@ KMS alias và SSM parameter ARN; thêm giới hạn tags/Region, runtime boundar
 state/lock access theo hợp đồng backend. Boundary lấy trần quyền của module IAM
 runtime hiện có. Tách managed policy để từng document dưới quota 6.144 ký tự.
 
-Render `ACCOUNT_ID` thành account từ STS trong thư mục riêng có quyền 0700,
+Render `ACCOUNT_ID` thành account từ STS và `AMI_ID` thành AMI đã pin/review trong thư mục riêng có quyền 0700,
 file 0600. Chạy `aws accessanalyzer validate-policy` với `IDENTITY_POLICY` trên
 các policy; trust dùng `RESOURCE_POLICY` và resource type
 `AWS::IAM::AssumeRolePolicyDocument`. Chỉ gắn document đã kiểm tra; nếu policy
@@ -75,7 +83,8 @@ chứng minh mọi API apply đã được cấp đủ quyền.
 1. Đăng nhập console bằng operator và MFA, rồi Switch Role với đường dẫn đầy đủ
    `miles/bootstrap/miles-dev-deploy`.
 2. Đăng nhập CLI bằng `aws login --remote --profile miles-dev --region ap-southeast-1`,
-   chọn phiên role đó trong trình duyệt. Không chọn user hoặc root.
+   chọn phiên role đó trong trình duyệt. Không chọn user hoặc root. Đặt region
+   Singapore trên profile nguồn để refresh token không gặp NoRegion.
 3. Đặt `AWS_PROFILE=miles-dev`, kiểm STS và chạy identity gate trước mỗi apply:
 
 ```bash
@@ -88,8 +97,44 @@ credential provider `aws login`; `plan-local.py` đã export credential tạm tr
 subprocess. Với lệnh Terraform triển khai trực tiếp, dùng cùng cách export vào
 process environment; không in hoặc lưu raw credential vào shell history/file.
 
-Các policy này phục vụ foundation bootstrap đã plan, chưa cấp quyền triển khai
-EC2/data bucket/DynamoDB hoặc ALB. Chưa đủ quy trình teardown: cần review quyền
-xóa tài nguyên mạng, bảo vệ data/KMS và plan tắt NAT trước khi bật hạ tầng tính phí.
-Không dùng AdministratorAccess để xử lý lỗi quyền và không coi template này là
-quyền deploy hoàn chỉnh của toàn bộ W3.
+## Mở rộng W3 — chưa cập nhật AWS
+
+Các template data/compute/session/teardown và boundary mới đã validate/simulate,
+chưa tạo managed policy hoặc đổi default version trên AWS trong lượt chỉ plan/test.
+Trước apply cần administrative IAM review, đối chiếu version đang gắn và cập nhật
+đúng document; không để deploy role tự đổi policy/boundary. Không overwrite policy
+khác nội dung mà chưa review diff. Giữ trust/MFA/user policy như bootstrap hiện có.
+
+Bốn policy mới cộng policy hiện có và SignInLocalDevelopmentAccess là 10 managed
+policies/role; quota đọc từ account hiện là 20. Boundary không gắn như
+identity policy vào deploy role. Kiểm quota/attachment count thực trước cập nhật.
+
+Compute chỉ cho pinned AMI, t4g.small, IMDSv2, private ENI và profile gateway đã
+bounded; volume mã hóa gp3 ≤20 GiB. CreateTags chỉ lúc RunInstances/CreateVolume,
+không được tự gắn nhãn nhận instance có sẵn. Data policy giới hạn 20 bảng thật và
+đúng backend bucket; không cấp object access/data mutation cho deploy chỉ để smoke
+test. Chạy smoke dưới runtime profile trên dev node sau khi apply được duyệt.
+
+Teardown thường ngày chỉ terminate instance, detach volume và bỏ NAT/EIP/routes,
+interface SG/endpoints hoặc ALB đúng tên. Không DeleteBucket/DeleteTable/DeleteVolume,
+ScheduleKeyDeletion hoặc xóa state. `prevent_destroy`/deletion protection vẫn cần;
+IAM permissions không thay proof graceful drain/retention trong app.
+
+Session access chỉ node Miles/dev và document `miles-dev-shell`; kết thúc/resume
+session dùng system tag khớp `${aws:userid}` theo
+[AWS Session Manager IAM examples](https://docs.aws.amazon.com/systems-manager/latest/userguide/getting-started-restrict-access-examples.html).
+Agent gateway có UpdateInstanceInformation và bốn ssmmessages channel actions;
+jobs không nhận các action này trong inline policy. Không cấp SendCommand hoặc
+StartSession cho runtime. KMS grant chỉ cho AWSResource trên key Miles/dev;
+CloudWatch key policy giới hạn đúng runtime log group bằng encryption context.
+
+ALB disabled trong Warm plan hiện tại; template teardown chỉ cho cleanup ALB, chưa
+cấp CreateLoadBalancer/listener/target group. Trước bật ALB phải generate/review
+policy bổ sung từ plan certificate thật. Không dùng AdministratorAccess để né lỗi.
+
+Quyền bootstrap/create/service integration chưa được kiểm bằng API apply thật;
+đặc biệt KMS tag/grant propagation và SSM managed-node/log delivery cần kiểm ở
+phiên AWS được duyệt. Simulation không thay đánh giá key policy, SCP hoặc context
+thực. Các API thiếu phải bổ sung theo lỗi đã xác định và validate lại, không nới
+CreateTags/TagResource để nhận tài nguyên ngoài phạm vi. Xem
+[quy trình vận hành](../../dev-sessions.md).
