@@ -157,6 +157,11 @@ type Checksum struct {
 	PartCount              int
 }
 type ObjectHead struct {
+	// Derived and persisted by the metadata publisher. An all-zero descriptor
+	// on input requests derivation; supplied descriptors must match the pages.
+	PageCount          uint32
+	ChunkCount         uint64
+	PageIndex          []uint64
 	Version            uint32
 	Object             ObjectKey
 	Domain, ManifestID string
