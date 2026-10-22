@@ -72,3 +72,18 @@ run "smallest_supported_vpc" {
     error_message = "A /19 VPC must still plan two public /27 subnets."
   }
 }
+
+run "bounded_runtime_roles" {
+  command = plan
+  variables {
+    runtime_permissions_boundary_arn = "arn:aws:iam::123456789012:policy/miles/bootstrap/MilesDevRuntimeBoundary"
+  }
+}
+
+run "reject_foreign_runtime_boundary" {
+  command = plan
+  variables {
+    runtime_permissions_boundary_arn = "arn:aws:iam::111122223333:policy/miles/bootstrap/MilesDevRuntimeBoundary"
+  }
+  expect_failures = [var.runtime_permissions_boundary_arn]
+}

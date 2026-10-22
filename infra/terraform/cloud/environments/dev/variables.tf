@@ -22,6 +22,15 @@ variable "deploy_role_arn" {
     error_message = "Supply an IAM role ARN, not a user/root ARN."
   }
 }
+variable "runtime_permissions_boundary_arn" {
+  type        = string
+  default     = null
+  description = "Pre-created runtime boundary; the deployment role requires it when creating EC2 roles."
+  validation {
+    condition     = var.runtime_permissions_boundary_arn == null ? true : var.runtime_permissions_boundary_arn == "arn:aws:iam::${var.account_id}:policy/miles/bootstrap/MilesDevRuntimeBoundary"
+    error_message = "Use the reviewed Miles dev runtime boundary in this account."
+  }
+}
 variable "vpc_cidr" {
   type    = string
   default = "10.0.0.0/16"

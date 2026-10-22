@@ -6,9 +6,10 @@ locals {
   writable_prefixes = ["packs/", "packs-index/", "journal/", "checkpoints/"]
 }
 resource "aws_iam_role" "runtime" {
-  for_each = local.roles
-  name     = "${var.name}-${each.key}"
-  path     = "/miles/dev/"
+  for_each             = local.roles
+  name                 = "${var.name}-${each.key}"
+  path                 = "/miles/dev/"
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy = jsonencode({
     Version   = "2012-10-17"
     Statement = [{ Effect = "Allow", Action = "sts:AssumeRole", Principal = { Service = "ec2.amazonaws.com" } }]

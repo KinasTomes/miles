@@ -34,16 +34,17 @@ module "security" {
   account_id = var.account_id
 }
 module "iam" {
-  source           = "../../modules/iam"
-  name             = local.name
-  region           = var.region
-  account_id       = var.account_id
-  data_bucket_name = local.data_bucket_name
-  table_arns       = [for n in local.table_names : "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${local.name}-${n}"]
-  kms_key_arn      = module.security.kms_key_arn
-  secret_arn       = module.security.secret_arn
-  parameter_arn    = module.security.parameter_arn
-  log_group_arn    = module.security.log_group_arn
+  source                   = "../../modules/iam"
+  name                     = local.name
+  region                   = var.region
+  account_id               = var.account_id
+  data_bucket_name         = local.data_bucket_name
+  table_arns               = [for n in local.table_names : "arn:aws:dynamodb:${var.region}:${var.account_id}:table/${local.name}-${n}"]
+  kms_key_arn              = module.security.kms_key_arn
+  secret_arn               = module.security.secret_arn
+  parameter_arn            = module.security.parameter_arn
+  log_group_arn            = module.security.log_group_arn
+  permissions_boundary_arn = var.runtime_permissions_boundary_arn
 }
 module "alb" {
   source            = "../../modules/alb"
