@@ -12,4 +12,6 @@ client_cidrs = []
 admin_ssh_cidrs = []
 # enable_alb=true needs an ISSUED ACM cert in the same account/Region.
 # certificate_arn = "..."
-# deploy_role_arn = "..." # required operationally before apply; never root apply
+# With CLI already signed in as the deploy role, leave deploy_role_arn unset.
+# Required when creating runtime roles using the scoped Miles deploy role:
+# runtime_permissions_boundary_arn = "arn:aws:iam::123456789012:policy/miles/bootstrap/MilesDevRuntimeBoundary"

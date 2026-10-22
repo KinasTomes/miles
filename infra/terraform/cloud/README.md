@@ -14,6 +14,10 @@ Nguồn: [kiến trúc v4](../../../docs/dedup-storage-gateway-architecture.md) 
 
 Mặc định `egress_mode=isolated`, `enable_alb=false`, CIDR client/admin rỗng: không tạo NAT, Interface Endpoints hoặc ALB. Output `aws_api_egress_configured` chỉ cho biết chọn đường mạng cho tám API trong inventory, **không là workload readiness probe** (SSM Session Manager/ECR/external Internet có điều kiện riêng). Đây **không là runtime-ready Cloud**; KMS/SSM/Secrets/CloudWatch chưa có đường từ private subnets. KMS/secret metadata vẫn phát sinh phí nếu apply, nên isolated không có nghĩa toàn stack miễn phí. Secret chưa được populate cũng chặn runtime.
 
+Cập nhật chuẩn bị deploy: [operator/MFA và quyền deploy](bootstrap/operator/README.md),
+[kiểm tra role và dự toán dev](dev-preparation.md). Các mục W2 bên dưới mô tả
+phạm vi foundation ban đầu; môi trường workload vẫn chưa apply.
+
 ## Chạy kiểm tra không tạo tài nguyên
 
 Yêu cầu Terraform đúng version, AWS CLI đã đăng nhập để plan thật. CI dùng mock provider nên không cần AWS credentials.
