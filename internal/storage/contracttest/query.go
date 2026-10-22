@@ -54,7 +54,8 @@ func runQueries(t *testing.T, newStore MetadataFactory) {
 		f.Quota.Limit = 64
 		h := newStore(t, f)
 		for _, key := range []string{"a", "b", "dir/a", "dir/b", "z"} {
-			r := f.Request("list-"+key, 0)
+			// Object keys may contain '/', but frozen-format manifest IDs may not.
+			r := f.Request("list-"+strings.ReplaceAll(key, "/", "-"), 0)
 			r.Head.Object.Key = key
 			r.Event.Object = r.Head.Object
 			Prepare(t, h.Store, f, r, 4)
