@@ -11,10 +11,14 @@ import tempfile
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--mode', choices=['isolated', 'nat', 'interface'], default='isolated')
 parser.add_argument('--stack', choices=['dev', 'state'], default='dev')
+parser.add_argument('--paused', action='store_true', help='Plan the dev pause state instead of the selected active egress mode.')
+parser.add_argument('--var-file', type=Path, help='Existing private tfvars file; CLI account/mode/pause values take precedence.')
 parser.add_argument('--policy-plan-json', type=Path,
                     help='Write a private plan JSON outside the repository for IAM policy analysis.')
 args = parser.parse_args()
 source = Path(__file__).resolve().parents[1]
+if args.var_file and (not args.var_file.is_absolute() or not args.var_file.is_file()):
+    parser.error('--var-file must be an existing absolute path')
 if args.policy_plan_json:
     target = args.policy_plan_json.absolute()
     if not args.policy_plan_json.is_absolute() or target.resolve().is_relative_to(source.parents[2]):
@@ -52,9 +56,11 @@ with tempfile.TemporaryDirectory(prefix='miles-plan-') as work:
         return subprocess.run(command, cwd=dev, env=env, check=True, capture_output=True, text=True).stdout
     try:
         run('terraform', 'init', '-reconfigure', '-input=false', '-no-color', '-lockfile=readonly')
-        variables = ['-var=account_id=' + account_id]
+        variables = ['-var-file=' + str(args.var_file)] if args.var_file else []
+        variables.append('-var=account_id=' + account_id)
         if args.stack == 'dev':
             variables.append('-var=egress_mode=' + args.mode)
+            variables.append('-var=paused=' + str(args.paused).lower())
         run('terraform', 'plan', '-input=false', '-no-color', '-lock-timeout=30s',
             *variables, '-out=review.tfplan')
         plan = json.loads(run('terraform', 'show', '-json', 'review.tfplan'))
@@ -72,5 +78,5 @@ with tempfile.TemporaryDirectory(prefix='miles-plan-') as work:
         fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'w') as stream:
             json.dump(plan, stream)
-    print(json.dumps({'stack': args.stack, 'mode': args.mode, 'backend': 'temporary local, empty state',
+    print(json.dumps({'stack': args.stack, 'mode': args.mode, 'paused': args.paused, 'backend': 'temporary local, empty state',
                       'applied': False, 'create_count': len(changes), 'changes': changes}, indent=2))

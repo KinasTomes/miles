@@ -1,7 +1,10 @@
 mock_provider "aws" {}
 
 # AWS documentation example account, never a live deployment target.
-variables { account_id = "123456789012" }
+variables {
+  account_id = "123456789012"
+  paused     = false
+}
 
 run "isolated_foundation" {
   command = plan
@@ -37,8 +40,8 @@ run "private_aws_apis" {
   command = plan
   variables { egress_mode = "interface" }
   assert {
-    condition     = length(output.network_inventory.interface_endpoints) == 8 && output.network_inventory.nat_count == 0
-    error_message = "Interface mode must cover eight AWS APIs without NAT."
+    condition     = length(output.network_inventory.interface_endpoints) == 9 && output.network_inventory.nat_count == 0
+    error_message = "Interface mode must cover nine AWS APIs without NAT."
   }
 }
 run "reject_alb_without_tls" {

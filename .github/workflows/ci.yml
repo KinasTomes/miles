@@ -55,10 +55,10 @@ jobs:
           terraform -chdir=infra/terraform/cloud/bootstrap/state validate
           terraform -chdir=infra/terraform/cloud/environments/dev init -backend=false -input=false -lockfile=readonly
           terraform -chdir=infra/terraform/cloud/environments/dev validate
-      - name: Test plans with mock AWS (no credentials or apply)
+      - name: Test dev lifecycle with mock AWS (no AWS API calls)
         run: terraform -chdir=infra/terraform/cloud/environments/dev test
 
-      - name: Test deployment identity gate (offline)
+      - name: Test deployment identity and session plan guards (offline)
         run: python3 -B -m unittest discover -s infra/terraform/cloud/scripts/tests -v
 
   benchmark-contracts:
