@@ -1,0 +1,160 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadRegionalNetwork",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeAddresses",
+        "ec2:DescribeAddressesAttribute",
+        "ec2:DescribeInternetGateways",
+        "ec2:DescribeNatGateways",
+        "ec2:DescribeNetworkAcls",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribePrefixLists",
+        "ec2:DescribeRouteTables",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeTags",
+        "ec2:DescribeVpcAttribute",
+        "ec2:DescribeVpcEndpointServiceConfigurations",
+        "ec2:DescribeVpcEndpoints",
+        "ec2:DescribeVpcs"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
+    },
+    {
+      "Sid": "ManageOwnedDevNetwork",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AssociateRouteTable",
+        "ec2:AttachInternetGateway",
+        "ec2:AuthorizeSecurityGroupEgress",
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:CreateRoute",
+        "ec2:ModifySubnetAttribute",
+        "ec2:ModifyVpcAttribute",
+        "ec2:RevokeSecurityGroupEgress",
+        "ec2:RevokeSecurityGroupIngress"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:elastic-ip/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:internet-gateway/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:natgateway/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:route-table/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:subnet/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc-endpoint/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:network-interface/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "TagNewDevNetwork",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:elastic-ip/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:internet-gateway/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:natgateway/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:route-table/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group-rule/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:subnet/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc-endpoint/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:network-interface/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev",
+          "ec2:CreateAction": [
+            "AllocateAddress",
+            "CreateInternetGateway",
+            "CreateNatGateway",
+            "CreateRouteTable",
+            "CreateSecurityGroup",
+            "CreateSubnet",
+            "CreateVpc",
+            "CreateVpcEndpoint",
+            "AuthorizeSecurityGroupIngress",
+            "AuthorizeSecurityGroupEgress"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "RetagOwnedDevNetwork",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:elastic-ip/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:internet-gateway/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:natgateway/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:route-table/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group-rule/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:subnet/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc-endpoint/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:network-interface/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "StringEqualsIfExists": {
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "KeepNetworkOwnershipLabels",
+      "Effect": "Deny",
+      "Action": "ec2:DeleteTags",
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:elastic-ip/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:internet-gateway/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:natgateway/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:route-table/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group-rule/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:subnet/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc-endpoint/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:network-interface/*"
+      ],
+      "Condition": {
+        "ForAnyValue:StringEqualsIgnoreCase": {
+          "aws:TagKeys": [
+            "Project",
+            "Environment"
+          ]
+        }
+      }
+    }
+  ]
+}

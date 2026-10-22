@@ -1,0 +1,150 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ListDevData",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket",
+        "s3:GetBucketLocation",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": [
+        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1"
+      ]
+    },
+    {
+      "Sid": "ReadDevData",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/*"
+      ]
+    },
+    {
+      "Sid": "WriteAndCleanupDevData",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:RestoreObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": [
+        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/packs/*",
+        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/packs-index/*",
+        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/journal/*",
+        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/checkpoints/*"
+      ]
+    },
+    {
+      "Sid": "DevMetadata",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:BatchGetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:DescribeTable",
+        "dynamodb:ConditionCheckItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-*"
+      ]
+    },
+    {
+      "Sid": "DevCrypto",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:Encrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "BootstrapConfig",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter"
+      ],
+      "Resource": [
+        "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/miles-dev/bootstrap-config"
+      ]
+    },
+    {
+      "Sid": "DevSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:ap-southeast-1:ACCOUNT_ID:secret:miles-dev/runtime-secrets-*"
+      ]
+    },
+    {
+      "Sid": "RuntimeLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": [
+        "arn:aws:logs:ap-southeast-1:ACCOUNT_ID:log-group:/miles-dev/runtime:*"
+      ]
+    },
+    {
+      "Sid": "RuntimeMetrics",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricData"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "cloudwatch:namespace": "Miles/DSG"
+        }
+      }
+    },
+    {
+      "Sid": "DrainDevTargets",
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:DeregisterTargets"
+      ],
+      "Resource": [
+        "arn:aws:elasticloadbalancing:ap-southeast-1:ACCOUNT_ID:targetgroup/miles-dev-s3/*"
+      ]
+    },
+    {
+      "Sid": "DevLifecycle",
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:RecordLifecycleActionHeartbeat",
+        "autoscaling:CompleteLifecycleAction"
+      ],
+      "Resource": [
+        "arn:aws:autoscaling:ap-southeast-1:ACCOUNT_ID:autoScalingGroup:*:autoScalingGroupName/miles-dev-*"
+      ]
+    }
+  ]
+}
