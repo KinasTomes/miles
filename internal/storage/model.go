@@ -130,6 +130,9 @@ type ChunkLocation struct {
 	Pack  PackRef
 	Range ByteRange
 	Codec string
+	// CRC32C covers the stored range. It lets GET verify bytes before zstd
+	// decoding without fetching the footer for every chunk.
+	CRC32C uint32
 }
 type Chunk struct {
 	Version          uint32

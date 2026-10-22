@@ -22,6 +22,7 @@ vet:
 test:
 	$(GO) test ./...
 	python3 -B -m unittest discover -s scripts/tests -v
+	python3 -B scripts/check_doc_names.py
 
 check: check-fmt vet test build
 
