@@ -18,12 +18,13 @@ func TestPackLifecycleFencesAndWarmAdmission(t *testing.T) {
 	defer m.Close()
 	ctx := context.Background()
 	writer := storage.WriterFence{LeaseID: "writer", ServiceIncarnation: "dev", Epoch: 1}
-	if err := m.Bootstrap(ctx, Bootstrap{Writers: []storage.WriterLease{{Fence: writer, ExpiresAt: now.Add(time.Hour)}}}); err != nil {
+	other := storage.WriterFence{LeaseID: "other", ServiceIncarnation: "dev", Epoch: 1}
+	if err := m.Bootstrap(ctx, Bootstrap{Writers: []storage.WriterLease{{Fence: writer, ExpiresAt: now.Add(time.Hour)}, {Fence: other, ExpiresAt: now.Add(time.Hour)}}}); err != nil {
 		t.Fatal(err)
 	}
 	ref := storage.PackRef{ID: "pack-lifecycle", Generation: "generation-1"}
 	info := storage.PackInfo{Version: 1, Ref: ref, State: "Uploading", Class: storage.Standard, Size: 100,
-		StateRevision: 1, ProtectedUntil: now.Add(time.Hour)}
+		StateRevision: 1, Writer: writer, ProtectedUntil: now.Add(time.Hour)}
 	stale := writer
 	stale.Epoch++
 	if err := m.RegisterUploadingPack(ctx, info, stale); !errors.Is(err, storage.ErrFenced) {
@@ -43,6 +44,9 @@ func TestPackLifecycleFencesAndWarmAdmission(t *testing.T) {
 	}
 	if _, err := m.MarkPackWarm(ctx, ref, 1, stale); !errors.Is(err, storage.ErrFenced) {
 		t.Fatalf("stale Warm publication: %v", err)
+	}
+	if _, err := m.MarkPackWarm(ctx, ref, 1, other); !errors.Is(err, storage.ErrFenced) {
+		t.Fatalf("different live writer published pack: %v", err)
 	}
 	warm, err := m.MarkPackWarm(ctx, ref, 1, writer)
 	if err != nil || warm.State != "Warm" || warm.StateRevision != 2 {

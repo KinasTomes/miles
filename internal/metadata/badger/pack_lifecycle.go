@@ -15,7 +15,7 @@ func (m *Store) RegisterUploadingPack(ctx context.Context, info s.PackInfo, writ
 		if err := m.fence(t, writer); err != nil {
 			return err
 		}
-		if info.Ref.Validate() != nil || info.Version != s.ModelVersion || info.State != "Uploading" || info.StateRevision != 1 || info.Class != s.Standard || info.Size <= 0 || info.Size > 64<<20 || !info.ProtectedUntil.After(m.now()) {
+		if info.Ref.Validate() != nil || info.Version != s.ModelVersion || info.State != "Uploading" || info.StateRevision != 1 || info.Class != s.Standard || info.Writer != writer || info.Size <= 0 || info.Size > 64<<20 || !info.ProtectedUntil.After(m.now()) {
 			return s.ErrInvalid
 		}
 		old, err := get[s.PackInfo](t, packKey(info.Ref))
@@ -44,6 +44,9 @@ func (m *Store) MarkPackWarm(ctx context.Context, ref s.PackRef, expected uint64
 		v, err := get[s.PackInfo](t, packKey(ref))
 		if err != nil {
 			return err
+		}
+		if v.Writer != writer {
+			return s.ErrFenced
 		}
 		if v.State == "Warm" && expected != ^uint64(0) && v.StateRevision == expected+1 {
 			out = v

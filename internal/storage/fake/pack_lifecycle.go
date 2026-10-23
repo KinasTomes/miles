@@ -17,7 +17,7 @@ func (m *Metadata) RegisterUploadingPack(ctx context.Context, info s.PackInfo, w
 	if err := m.fence(writer); err != nil {
 		return err
 	}
-	if info.Ref.Validate() != nil || info.Version != s.ModelVersion || info.State != "Uploading" || info.StateRevision != 1 || info.Class != s.Standard || info.Size <= 0 || info.Size > 64<<20 || !info.ProtectedUntil.After(m.now()) {
+	if info.Ref.Validate() != nil || info.Version != s.ModelVersion || info.State != "Uploading" || info.StateRevision != 1 || info.Class != s.Standard || info.Writer != writer || info.Size <= 0 || info.Size > 64<<20 || !info.ProtectedUntil.After(m.now()) {
 		return s.ErrInvalid
 	}
 	if old, ok := m.packs[info.Ref]; ok {
@@ -45,6 +45,9 @@ func (m *Metadata) MarkPackWarm(ctx context.Context, ref s.PackRef, expected uin
 	old, ok := m.packs[ref]
 	if !ok {
 		return s.PackInfo{}, s.ErrNotFound
+	}
+	if old.Writer != writer {
+		return s.PackInfo{}, s.ErrFenced
 	}
 	if old.State == "Warm" && expected != ^uint64(0) && old.StateRevision == expected+1 {
 		return old, nil

@@ -62,7 +62,7 @@ func (p *StorePublisher) Publish(ctx context.Context, ref storage.PackRef, data,
 		}
 	}
 	info := storage.PackInfo{Version: storage.ModelVersion, Ref: ref, Size: int64(len(data)), Class: storage.Standard,
-		State: "Uploading", StateRevision: 1, ProtectedUntil: p.ProtectedUntil}
+		State: "Uploading", StateRevision: 1, Writer: p.Writer, ProtectedUntil: p.ProtectedUntil}
 	if err := p.Metadata.RegisterUploadingPack(ctx, info, p.Writer); err != nil {
 		return nil, err
 	}

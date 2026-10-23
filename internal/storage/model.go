@@ -122,6 +122,7 @@ type PackInfo struct {
 	Ref                                              PackRef
 	Size                                             int64
 	Class                                            StorageClass
+	Writer                                           WriterFence // Uploading -> Warm publication owner.
 	RestoredUntil, ProtectedUntil, MinRetentionUntil time.Time
 	StateRevision                                    uint64
 	LastAccess                                       time.Time
