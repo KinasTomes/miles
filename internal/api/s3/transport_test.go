@@ -63,10 +63,11 @@ func (f transportFixture) find(t *testing.T, name string) transportCase {
 	return transportCase{}
 }
 
-// router authenticates the fixture access key as cred.
+// router authenticates the fixture access key as cred, the owner of every
+// bucket.
 func (f transportFixture) router(cred Credential) Router {
 	cred.Secret = f.Credentials.SecretAccessKey
-	return Router{Region: f.Credentials.Region, Credentials: credentialMap{f.Credentials.AccessKeyID: cred}}
+	return Router{Region: f.Credentials.Region, Credentials: credentialMap{f.Credentials.AccessKeyID: cred}, Access: ownerAccess{}}
 }
 
 var activeUser = Credential{UserID: "demo", Active: true}
@@ -79,6 +80,18 @@ func (m credentialMap) Credential(_ context.Context, accessKeyID string) (Creden
 		return Credential{}, storage.ErrNotFound
 	}
 	return c, nil
+}
+
+// ownerAccess makes the caller of transport cases the owner of every bucket,
+// so those cases reach the handler.
+type ownerAccess struct{}
+
+func (ownerAccess) Authorize(_ context.Context, accessKeyID, bucket string) (storage.Authorization, error) {
+	if bucket == "" {
+		return storage.Authorization{}, storage.ErrNotFound
+	}
+	b := storage.Bucket{Name: bucket, ID: "bucket-" + bucket, OwnerID: "demo", Domain: "default", Active: true}
+	return storage.Authorization{UserID: "demo", CredentialID: accessKeyID, Bucket: b, Read: true, Write: true}, nil
 }
 
 type unavailableCredentials struct{}

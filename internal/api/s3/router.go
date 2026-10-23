@@ -5,27 +5,38 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/KinasTomes/miles/internal/storage"
 )
 
 // Router is the S3 API http.Handler (API v2 3): it gives every request an ID,
-// resolves its operation, checks its SigV4 signature and hands it with its
-// payload to the handler of the operation. Bucket authorization (API v2
-// 2.2.1) comes after it, before the handler reads the body.
+// resolves its operation, checks its SigV4 signature, authorizes the caller
+// on the bucket (API v2 2.2.3) and hands the request with its payload to the
+// handler of the operation, before anything reads the body, an object or the
+// cache.
 type Router struct {
 	Region      string // region of every credential scope
 	Credentials Credentials
+	Access      Access
 	Now         func() time.Time // server clock for X-Amz-Date and presigned expiry
 	Handlers    map[Operation]Handler
 }
 
-// Request is an S3 request the router admitted: resolved, authenticated, with
-// its body as a Payload.
+// Request is an S3 request the router admitted: resolved, authenticated,
+// authorized on its bucket, with its body as a Payload.
 type Request struct {
 	Route
 	HTTP   *http.Request
 	ID     string
 	Caller Caller
+	// Access is the authorization snapshot the router admitted the request
+	// on: the bucket incarnation, owner and domain, and the caller's rights.
+	// It is zero for ListBuckets and for CreateBucket of a free name. Writes
+	// carry its bucket ID and credential into their metadata transaction,
+	// which checks them again (API v2 2.2.3).
+	Access storage.Authorization
 	Body   *Payload
+	access Access
 }
 
 // Handler serves one operation. An *Error it returns becomes the S3 error
@@ -60,9 +71,13 @@ func (rt *Router) serve(w http.ResponseWriter, r *http.Request, id string) error
 	if err != nil {
 		return err
 	}
+	access, err := rt.authorize(r.Context(), route, caller)
+	if err != nil {
+		return err
+	}
 	h, ok := rt.Handlers[route.Op]
 	if !ok {
 		return &Error{Code: ErrNotImplemented, Message: string(route.Op) + " is not implemented yet", Bucket: route.Bucket, Key: route.Key}
 	}
-	return h(w, &Request{Route: route, HTTP: r, ID: id, Caller: caller, Body: newPayload(r, route.Op, s)})
+	return h(w, &Request{Route: route, HTTP: r, ID: id, Caller: caller, Access: access, Body: newPayload(r, route.Op, s), access: rt.Access})
 }
