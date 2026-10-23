@@ -116,6 +116,11 @@ func (m *Metadata) SetQuota(v s.LogicalQuota) {
 	defer m.mu.Unlock()
 	m.quotas[v.OwnerID] = v
 }
+func (m *Metadata) SetPack(v s.PackInfo) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.packs[v.Ref] = v
+}
 func (m *Metadata) SetWriter(v s.WriterLease) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -199,7 +204,9 @@ func (m *Metadata) GetChunks(ctx context.Context, keys []s.ChunkKey, consistent 
 	}
 	return out, nil
 }
-func (m *Metadata) location(l s.ChunkLocation) error {
+
+// Only new canonical destinations require Warm; existing winners remain readable.
+func (m *Metadata) validateCanonicalDestination(l s.ChunkLocation) error {
 	if err := l.Validate(); err != nil {
 		return err
 	}
@@ -207,8 +214,8 @@ func (m *Metadata) location(l s.ChunkLocation) error {
 	if !ok {
 		return s.ErrNotFound
 	}
-	if p.State == "Retiring" || p.State == "Deleting" || p.State == "Transitioning" {
-		return s.ErrFenced
+	if p.State != "Warm" {
+		return s.ErrConflict
 	}
 	return l.Range.Validate(p.Size)
 }
@@ -230,7 +237,7 @@ func (m *Metadata) PutChunkIfAbsent(ctx context.Context, c s.Chunk, f s.WriterFe
 	if c.LocationRevision != 1 {
 		return s.Chunk{}, false, s.ErrInvalid
 	}
-	if err := m.location(c.Location); err != nil {
+	if err := m.validateCanonicalDestination(c.Location); err != nil {
 		return s.Chunk{}, false, err
 	}
 	m.chunks[c.Key] = c
@@ -255,7 +262,7 @@ func (m *Metadata) CompareAndSwapChunkLocation(ctx context.Context, key s.ChunkK
 	if revision != v.LocationRevision || revision == ^uint64(0) {
 		return s.Chunk{}, s.ErrConflict
 	}
-	if err := m.location(next); err != nil {
+	if err := m.validateCanonicalDestination(next); err != nil {
 		return s.Chunk{}, err
 	}
 	v.Location = next

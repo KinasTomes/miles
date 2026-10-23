@@ -16,7 +16,7 @@ func TestMetadataContract(t *testing.T) {
 			seed.Uploads = []s.Completion{*f.Upload}
 		}
 		store := fake.NewMetadata(seed)
-		return contracttest.MetadataHarness{Store: store, SetBucket: store.SetBucket, SetCredential: store.SetCredential, SetGrant: store.SetGrant, SetWriter: store.SetWriter, SetQuota: store.SetQuota, FailCommit: store.FailCommit, FailReconcile: store.FailReconcile}
+		return contracttest.MetadataHarness{Store: store, SetPack: store.SetPack, SetBucket: store.SetBucket, SetCredential: store.SetCredential, SetGrant: store.SetGrant, SetWriter: store.SetWriter, SetQuota: store.SetQuota, FailCommit: store.FailCommit, FailReconcile: store.FailReconcile}
 	})
 }
 func TestPackContract(t *testing.T) {

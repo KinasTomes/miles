@@ -21,6 +21,9 @@ type MetadataStore interface {
 	ListPacksByState(ctx context.Context, request PackListRequest) (PackListPage, error)
 	Authorize(ctx context.Context, credentialID, bucket string) (Authorization, error)
 	GetChunks(ctx context.Context, keys []ChunkKey, consistent bool) (map[ChunkKey]Chunk, error)
+	// New insert/CAS destinations must be Warm in the mutation transaction;
+	// otherwise ErrConflict. An existing insert winner is returned unchanged,
+	// regardless of its pack state, for engine reuse/revival classification.
 	PutChunkIfAbsent(ctx context.Context, chunk Chunk, writer WriterFence) (Chunk, bool, error)
 	CompareAndSwapChunkLocation(ctx context.Context, key ChunkKey, expectedRevision uint64, next ChunkLocation, writer WriterFence) (Chunk, error)
 	GetPacks(ctx context.Context, refs []PackRef) (map[PackRef]PackInfo, error)
@@ -38,6 +41,12 @@ type MetadataStore interface {
 	DeleteObject(ctx context.Context, request CommitRequest) (CommitResult, error) // tombstone, never physical delete.
 	GetOutbox(ctx context.Context, eventID string) (OutboxEvent, error)
 	GetCompletionReceipt(ctx context.Context, uploadID string) (CompletedReceipt, error)
+}
+
+// ManifestPageReader is the optional bounded-memory read extension. Callers use
+// the committed head's PageCount/PageIndex and validate offsets against the head.
+type ManifestPageReader interface {
+	GetManifestPage(context.Context, string, uint32) (ManifestPage, error)
 }
 
 // PackStore provides physical I/O, NOT authorization, GC safety or S3 fencing.
