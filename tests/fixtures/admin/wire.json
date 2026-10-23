@@ -1,0 +1,25 @@
+{
+  "note": "Admin wire vectors, API §6.5.3 and §6.4. cursor: key_hex is the MAC key of kid, now the issue time in unix seconds, query the raw request query, filter its CanonicalFilter, payload_json the decoded payload. token: token_id is hex of token_id_bytes_hex, secret base64url-nopad of secret_bytes_hex, secret_hash lowercase hex SHA-256 of the 43 secret characters.",
+  "cursor": {
+    "kid": "k2026-10",
+    "key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "now": 1792713600,
+    "principal": "user-owner",
+    "resource": "/admin/v1/buckets/demo/grants",
+    "bucket_id": "bkt-demo-0001",
+    "query": "status=active&limit=10&b=x%20y&a=2&a=10&cursor=zzz",
+    "filter": "a=10&a=2&b=x%20y&status=active",
+    "pos": "user-reader",
+    "exp": 1792717200,
+    "payload_json": "{\"v\":1,\"principal\":\"user-owner\",\"resource\":\"/admin/v1/buckets/demo/grants\",\"bucket_id\":\"bkt-demo-0001\",\"filter\":\"a=10&a=2&b=x%20y&status=active\",\"pos\":\"user-reader\",\"exp\":1792717200}",
+    "cursor": "k2026-10.eyJ2IjoxLCJwcmluY2lwYWwiOiJ1c2VyLW93bmVyIiwicmVzb3VyY2UiOiIvYWRtaW4vdjEvYnVja2V0cy9kZW1vL2dyYW50cyIsImJ1Y2tldF9pZCI6ImJrdC1kZW1vLTAwMDEiLCJmaWx0ZXIiOiJhPTEwJmE9MiZiPXglMjB5JnN0YXR1cz1hY3RpdmUiLCJwb3MiOiJ1c2VyLXJlYWRlciIsImV4cCI6MTc5MjcxNzIwMH0.SwSxu_Wo5T6A9yDAdnzxtdGiB2LksSj3oKrmZ87XC6A"
+  },
+  "token": {
+    "token_id_bytes_hex": "000102030405060708090a0b0c0d0e0f",
+    "secret_bytes_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "token_id": "000102030405060708090a0b0c0d0e0f",
+    "secret": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "token": "000102030405060708090a0b0c0d0e0f.ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+    "secret_hash": "cf0931e168b49e987503caf18af6fe253b6b3d82a81008c3e8e1ee67c7c8dc55"
+  }
+}
