@@ -365,7 +365,7 @@ func runVerificationContract(t *testing.T, verify verifierAdapter) {
 	}
 }
 func TestProductionVerificationPending(t *testing.T) {
-	t.Skip("no production verifier adapter: fixture self-checks do not prove verification or allocation caps")
+	t.Skip("full 23-vector category/resource contract pending: VerifyPackEntry has lower-level production tests, but no exact category mapping or proven workspace budget")
 }
 
 func TestVerificationFixtureDeterminism(t *testing.T) {
