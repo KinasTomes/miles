@@ -446,8 +446,6 @@ func freeze(u storedUpload, in completeInput) ([]storedPart, ErrorCode) {
 	return heads, ""
 }
 
-var crc64NVME = crc64.MakeTable(0x9a6c9329ac4bc9b5)
-
 // fullObjectChecksum combines the part CRCs in order. Update is affine in
 // its start value, so crc(A||B) = crc(B) ^ Update(crc(A), 0^n) ^ Update(0, 0^n)
 // with n = len(B).

@@ -1,6 +1,6 @@
 # Định dạng pack, sidecar và pages v1 — W01-CHIEN-04
 
-Trạng thái: đề xuất để review, chuẩn bị freeze cuối tuần 2 ở W02-HAI-02. Task Miles `W01-CHIEN-04` (nguồn `W01-HAI-02`, A02/A09/A11), phụ thuộc `W01-HUNG-04` (Done). Chưa có codec production: fixture trong `tests/fixtures/format/` được kiểm bằng encoder/reader tham chiếu viết trong test từ tài liệu này. Nguồn: [kiến trúc §4, §5, §9.0, §10](../dedup-storage-gateway-architecture.md), [API §4.3.1](../dedup-storage-gateway-api.md), [shared storage](shared-storage.md).
+Trạng thái: thiết kế v1 đã có production codec pack/footer/sidecar trong `internal/pack` (W02-HAI-02); format pages vẫn được kiểm bằng reference tests và thuộc W02-HAI-03/W04. Freeze chính thức của nhóm cần review độc lập theo [freeze record](pack-format-freeze.md). Task Miles `W01-CHIEN-04` (nguồn `W01-HAI-02`, A02/A09/A11), phụ thuộc `W01-HUNG-04` (Done). Nguồn: [kiến trúc §4, §5, §9.0, §10](../dedup-storage-gateway-architecture.md), [API §4.3.1](../dedup-storage-gateway-api.md), [shared storage](shared-storage.md).
 
 | Checklist W1 | Mục | Fixture |
 |---|---|---|
@@ -104,7 +104,7 @@ Identity vật lý của pack ở mọi nơi là cặp **(pack_id, generation)**
 
 ### 2.4 Đọc và kiểm tra
 
-- **GET một chunk** không đọc footer: `Chunks` cho (pack, generation, offset, stored_len, codec, raw_len); `RangeGet` → so CRC-32C → giải nén → kiểm `raw_len` và SHA-256 = hash trước khi phát byte (KT §6). CRC bắt lỗi trước khi tốn CPU giải nén; SHA-256 là kiểm tra identity cuối.
+- **GET một chunk** không đọc footer: `Chunks` cho (pack, generation, offset, stored_len, codec, raw_len, crc32c); `RangeGet` → so CRC-32C → giải nén → kiểm `raw_len` và SHA-256 = hash trước khi phát byte (KT §6). `storage.ChunkLocation.CRC32C` lưu CRC của stored bytes từ footer entry; không thể suy từ SHA-256 raw khi blob đã nén. CRC bắt lỗi trước khi tốn CPU giải nén; SHA-256 là kiểm tra identity cuối.
 - **Đọc footer**: Range `bytes=-24` (Content-Range cho `size`) → kiểm magic, version, phương trình size → Range `[index_offset, index_offset+index_len)` → SHA-256 → parse và kiểm identity. Có thể đọc một suffix lớn hơn (ví dụ 64 KiB) để lấy cả index trong một request khi index nhỏ.
 - **Scrub đầy đủ**: footer + header + từng blob như GET.
 - **Sidecar** được kiểm độc lập (index_sha256 và identity theo key) vì pack Cold không đọc được. Khi pack đọc được, sidecar phải byte-identical với footer index; khác nhau là hỏng — footer đã kiểm là nguồn đúng, sidecar được ghi lại.
@@ -112,7 +112,7 @@ Identity vật lý của pack ở mọi nơi là cặp **(pack_id, generation)**
 ### 2.5 Ghi, ánh xạ model và rebuild
 
 - Thứ tự: PUT pack, PUT sidecar, rồi mới insert/CAS `Chunks` (KT §5.1). Retry cùng generation phải gửi cùng bytes (`PackStore` trả conflict nếu khác). `PackInfo.Size` = size object.
-- Entry ánh xạ thẳng sang `storage.Chunk`: `Key{domain, hex(hash)}`, `RawBytes = raw_len`, `Location{Pack: PackRef{pack_id, generation}, Range{offset, stored_len}, Codec}`. Test kiểm mọi entry golden qua `storage.Chunk.Validate`.
+- Entry ánh xạ thẳng sang `storage.Chunk`: `Key{domain, hex(hash)}`, `RawBytes = raw_len`, `Location{Pack: PackRef{pack_id, generation}, Range{offset, stored_len}, Codec, CRC32C: crc32c}`. CRC-32C thuộc stored bytes của location hiện hành, không suy từ raw hash; insert/CAS location phải lưu CRC cùng pack/range/codec và revision. Test kiểm mọi entry golden qua `storage.Chunk.Validate`.
 - Sidecar đủ để dựng inventory (domain, hash) → các bản sao vật lý mà không restore pack Cold. Sidecar **không** có: canonical winner, `location_revision`, refcount, namespace/manifest (journal/checkpoint R2, W01-PHONG-03), state/class/restore (HEAD S3). Rebuild không chọn bản sao chỉ vì sidecar có hash (KT §9.1).
 - Quét orphan: list `packs/` cho PackRef từ key; Range `[0, H)` kiểm header khi cần.
 
@@ -220,7 +220,7 @@ Pages, sidecar và pack không nằm trong transaction (KT §9.0). Định dạn
 | `pages.json` | streams | Input `cli-cp-multipart`, input 10000 part (4 pages), snapshot upload `full` của `multipart.json`, snapshot 10000 part (3 pages) |
 | `pages.json` | invalid, corrupt | raw_len 0, domain sai, owner sai quy tắc ở cả key và page, snapshot sai thứ tự/lẫn algorithm/part rỗng có page; byte lật, byte thừa, đọc nhầm owner/kind, hoán đổi/thiếu page, head sai size/chunk_count/domain/page_index/1025 pages, stream thiếu page/sai digest/sai độ dài |
 
-`internal/pack/format_test.go` và `internal/manifest/pages_test.go` encode lại mọi golden và so bytes, đọc lại qua reader tham chiếu, ánh xạ sang model `internal/storage`, rồi kiểm từng case invalid/corrupt dừng đúng stage. Frame zstd trong fixture là frame RLE một block; reader tham chiếu chỉ giải các frame raw/RLE single-segment đó, codec production dùng decoder zstd đầy đủ. Kiểm ngoài Go: các frame được libzstd (Bun 1.4.3 `zstdDecompressSync`) giải ra đúng raw; một parser JavaScript viết riêng từ bảng ở §2–3 đọc `pack_hex` và `page_hex` cho cùng CRC-32C, SHA-256, offset và digest.
+`internal/pack/pack_production_test.go` encode/read mọi pack golden bằng codec production, so bytes/hash và kiểm từng case invalid/corrupt dừng đúng stage. `internal/pack/format_test.go` chỉ còn fixture recipes và constructor cố ý tạo bytes sai cho negative tests. `internal/manifest/pages_test.go` vẫn là reference encoder/reader theo owner của pages. Frame zstd trong fixture là frame RLE một block; reader production dùng decoder zstd đầy đủ và từ chối frame nối thêm/trailing bytes. Kiểm ngoài Go từ W1: các frame được libzstd (Bun 1.4.3 `zstdDecompressSync`) giải ra đúng raw; một parser JavaScript viết riêng từ bảng ở §2–3 đọc `pack_hex` và `page_hex` cho cùng CRC-32C, SHA-256, offset và digest.
 
 ```bash
 go test ./internal/pack ./internal/manifest

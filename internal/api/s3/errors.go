@@ -131,9 +131,7 @@ type errorBody struct {
 // caller can only log it with requestID; it must not write another response.
 func WriteError(w http.ResponseWriter, r *http.Request, e *Error, requestID string) error {
 	h := w.Header()
-	h.Set("Server", "DedupStorageGateway")
-	h.Set("X-Amz-Request-Id", requestID)
-	h.Set("X-Amz-Id-2", requestID)
+	setCommonHeaders(h, requestID)
 	if r.Method == http.MethodHead {
 		w.WriteHeader(e.Status())
 		return nil
@@ -157,6 +155,13 @@ func WriteError(w http.ResponseWriter, r *http.Request, e *Error, requestID stri
 		return fmt.Errorf("s3: write %s error: %w", e.Code, err)
 	}
 	return nil
+}
+
+// setCommonHeaders sets the response headers of every S3 response (API v2 2.3).
+func setCommonHeaders(h http.Header, requestID string) {
+	h.Set("Server", "DedupStorageGateway")
+	h.Set("X-Amz-Request-Id", requestID)
+	h.Set("X-Amz-Id-2", requestID)
 }
 
 // NewRequestID returns a request ID in the S3 form: 16 upper-case hex digits.

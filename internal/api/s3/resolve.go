@@ -1,8 +1,10 @@
-// Package s3 is the S3 API contract of the gateway: the operation table that
-// maps a path-style request to exactly one operation, the query parameters,
-// headers and checksum combinations DSG rejects instead of ignoring, and the
-// XML error format (docs/dedup-storage-gateway-api.md sections 2.1, 2.4, 2.5,
-// 2.7 and 4.1). Request/response fixtures for router implementations live in
+// Package s3 is the S3 API of the gateway: the operation table that maps a
+// path-style request to exactly one operation, the query parameters, headers
+// and checksum combinations DSG rejects instead of ignoring, the XML error
+// format (docs/dedup-storage-gateway-api.md sections 2.1, 2.4, 2.5, 2.7 and
+// 4.1), and the transport of API v2 2.2.2 and 3: Router checks SigV4 header
+// and presigned signatures, and Payload decodes aws-chunked bodies and checks
+// their signatures, length and checksums. Request/response fixtures live in
 // tests/fixtures/s3.
 //
 // Resolve checks what can be decided from the request line and headers
@@ -330,7 +332,7 @@ var checksumTypes = map[string][]string{
 
 // trailerPayloads are the x-amz-content-sha256 values whose aws-chunked body
 // carries the trailer named by x-amz-trailer.
-var trailerPayloads = []string{"STREAMING-UNSIGNED-PAYLOAD-TRAILER", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"}
+var trailerPayloads = []string{streamingUnsignedTrailer, streamingSignedTrailer}
 
 // checkChecksum rejects checksum headers DSG cannot honour, before the body
 // is read: an algorithm outside checksumTypes; more than one checksum value
