@@ -29,6 +29,6 @@ func TestMetadataContract(t *testing.T) {
 			}
 			return func() error { return s.ErrUnavailable }
 		}
-		return contracttest.MetadataHarness{Store: m, SetBucket: func(v s.Bucket) { set(key("buckets", v.Name), v) }, SetCredential: func(v s.Credential) { set(key("credentials", v.ID), v) }, SetGrant: func(v s.Grant) { set(key("grants", v.BucketID, v.UserID), v) }, SetQuota: func(v s.LogicalQuota) { set(key("quotas", v.OwnerID), v) }, SetWriter: func(v s.WriterLease) { set(key("writers", v.Fence.LeaseID), v) }, FailCommit: func(before, after bool) { m.beforePublish = fault(before); m.afterPublish = fault(after) }, FailReconcile: func(on bool) { m.reconcile = fault(on) }}
+		return contracttest.MetadataHarness{Store: m, SetPack: func(v s.PackInfo) { set(packKey(v.Ref), v) }, SetBucket: func(v s.Bucket) { set(key("buckets", v.Name), v) }, SetCredential: func(v s.Credential) { set(key("credentials", v.ID), v) }, SetGrant: func(v s.Grant) { set(key("grants", v.BucketID, v.UserID), v) }, SetQuota: func(v s.LogicalQuota) { set(key("quotas", v.OwnerID), v) }, SetWriter: func(v s.WriterLease) { set(key("writers", v.Fence.LeaseID), v) }, FailCommit: func(before, after bool) { m.beforePublish = fault(before); m.afterPublish = fault(after) }, FailReconcile: func(on bool) { m.reconcile = fault(on) }}
 	})
 }

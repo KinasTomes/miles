@@ -60,7 +60,10 @@ func (m *Store) GetChunks(ctx context.Context, keys []s.ChunkKey, _ bool) (map[s
 	})
 	return out, err
 }
-func location(t *db.Txn, l s.ChunkLocation) error {
+
+// validateCanonicalDestination admits only a new Warm destination. Existing
+// winners are returned before this check so the engine can classify/revive them.
+func validateCanonicalDestination(t *db.Txn, l s.ChunkLocation) error {
 	if err := l.Validate(); err != nil {
 		return err
 	}
@@ -68,7 +71,7 @@ func location(t *db.Txn, l s.ChunkLocation) error {
 	if err != nil {
 		return err
 	}
-	if p.State == "Retiring" || p.State == "Deleting" || p.State == "Transitioning" {
+	if p.State != "Warm" {
 		return s.ErrConflict
 	}
 	return l.Range.Validate(p.Size)
@@ -94,7 +97,7 @@ func (m *Store) PutChunkIfAbsent(ctx context.Context, c s.Chunk, w s.WriterFence
 		if c.LocationRevision != 1 {
 			return s.ErrInvalid
 		}
-		if err := location(t, c.Location); err != nil {
+		if err := validateCanonicalDestination(t, c.Location); err != nil {
 			return err
 		}
 		if err := put(t, chunkKey(c.Key), c); err != nil {
@@ -125,7 +128,7 @@ func (m *Store) CompareAndSwapChunkLocation(ctx context.Context, k s.ChunkKey, r
 		if revision == ^uint64(0) || v.LocationRevision != revision {
 			return s.ErrConflict
 		}
-		if err := location(t, next); err != nil {
+		if err := validateCanonicalDestination(t, next); err != nil {
 			return err
 		}
 		v.Location = next

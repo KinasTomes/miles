@@ -49,6 +49,15 @@ CRC32C zero is valid. Location CAS changes the whole location and increments its
 revision, conditioned on the previous revision and live writer fence. Lookup is
 authoritative in Badger; neither an LRU nor a Bloom filter proves existence.
 
+New canonical inserts and location CAS additionally require the destination pack
+to be exactly `Warm`, checked inside the mutation transaction. Every other state,
+including empty/unknown states, returns `ErrConflict`; an invalid writer still
+returns `ErrFenced`. Missing packs return `ErrNotFound`. The fake adapter follows
+the same contract. An existing insert winner is returned before destination
+admission, even when its pack is Cold, so the engine can classify reuse/revival.
+This guard does not replace R1 pin/protection or require every reused chunk to be
+Warm at object commit time.
+
 ## Publication and retry
 
 Manifest pages are individually immutable and idempotent. A batch can partially

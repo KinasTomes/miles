@@ -32,6 +32,17 @@ that a CI run has already passed.
 
 ## Important cases
 
+- Shared canonical admission regressions reject insert and CAS destinations in
+  Uploading, Cold, Restoring, Restored, Compacting, Transitioning, Retiring,
+  Retired, Deleting, Deleted, empty and unknown states. Rejected mutations leave
+  canonical records/revisions unchanged. Warm insert and Cold-to-Warm revival
+  succeed; existing Cold winners remain available. Missing-pack, invalid-range
+  and writer-fence errors retain their meanings on both adapters.
+- `TestUploadingPackCannotPublishHead`: a caller cannot bypass failed canonical
+  insertion by writing a manifest and committing; head/outbox remain absent and
+  reservation/quota remain unconsumed across reopen. These tests address PR #23's
+  Warm-admission review; shared negative tests failed before the guard fix.
+
 - `TestMetadataContract`: reusable storage acceptance suite, including concurrent
   insert/CAS/head publication, permission revocation, quota and completion rules,
   LIST pagination, monotonic access statistics and revisioned policy updates.

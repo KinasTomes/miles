@@ -21,6 +21,9 @@ type MetadataStore interface {
 	ListPacksByState(ctx context.Context, request PackListRequest) (PackListPage, error)
 	Authorize(ctx context.Context, credentialID, bucket string) (Authorization, error)
 	GetChunks(ctx context.Context, keys []ChunkKey, consistent bool) (map[ChunkKey]Chunk, error)
+	// New insert/CAS destinations must be Warm in the mutation transaction;
+	// otherwise ErrConflict. An existing insert winner is returned unchanged,
+	// regardless of its pack state, for engine reuse/revival classification.
 	PutChunkIfAbsent(ctx context.Context, chunk Chunk, writer WriterFence) (Chunk, bool, error)
 	CompareAndSwapChunkLocation(ctx context.Context, key ChunkKey, expectedRevision uint64, next ChunkLocation, writer WriterFence) (Chunk, error)
 	GetPacks(ctx context.Context, refs []PackRef) (map[PackRef]PackInfo, error)
