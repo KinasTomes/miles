@@ -201,6 +201,79 @@ func TestSnapshotAgeAndFailures(t *testing.T) {
 	}
 }
 
+// delayedLoad reads the authorization at the load's start and returns it
+// holdMs later, after the world moved on without the caller: the metadata
+// answered, the response only then arrived.
+type delayedLoad struct {
+	w      *world
+	holdMs int64
+}
+
+func (d delayedLoad) Authorize(ctx context.Context, credentialID, bucket string) (s.Authorization, error) {
+	a, err := d.w.Authorize(ctx, credentialID, bucket)
+	if err == nil {
+		d.w.advance(d.w.elapsed + d.holdMs)
+	}
+	return a, err
+}
+
+// A load that returns past the bound of what it read must not serve it:
+// the revoke committed at 1 s reaches an admission whose load read the
+// active state at 0 and answered at 6 s, so the reread denies. Regression
+// of the PR 24 review: the response was served although valid_until, 5 s
+// after the read, had passed.
+func TestSnapshotOutlivedByItsLoad(t *testing.T) {
+	ctx := context.Background()
+	revokedAt := int64(1000)
+	w := newWorld(t, &revokedAt)
+	snaps := NewSnapshots(delayedLoad{w: w, holdMs: 6000}, w.clock)
+	if _, err := snaps.Authorize(ctx, "writer-key", "demo"); !errors.Is(err, s.ErrAccessDenied) {
+		t.Fatalf("a load answered at 6 s served the state it read at 0: %v", err)
+	}
+	if w.loads != 2 {
+		t.Fatalf("%d loads, want the reread after the first outlived its bound", w.loads)
+	}
+}
+
+// A slow load does not make the snapshot younger: the read at 0 answered
+// at 2 is kept until 5 s after its read, so a hit at 5.5 s reads again.
+func TestSlowLoadDoesNotRefreshSnapshotAge(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t, nil)
+	snaps := NewSnapshots(delayedLoad{w: w, holdMs: 2000}, w.clock)
+	for _, ms := range []int64{0, 5500} {
+		w.advance(ms)
+		if _, err := snaps.Authorize(ctx, "writer-key", "demo"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if w.loads != 2 {
+		t.Fatalf("%d loads, want the 5.5 s hit past the 5 s bound of the read at 0", w.loads)
+	}
+}
+
+// A bearer token that expires while its load is in flight is not accepted
+// when the load returns: the read at 0 with expires_at 1 s, answered at
+// 2 s, is refused, and the reread of the already expired token fails as
+// ErrExpiredDuringLoad instead of extending the token past its expiry.
+func TestBearerExpiringDuringItsLoad(t *testing.T) {
+	ctx := context.Background()
+	w := newWorld(t, nil)
+	expires := w.start.Add(time.Second)
+	loads := 0
+	cache := NewCache(w.clock, func(context.Context, string) (string, time.Time, error) {
+		loads++
+		w.advance(2000)
+		return "token of writer", expires, nil
+	})
+	if v, err := cache.Get(ctx, "token"); !errors.Is(err, ErrExpiredDuringLoad) {
+		t.Fatalf("bearer expired at 1 s, answered at 2 s: got (%q, %v), want ErrExpiredDuringLoad", v, err)
+	}
+	if loads != 2 {
+		t.Fatalf("%d loads, want the refused reread of the expired token", loads)
+	}
+}
+
 // Expired snapshots leave the map once it doubles, so its size follows the
 // keys read in the last 5 s, not every key ever seen.
 func TestCacheDropsExpiredEntries(t *testing.T) {

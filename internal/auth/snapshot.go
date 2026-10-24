@@ -9,6 +9,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
@@ -19,6 +20,12 @@ import (
 // MaxAge bounds the age of every snapshot (API v2 2.2.3).
 const MaxAge = 5 * time.Second
 
+// ErrExpiredDuringLoad reports a value that reached Get past its own
+// valid_until: the load outlived the bound of what it read, or the value
+// was already expired when read. Get reads again once before failing, so
+// callers fail closed on it like on any load error.
+var ErrExpiredDuringLoad = errors.New("auth: load outlived valid_until")
+
 // minSweep is the entry count below which the cache does not look for
 // expired entries.
 const minSweep = 64
@@ -27,7 +34,10 @@ const minSweep = 64
 // clock time after the read, or until the expiry Load returned (a bearer
 // token's expires_at) if that comes first: valid_until of API v2 2.2.3. A
 // hit does not refresh the age and a failed load is not kept, so the next
-// request reads again. Snapshots are local to the node that read them.
+// request reads again; a value that reaches Get past its bound is not
+// returned either but read again, and once that reread fails the same way
+// Get reports ErrExpiredDuringLoad. Snapshots are local to the node that
+// read them.
 type Cache[K comparable, V any] struct {
 	clock clock.Clock
 	// load reads key consistently from authoritative metadata. A zero
@@ -49,42 +59,56 @@ func NewCache[K comparable, V any](clk clock.Clock, load func(ctx context.Contex
 }
 
 // Get returns the snapshot of key, reading it again once the cached one
-// reached its bound.
+// reached its bound. Every value it returns is within valid_until at
+// return time: a load that returns past the bound of what it read is read
+// again from a fresh now, without refreshing the age of the first read,
+// and a reread that also outlives its bound reports ErrExpiredDuringLoad
+// instead of the stale value.
 func (c *Cache[K, V]) Get(ctx context.Context, key K) (V, error) {
-	// The read happens after now, so a bound counted from now is never late.
-	now := c.clock.Now()
-	c.mu.Lock()
-	e, ok := c.entries[key]
-	c.mu.Unlock()
-	if ok && before(now.Instant, e.validUntil) {
-		return e.value, nil
-	}
-	v, expires, err := c.load(ctx, key)
-	if err != nil {
-		var zero V
-		return zero, err
-	}
-	bound := MaxAge
-	if !expires.IsZero() {
-		bound = min(bound, expires.Sub(now.WallUTC))
-	}
-	validUntil, err := now.Instant.Add(bound)
-	if bound <= 0 || err != nil {
+	var zero V
+	for range 2 {
+		// The read happens after now, so a bound counted from now is
+		// never late.
+		now := c.clock.Now()
+		c.mu.Lock()
+		e, ok := c.entries[key]
+		c.mu.Unlock()
+		if ok && before(now.Instant, e.validUntil) {
+			return e.value, nil
+		}
+		v, expires, err := c.load(ctx, key)
+		if err != nil {
+			return zero, err
+		}
+		bound := MaxAge
+		if !expires.IsZero() {
+			bound = min(bound, expires.Sub(now.WallUTC))
+		}
+		validUntil, err := now.Instant.Add(bound)
+		if err != nil {
+			return v, nil
+		}
+		// The bound counted from the read must still hold once the load
+		// returns; an expired one, which bound <= 0 also is, is never
+		// served or kept.
+		if after := c.clock.Now().Instant; !before(after, validUntil) {
+			continue
+		}
+
+		c.mu.Lock()
+		if len(c.entries) >= c.sweepAt {
+			for k, e := range c.entries {
+				if !before(now.Instant, e.validUntil) {
+					delete(c.entries, k)
+				}
+			}
+			c.sweepAt = max(minSweep, 2*len(c.entries))
+		}
+		c.entries[key] = entry[V]{value: v, validUntil: validUntil}
+		c.mu.Unlock()
 		return v, nil
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.entries) >= c.sweepAt {
-		for k, e := range c.entries {
-			if !before(now.Instant, e.validUntil) {
-				delete(c.entries, k)
-			}
-		}
-		c.sweepAt = max(minSweep, 2*len(c.entries))
-	}
-	c.entries[key] = entry[V]{value: v, validUntil: validUntil}
-	return v, nil
+	return zero, ErrExpiredDuringLoad
 }
 
 // before reports a < b; instants of another clock domain never compare as
