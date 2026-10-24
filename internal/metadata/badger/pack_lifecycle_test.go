@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/storage"
+	"github.com/KinasTomes/miles/internal/storage/fake"
 )
 
 func TestPackLifecycleFencesAndWarmAdmission(t *testing.T) {
@@ -57,5 +58,51 @@ func TestPackLifecycleFencesAndWarmAdmission(t *testing.T) {
 	}
 	if _, inserted, err := m.PutChunkIfAbsent(ctx, chunk, writer); err != nil || !inserted {
 		t.Fatalf("Warm canonical admission: %t %v", inserted, err)
+	}
+}
+
+func TestRegisterUploadingPackRetryWithClockTimestamp(t *testing.T) {
+	now := time.Now()
+	ctx := context.Background()
+	writer := storage.WriterFence{LeaseID: "writer", ServiceIncarnation: "dev", Epoch: 1}
+	lease := storage.WriterLease{Fence: writer, ExpiresAt: now.Add(2 * time.Hour)}
+	badgerStore, err := Open(Options{Path: t.TempDir(), Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer badgerStore.Close()
+	if err := badgerStore.Bootstrap(ctx, Bootstrap{Writers: []storage.WriterLease{lease}}); err != nil {
+		t.Fatal(err)
+	}
+	stores := map[string]storage.PackLifecycleStore{
+		"badger": badgerStore,
+		"fake":   fake.NewMetadata(fake.Seed{Now: func() time.Time { return now }, Writers: []storage.WriterLease{lease}}),
+	}
+	for name, store := range stores {
+		t.Run(name, func(t *testing.T) {
+			info := storage.PackInfo{Version: storage.ModelVersion, Ref: storage.PackRef{ID: "retry", Generation: "generation"},
+				State: "Uploading", Class: storage.Standard, Size: 100, StateRevision: 1, Writer: writer,
+				ProtectedUntil: now.Add(time.Hour)}
+			if err := store.RegisterUploadingPack(ctx, info, writer); err != nil {
+				t.Fatal("initial registration:", err)
+			}
+			if err := store.RegisterUploadingPack(ctx, info, writer); err != nil {
+				t.Fatal("identical retry after persistence:", err)
+			}
+			info.ProtectedUntil = info.ProtectedUntil.In(time.FixedZone("plus-one", 3600))
+			if err := store.RegisterUploadingPack(ctx, info, writer); err != nil {
+				t.Fatal("same instant in another location:", err)
+			}
+			changed := info
+			changed.Size++
+			if err := store.RegisterUploadingPack(ctx, changed, writer); !errors.Is(err, storage.ErrConflict) {
+				t.Fatalf("changed size accepted: %v", err)
+			}
+			changed = info
+			changed.ProtectedUntil = changed.ProtectedUntil.Add(time.Second)
+			if err := store.RegisterUploadingPack(ctx, changed, writer); !errors.Is(err, storage.ErrConflict) {
+				t.Fatalf("changed protection accepted: %v", err)
+			}
+		})
 	}
 }

@@ -21,7 +21,7 @@ func (m *Metadata) RegisterUploadingPack(ctx context.Context, info s.PackInfo, w
 		return s.ErrInvalid
 	}
 	if old, ok := m.packs[info.Ref]; ok {
-		if old == info {
+		if s.SamePackInfo(old, info) {
 			return nil
 		}
 		return s.ErrConflict

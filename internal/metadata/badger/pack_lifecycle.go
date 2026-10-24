@@ -20,7 +20,7 @@ func (m *Store) RegisterUploadingPack(ctx context.Context, info s.PackInfo, writ
 		}
 		old, err := get[s.PackInfo](t, packKey(info.Ref))
 		if err == nil {
-			if old == info {
+			if s.SamePackInfo(old, info) {
 				return nil
 			}
 			return s.ErrConflict
