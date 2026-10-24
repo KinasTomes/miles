@@ -49,6 +49,14 @@ type ManifestPageReader interface {
 	GetManifestPage(context.Context, string, uint32) (ManifestPage, error)
 }
 
+// PackLifecycleStore controls the metadata side of an immutable physical
+// write. Register before physical I/O; mark Warm only after the complete pack
+// and sidecar are verified. Canonical chunk mutations reject other states.
+type PackLifecycleStore interface {
+	RegisterUploadingPack(context.Context, PackInfo, WriterFence) error
+	MarkPackWarm(context.Context, PackRef, uint64, WriterFence) (PackInfo, error)
+}
+
 // PackStore provides physical I/O, NOT authorization, GC safety or S3 fencing.
 // Callers must hold R1 protection; class changes/deletes require durable
 // Transitioning/Deleting metadata and reconciliation before reopening admission.
