@@ -2,11 +2,9 @@ package manifest
 
 // tests/fixtures/format/pages.json pins page format v1 of
 // docs/contracts/pack-and-pages.md: ManifestPages, UploadPartPages and
-// CompletionPages (completion input and frozen part snapshot). No production
-// codec exists yet (W02-HAI-03, W04-CHIEN/HAI), so these tests run every
-// fixture through a reference encoder and reader written from that document.
-// The production codec must pass the same fixtures; its tests then replace
-// these functions.
+// CompletionPages (completion input and frozen part snapshot). Object/part
+// pages also exercise the production codec against these exact frozen bytes;
+// completion stream codecs remain reference-only until multipart work.
 
 import (
 	"bytes"
@@ -511,6 +509,16 @@ func TestGoldenPages(t *testing.T) {
 			e := c.Expect
 			var sizes []int
 			for i, b := range pages {
+				if kinds[c.Kind] <= 2 {
+					page, err := Decode(b, kinds[c.Kind], c.Owner, uint32(i))
+					if err != nil {
+						t.Fatal(err)
+					}
+					encoded, err := Encode(kinds[c.Kind], page)
+					if err != nil || !bytes.Equal(encoded, b) {
+						t.Fatalf("production codec differs from golden: %v", err)
+					}
+				}
 				sizes = append(sizes, len(b))
 				if n := itemSize(kinds[c.Kind], c.Owner, uint32(i), b); len(b) > maxPageBytes || n >= 400_000 {
 					t.Fatalf("page %d: body %d bytes, item %d bytes", i, len(b), n)

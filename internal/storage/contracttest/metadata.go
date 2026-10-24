@@ -33,6 +33,7 @@ type MetadataHarness struct {
 	SetCredential func(s.Credential)
 	SetGrant      func(s.Grant)
 	SetWriter     func(s.WriterLease)
+	SetPack       func(s.PackInfo)
 	SetQuota      func(s.LogicalQuota)
 	FailCommit    func(before, after bool)
 }
@@ -92,6 +93,7 @@ func NoPublication(t *testing.T, store s.MetadataStore, r s.CommitRequest) {
 }
 
 func RunMetadata(t *testing.T, newStore MetadataFactory) {
+	runCanonicalDestinations(t, newStore)
 	runReservations(t, newStore)
 	runQueries(t, newStore)
 	ctx := context.Background()

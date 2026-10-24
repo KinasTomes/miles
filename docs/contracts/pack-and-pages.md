@@ -154,7 +154,8 @@ Page bất biến. Owner ID ngẫu nhiên chỉ thuộc một writer và chia gr
 
 ### 3.4 Object manifest (`ManifestPages`)
 
-Head `Objects` thêm các field (model hiện chưa có, W02-HAI-03 bổ sung):
+Head `Objects` có các field dưới đây (`storage.ObjectHead`, W02-HAI-03).
+Quy tắc derive/validate tại backend dev được mô tả trong [dev metadata](dev-metadata.md):
 
 | Field | Giá trị |
 |---|---|
