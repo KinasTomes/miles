@@ -15,10 +15,10 @@ var (
 )
 
 // ManifestValidation records checks possible with today's decoded shared models.
-// DescriptorVerified remains false: ObjectHead has no authoritative page_count,
-// chunk_count or page_index, and ManifestPage has no serialized envelope/checksum.
-// Observed totals are not independent completeness evidence. A successful plan
-// must not be used as proof of page authenticity, R1 root binding or read rights.
+// DescriptorVerified means supplied head counts/index match all decoded pages.
+// Legacy heads without a descriptor remain unverified. This is not proof of
+// serialized page authenticity, R1 root binding or read rights; the caller must
+// obtain the head from an authoritative, protected snapshot.
 type ManifestValidation struct {
 	ObservedPages      int
 	ObservedChunks     int64
@@ -150,8 +150,19 @@ func PlanRead(expected storage.ObjectKey, head storage.ObjectHead, pages []stora
 	if cursor != head.Size {
 		return ReadPlan{}, incompleteManifest("logical bytes shorter than object size")
 	}
+	descriptor := head.PageCount != 0 || head.ChunkCount != 0 || len(head.PageIndex) != 0
+	if descriptor {
+		if uint64(head.PageCount) != uint64(len(pages)) || head.ChunkCount != uint64(count) || len(head.PageIndex) != len(pages) {
+			return ReadPlan{}, invalidManifest("head descriptor counts")
+		}
+		for i, page := range pages {
+			if head.PageIndex[i] != uint64(page.Chunks[0].LogicalOffset) {
+				return ReadPlan{}, invalidManifest("head page index")
+			}
+		}
+	}
 	plan := ReadPlan{Object: head.Object, HeadRevision: head.Revision, ManifestID: head.ManifestID, Range: span,
-		Validation: ManifestValidation{ObservedPages: len(pages), ObservedChunks: count, LogicalBytes: cursor}}
+		Validation: ManifestValidation{ObservedPages: len(pages), ObservedChunks: count, LogicalBytes: cursor, DescriptorVerified: descriptor}}
 	end := span.Offset + span.Length // validated, bounded by head.Size
 	for _, page := range pages {
 		for _, ref := range page.Chunks {

@@ -1,6 +1,27 @@
-# Phase 3A.0 — Verification fixtures và I/O harness
+# Read path — implementation, evidence và integration gates
 
-Đây là **test-only harness** cho W02-PHONG-02, chưa có production reader hoặc verifier. Tất cả Go files đều có hậu tố `_test.go`; không thêm shared model/port hoặc production API.
+## Trạng thái sau khi tích hợp Badger metadata
+
+W02-PHONG-02 vẫn **PARTIAL**, chưa có protected reader và chưa đạt toàn bộ C3.
+
+- Production primitives: `admission.go`, `readahead.go`, `fetch.go`, `verify.go`, `mapping.go`; Physical LRU nằm trong `internal/cache`, manifest/range planner trong `internal/engine`.
+- `MapCanonicalRange` kiểm ChunkKey/raw length, expected location revision, exact PackRef/generation và range trong pack size trước khi chuyển sang `pack.Entry`/`CacheKey`. Đây là kiểm tra snapshot metadata, không phải atomic pin, authority token hoặc CRC presence proof.
+- Planner đối chiếu PageCount/ChunkCount/PageIndex khi head có descriptor. Legacy head không có descriptor vẫn chỉ có structural validation. DescriptorVerified không chứng minh page authenticity hoặc R1 protection; empty all-zero descriptor không được nâng thành evidence nguồn độc lập.
+- Badger PR #23 đã kiểm CRC field presence bằng pointer khi decode: missing/null bị reject, zero hợp lệ. Evidence nằm trong `internal/metadata/badger/db.go`, `durability_test.go` và shared canonical CAS suite. Không suy rộng guarantee này sang mọi MetadataStore hoặc R2 serializer.
+- `verified_scheduler_test.go` dùng production writer/verifier với fixture bindings; `reader_integration_test.go` cũ dùng test double. Hai loại evidence không tương đương. Workspace allowance của fixture không phải production hard bound.
+
+### Các gate còn chặn orchestration
+
+1. **R1 / Phong và Hưng:** chưa có concrete Read View, atomic root bind, exact generation pins, revision validation cùng retirement và release/quiescence. `MetadataStore.GetChunks` không thay thế pin. Không xây authority boolean hoặc chuyển sang triển khai task coordinator trong task này.
+2. **Decoder / Hải:** `pack.ReadBlob` giới hạn output/window nhưng chưa có contract upper bound cho toàn bộ workspace/copies và lifetime. Cần bound/instrumentation có thể kiểm chứng trước khi đưa zstd vào production scheduler accounting; benchmark allocation không đủ.
+3. **Orchestration consumer:** phải Authorize (bao gồm Read=true và bucket incarnation), acquire/bind/pin, preflight toàn requested Range bằng shared policy trước cache/I/O, rồi revalidate trước emit. Chưa có entrypoint nối chuỗi đó; không tuyên bố authorization ordering đã hoàn thành.
+4. **Bucket cache:** pinned bucket policy điều khiển read-ahead; resource quotas node/bucket/request đã có. `admit_on_write=false` không tắt read cache. Cache identity vẫn physical và có thể chia sẻ giữa bucket sau authorization; chưa thêm quota/default hoặc admission policy không có trong contract.
+
+Race suite Linux trong CI đã được bổ sung `internal/readpath`/`internal/cache`. Không coi workflow tồn tại là check đã PASS cho branch; workflow chỉ chạy khi push main hoặc có pull request.
+
+## Hồ sơ Phase 3A.0 (lịch sử)
+
+Phần Phase 3A.0 bên dưới là **test-only harness**. Các tuyên bố pending của phần lịch sử chỉ áp dụng cho harness/category adapter, không phủ nhận production verifier `internal/pack` và lower-level adapter đã bổ sung sau đó.
 
 ## Evidence và giới hạn
 
