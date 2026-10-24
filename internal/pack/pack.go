@@ -316,20 +316,28 @@ func Inspect(data []byte, want storage.PackRef) ([]Entry, []byte, error) {
 }
 
 // ReadBlob validates physical and logical integrity before releasing bytes.
+// stored is borrowed and immutable until return; success transfers exclusive
+// ownership of an exact-capacity output. Failure returns nil. Decode and Close
+// finish synchronously: cancellation elsewhere cannot release a reservation or
+// pin before this call and all output consumers have returned.
 func ReadBlob(e Entry, stored []byte) ([]byte, error) {
-	if e.RawLength == 0 || e.RawLength > engine.MaxChunkBytes || e.StoredLen == 0 {
-		return nil, invalid("index", "invalid chunk length")
+	if err := validateDecodeLengths(e); err != nil {
+		return nil, err
 	}
+	// Keep physical errors ahead of logical metadata mismatches: downstream
+	// callers distinguish blob_checksum from content without parsing text.
 	if len(stored) != int(e.StoredLen) || crc32.Checksum(stored, crcTable) != e.CRC32C {
 		return nil, invalid("blob_checksum", "stored bytes or CRC32C mismatch")
+	}
+	if _, err := EstimateDecodeMemory(e); err != nil {
+		return nil, err
 	}
 	raw := stored
 	if e.Codec == "zstd" {
 		if err := oneFrame(stored, e.RawLength); err != nil {
 			return nil, invalid("content", "zstd frame: %v", err)
 		}
-		decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(engine.MaxChunkBytes),
-			zstd.WithDecoderConcurrency(1), zstd.WithDecodeAllCapLimit(true))
+		decoder, err := newBlobDecoder()
 		if err != nil {
 			return nil, err
 		}
@@ -340,13 +348,17 @@ func ReadBlob(e Entry, stored []byte) ([]byte, error) {
 		if err != nil {
 			return nil, invalid("content", "zstd decode: %v", err)
 		}
-	} else if e.Codec != "raw" {
-		return nil, invalid("index", "unknown codec")
+	} else {
+		raw = make([]byte, e.RawLength)
+		copy(raw, stored)
 	}
-	if len(raw) != int(e.RawLength) || e.Key.Validate() != nil || hex.EncodeToString(sha256Bytes(raw)) != e.Key.Hash {
+	sum := sha256.Sum256(raw)
+	var encoded [sha256.Size * 2]byte
+	hex.Encode(encoded[:], sum[:])
+	if len(raw) != int(e.RawLength) || string(encoded[:]) != e.Key.Hash {
 		return nil, invalid("content", "raw length or SHA-256 mismatch")
 	}
-	return bytes.Clone(raw), nil
+	return raw[:len(raw):len(raw)], nil
 }
 
 // ReadFooter uses two bounded physical ranges, not a full-object GET.
@@ -418,8 +430,6 @@ func readRange(ctx context.Context, store storage.PackStore, ref storage.PackRef
 	}
 	return data, nil
 }
-
-func sha256Bytes(b []byte) []byte { sum := sha256.Sum256(b); return sum[:] }
 
 // oneFrame rejects concatenated/skippable frames, dictionaries and trailing
 // bytes before decode, which alone could accept multiple frames.
