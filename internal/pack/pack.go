@@ -321,11 +321,16 @@ func Inspect(data []byte, want storage.PackRef) ([]Entry, []byte, error) {
 // finish synchronously: cancellation elsewhere cannot release a reservation or
 // pin before this call and all output consumers have returned.
 func ReadBlob(e Entry, stored []byte) ([]byte, error) {
-	if _, err := EstimateDecodeMemory(e); err != nil {
+	if err := validateDecodeLengths(e); err != nil {
 		return nil, err
 	}
+	// Keep physical errors ahead of logical metadata mismatches: downstream
+	// callers distinguish blob_checksum from content without parsing text.
 	if len(stored) != int(e.StoredLen) || crc32.Checksum(stored, crcTable) != e.CRC32C {
 		return nil, invalid("blob_checksum", "stored bytes or CRC32C mismatch")
+	}
+	if _, err := EstimateDecodeMemory(e); err != nil {
+		return nil, err
 	}
 	raw := stored
 	if e.Codec == "zstd" {

@@ -25,15 +25,17 @@ type DecodeMemory struct {
 // A successful estimate is not integrity, authorization, or location proof.
 // The limits below make all arithmetic safe in int64, including on 32-bit hosts.
 func EstimateDecodeMemory(e Entry) (DecodeMemory, error) {
-	if e.Key.Validate() != nil || e.RawLength == 0 || e.RawLength > engine.MaxChunkBytes ||
-		e.StoredLen == 0 || e.StoredLen > MaxPackBytes || e.Offset > MaxPackBytes-uint64(e.StoredLen) {
-		return DecodeMemory{}, invalid("index", "invalid chunk identity or length")
+	if err := validateDecodeLengths(e); err != nil {
+		return DecodeMemory{}, err
+	}
+	if e.Key.Validate() != nil {
+		return DecodeMemory{}, invalid("content", "invalid chunk identity")
 	}
 	m := DecodeMemory{InputBytes: int64(e.StoredLen), OutputBytes: int64(e.RawLength), WorkspaceBytes: sha256.Size * 3}
 	switch e.Codec {
 	case "raw":
 		if e.StoredLen != e.RawLength {
-			return DecodeMemory{}, invalid("index", "invalid raw stored length")
+			return DecodeMemory{}, invalid("content", "raw length mismatch")
 		}
 	case "zstd":
 		// DecodeAll borrows input and uses the destination as history (no
@@ -59,4 +61,12 @@ func newBlobDecoder() (*zstd.Decoder, error) {
 		zstd.WithDecoderConcurrency(1), zstd.WithDecoderLowmem(true),
 		zstd.WithDecoderMaxMemory(engine.MaxChunkBytes),
 		zstd.WithDecoderMaxWindow(engine.MaxChunkBytes), zstd.WithDecodeAllCapLimit(true))
+}
+
+func validateDecodeLengths(e Entry) error {
+	if e.RawLength == 0 || e.RawLength > engine.MaxChunkBytes ||
+		e.StoredLen == 0 || e.StoredLen > MaxPackBytes || e.Offset > MaxPackBytes-uint64(e.StoredLen) {
+		return invalid("index", "invalid chunk length or range")
+	}
+	return nil
 }
