@@ -97,7 +97,7 @@ func TestPipelineBatchesReusesAndKeepsDomainsSeparate(t *testing.T) {
 		return result, refs
 	}
 	first, refs := run("default")
-	if first.Size != int64(len(body)) || first.ChunkCount != 205 || first.PackCount != 1 || len(refs) != 205 || m.lookupRuns < 3 || m.maxKeys > maxBatchKeys {
+	if first.Size != int64(len(body)) || first.ChunkCount != 205 || first.PackCount != 1 || len(refs) != 205 || m.lookupRuns != 1 || m.maxKeys > maxBatchKeys {
 		t.Fatalf("unexpected first run: %+v refs=%d lookups=%d max=%d", first, len(refs), m.lookupRuns, m.maxKeys)
 	}
 	for i, ref := range refs {
@@ -112,6 +112,39 @@ func TestPipelineBatchesReusesAndKeepsDomainsSeparate(t *testing.T) {
 	third, other := run("tenant-b")
 	if third.PackCount != 1 || len(m.rows) != 2 || other[0].Key.Hash != refs[0].Key.Hash || other[0].Key.Domain == refs[0].Key.Domain {
 		t.Fatalf("cross-domain identity: %+v rows=%d", third, len(m.rows))
+	}
+}
+
+func TestPipelineKeepsCompressiblePackAcrossLookupBatches(t *testing.T) {
+	m := newMemoryPublisher()
+	p := Pipeline{Lookup: m, Publisher: m, Chunking: engine.ChunkingParams{Min: 16 << 10, Avg: 16 << 10, Max: 16 << 10},
+		Compression: engine.CompressionPolicy{Enabled: true, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)}}
+	var body []byte
+	for i := 0; i < 201; i++ {
+		block := bytes.Repeat([]byte{byte(i), byte(i >> 8)}, 8<<10)
+		body = append(body, block...)
+	}
+	// Repeat a chunk after the first lookup batch while its pack is pending.
+	body = append(body, body[:16<<10]...)
+	var refs []storage.ChunkRef
+	result, err := p.Run(context.Background(), bytes.NewReader(body), "default", func(ref storage.ChunkRef) error {
+		refs = append(refs, ref)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Size != int64(len(body)) || result.ChunkCount != 202 || result.PackCount != 1 || len(m.rows) != 201 ||
+		len(refs) != 202 || m.lookupRuns != 3 || m.maxKeys > maxBatchKeys {
+		t.Fatalf("cross-batch pack: result=%+v rows=%d refs=%d lookups=%d max=%d", result, len(m.rows), len(refs), m.lookupRuns, m.maxKeys)
+	}
+	for i, ref := range refs {
+		if ref.LogicalOffset != int64(i*(16<<10)) || ref.RawBytes != 16<<10 {
+			t.Fatalf("ref %d out of order: %+v", i, ref)
+		}
+	}
+	if refs[201].Key != refs[0].Key {
+		t.Fatal("pending chunk was not reused across lookup batches")
 	}
 }
 

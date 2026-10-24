@@ -71,6 +71,38 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 	}
 	defer compressor.Close()
 	var result Result
+	refs := orderedRefs{domain: domain, emit: emit, result: &result}
+	defer refs.Close()
+	var builder *pack.Builder
+	var ref storage.PackRef
+	prior := make(map[storage.ChunkKey]storage.Chunk)
+	pendingKeys := make(map[storage.ChunkKey]struct{})
+	var publishedSeq uint64
+	flush := func() error {
+		if builder == nil {
+			return nil
+		}
+		packBytes, sidecar, entries, err := builder.Finish()
+		if err != nil {
+			return err
+		}
+		published, err := p.Publisher.Publish(ctx, ref, packBytes, sidecar, entries, prior)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			row, ok := published[entry.Key]
+			if !ok || row.Key != entry.Key || row.RawBytes != int64(entry.RawLength) || row.Validate() != nil {
+				return fmt.Errorf("%w: incomplete canonical publication", storage.ErrUnavailable)
+			}
+		}
+		result.PackCount++
+		publishedSeq++
+		builder = nil
+		prior = make(map[storage.ChunkKey]storage.Chunk)
+		pendingKeys = make(map[storage.ChunkKey]struct{})
+		return nil
+	}
 	var pending *engine.Chunk
 	for {
 		batch := make([]engine.Chunk, 0, maxBatchKeys)
@@ -102,39 +134,53 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 			}
 		}
 		if len(batch) == 0 {
+			if err := flush(); err != nil {
+				return result, err
+			}
+			if err := refs.Drain(publishedSeq); err != nil {
+				return result, err
+			}
+			if !refs.Empty() {
+				return result, fmt.Errorf("%w: pending refs after final pack", storage.ErrUnavailable)
+			}
 			return result, nil
 		}
 		keys := make([]storage.ChunkKey, 0, len(unique))
+		alreadyPending := make(map[storage.ChunkKey]struct{})
 		for key := range unique {
+			if _, ok := pendingKeys[key]; ok {
+				alreadyPending[key] = struct{}{}
+				continue
+			}
 			keys = append(keys, key)
 		}
-		rows, err := lookupComplete(ctx, p.Lookup, keys)
-		if err != nil {
-			return result, err
-		}
-		if rows == nil {
-			return result, fmt.Errorf("%w: nil lookup result", storage.ErrUnavailable)
+		rows := make(map[storage.ChunkKey]storage.Chunk)
+		if len(keys) != 0 {
+			rows, err = lookupComplete(ctx, p.Lookup, keys)
+			if err != nil {
+				return result, err
+			}
+			if rows == nil {
+				return result, fmt.Errorf("%w: nil lookup result", storage.ErrUnavailable)
+			}
 		}
 		for key, row := range rows {
 			if _, requested := unique[key]; !requested || row.Key != key || row.Validate() != nil {
 				return result, fmt.Errorf("%w: invalid lookup result", storage.ErrUnavailable)
 			}
 		}
-		var builder *pack.Builder
-		var ref storage.PackRef
-		prior := make(map[storage.ChunkKey]storage.Chunk)
-		resolved := make(map[storage.ChunkKey]storage.Chunk)
 		for key, chunk := range unique {
+			if _, ok := alreadyPending[key]; ok {
+				continue
+			}
 			if row, found := rows[key]; found {
 				ok, err := p.Publisher.Reuse(ctx, row)
 				if err != nil {
 					return result, err
 				}
 				if ok {
-					resolved[key] = row
 					continue
 				}
-				prior[key] = row
 			}
 			encoded, err := compressor.Encode(chunk)
 			if err != nil {
@@ -150,39 +196,58 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 					return result, err
 				}
 			}
-			if err := builder.Add(pack.Blob{Key: key, Codec: encoded.Codec, RawLength: uint32(encoded.RawBytes), Stored: encoded.Bytes}); err != nil {
-				return result, err
-			}
-		}
-		if builder != nil {
-			packBytes, sidecar, entries, err := builder.Finish()
-			if err != nil {
-				return result, err
-			}
-			published, err := p.Publisher.Publish(ctx, ref, packBytes, sidecar, entries, prior)
-			if err != nil {
-				return result, err
-			}
-			for _, entry := range entries {
-				row, ok := published[entry.Key]
-				if !ok || row.Key != entry.Key || row.RawBytes != int64(entry.RawLength) || row.Validate() != nil {
-					return result, fmt.Errorf("%w: incomplete canonical publication", storage.ErrUnavailable)
+			blob := pack.Blob{Key: key, Codec: encoded.Codec, RawLength: uint32(encoded.RawBytes), Stored: encoded.Bytes}
+			if err := builder.Add(blob); errors.Is(err, pack.ErrFull) {
+				if err := flush(); err != nil {
+					return result, err
 				}
-				resolved[entry.Key] = row
+				ref, err = pack.NewRef()
+				if err != nil {
+					return result, err
+				}
+				builder, err = pack.NewBuilder(ref)
+				if err != nil {
+					return result, err
+				}
+				err = builder.Add(blob)
+				if err != nil {
+					return result, err
+				}
+			} else if err != nil {
+				return result, err
 			}
-			result.PackCount++
+			if row, found := rows[key]; found {
+				prior[key] = row
+			}
+			pendingKeys[key] = struct{}{}
+			if builder.Ready() {
+				if err := flush(); err != nil {
+					return result, err
+				}
+			}
 		}
 		for _, chunk := range batch {
-			if _, ok := resolved[chunk.Key]; !ok {
-				return result, fmt.Errorf("%w: unresolved chunk", storage.ErrUnavailable)
+			waitFor := publishedSeq
+			if _, ok := pendingKeys[chunk.Key]; ok {
+				waitFor++
 			}
-			if err := emit(storage.ChunkRef{Key: chunk.Key, RawBytes: int64(len(chunk.Bytes)), LogicalOffset: chunk.Offset}); err != nil {
+			if err := refs.Add(storage.ChunkRef{Key: chunk.Key, RawBytes: int64(len(chunk.Bytes)), LogicalOffset: chunk.Offset}, waitFor); err != nil {
 				return result, err
 			}
-			result.Size += int64(len(chunk.Bytes))
-			result.ChunkCount++
+		}
+		if err := refs.Drain(publishedSeq); err != nil {
+			return result, err
 		}
 		if end {
+			if err := flush(); err != nil {
+				return result, err
+			}
+			if err := refs.Drain(publishedSeq); err != nil {
+				return result, err
+			}
+			if !refs.Empty() {
+				return result, fmt.Errorf("%w: pending refs after final pack", storage.ErrUnavailable)
+			}
 			return result, nil
 		}
 	}
