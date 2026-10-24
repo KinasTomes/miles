@@ -2,6 +2,7 @@ package pack
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"hash/crc32"
 	"math"
@@ -26,7 +27,7 @@ func TestEstimateDecodeMemory(t *testing.T) {
 	for _, codec := range []string{"raw", "zstd"} {
 		e := memoryEntry(codec, []byte("owned"), []byte("owned"))
 		m, err := EstimateDecodeMemory(e)
-		if err != nil || m.InputBytes != 5 || m.OutputBytes != 5 || (m.WorkspaceBytes == 0) != (codec == "raw") {
+		if err != nil || m.InputBytes != 5 || m.OutputBytes != 5 || (m.WorkspaceBytes == sha256.Size*3) != (codec == "raw") {
 			t.Fatalf("%s: %+v %v", codec, m, err)
 		}
 		// Repeated successful estimates allocate no payload or decoder state.

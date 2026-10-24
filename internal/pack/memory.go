@@ -1,6 +1,8 @@
 package pack
 
 import (
+	"crypto/sha256"
+
 	"github.com/KinasTomes/miles/internal/engine"
 	"github.com/klauspost/compress/zstd"
 )
@@ -27,7 +29,7 @@ func EstimateDecodeMemory(e Entry) (DecodeMemory, error) {
 		e.StoredLen == 0 || e.StoredLen > MaxPackBytes || e.Offset > MaxPackBytes-uint64(e.StoredLen) {
 		return DecodeMemory{}, invalid("index", "invalid chunk identity or length")
 	}
-	m := DecodeMemory{InputBytes: int64(e.StoredLen), OutputBytes: int64(e.RawLength)}
+	m := DecodeMemory{InputBytes: int64(e.StoredLen), OutputBytes: int64(e.RawLength), WorkspaceBytes: sha256.Size * 3}
 	switch e.Codec {
 	case "raw":
 		if e.StoredLen != e.RawLength {
@@ -43,7 +45,7 @@ func EstimateDecodeMemory(e Entry) (DecodeMemory, error) {
 		const sequenceBuffers = 2 * sequences * 3 * 8 // at most 64-bit ints
 		const tablesAndState = 64 << 10
 		const growthRounding = 2 * 8192 // Go 1.27.2 byte-slice page rounding
-		m.WorkspaceBytes = 5*m.OutputBytes + 9*block + growthRounding +
+		m.WorkspaceBytes += 5*m.OutputBytes + 9*block + growthRounding +
 			blockBuffers + sequenceBuffers + tablesAndState
 	default:
 		return DecodeMemory{}, invalid("index", "unknown codec")

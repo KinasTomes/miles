@@ -347,7 +347,10 @@ func ReadBlob(e Entry, stored []byte) ([]byte, error) {
 		raw = make([]byte, e.RawLength)
 		copy(raw, stored)
 	}
-	if len(raw) != int(e.RawLength) || e.Key.Validate() != nil || hex.EncodeToString(sha256Bytes(raw)) != e.Key.Hash {
+	sum := sha256.Sum256(raw)
+	var encoded [sha256.Size * 2]byte
+	hex.Encode(encoded[:], sum[:])
+	if len(raw) != int(e.RawLength) || string(encoded[:]) != e.Key.Hash {
 		return nil, invalid("content", "raw length or SHA-256 mismatch")
 	}
 	return raw[:len(raw):len(raw)], nil
@@ -422,8 +425,6 @@ func readRange(ctx context.Context, store storage.PackStore, ref storage.PackRef
 	}
 	return data, nil
 }
-
-func sha256Bytes(b []byte) []byte { sum := sha256.Sum256(b); return sum[:] }
 
 // oneFrame rejects concatenated/skippable frames, dictionaries and trailing
 // bytes before decode, which alone could accept multiple frames.
