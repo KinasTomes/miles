@@ -292,6 +292,16 @@ type ReservationRelease struct {
 	Writer           WriterFence
 }
 
+// ReservationAdjustment replaces both counters at one ledger revision. The
+// writer must use the returned revision for publication or another adjustment.
+type ReservationAdjustment struct {
+	ID, OpID         string
+	ExpectedRevision uint64
+	Bytes            int64
+	StagedBytes      int64
+	Writer           WriterFence
+}
+
 // Cursors below are INTERNAL scan state, never unsigned HTTP tokens. The API
 // layer owns opaque encoding/MAC/expiry and must validate it before using them.
 type BucketListRequest struct {

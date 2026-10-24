@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	s "github.com/KinasTomes/miles/internal/storage"
 )
@@ -30,12 +31,22 @@ func runReservations(t *testing.T, newStore MetadataFactory) {
 			_, err = h.Store.CommitObject(ctx, r)
 			requireError(t, err, s.ErrUnavailable)
 			h.FailCommit(false, false)
+			outcome, lookupErr := h.Store.GetCommitOutcome(ctx, r.Head.OpID)
+			if committed {
+				if lookupErr != nil || !outcome.AlreadyCommitted || outcome.Head.Revision != 1 {
+					t.Fatal("lost ACK outcome lookup", outcome, lookupErr)
+				}
+			} else {
+				requireError(t, lookupErr, s.ErrNotFound)
+			}
 			next := f.Lease
 			next.Fence.Epoch++
 			h.SetWriter(next)
 			claim := s.ReservationClaim{ID: r.ReservationID, OpID: r.Head.OpID, ExpectedRevision: 1, Writer: next.Fence}
 			before, _ := h.Store.GetQuota(ctx, "owner")
 			h.FailReconcile(true)
+			_, err = h.Store.GetCommitOutcome(ctx, r.Head.OpID)
+			requireError(t, err, s.ErrUnavailable)
 			_, err = h.Store.ClaimReservation(ctx, claim)
 			requireError(t, err, s.ErrUnavailable)
 			// Cleanup must also fail closed when an outcome read is unavailable.
@@ -97,6 +108,59 @@ func runReservations(t *testing.T, newStore MetadataFactory) {
 			}
 		})
 	}
+	t.Run("streaming adjustment CAS and quota", func(t *testing.T) {
+		f := NewFixture()
+		h := newStore(t, f)
+		r := f.Request("stream-adjust", 0)
+		ledger := s.Reservation{Version: s.ModelVersion, ID: r.ReservationID, OpID: r.Head.OpID,
+			OwnerID: f.Bucket.OwnerID, Object: r.Head.Object, Revision: 1, State: s.ReservationActive,
+			Deadline: f.Now.Add(30 * time.Minute), Writer: r.Writer}
+		if err := h.Store.ReserveLogicalQuota(ctx, ledger); err != nil {
+			t.Fatal(err)
+		}
+		adjust := s.ReservationAdjustment{ID: ledger.ID, OpID: ledger.OpID, ExpectedRevision: 1, Bytes: 4, StagedBytes: 4, Writer: r.Writer}
+		got, err := h.Store.AdjustLogicalQuota(ctx, adjust)
+		if err != nil || got.Revision != 2 || got.Bytes != 4 || got.StagedBytes != 4 {
+			t.Fatal(got, err)
+		}
+		again, err := h.Store.AdjustLogicalQuota(ctx, adjust)
+		if err != nil || again != got {
+			t.Fatal("idempotent adjustment", again, err)
+		}
+		quota, _ := h.Store.GetQuota(ctx, "owner")
+		if quota.Reserved != 4 || quota.Staged != 4 {
+			t.Fatal("double adjustment", quota)
+		}
+		wrong := adjust
+		wrong.OpID = "wrong-op"
+		_, err = h.Store.AdjustLogicalQuota(ctx, wrong)
+		requireError(t, err, s.ErrConflict)
+		wrong = adjust
+		wrong.Bytes = 3
+		_, err = h.Store.AdjustLogicalQuota(ctx, wrong)
+		requireError(t, err, s.ErrConflict)
+		adjust.ExpectedRevision = 2
+		adjust.Bytes = 9
+		_, err = h.Store.AdjustLogicalQuota(ctx, adjust)
+		requireError(t, err, s.ErrQuotaExceeded)
+		adjust.Bytes, adjust.StagedBytes = 4, 5
+		_, err = h.Store.AdjustLogicalQuota(ctx, adjust)
+		requireError(t, err, s.ErrInvalid)
+		quota, _ = h.Store.GetQuota(ctx, "owner")
+		if quota.Reserved != 4 || quota.Staged != 4 {
+			t.Fatal("failed adjustment changed quota", quota)
+		}
+		if _, err := h.Store.GetCommitOutcome(ctx, r.Head.OpID); !errors.Is(err, s.ErrNotFound) {
+			t.Fatal("unexpected commit", err)
+		}
+		if err := h.Store.ReleaseLogicalQuota(ctx, s.ReservationRelease{ID: ledger.ID, OpID: ledger.OpID, ExpectedRevision: 2, Writer: r.Writer}); err != nil {
+			t.Fatal(err)
+		}
+		quota, _ = h.Store.GetQuota(ctx, "owner")
+		if quota.Reserved != 0 || quota.Staged != 0 {
+			t.Fatal("release after adjustment", quota)
+		}
+	})
 	t.Run("orphan claim release CAS and retained terminal state", func(t *testing.T) {
 		f := NewFixture()
 		h := newStore(t, f)
