@@ -36,6 +36,17 @@ var checksumHashes = map[string]func() hash.Hash{
 // xorout all ones as in hash/crc64.
 var crc64NVME = crc64.MakeTable(0x9a6c9329ac4bc9b5)
 
+// ChecksumHash returns a new hash of a checksum algorithm of API v2 2.7 by
+// its upper-case name (CRC64NVME, CRC32, CRC32C, SHA1, SHA256), or false for
+// any other name.
+func ChecksumHash(algorithm string) (hash.Hash, bool) {
+	newHash, ok := checksumHashes[strings.ToLower(algorithm)]
+	if !ok || algorithm != strings.ToUpper(algorithm) {
+		return nil, false
+	}
+	return newHash(), true
+}
+
 // Payload is the logical body of a request: its bytes after HTTP chunked and
 // aws-chunked decoding, the bytes checksums, the ETag and the engine work on
 // (API v2 2.7). It checks the body while it is read, in the order of API v2
