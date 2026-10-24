@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/manifest"
 	s "github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -242,6 +243,79 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 		saved, err := h.Store.GetManifest(ctx, r.Head.ManifestID)
 		if err != nil || saved[0].Chunks[0].RawBytes != 4 {
 			t.Fatal("page mutation through returned slice")
+		}
+	})
+	t.Run("empty manifest publishes zero pages", func(t *testing.T) {
+		f := NewFixture()
+		h := newStore(t, f)
+		r := f.Request("empty-object", 0)
+		r.Head.Size = 0
+		reservation := s.Reservation{Version: s.ModelVersion, ID: r.ReservationID, OpID: r.Head.OpID, OwnerID: f.Bucket.OwnerID,
+			Object: r.Head.Object, Revision: 1, State: s.ReservationActive, Deadline: f.Now.Add(30 * time.Minute), Writer: r.Writer}
+		if err := h.Store.ReserveLogicalQuota(ctx, reservation); err != nil {
+			t.Fatal(err)
+		}
+		NoPublication(t, h.Store, r)
+		result, err := h.Store.CommitObject(ctx, r)
+		if err != nil || result.Head.Size != 0 || result.Head.PageCount != 0 || result.Head.ChunkCount != 0 {
+			t.Fatal(result, err)
+		}
+		pages, err := h.Store.GetManifest(ctx, r.Head.ManifestID)
+		if err != nil || len(pages) != 0 {
+			t.Fatal("empty committed manifest", pages, err)
+		}
+		quota, _ := h.Store.GetQuota(ctx, f.Bucket.OwnerID)
+		if quota.Used != 0 || quota.Reserved != 0 || quota.Staged != 0 {
+			t.Fatal(quota)
+		}
+	})
+	t.Run("multi-page manifest publishes only after every page", func(t *testing.T) {
+		f := NewFixture()
+		r := f.Request("large-manifest", 0)
+		capacity, err := manifest.RefCapacity(r.Head.ManifestID, r.Head.Domain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Head.Size = int64(capacity+1) * 4
+		f.Quota.Limit = r.Head.Size
+		h := newStore(t, f)
+		chunk := f.Chunk(r.Head.Domain)
+		if _, _, err := h.Store.PutChunkIfAbsent(ctx, chunk, r.Writer); err != nil {
+			t.Fatal(err)
+		}
+		first := s.ManifestPage{Version: s.ModelVersion, ManifestID: r.Head.ManifestID, Domain: r.Head.Domain, Number: 0}
+		for i := 0; i < capacity; i++ {
+			first.Chunks = append(first.Chunks, s.ChunkRef{Key: chunk.Key, RawBytes: 4, LogicalOffset: int64(i) * 4})
+		}
+		last := s.ManifestPage{Version: s.ModelVersion, ManifestID: r.Head.ManifestID, Domain: r.Head.Domain, Number: 1,
+			Chunks: []s.ChunkRef{{Key: chunk.Key, RawBytes: 4, LogicalOffset: int64(capacity) * 4}}}
+		if err := h.Store.WriteManifestPages(ctx, []s.ManifestPage{first}, r.Writer); err != nil {
+			t.Fatal(err)
+		}
+		reservation := s.Reservation{Version: s.ModelVersion, ID: r.ReservationID, OpID: r.Head.OpID, OwnerID: f.Bucket.OwnerID,
+			Object: r.Head.Object, Revision: 1, State: s.ReservationActive, Deadline: f.Now.Add(30 * time.Minute),
+			Bytes: r.Head.Size, StagedBytes: r.Head.Size, Writer: r.Writer}
+		if err := h.Store.ReserveLogicalQuota(ctx, reservation); err != nil {
+			t.Fatal(err)
+		}
+		_, err = h.Store.CommitObject(ctx, r)
+		requireError(t, err, s.ErrInvalid)
+		NoPublication(t, h.Store, r)
+		if err := h.Store.WriteManifestPages(ctx, []s.ManifestPage{last}, r.Writer); err != nil {
+			t.Fatal(err)
+		}
+		result, err := h.Store.CommitObject(ctx, r)
+		if err != nil || result.Head.PageCount != 2 || result.Head.ChunkCount != uint64(capacity+1) ||
+			!reflect.DeepEqual(result.Head.PageIndex, []uint64{0, uint64(capacity * 4)}) {
+			t.Fatal(result, err)
+		}
+		_, err = h.Store.CommitObject(ctx, r)
+		if err != nil {
+			t.Fatal("large manifest retry", err)
+		}
+		quota, _ := h.Store.GetQuota(ctx, f.Bucket.OwnerID)
+		if quota.Used != r.Head.Size || quota.Reserved != 0 || quota.Staged != 0 {
+			t.Fatal(quota)
 		}
 	})
 	t.Run("atomic commit retry and immutable op input", func(t *testing.T) {

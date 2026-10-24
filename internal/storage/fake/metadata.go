@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/manifest"
 	s "github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -43,6 +44,7 @@ type Metadata struct {
 	uploads                           map[string]s.Completion
 	chunks                            map[s.ChunkKey]s.Chunk
 	manifests                         map[string]map[uint32]s.ManifestPage
+	manifestSeals                     map[string]uint32
 	heads                             map[s.ObjectKey]s.ObjectHead
 	reservations                      map[string]s.Reservation
 	events                            map[string]s.OutboxEvent
@@ -71,7 +73,7 @@ func NewMetadata(seed Seed) *Metadata {
 	if seed.Now == nil {
 		seed.Now = time.Now
 	}
-	m := &Metadata{policies: map[uint64]s.PolicySnapshot{}, now: seed.Now, buckets: map[string]s.Bucket{}, users: map[string]s.User{}, credentials: map[string]s.Credential{}, grants: map[[2]string]s.Grant{}, quotas: map[string]s.LogicalQuota{}, packs: map[s.PackRef]s.PackInfo{}, writers: map[string]s.WriterLease{}, uploads: map[string]s.Completion{}, chunks: map[s.ChunkKey]s.Chunk{}, manifests: map[string]map[uint32]s.ManifestPage{}, heads: map[s.ObjectKey]s.ObjectHead{}, reservations: map[string]s.Reservation{}, events: map[string]s.OutboxEvent{}, receipts: map[string]s.CompletedReceipt{}, commits: map[string]committed{}}
+	m := &Metadata{policies: map[uint64]s.PolicySnapshot{}, now: seed.Now, buckets: map[string]s.Bucket{}, users: map[string]s.User{}, credentials: map[string]s.Credential{}, grants: map[[2]string]s.Grant{}, quotas: map[string]s.LogicalQuota{}, packs: map[s.PackRef]s.PackInfo{}, writers: map[string]s.WriterLease{}, uploads: map[string]s.Completion{}, chunks: map[s.ChunkKey]s.Chunk{}, manifests: map[string]map[uint32]s.ManifestPage{}, manifestSeals: map[string]uint32{}, heads: map[s.ObjectKey]s.ObjectHead{}, reservations: map[string]s.Reservation{}, events: map[string]s.OutboxEvent{}, receipts: map[string]s.CompletedReceipt{}, commits: map[string]committed{}}
 	for _, v := range seed.Buckets {
 		m.buckets[v.Name] = v
 	}
@@ -301,12 +303,16 @@ func (m *Metadata) WriteManifestPages(ctx context.Context, pages []s.ManifestPag
 		if err := p.Validate(); err != nil {
 			return err
 		}
-		b, _ := json.Marshal(p)
-		if len(b) >= 400*1024 {
-			return s.ErrInvalid
+		if _, err := manifest.Encode(manifest.ObjectPage, p); err != nil {
+			return err
 		}
 		if old, ok := m.manifests[p.ManifestID][p.Number]; ok && !reflect.DeepEqual(old, p) {
 			return s.ErrConflict
+		}
+		if _, exists := m.manifests[p.ManifestID][p.Number]; !exists {
+			if _, sealed := m.manifestSeals[p.ManifestID]; sealed {
+				return s.ErrConflict
+			}
 		}
 		if old, ok := seen[p.ManifestID][p.Number]; ok && !reflect.DeepEqual(old, p) {
 			return s.ErrConflict
@@ -332,6 +338,9 @@ func (m *Metadata) GetManifest(ctx context.Context, id string) ([]s.ManifestPage
 	}
 	pages, ok := m.manifests[id]
 	if !ok {
+		if count, sealed := m.manifestSeals[id]; sealed && count == 0 {
+			return []s.ManifestPage{}, nil
+		}
 		return nil, s.ErrNotFound
 	}
 	out := make([]s.ManifestPage, 0, len(pages))
@@ -384,18 +393,29 @@ func (m *Metadata) GetQuota(ctx context.Context, id string) (s.LogicalQuota, err
 	}
 	return v, nil
 }
-func (m *Metadata) manifest(h s.ObjectHead) error {
+func (m *Metadata) manifest(h *s.ObjectHead) error {
+	capacity, err := manifest.RefCapacity(h.ManifestID, h.Domain)
+	if err != nil {
+		return err
+	}
 	pages, ok := m.manifests[h.ManifestID]
 	if !ok {
+		if h.Size == 0 && h.PageCount == 0 && h.ChunkCount == 0 && len(h.PageIndex) == 0 {
+			return nil
+		}
 		return s.ErrNotFound
 	}
 	var offset int64
+	var chunks uint64
+	var index []uint64
 	for n := 0; n < len(pages); n++ {
 		p, ok := pages[uint32(n)]
-		if !ok || p.Domain != h.Domain {
+		if !ok || p.Domain != h.Domain || (n < len(pages)-1 && len(p.Chunks) != capacity) {
 			return s.ErrInvalid
 		}
+		index = append(index, uint64(offset))
 		for _, r := range p.Chunks {
+			chunks++
 			c, ok := m.chunks[r.Key]
 			if !ok {
 				return s.ErrNotFound
@@ -409,6 +429,11 @@ func (m *Metadata) manifest(h s.ObjectHead) error {
 	if offset != h.Size {
 		return s.ErrInvalid
 	}
+	if (h.PageCount != 0 || h.ChunkCount != 0 || len(h.PageIndex) != 0) &&
+		(h.PageCount != uint32(len(pages)) || h.ChunkCount != chunks || !reflect.DeepEqual(h.PageIndex, index)) {
+		return s.ErrInvalid
+	}
+	h.PageCount, h.ChunkCount, h.PageIndex = uint32(len(pages)), chunks, index
 	return nil
 }
 func (m *Metadata) CommitObject(ctx context.Context, r s.CommitRequest) (s.CommitResult, error) {
@@ -497,8 +522,12 @@ func (m *Metadata) commit(ctx context.Context, r s.CommitRequest) (s.CommitResul
 	if r.Head.Size > q.Limit-used || q.Reserved-reservation.Bytes > q.Limit-used-r.Head.Size {
 		return s.CommitResult{}, s.ErrQuotaExceeded
 	}
+	h := copyOf(r.Head)
 	if !r.Head.Deleted {
-		if err := m.manifest(r.Head); err != nil {
+		if _, sealed := m.manifestSeals[h.ManifestID]; sealed {
+			return s.CommitResult{}, s.ErrConflict
+		}
+		if err := m.manifest(&h); err != nil {
 			return s.CommitResult{}, err
 		}
 	}
@@ -519,7 +548,6 @@ func (m *Metadata) commit(ctx context.Context, r s.CommitRequest) (s.CommitResul
 	if m.failBeforeCommit {
 		return s.CommitResult{}, fmt.Errorf("%w: injected before atomic publish", s.ErrUnavailable)
 	}
-	h := copyOf(r.Head)
 	h.Revision = r.ExpectedRevision + 1
 	q.Used = used + h.Size
 	q.Reserved -= reservation.Bytes
@@ -534,6 +562,9 @@ func (m *Metadata) commit(ctx context.Context, r s.CommitRequest) (s.CommitResul
 	}
 	m.quotas[q.OwnerID] = q
 	m.heads[h.Object] = h
+	if !h.Deleted {
+		m.manifestSeals[h.ManifestID] = h.PageCount
+	}
 	m.events[r.Event.ID] = r.Event
 	reservation.State = s.ReservationCommitted
 	reservation.Revision++

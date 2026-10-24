@@ -161,6 +161,41 @@ func runReservations(t *testing.T, newStore MetadataFactory) {
 			t.Fatal("release after adjustment", quota)
 		}
 	})
+	t.Run("streaming same-size overwrite uses base credit at full quota", func(t *testing.T) {
+		f := NewFixture()
+		f.Quota.Limit = 4
+		h := newStore(t, f)
+		first := f.Request("stream-base", 0)
+		Prepare(t, h.Store, f, first, 4)
+		if _, err := h.Store.CommitObject(ctx, first); err != nil {
+			t.Fatal(err)
+		}
+		next := f.Request("stream-overwrite", 1)
+		page := s.ManifestPage{Version: s.ModelVersion, ManifestID: next.Head.ManifestID, Domain: next.Head.Domain,
+			Chunks: []s.ChunkRef{{Key: f.Chunk(next.Head.Domain).Key, RawBytes: 4}}}
+		if err := h.Store.WriteManifestPages(ctx, []s.ManifestPage{page}, next.Writer); err != nil {
+			t.Fatal(err)
+		}
+		ledger := s.Reservation{Version: s.ModelVersion, ID: next.ReservationID, OpID: next.Head.OpID, OwnerID: f.Bucket.OwnerID,
+			Object: next.Head.Object, BaseRevision: 1, BaseSize: 4, Revision: 1, State: s.ReservationActive,
+			Deadline: f.Now.Add(30 * time.Minute), Writer: next.Writer}
+		if err := h.Store.ReserveLogicalQuota(ctx, ledger); err != nil {
+			t.Fatal(err)
+		}
+		adjusted, err := h.Store.AdjustLogicalQuota(ctx, s.ReservationAdjustment{ID: ledger.ID, OpID: ledger.OpID,
+			ExpectedRevision: 1, Bytes: 0, StagedBytes: 4, Writer: next.Writer})
+		if err != nil || adjusted.Revision != 2 {
+			t.Fatal(adjusted, err)
+		}
+		next.ReservationRevision = adjusted.Revision
+		if _, err := h.Store.CommitObject(ctx, next); err != nil {
+			t.Fatal(err)
+		}
+		quota, _ := h.Store.GetQuota(ctx, f.Bucket.OwnerID)
+		if quota.Limit != 4 || quota.Used != 4 || quota.Reserved != 0 || quota.Staged != 0 {
+			t.Fatal(quota)
+		}
+	})
 	t.Run("orphan claim release CAS and retained terminal state", func(t *testing.T) {
 		f := NewFixture()
 		h := newStore(t, f)
