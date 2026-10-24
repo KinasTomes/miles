@@ -99,6 +99,22 @@ func (p *Packs) PutSidecar(ctx context.Context, ref s.PackRef, size int64, r io.
 	p.sidecars[ref] = blob{s.PackInfo{Version: s.ModelVersion, Ref: ref, Size: size, Class: s.Standard, State: "Warm"}, data}
 	return nil
 }
+
+func (p *Packs) ReadSidecar(ctx context.Context, ref s.PackRef) ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := ref.Validate(); err != nil {
+		return nil, err
+	}
+	v, ok := p.sidecars[ref]
+	if !ok {
+		return nil, s.ErrNotFound
+	}
+	return bytes.Clone(v.Body), nil
+}
 func (p *Packs) HeadPack(ctx context.Context, ref s.PackRef) (s.PackInfo, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
