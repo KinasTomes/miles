@@ -67,6 +67,7 @@ func runQueries(t *testing.T, newStore MetadataFactory) {
 		del.Head.Object.Key = "b"
 		del.Event.Object = del.Head.Object
 		del.Head.Deleted, del.Head.Size, del.Head.ManifestID = true, 0, ""
+		del.Head.ETag, del.Head.ETagKind, del.Head.Metadata = "", "", nil
 		reservation := s.Reservation{Version: s.ModelVersion, ID: del.ReservationID, OpID: del.Head.OpID, OwnerID: "owner", Object: del.Head.Object, BaseRevision: 1, BaseSize: 4, State: s.ReservationActive, Revision: 1, Deadline: f.Now.Add(time.Minute), Writer: f.Lease.Fence}
 		if err := h.Store.ReserveLogicalQuota(ctx, reservation); err != nil {
 			t.Fatal(err)
@@ -189,7 +190,8 @@ func runQueries(t *testing.T, newStore MetadataFactory) {
 const fixturePolicy = `{"tiering":{"enabled":true,"warm_storage_class":"STANDARD","cold_storage_class":"GLACIER_IR","cold_after_days":30,"min_pack_live_ratio":0.8,"auto_restore":true,"auto_restore_days":1,"auto_restore_tier":"Standard"},"compression":{"enabled":true,"codec":"zstd","level":3,"min_saving_ratio":0.1},"chunking":{"min_bytes":262144,"avg_bytes":1048576,"max_bytes":4194304}}`
 
 func policyRequest(f Fixture, op string, expected uint64, doc string) s.PolicyUpdate {
-	return s.PolicyUpdate{Candidate: s.PolicySnapshot{Version: s.ModelVersion, Document: []byte(doc)}, ExpectedRevision: expected, CredentialID: "admin-key", Writer: f.Lease.Fence, Event: &s.OutboxEvent{Version: s.ModelVersion, ID: "policy-event-" + op, HistoryID: "history-1", Entity: "SystemConfig", EntityID: "global-policy", Revision: expected + 1, OpID: op, PayloadPointer: "policy/input/" + op, PayloadSHA256: strings.Repeat("b", 64)}}
+	opID := fixtureOpID(op)
+	return s.PolicyUpdate{Candidate: s.PolicySnapshot{Version: s.ModelVersion, Document: []byte(doc)}, ExpectedRevision: expected, CredentialID: "admin-key", Writer: f.Lease.Fence, Event: &s.OutboxEvent{Version: s.ModelVersion, ID: fixtureEventID(opID, "SystemConfig", "entity_put"), HistoryID: fixtureHistoryID, Entity: "SystemConfig", Action: "entity_put", EntityID: "global-policy", Revision: expected + 1, OpID: opID, PayloadPointer: "policy/input/" + op, PayloadSHA256: strings.Repeat("b", 64)}}
 }
 func runPolicy(t *testing.T, newStore MetadataFactory) {
 	ctx := context.Background()

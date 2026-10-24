@@ -274,6 +274,11 @@ func (m *Metadata) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySna
 	if _, ok := m.events[e.ID]; ok {
 		return s.PolicySnapshot{}, s.ErrConflict
 	}
+	for _, event := range m.events {
+		if event.OpID == e.OpID {
+			return s.PolicySnapshot{}, s.ErrConflict
+		}
+	}
 	if m.failBeforeCommit {
 		return s.PolicySnapshot{}, s.ErrUnavailable
 	}

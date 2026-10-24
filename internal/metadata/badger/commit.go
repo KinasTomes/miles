@@ -90,6 +90,13 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if found {
 			return s.ErrConflict
 		}
+		found, err = exists(t, key("event-ops", r.Event.OpID))
+		if err != nil {
+			return err
+		}
+		if found {
+			return s.ErrConflict
+		}
 		reservation, err := get[s.Reservation](t, key("reservations", r.ReservationID))
 		if err != nil {
 			return err

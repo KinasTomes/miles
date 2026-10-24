@@ -468,6 +468,11 @@ func (m *Metadata) commit(ctx context.Context, r s.CommitRequest) (s.CommitResul
 	if _, ok := m.events[r.Event.ID]; ok {
 		return s.CommitResult{}, s.ErrConflict
 	}
+	for _, event := range m.events {
+		if event.OpID == r.Event.OpID {
+			return s.CommitResult{}, s.ErrConflict
+		}
+	}
 	reservation, ok := m.reservations[r.ReservationID]
 	if !ok {
 		return s.CommitResult{}, s.ErrNotFound

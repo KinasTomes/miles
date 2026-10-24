@@ -233,6 +233,7 @@ type OutboxEvent struct {
 	ID, HistoryID                       string
 	Epoch                               uint64
 	Entity                              string
+	Action                              string
 	EntityID                            string
 	Object                              ObjectKey
 	Revision                            uint64

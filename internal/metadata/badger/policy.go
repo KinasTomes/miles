@@ -133,6 +133,13 @@ func (m *Store) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySnapsh
 		if found {
 			return s.ErrConflict
 		}
+		found, err = exists(t, key("event-ops", e.OpID))
+		if err != nil {
+			return err
+		}
+		if found {
+			return s.ErrConflict
+		}
 		out = r.Candidate
 		out.Document = bytes.Clone(r.Candidate.Document)
 		out.Revision = revision + 1

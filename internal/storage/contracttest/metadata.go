@@ -4,6 +4,8 @@ package contracttest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"reflect"
 	"strings"
@@ -39,6 +41,21 @@ type MetadataHarness struct {
 }
 type MetadataFactory func(*testing.T, Fixture) MetadataHarness
 
+const fixtureHistoryID = "11111111111111111111111111111111"
+
+func fixtureOpID(label string) string {
+	sum := sha256.Sum256([]byte(label))
+	return hex.EncodeToString(sum[:16])
+}
+
+func fixtureEventID(opID, entity, action string) string {
+	id, err := s.EventID(fixtureHistoryID, opID, entity, action)
+	if err != nil {
+		panic(err)
+	}
+	return id
+}
+
 func NewFixture() Fixture {
 	now := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 	return Fixture{Now: now, Bucket: s.Bucket{Name: "demo", ID: "bucket-1", OwnerID: "owner", Domain: "default", Revision: 1, Active: true}, Users: []s.User{{ID: "owner", Active: true, Revision: 1}, {ID: "writer", Active: true, Revision: 1}, {ID: "admin", Active: true, Revision: 1}}, Credentials: []s.Credential{{ID: "owner-key", UserID: "owner", Active: true, Revision: 1}, {ID: "writer-key", UserID: "writer", Active: true, Revision: 1}, {ID: "admin-key", UserID: "admin", Active: true, SystemAdmin: true, Revision: 1}}, Grant: s.Grant{BucketID: "bucket-1", UserID: "writer", Write: true, Revision: 1}, Quota: s.LogicalQuota{OwnerID: "owner", Limit: 8}, Packs: []s.PackInfo{{Version: s.ModelVersion, Ref: s.PackRef{ID: "pack-a", Generation: "gen-1"}, Size: 64, Class: s.Standard, State: "Warm"}, {Version: s.ModelVersion, Ref: s.PackRef{ID: "pack-b", Generation: "gen-2"}, Size: 64, Class: s.Standard, State: "Warm"}}, Lease: s.WriterLease{Fence: s.WriterFence{LeaseID: "writer-lease", ServiceIncarnation: "history-1", Epoch: 1}, ExpiresAt: now.Add(time.Minute)}}
@@ -48,7 +65,8 @@ func (f Fixture) Chunk(domain string) s.Chunk {
 }
 func (f Fixture) Request(op string, revision uint64) s.CommitRequest {
 	object := s.ObjectKey{Bucket: f.Bucket.Name, BucketID: f.Bucket.ID, Key: "file"}
-	return s.CommitRequest{ReservationRevision: 1, Head: s.ObjectHead{Version: s.ModelVersion, Object: object, Domain: f.Bucket.Domain, ManifestID: "manifest-" + op, Size: 4, ETag: "\"fixture-etag\"", ETagKind: "put-md5", Metadata: map[string]string{"content-type": "application/octet-stream"}, OpID: op}, ExpectedRevision: revision, UserID: "writer", CredentialID: "writer-key", ReservationID: "reservation-" + op, Writer: f.Lease.Fence, Event: s.OutboxEvent{Version: s.ModelVersion, ID: "event-" + op, HistoryID: "history-1", Epoch: 0, Entity: "Objects", Object: object, Revision: revision + 1, OpID: op, PayloadPointer: "journal/input/" + op, PayloadSHA256: strings.Repeat("b", 64)}}
+	opID := fixtureOpID(op)
+	return s.CommitRequest{ReservationRevision: 1, Head: s.ObjectHead{Version: s.ModelVersion, Object: object, Domain: f.Bucket.Domain, ManifestID: "manifest-" + op, Size: 4, ETag: "\"fixture-etag\"", ETagKind: "put-md5", Metadata: map[string]string{"content-type": "application/octet-stream"}, OpID: opID}, ExpectedRevision: revision, UserID: "writer", CredentialID: "writer-key", ReservationID: "reservation-" + op, Writer: f.Lease.Fence, Event: s.OutboxEvent{Version: s.ModelVersion, ID: fixtureEventID(opID, "Objects", "object_commit"), HistoryID: fixtureHistoryID, Epoch: 0, Entity: "Objects", Action: "object_commit", Object: object, Revision: revision + 1, OpID: opID, PayloadPointer: "journal/input/" + op, PayloadSHA256: strings.Repeat("b", 64)}}
 }
 func Prepare(t *testing.T, store s.MetadataStore, f Fixture, r s.CommitRequest, reserved int64) {
 	t.Helper()
@@ -290,7 +308,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 			t.Fatalf("head winners=%d", won.Load())
 		}
 		head, _ := h.Store.GetObject(ctx, a.Head.Object)
-		eventID := "event-" + head.OpID
+		eventID := fixtureEventID(head.OpID, "Objects", "object_commit")
 		if _, err := h.Store.GetOutbox(ctx, eventID); err != nil {
 			t.Fatal(err)
 		}
@@ -391,6 +409,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 		del.Head.Deleted = true
 		del.Head.ManifestID = ""
 		del.Head.Size = 0
+		del.Head.ETag, del.Head.ETagKind, del.Head.Metadata = "", "", nil
 		if err := h.Store.ReserveLogicalQuota(ctx, s.Reservation{Version: s.ModelVersion, OpID: del.Head.OpID, BaseRevision: 2, BaseSize: 4, State: s.ReservationActive, Revision: 1, Deadline: f.Now.Add(30 * time.Minute), ID: del.ReservationID, OwnerID: "owner", Object: del.Head.Object, Writer: del.Writer}); err != nil {
 			t.Fatal(err)
 		}

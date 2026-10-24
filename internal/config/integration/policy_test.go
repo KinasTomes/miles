@@ -3,7 +3,9 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -30,7 +32,10 @@ func setup(t *testing.T) (config.PolicyValidator, *fake.Metadata, storage.Writer
 	return v, store, fence, wall
 }
 func event(id string, r uint64) *storage.OutboxEvent {
-	return &storage.OutboxEvent{Version: storage.ModelVersion, ID: id, HistoryID: "history", Entity: "SystemConfig", EntityID: "global-policy", Revision: r, OpID: id, PayloadPointer: "payload/" + id, PayloadSHA256: strings.Repeat("a", 64)}
+	opID := fmt.Sprintf("%x", sha256.Sum256([]byte(id)))[:32]
+	historyID := strings.Repeat("1", 32)
+	eventID, _ := storage.EventID(historyID, opID, "SystemConfig", "entity_put")
+	return &storage.OutboxEvent{Version: storage.ModelVersion, ID: eventID, HistoryID: historyID, Entity: "SystemConfig", Action: "entity_put", EntityID: "global-policy", Revision: r, OpID: opID, PayloadPointer: "payload/" + id, PayloadSHA256: strings.Repeat("a", 64)}
 }
 func create(t *testing.T, v config.PolicyValidator, s storage.MetadataStore, f storage.WriterFence) i.Context {
 	t.Helper()
@@ -120,10 +125,10 @@ func TestGlobalCASHistoryAndPin(t *testing.T) {
 	if e != nil || current.Global() != winner.c.Global() {
 		t.Fatal("partial state", e)
 	}
-	if _, e := s.GetOutbox(ctx, winner.name); e != nil {
+	if _, e := s.GetOutbox(ctx, event(winner.name, 2).ID); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := s.GetOutbox(ctx, loser.name); !errors.Is(e, storage.ErrNotFound) {
+	if _, e := s.GetOutbox(ctx, event(loser.name, 2).ID); !errors.Is(e, storage.ErrNotFound) {
 		t.Fatal("loser event", e)
 	}
 	if _, e := s.GetPolicy(ctx, 3); !errors.Is(e, storage.ErrNotFound) {
@@ -252,14 +257,14 @@ func TestMutationAuthorityAndUnknownOutcome(t *testing.T) {
 				if raw.Revision != 2 {
 					t.Fatal("lost ACK lost commit")
 				}
-				if _, e := s.GetOutbox(ctx, "mutation"); e != nil {
+				if _, e := s.GetOutbox(ctx, event("mutation", 2).ID); e != nil {
 					t.Fatal(e)
 				}
 			} else {
 				if raw.Revision != 1 {
 					t.Fatal("partial write")
 				}
-				if _, e := s.GetOutbox(ctx, "mutation"); !errors.Is(e, storage.ErrNotFound) {
+				if _, e := s.GetOutbox(ctx, event("mutation", 2).ID); !errors.Is(e, storage.ErrNotFound) {
 					t.Fatal(e)
 				}
 			}
@@ -547,7 +552,7 @@ func TestINT_R01ValidateBeforePublication(t *testing.T) {
 				if e != nil || !reflect.DeepEqual(h, current) {
 					t.Fatal("current/history divergence", e)
 				}
-				ev, e := store.GetOutbox(ctx, "attempt")
+				ev, e := store.GetOutbox(ctx, event("attempt", 2).ID)
 				if e != nil || ev != *event("attempt", 2) {
 					t.Fatal("outbox missing", e)
 				}
@@ -559,7 +564,7 @@ func TestINT_R01ValidateBeforePublication(t *testing.T) {
 				if !reflect.DeepEqual(before, current) {
 					t.Fatal("publication despite failure")
 				}
-				if _, e := store.GetOutbox(ctx, "attempt"); !errors.Is(e, storage.ErrNotFound) {
+				if _, e := store.GetOutbox(ctx, event("attempt", 2).ID); !errors.Is(e, storage.ErrNotFound) {
 					t.Fatal("partial event", e)
 				}
 				if wantRevision == 1 {
@@ -616,7 +621,7 @@ func TestINT_R01PostPublicationVerification(t *testing.T) {
 			if e != nil || !reflect.DeepEqual(h, raw) {
 				t.Fatal(e)
 			}
-			if _, e := store.GetOutbox(ctx, "committed"); e != nil {
+			if _, e := store.GetOutbox(ctx, event("committed", 2).ID); e != nil {
 				t.Fatal(e)
 			}
 			if _, e := store.GetPolicy(ctx, 3); !errors.Is(e, storage.ErrNotFound) {
