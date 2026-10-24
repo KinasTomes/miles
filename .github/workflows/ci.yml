@@ -24,7 +24,7 @@ jobs:
       - name: Format, vet, test and build
         run: make check
       - name: Storage and runtime race checks
-        run: go test -race ./internal/storage/... ./internal/metadata/... ./internal/manifest ./internal/engine ./internal/pack ./internal/config ./internal/app ./internal/observability ./cmd/miles
+        run: go test -race ./internal/storage/... ./internal/metadata/... ./internal/manifest ./internal/engine ./internal/pack ./internal/cache ./internal/readpath ./internal/config ./internal/app ./internal/observability ./cmd/miles
 
   terraform-check:
     runs-on: ubuntu-24.04
