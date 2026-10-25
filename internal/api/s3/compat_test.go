@@ -74,10 +74,21 @@ type compatRangeRow struct {
 	Note         string
 }
 
+// compatHeadObject is the stored object a HEAD row describes: what the
+// reference response is built from, independently of the pinned headers.
+type compatHeadObject struct {
+	Size         int64
+	Etag         string `json:"etag"`
+	LastModified string `json:"last_modified"`
+	ContentType  string `json:"content_type"`
+	// Checksum pins stored algorithm and Base64 digest: "CRC64NVME Y53hf1fT3M4=".
+	Checksum string
+}
+
 type compatHeadRow struct {
 	Name           string
 	Request        []string
-	Size           int64
+	Object         *compatHeadObject `json:"object"`
 	RequestHeaders map[string]string `json:"request_headers"`
 	Status         int
 	Headers        map[string]string
@@ -315,9 +326,10 @@ func TestRangeFixtures(t *testing.T) {
 
 // TestHeadFixtures runs the Resolve-level HEAD rows (partNumber is P2,
 // If-Match belongs to GetObject) through the real parser, checks every error
-// row is a bodyless response with the common headers (API v2 4.2), and pins
-// the checksum headers of x-amz-checksum-mode against the reference from
-// 2.7.
+// row is a bodyless response with the common headers (API v2 4.2), and
+// compares every success row — status, pinned headers, empty body — with the
+// reference response built from the row's stored object, so a drifted
+// fixture row fails here instead of at the W03 handler.
 func TestHeadFixtures(t *testing.T) {
 	for _, row := range loadCompat(t).Head {
 		t.Run(row.Name, func(t *testing.T) {
@@ -356,22 +368,42 @@ func TestHeadFixtures(t *testing.T) {
 					}
 				}
 			}
-			// The checksum rows are the contract of x-amz-checksum-mode: the
-			// reference from 2.7 must return exactly the headers the row pins.
-			for name, value := range row.Headers {
-				if !strings.HasPrefix(name, "x-amz-checksum-") || name == "x-amz-checksum-type" {
-					continue
-				}
-				got := headChecksumHeaders(row.RequestHeaders["x-amz-checksum-mode"], "CRC64NVME", value)
-				if got == nil || got[name] != value {
-					t.Fatalf("reference for mode %q does not echo %s", row.RequestHeaders["x-amz-checksum-mode"], name)
-				}
-				if typ := got["x-amz-checksum-type"]; typ != "FULL_OBJECT" {
-					t.Errorf("reference checksum type %q, want FULL_OBJECT", typ)
+			if row.Object == nil {
+				return
+			}
+			// The reference response comes from the stored object and the
+			// request headers alone; the row must pin exactly what it says.
+			status, headers := headResponse(row.RequestHeaders, *row.Object)
+			if status != row.Status {
+				t.Errorf("reference status %d, row pins %d", status, row.Status)
+			}
+			if status != http.StatusOK {
+				return // an unsatisfiable range: 416, headers only
+			}
+			for _, name := range []string{"ETag", "Last-Modified", "Content-Type", "Content-Length", "Accept-Ranges"} {
+				if headers[name] == "" {
+					t.Errorf("reference response lacks %s", name)
 				}
 			}
-			if row.NoChecksum && len(row.RequestHeaders) == 0 && headChecksumHeaders("", "CRC64NVME", "AAAAAAAAAAA=") != nil {
+			if headers["Accept-Ranges"] != "bytes" {
+				t.Errorf("reference Accept-Ranges %q, want bytes", headers["Accept-Ranges"])
+			}
+			for name, want := range row.Headers {
+				if got := headers[name]; got != want {
+					t.Errorf("reference header %s = %q, row pins %q", name, got, want)
+				}
+			}
+			hasChecksum := false
+			for name := range headers {
+				if strings.HasPrefix(name, "x-amz-checksum-") {
+					hasChecksum = true
+				}
+			}
+			if row.NoChecksum && hasChecksum {
 				t.Error("absent checksum mode must not send checksum headers")
+			}
+			if !row.NoBody {
+				t.Error("a HEAD success row must pin no_body")
 			}
 		})
 	}
@@ -453,15 +485,16 @@ type byteRange struct {
 
 // parseRange is the reference of API v2 4.1: spec against an object of size
 // bytes. isByteRange is false when the header carries no byte range at all
-// (absent, or a unit other than bytes, which RFC 9110 says to ignore: the
-// object is served whole); ok is false when it is a byte range DSG must
-// answer InvalidRange: not exactly one range of the form bytes=a-b, bytes=a-
-// or bytes=-n, a start at or beyond the object, a zero suffix, or an object
-// of zero bytes. A closed end past the object is clamped to its last byte.
+// (absent, or a unit other than bytes — matched case-insensitively as
+// RFC 9110 14.1 requires — which the server ignores: the object is served
+// whole); ok is false when it is a byte range DSG must answer InvalidRange:
+// not exactly one range of the form bytes=a-b, bytes=a- or bytes=-n, a start
+// at or beyond the object, a zero suffix, or an object of zero bytes. A
+// closed end past the object is clamped to its last byte.
 func parseRange(spec string, size int64) (r byteRange, isByteRange, ok bool) {
 	spec = strings.TrimSpace(spec)
 	unit, rest, found := strings.Cut(spec, "=")
-	if !found || unit != "bytes" {
+	if !found || !strings.EqualFold(unit, "bytes") {
 		return byteRange{0, size}, false, false
 	}
 	if strings.Contains(rest, ",") {
@@ -509,4 +542,34 @@ func headChecksumHeaders(mode, algorithm, value string) map[string]string {
 		return nil
 	}
 	return map[string]string{"x-amz-checksum-" + name: value, "x-amz-checksum-type": "FULL_OBJECT"}
+}
+
+// headResponse is the reference of API v2 4.2 for a HeadObject on obj: the
+// status and the headers of a response that never carries a body. A Range
+// the object satisfies answers 200 — not 206 — with the Content-Length of
+// the selected range, as S3's HeadObject does; a byte range the object
+// cannot satisfy answers 416 with headers only, and an unrecognized unit
+// leaves the whole object's length. hdr holds the request headers (Range,
+// x-amz-checksum-mode).
+func headResponse(hdr map[string]string, obj compatHeadObject) (int, map[string]string) {
+	r, isByteRange, ok := parseRange(hdr["Range"], obj.Size)
+	if isByteRange && !ok {
+		return http.StatusRequestedRangeNotSatisfiable, nil
+	}
+	length := obj.Size
+	if ok {
+		length = r.length
+	}
+	h := map[string]string{
+		"ETag":           obj.Etag,
+		"Last-Modified":  obj.LastModified,
+		"Content-Type":   obj.ContentType,
+		"Content-Length": strconv.FormatInt(length, 10),
+		"Accept-Ranges":  "bytes",
+	}
+	algorithm, value, _ := strings.Cut(obj.Checksum, " ")
+	for name, v := range headChecksumHeaders(hdr["x-amz-checksum-mode"], algorithm, value) {
+		h[name] = v
+	}
+	return http.StatusOK, h
 }
