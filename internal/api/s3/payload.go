@@ -87,13 +87,20 @@ func newPayload(r *http.Request, op Operation, s *signer) *Payload {
 		alg = "crc64nvme" // stored when the client names no algorithm (API v2 2.7)
 	}
 	if alg != "" {
-		p.sum, p.algorithm = checksumHashes[alg](), strings.ToUpper(alg)
-		hashes = append(hashes, p.sum)
+		if newHash, known := checksumHashes[alg]; known {
+			p.sum, p.algorithm = newHash(), strings.ToUpper(alg)
+			hashes = append(hashes, p.sum)
+		} else {
+			// Resolve rejects unknown algorithms, but newPayload must not
+			// trust that: a caller that builds the payload without it (the
+			// fuzz corpus reaches here) would panic on the nil hash.
+			p.err = cmp.Or(p.err, error(&Error{Code: ErrInvalidRequest, Message: "checksum algorithm " + strings.ToUpper(alg) + " is not supported"}))
+		}
 	}
 	if sent {
 		var ok bool
 		if p.wantSum, ok = checksumDigest(alg, want); !ok {
-			p.err = &Error{Code: ErrInvalidRequest, Message: "Value for x-amz-checksum-" + alg + " header is invalid."}
+			p.err = cmp.Or(p.err, error(&Error{Code: ErrInvalidRequest, Message: "Value for x-amz-checksum-" + alg + " header is invalid."}))
 		}
 	}
 	p.checkMD5, p.wantMD5 = len(r.Header.Values("Content-Md5")) > 0, r.Header.Get("Content-Md5")
@@ -133,10 +140,15 @@ func requestChecksum(h http.Header) (alg, value string, sent bool) {
 }
 
 // checksumDigest decodes a checksum value of alg: the base64 of a digest of
-// the algorithm's size. An empty value is not one.
+// the algorithm's size. An empty value is not one, and neither is a value of
+// an unknown algorithm.
 func checksumDigest(alg, value string) ([]byte, bool) {
+	newHash, known := checksumHashes[alg]
+	if !known {
+		return nil, false
+	}
 	b, err := base64.StdEncoding.Strict().DecodeString(value)
-	return b, err == nil && len(b) == checksumHashes[alg]().Size()
+	return b, err == nil && len(b) == newHash().Size()
 }
 
 func (p *Payload) Read(b []byte) (int, error) {
