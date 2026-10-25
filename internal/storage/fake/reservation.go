@@ -51,7 +51,7 @@ func (m *Metadata) ReserveLogicalQuota(ctx context.Context, r s.Reservation) err
 	}
 	b, ok := m.buckets[r.Object.Bucket]
 	if !ok || !b.Active || b.ID != r.Object.BucketID {
-		return s.ErrNotFound
+		return s.ErrBucketNotFound
 	}
 	if b.OwnerID != r.OwnerID {
 		return s.ErrInvalid

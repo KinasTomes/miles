@@ -2,6 +2,7 @@ package s3
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -14,6 +15,9 @@ func TestMetadataWriteError(t *testing.T) {
 		code   ErrorCode
 		status int
 	}{
+		{storage.ErrBucketNotFound, ErrNoSuchBucket, http.StatusNotFound},
+		{fmt.Errorf("commit: %w", storage.ErrBucketNotFound), ErrNoSuchBucket, http.StatusNotFound},
+		{storage.ErrNotFound, ErrInternalError, http.StatusInternalServerError},
 		{storage.ErrQuotaExceeded, ErrQuotaExceeded, http.StatusForbidden},
 		{storage.ErrConflict, ErrOperationAborted, http.StatusConflict},
 		{storage.ErrUnavailable, ErrServiceUnavailable, http.StatusServiceUnavailable},

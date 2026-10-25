@@ -103,6 +103,8 @@ type Error struct {
 func MetadataWriteError(err error) *Error {
 	var code ErrorCode
 	switch {
+	case errors.Is(err, storage.ErrBucketNotFound):
+		code = ErrNoSuchBucket
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		code = ErrQuotaExceeded
 	case errors.Is(err, storage.ErrConflict):

@@ -15,14 +15,18 @@ const ModelVersion uint32 = 1
 const MaxObjectBytes int64 = 100 << 30
 
 var (
-	ErrInvalid       = errors.New("invalid storage input")
-	ErrNotFound      = errors.New("storage record not found")
-	ErrConflict      = errors.New("storage revision or immutable content conflict")
-	ErrAccessDenied  = errors.New("storage access denied")
-	ErrQuotaExceeded = errors.New("logical quota exceeded")
-	ErrFenced        = errors.New("writer lease or fence is no longer valid")
-	ErrUnavailable   = errors.New("backend unavailable; outcome may be unknown")
-	ErrCold          = errors.New("pack requires restore")
+	ErrInvalid  = errors.New("invalid storage input")
+	ErrNotFound = errors.New("storage record not found")
+	// ErrBucketNotFound preserves ErrNotFound for existing callers while letting
+	// write adapters distinguish a missing/inactive/recreated bucket from an
+	// absent reservation or another internal record.
+	ErrBucketNotFound = fmt.Errorf("%w: bucket missing, inactive or incarnation changed", ErrNotFound)
+	ErrConflict       = errors.New("storage revision or immutable content conflict")
+	ErrAccessDenied   = errors.New("storage access denied")
+	ErrQuotaExceeded  = errors.New("logical quota exceeded")
+	ErrFenced         = errors.New("writer lease or fence is no longer valid")
+	ErrUnavailable    = errors.New("backend unavailable; outcome may be unknown")
+	ErrCold           = errors.New("pack requires restore")
 )
 
 var identifier = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)

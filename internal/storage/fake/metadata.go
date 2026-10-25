@@ -103,6 +103,11 @@ func NewMetadata(seed Seed) *Metadata {
 
 // Control hooks change authoritative fixture state, not production interfaces.
 func (m *Metadata) SetBucket(v s.Bucket) { m.mu.Lock(); defer m.mu.Unlock(); m.buckets[v.Name] = v }
+func (m *Metadata) RemoveBucket(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.buckets, name)
+}
 func (m *Metadata) SetCredential(v s.Credential) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -175,7 +180,7 @@ func (m *Metadata) authorize(credential, bucket string) (s.Authorization, error)
 	}
 	b, ok := m.buckets[bucket]
 	if !ok || !b.Active {
-		return s.Authorization{}, s.ErrNotFound
+		return s.Authorization{}, s.ErrBucketNotFound
 	}
 	g := m.grants[[2]string{b.ID, u.ID}]
 	owner := u.ID == b.OwnerID
@@ -465,7 +470,7 @@ func (m *Metadata) commit(ctx context.Context, r s.CommitRequest) (s.CommitResul
 		return s.CommitResult{}, err
 	}
 	if auth.Bucket.ID != r.Head.Object.BucketID {
-		return s.CommitResult{}, s.ErrNotFound
+		return s.CommitResult{}, s.ErrBucketNotFound
 	}
 	if auth.UserID != r.UserID || !auth.Write {
 		return s.CommitResult{}, s.ErrAccessDenied

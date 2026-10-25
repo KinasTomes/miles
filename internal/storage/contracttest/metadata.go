@@ -33,6 +33,7 @@ type MetadataHarness struct {
 	FailReconcile func(bool)
 	Store         s.MetadataStore
 	SetBucket     func(s.Bucket)
+	RemoveBucket  func(string)
 	SetCredential func(s.Credential)
 	SetGrant      func(s.Grant)
 	SetWriter     func(s.WriterLease)
@@ -426,7 +427,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 		_, err = h.Store.Authorize(ctx, "owner-key", "")
 		requireError(t, err, s.ErrNotFound)
 	})
-	for _, change := range []string{"credential revoke", "grant revoke", "bucket ABA", "expired writer", "stale epoch", "service incarnation", "quota shrunk"} {
+	for _, change := range []string{"credential revoke", "grant revoke", "bucket removed", "bucket inactive", "bucket ABA", "expired writer", "stale epoch", "service incarnation", "quota shrunk"} {
 		t.Run("commit rechecks "+change, func(t *testing.T) {
 			f := NewFixture()
 			h := newStore(t, f)
@@ -447,12 +448,20 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 				g.Read = true
 				g.Revision++
 				h.SetGrant(g)
+			case "bucket removed":
+				h.RemoveBucket(f.Bucket.Name)
+				want = s.ErrBucketNotFound
+			case "bucket inactive":
+				b := f.Bucket
+				b.Active = false
+				h.SetBucket(b)
+				want = s.ErrBucketNotFound
 			case "bucket ABA":
 				b := f.Bucket
 				b.ID = "bucket-2"
 				b.Revision = 1
 				h.SetBucket(b)
-				want = s.ErrNotFound
+				want = s.ErrBucketNotFound
 			case "expired writer":
 				lease := f.Lease
 				lease.ExpiresAt = f.Now
@@ -477,6 +486,9 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 			before, _ := h.Store.GetQuota(ctx, "owner")
 			_, err := h.Store.CommitObject(ctx, r)
 			requireError(t, err, want)
+			if change == "bucket removed" || change == "bucket inactive" || change == "bucket ABA" {
+				requireError(t, err, s.ErrNotFound) // Preserve the established storage contract.
+			}
 			NoPublication(t, h.Store, r)
 			after, _ := h.Store.GetQuota(ctx, "owner")
 			if after != before {
@@ -484,6 +496,17 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 			}
 		})
 	}
+	t.Run("missing reservation is not a missing bucket", func(t *testing.T) {
+		f := NewFixture()
+		h := newStore(t, f)
+		r := f.Request("missing-reservation", 0)
+		_, err := h.Store.CommitObject(ctx, r)
+		requireError(t, err, s.ErrNotFound)
+		if errors.Is(err, s.ErrBucketNotFound) {
+			t.Fatal("internal absence misclassified as bucket", err)
+		}
+		NoPublication(t, h.Store, r)
+	})
 	t.Run("full quota overwrite credit and tombstone CAS", func(t *testing.T) {
 		f := NewFixture()
 		f.Quota.Limit = 4
