@@ -12,6 +12,13 @@ import (
 // or inspect its outbox/receipt before releasing reservations or deleting data.
 type MetadataStore interface {
 	GetBucket(ctx context.Context, name string) (Bucket, error)
+	// CreateBucket publishes a new bucket incarnation only when the signing
+	// credential and its user are still active and the name is still free
+	// (API v2 2.2.3 write transaction). When the name is taken it returns the
+	// existing bucket and false, so the caller maps the outcome by owner; the
+	// bucket_id, owner, domain and CreatedAt are set by the transaction, not
+	// the request.
+	CreateBucket(ctx context.Context, request BucketCreate) (Bucket, bool, error)
 	GetCredential(ctx context.Context, credentialID string) (Credential, error)
 	ListAccessibleBuckets(ctx context.Context, request BucketListRequest) (BucketListPage, error)
 	GetPolicy(ctx context.Context, revision uint64) (PolicySnapshot, error) // zero selects current.

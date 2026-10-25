@@ -4,6 +4,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 
@@ -19,6 +20,10 @@ type Dependencies struct {
 	Packs    storage.PackStore
 	Cache    storage.Cache
 	Probe    func(context.Context) error
+	// DevCredentials are the SigV4 test credentials dev provisioning minted
+	// into the volatile fixture store (API v2 3.5 format, bound to DevUser,
+	// no admin rights). Dev only; runtime leaves it empty.
+	DevCredentials []DevCredential
 }
 
 var ErrRuntimeUnavailable = errors.New("runtime storage and validated clock adapters are not configured")
@@ -35,7 +40,13 @@ func Bootstrap(c config.Startup) (Dependencies, error) {
 	const bucket = "miles-dev-probe"
 	ref := storage.PackRef{ID: "dev-probe", Generation: "1"}
 	body := []byte("miles-dev-probe")
-	m := fake.NewMetadata(fake.Seed{Buckets: []storage.Bucket{{Name: bucket, ID: "dev-probe", OwnerID: "dev", Domain: "default", Active: true, Revision: 1}}})
+	// Dev provisioning mints one SigV4 test credential per process from the
+	// entropy source; nothing secret is read from or written to the repo.
+	user, credential, minted, err := devFixtureIdentity(rand.Reader)
+	if err != nil {
+		return Dependencies{}, err
+	}
+	m := fake.NewMetadata(fake.Seed{Buckets: []storage.Bucket{{Name: bucket, ID: "dev-probe", OwnerID: user.ID, Domain: user.DefaultDomain, Active: true, Revision: 1}}, Users: []storage.User{user}, Credentials: []storage.Credential{credential}})
 	p := fake.NewPacks(nil)
 	cache := fake.NewCache()
 	ctx := context.Background()
@@ -59,5 +70,5 @@ func Bootstrap(c config.Startup) (Dependencies, error) {
 		}
 		return ctx.Err()
 	}
-	return Dependencies{Metadata: m, Packs: p, Cache: cache, Probe: probe}, nil
+	return Dependencies{Metadata: m, Packs: p, Cache: cache, Probe: probe, DevCredentials: []DevCredential{minted}}, nil
 }

@@ -37,7 +37,12 @@ type Request struct {
 	Access storage.Authorization
 	Body   *Payload
 	access Access
+	region string
 }
+
+// Region is the gateway region every credential scope uses; bucket handlers
+// check LocationConstraint against it and echo it back (API v2 4.2).
+func (r *Request) Region() string { return r.region }
 
 // Handler serves one operation. An *Error it returns becomes the S3 error
 // response; any other error is logged and answered InternalError. It returns
@@ -79,5 +84,5 @@ func (rt *Router) serve(w http.ResponseWriter, r *http.Request, id string) error
 	if !ok {
 		return &Error{Code: ErrNotImplemented, Message: string(route.Op) + " is not implemented yet", Bucket: route.Bucket, Key: route.Key}
 	}
-	return h(w, &Request{Route: route, HTTP: r, ID: id, Caller: caller, Access: access, Body: newPayload(r, route.Op, s), access: rt.Access})
+	return h(w, &Request{Route: route, HTTP: r, ID: id, Caller: caller, Access: access, Body: newPayload(r, route.Op, s), access: rt.Access, region: rt.Region})
 }

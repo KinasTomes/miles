@@ -481,6 +481,13 @@ XML ListBucketResult có Name/Prefix/Delimiter nếu có, KeyCount/MaxKeys/IsTru
 
 Không nhận dedup_domain tùy ý từ user qua header PUT/CreateBucket; domain khởi tạo lấy owner. Admin thay miền user chỉ ảnh hưởng bucket mới.
 
+**Hiện thực (W03-CHIEN-01)**:
+
+- `storage.MetadataStore.CreateBucket(BucketCreate)` là transaction của bảng trên: credential và user được kiểm lại trong cùng một write, tên còn free mới publish, và bucket_id (32 hex CSPRNG), owner, domain (chép `default_domain` của owner, rỗng thì "default") lẫn `created_at` do transaction gán. Tên đã có trả về bucket hiện hành để caller map theo owner; tạo lại cùng tên ra bucket_id mới, grant cũ gắn bucket_id cũ nên vô hiệu — contract suite `internal/storage/contracttest` chạy cho fake và Badger.
+- `s3.NewBucketHandlers(store)` lắp CreateBucket/HeadBucket/ListBuckets vào Router. CreateBucket kiểm tên theo S3 (3–63 ký tự, label chữ thường/số/gạch nối ngăn bằng chấm, hai đầu chữ/số; loại hình IP, tiền tố `xn--`/`sthree-`, hậu tố `-s3alias`/`--ol-s3`), đọc CreateBucketConfiguration qua `Payload.DecodeXML`, và LocationConstraint phải rỗng hoặc bằng Region cấu hình — sai region trả `InvalidRequest` 400 (không thêm code mới vào bảng 2.4 đã freeze), body hỏng `MalformedXML`. Race sau authorize map theo owner như trên. Response 200 kèm `Location: /{bucket}`. HeadBucket 200 kèm `x-amz-bucket-region`; 403/404 không body như mọi HEAD. ListBuckets đọc một trang `ListAccessibleBuckets` (owner ∨ read ∨ write; system admin không liệt kê gì khi không có grant) và trả XML `ListAllMyBucketsResult` với `Owner.ID` là user_id DSG, `CreationDate` ISO 8601 UTC, không DisplayName.
+- `tests/fixtures/s3/buckets.json` pin toàn bộ row trên (tên hợp lệ/không, create đúng/sai region, collision, HEAD theo principal, XML ListBuckets của từng hình dạng truy cập) và chạy qua Router + handler thật; row lỗi pin HTTP status đối chiếu bảng 2.4.
+- Dev provisioning (`internal/app`): mode dev mint một cặp SigV4 test credential theo format 3.5 (access key 20 ký tự [A-Z0-9], secret base64 của 30 byte CSPRNG, rejection sampling không lệch modulo) gắn user dev, không có cờ admin; runtime mode không mint, secret không ghi log.
+
 ### 4.3 Multipart upload (P1)
 
 | Operation | Chi tiết |

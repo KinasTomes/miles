@@ -48,6 +48,16 @@ func (k ChunkKey) PartitionKey() (string, error) {
 	return k.Domain + "#" + k.Hash, nil
 }
 
+// ValidateDomain checks one dedup domain identifier (API v2 2.2.1): 1-64
+// characters of [a-z0-9_-], no "#", so it can never collide with the "#"-joined
+// partition key of a chunk.
+func ValidateDomain(domain string) error {
+	if !identifier.MatchString(domain) {
+		return fmt.Errorf("%w: domain", ErrInvalid)
+	}
+	return nil
+}
+
 // NewBucketID must be called for every new incarnation, including name reuse.
 func NewBucketID() (string, error) {
 	var b [16]byte
@@ -61,12 +71,36 @@ type Bucket struct {
 	Name, ID, OwnerID, Domain string
 	Revision                  uint64
 	Active                    bool
+	// CreatedAt is set once by CreateBucket; ListBuckets returns it as
+	// CreationDate. It is zero on fixtures seeded before the field existed.
+	CreatedAt time.Time
 }
 type User struct {
 	ID       string
 	Active   bool
 	Revision uint64
+	// DefaultDomain is the dedup domain CreateBucket copies into the new
+	// bucket (API v2 3.5). Empty falls back to "default": fixture and dev
+	// seeds predate the field and every domain was "default".
+	DefaultDomain string
 }
+
+// BucketCreate is the CreateBucket transaction of API v2 2.2.3/3.5: the
+// credential that signed the request, the user it belongs to (both must still
+// be active when the transaction runs) and the requested name. The backend
+// generates the bucket_id, copies the owner's current default_domain and sets
+// CreatedAt; nothing else of the caller survives into the record.
+type BucketCreate struct {
+	CredentialID, UserID, Name string
+}
+
+func (r BucketCreate) Validate() error {
+	if r.CredentialID == "" || r.UserID == "" || r.Name == "" {
+		return fmt.Errorf("%w: bucket create identity", ErrInvalid)
+	}
+	return nil
+}
+
 type Credential struct {
 	ID, UserID          string
 	Active, SystemAdmin bool

@@ -1,0 +1,122 @@
+{
+  "region": "us-east-1",
+  "created_at": "2026-10-22T10:00:00.000Z",
+  "names": [
+    { "name": "abc", "valid": true },
+    { "name": "my-bucket", "valid": true },
+    { "name": "my.s3.bucket", "valid": true },
+    { "name": "123", "valid": true },
+    { "name": "m-x", "valid": true },
+    { "name": "ab", "valid": false },
+    { "name": "a_b", "valid": false },
+    { "name": "A-b", "valid": false },
+    { "name": "-abc", "valid": false },
+    { "name": "abc-", "valid": false },
+    { "name": "m-", "valid": false },
+    { "name": "a..b", "valid": false },
+    { "name": ".abc", "valid": false },
+    { "name": "abc.", "valid": false },
+    { "name": "a.-b", "valid": false },
+    { "name": "192.168.1.1", "valid": false },
+    { "name": "xn--bucket", "valid": false },
+    { "name": "sthree-bucket", "valid": false },
+    { "name": "abc-s3alias", "valid": false },
+    { "name": "abc--ol-s3", "valid": false },
+    { "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "valid": false },
+    { "name": "นี้คือถังของฉัน", "valid": false }
+  ],
+  "create": [
+    {
+      "name": "fresh",
+      "principal": "owner",
+      "body": "",
+      "status": 200,
+      "location": "/fresh"
+    },
+    {
+      "name": "fresh",
+      "principal": "owner",
+      "body": "<CreateBucketConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><LocationConstraint>us-east-1</LocationConstraint></CreateBucketConfiguration>",
+      "status": 200,
+      "location": "/fresh"
+    },
+    {
+      "name": "fresh",
+      "principal": "owner",
+      "body": "<CreateBucketConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><LocationConstraint>eu-west-1</LocationConstraint></CreateBucketConfiguration>",
+      "status": 400,
+      "code": "InvalidRequest"
+    },
+    {
+      "name": "fresh",
+      "principal": "owner",
+      "body": "<CreateBucketConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><LocationConstraint>us-east-1</LocationConstraint>",
+      "status": 400,
+      "code": "MalformedXML"
+    },
+    {
+      "name": "demo",
+      "principal": "owner",
+      "status": 409,
+      "code": "BucketAlreadyOwnedByYou"
+    },
+    {
+      "name": "demo",
+      "principal": "writer",
+      "status": 409,
+      "code": "BucketAlreadyExists"
+    },
+    {
+      "name": "fresh",
+      "principal": "disabled",
+      "status": 403,
+      "code": "AccessDenied"
+    },
+    {
+      "name": "fresh",
+      "principal": "revoked",
+      "status": 403,
+      "code": "InvalidAccessKeyId"
+    },
+    {
+      "name": "AB",
+      "principal": "owner",
+      "status": 400,
+      "code": "InvalidBucketName"
+    }
+  ],
+  "head": [
+    { "name": "demo", "principal": "owner", "status": 200, "region": "us-east-1" },
+    { "name": "demo", "principal": "reader", "status": 200, "region": "us-east-1" },
+    { "name": "demo", "principal": "writer", "status": 403 },
+    { "name": "demo", "principal": "admin", "status": 403 },
+    { "name": "gone", "principal": "owner", "status": 404 }
+  ],
+  "list": [
+    {
+      "principal": "owner",
+      "owner_id": "user-owner",
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListAllMyBucketsResult><Owner><ID>user-owner</ID></Owner><Buckets><Bucket><Name>demo</Name><CreationDate>2026-10-22T10:00:00.000Z</CreationDate></Bucket></Buckets></ListAllMyBucketsResult>"
+    },
+    {
+      "principal": "reader",
+      "owner_id": "user-reader",
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListAllMyBucketsResult><Owner><ID>user-reader</ID></Owner><Buckets><Bucket><Name>demo</Name><CreationDate>2026-10-22T10:00:00.000Z</CreationDate></Bucket></Buckets></ListAllMyBucketsResult>"
+    },
+    {
+      "principal": "writer",
+      "owner_id": "user-writer",
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListAllMyBucketsResult><Owner><ID>user-writer</ID></Owner><Buckets><Bucket><Name>demo</Name><CreationDate>2026-10-22T10:00:00.000Z</CreationDate></Bucket></Buckets></ListAllMyBucketsResult>"
+    },
+    {
+      "principal": "plain",
+      "owner_id": "user-plain",
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListAllMyBucketsResult><Owner><ID>user-plain</ID></Owner><Buckets></Buckets></ListAllMyBucketsResult>"
+    },
+    {
+      "principal": "admin",
+      "owner_id": "user-admin",
+      "xml": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListAllMyBucketsResult><Owner><ID>user-admin</ID></Owner><Buckets></Buckets></ListAllMyBucketsResult>"
+    }
+  ]
+}

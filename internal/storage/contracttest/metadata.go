@@ -30,7 +30,9 @@ type MetadataHarness struct {
 	FailReconcile func(bool)
 	Store         s.MetadataStore
 	SetBucket     func(s.Bucket)
+	DeleteBucket  func(string)
 	SetCredential func(s.Credential)
+	SetUser       func(s.User)
 	SetGrant      func(s.Grant)
 	SetWriter     func(s.WriterLease)
 	SetPack       func(s.PackInfo)
@@ -96,6 +98,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 	runCanonicalDestinations(t, newStore)
 	runReservations(t, newStore)
 	runQueries(t, newStore)
+	runBucketCreate(t, newStore)
 	ctx := context.Background()
 	t.Run("location CRC survives insert lookup and CAS", func(t *testing.T) {
 		f := NewFixture()
