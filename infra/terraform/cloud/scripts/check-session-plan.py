@@ -30,7 +30,13 @@ def check_plan(plan, action, account):
         raise ValueError('Plan account/Region differs from the expected dev deployment.')
     if values.get('deploy_role_arn') is not None or values.get('runtime_permissions_boundary_arn') != expected_boundary:
         raise ValueError('Use the current deploy session and the reviewed runtime boundary.')
-    if values.get('paused') is not (action == 'pause'):
+    # Terraform preserves CLI -var booleans as raw strings in plan.variables.
+    paused = values.get('paused')
+    if paused == 'true':
+        paused = True
+    elif paused == 'false':
+        paused = False
+    if paused is not (action == 'pause'):
         raise ValueError('Plan paused input does not match the requested action.')
     prior = plan.get('prior_state', {}).get('values', {}).get('outputs', {}).get('session_configuration', {}).get('value')
     configured = plan.get('planned_values', {}).get('outputs', {}).get('session_configuration', {}).get('value')

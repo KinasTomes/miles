@@ -60,6 +60,20 @@ class SessionPlanTests(unittest.TestCase):
                 plan['resource_changes'] = [change(address, ['delete'])]
                 gate.check_plan(plan, 'pause', ACCOUNT)
 
+    def test_cli_boolean_values_match_the_requested_transition(self):
+        for action, value in [('pause', 'true'), ('resume', 'false')]:
+            with self.subTest(action=action):
+                plan = fixture(action)
+                plan['variables']['paused']['value'] = value
+                self.assertEqual(gate.check_plan(plan, action, ACCOUNT), [])
+                with self.assertRaises(ValueError):
+                    gate.check_plan(plan, 'resume' if action == 'pause' else 'pause', ACCOUNT)
+        for value in ['TRUE', 'False', '1', '', ' true ', 1, 0, None]:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                plan = fixture()
+                plan['variables']['paused']['value'] = value
+                gate.check_plan(plan, 'pause', ACCOUNT)
+
     def test_replacements_updates_and_wrong_direction_are_blocked(self):
         for actions in [['delete', 'create'], ['create', 'delete'], ['update'], ['create']]:
             with self.subTest(actions=actions), self.assertRaises(ValueError):
