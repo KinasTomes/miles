@@ -3,8 +3,12 @@ package s3
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -134,6 +138,106 @@ func fuzzSigner() *signer {
 	}
 }
 
+// chunkedModes indexes the mode argument of the fuzz seeds: 0 unsigned
+// trailer, 1 signed chunks, 2 signed chunks and trailer.
+var chunkedModes = [3]string{streamingUnsignedTrailer, streamingSigned, streamingSignedTrailer}
+
+// validChunkedBody returns, for each STREAMING- mode, an aws-chunked body of
+// data whose framing, chunk and trailer signatures and checksum the decoder
+// accepts end to end: the signature chain is generated with fuzzSigner's
+// key, the trailer carries the checksum of data under its own algorithm, and
+// decodedLen is the length of data itself. Every mode's mutation starts from
+// a body that really reaches io.EOF.
+func validChunkedBody(mode string, data []byte) (body string, decodedLen int64, trailer string) {
+	s := fuzzSigner()
+	sum := func(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+	digest := func(alg string, b []byte) string {
+		h, _ := ChecksumHash(alg)
+		h.Write(b)
+		return base64.StdEncoding.EncodeToString(h.Sum(nil))
+	}
+	chunkSig := func(prev string, b []byte) string {
+		return s.sign("AWS4-HMAC-SHA256-PAYLOAD\n" + s.amzDate + "\n" + s.scope + "\n" + prev + "\n" + emptySHA256 + "\n" + sum(b))
+	}
+	// A data chunk is "<size>[;chunk-signature=s]\r\n<data>\r\n"; the zero
+	// chunk is its header line alone — the trailer section (or the empty
+	// line of a body without one) follows immediately, like the aws-chunked
+	// bodies transport.json captured and the AWS docs examples.
+	var b strings.Builder
+	prev := s.seed
+	dataChunk := func(c []byte) {
+		fmt.Fprintf(&b, "%x", len(c))
+		if mode != streamingUnsignedTrailer {
+			sig := chunkSig(prev, c)
+			fmt.Fprintf(&b, ";chunk-signature=%s", sig)
+			prev = sig
+		}
+		fmt.Fprintf(&b, "\r\n%s\r\n", c)
+	}
+	// two chunks so a mutation can also move the boundary; the empty payload
+	// keeps the single zero chunk of a real empty PUT.
+	if len(data) > 7 {
+		dataChunk(data[:7])
+		dataChunk(data[7:])
+	} else if len(data) > 0 {
+		dataChunk(data)
+	}
+	fmt.Fprintf(&b, "0")
+	if mode != streamingUnsignedTrailer {
+		sig := chunkSig(prev, nil)
+		fmt.Fprintf(&b, ";chunk-signature=%s", sig)
+		prev = sig
+	}
+	b.WriteString("\r\n")
+
+	switch mode {
+	case streamingUnsignedTrailer:
+		trailer = "x-amz-checksum-crc64nvme"
+		fmt.Fprintf(&b, "%s:%s\r\n\r\n", trailer, digest("CRC64NVME", data))
+	case streamingSigned:
+		b.WriteString("\r\n") // no trailer: one empty line ends the body
+	case streamingSignedTrailer:
+		trailer = "x-amz-checksum-crc32c"
+		line := trailer + ":" + digest("CRC32C", data)
+		tsig := s.sign("AWS4-HMAC-SHA256-TRAILER\n" + s.amzDate + "\n" + s.scope + "\n" + prev + "\n" + sum([]byte(line+"\n")))
+		fmt.Fprintf(&b, "%s\r\nx-amz-trailer-signature:%s\r\n\r\n", line, tsig)
+	}
+	return b.String(), int64(len(data)), trailer
+}
+
+// TestChunkedFuzzSeedsReachEOF proves the valid seed of every mode passes
+// the whole decoder — the fuzz corpus mutates from bodies that reach io.EOF,
+// so a signature or trailer check that never ran on valid input would hide
+// from the fuzzer.
+func TestChunkedFuzzSeedsReachEOF(t *testing.T) {
+	for _, data := range [][]byte{
+		[]byte("Miles transport fixture payload\n"),
+		nil, // the empty PUT
+		bytes.Repeat([]byte("a"), 100),
+	} {
+		for i, mode := range chunkedModes {
+			t.Run(fmt.Sprintf("mode%d/%dB", i, len(data)), func(t *testing.T) {
+				body, decodedLen, trailer := validChunkedBody(mode, data)
+				r := httptest.NewRequest(http.MethodPut, "/demo/k", strings.NewReader(body))
+				r.Header.Set("Content-Encoding", "aws-chunked")
+				r.Header.Set("X-Amz-Content-Sha256", mode)
+				r.Header.Set("X-Amz-Decoded-Content-Length", strconv.FormatInt(decodedLen, 10))
+				if trailer != "" {
+					r.Header.Set("X-Amz-Trailer", trailer)
+				}
+				p := newPayload(r, PutObject, fuzzSigner())
+				got, err := io.ReadAll(p)
+				if err != nil {
+					t.Fatalf("valid %s seed of %d bytes: %v", mode, len(data), err)
+				}
+				if !bytes.Equal(got, data) {
+					t.Fatalf("valid seed decoded %q, want %q", got, data)
+				}
+			})
+		}
+	}
+}
+
 // decodeHTTPChunked strips the HTTP chunked framing a captured transport
 // body still carries; the aws-chunked decoder sits above it. A seed body
 // that ends mid-chunk (the truncated variant) decodes up to the cut.
@@ -147,6 +251,22 @@ func decodeHTTPChunked(f *testing.F, body string) []byte {
 }
 
 func FuzzAWSChunked(f *testing.F) {
+	// The valid seeds come first: each mode's canonical body reaches io.EOF
+	// (TestChunkedFuzzSeedsReachEOF proves it), so the fuzzer starts from a
+	// working path and mutates framing, chunk data, signatures and trailer
+	// from there.
+	for _, data := range []string{
+		"Miles transport fixture payload\n",
+		"",
+		strings.Repeat("a", 100),
+	} {
+		for i, mode := range chunkedModes {
+			body, decodedLen, trailer := validChunkedBody(mode, []byte(data))
+			f.Add([]byte(body), uint8(i), decodedLen, trailer)
+		}
+	}
+	// The captured requests of the pinned clients stay as near-miss seeds:
+	// their framing is real, their signatures belong to another key.
 	tf := loadTransport(f)
 	for _, c := range tf.Cases {
 		if c.BodyOmitted > 0 || c.Body == "" {
