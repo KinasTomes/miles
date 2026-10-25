@@ -210,6 +210,41 @@
           "aws:ResourceTag/Environment": "dev"
         }
       }
+    },
+    {
+      "Sid": "ReadParameterInventory",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeParameters"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
+    },
+    {
+      "Sid": "UseOwnedEBSKeys",
+      "Effect": "Allow",
+      "Action": [
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:ReEncryptFrom",
+        "kms:ReEncryptTo"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev",
+          "kms:ViaService": "ec2.ap-southeast-1.amazonaws.com"
+        }
+      }
     }
   ]
 }
