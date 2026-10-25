@@ -1,72 +1,88 @@
-# Kiểm tra readiness của môi trường AWS dev Warm
+# Kiểm tra môi trường AWS dev Warm
 
-Task: W03-HUNG-01. Đối chiếu ngày 25/10/2026 (UTC+7), sau khi đồng bộ
-`main` tại `65e9c04`. Đây là bằng chứng chuẩn bị IaC, chưa phải nghiệm thu
-môi trường đã chạy trên AWS.
+Task: W03-HUNG-01. Kiểm AWS thật ngày 25/10/2026 (UTC+7), sau khi đồng bộ
+`main` tại `65e9c04`. Phiên được lead cho phép chạy thật, dùng deploy role;
+phiên root riêng chỉ kiểm/cập nhật IAM và đã đăng xuất sau khi hoàn tất.
 
-## Kết quả không tạo tài nguyên
+## Bằng chứng AWS thật
 
-| Kiểm tra | Kết quả | Giới hạn |
-|---|---|---|
-| Terraform 1.15.2, AWS provider 6.21.0 | Giữ version và lockfile hiện có | Không nâng dependency trong task này |
-| `terraform fmt -check -recursive` | Pass | Format |
-| Init `-backend=false -lockfile=readonly` và validate | Bootstrap state và dev đều pass | Không kiểm remote state hoặc quyền apply |
-| `terraform test` | 21 pass, 0 fail | Tất cả dùng mock AWS, kể cả các bước apply/cleanup trong test |
-| Python identity/private-plan/session-plan tests | 11 pass | Kiểm offline; không chứng minh quyền IAM trên AWS |
-| `make check` sau đồng bộ main | Pass | Go/Python tests, vet, format và build; không chạy ứng dụng trên EC2 |
+| Phần kiểm | Kết quả |
+|---|---|
+| Terraform state | S3 riêng, versioning/SSE-S3/public block/TLS-only; một plan đồng thời bị S3 state lock từ chối |
+| IAM | Template qua Access Analyzer không có findings; 28 simulator cases đạt, gồm tài nguyên có/không có ownership và từ chối xóa data/key; apply workload dưới deploy role |
+| Datastore | 20 bảng ACTIVE, on-demand cap 10 read/10 write, SSE-KMS, PITR 1 ngày, deletion protection; S3 versioned/SSE-KMS/public block/BucketOwnerEnforced |
+| Network/compute | Một t4g.small private, không public IP, IMDSv2/hop limit 1, CPU credits standard; một NAT, hai gateway endpoints S3/DDB; không ALB, không mở SSH/Admin/metrics Internet |
+| Session Manager | Node Online, vào được đúng document audit; KMS data channel và CloudWatch streaming log mã hóa, marker lệnh đã tới log group retention 14 ngày; shell mặc định/port forwarding bị từ chối |
+| Runtime I/O | Từ instance profile: S3 put/get SHA-256, SSE-KMS và version khớp; đọc checkpoint control object tách biệt; DynamoDB conditional put/consistent get đạt; truy cập state và IAM bị từ chối |
+| Pause/resume | Hai lần bật, hai lần nghỉ; instance thay mới, cùng data-volume filesystem UUID; EBS/S3 SHA-256, S3 version và DynamoDB record khớp qua lần nghỉ; probe EBS/DDB đã dọn |
 
-Mock lifecycle kiểm active → pause → resume và interface → pause. S3,
-DynamoDB, data EBS, KMS, VPC và runtime identities được giữ; EC2/root disk,
-NAT/EIP, interface endpoints và ALB theo phiên được thu hồi. Gate plan chặn
-thay đổi tài nguyên giữ lại, replace, drift, import/move và đổi AMI/topology.
-Đây là kiểm graph và kế hoạch, chưa chứng minh dữ liệu hay network thật.
+Data EBS mới được đối chiếu VolumeId/serial, xác nhận không có filesystem/signature,
+không phải root rồi mới tạo ext4. Mỗi lần dừng đều sync/unmount; không có DSG/jobs
+đang chạy để drain. Lần resume phải dùng filesystem cũ, không format lại.
 
-Lệnh tái hiện nằm trong [Terraform README](../../infra/terraform/cloud/README.md).
-Không cần credential AWS để chạy bộ kiểm tra offline này.
+Bản ghi DynamoDB và file EBS kiểm thử được dọn sau vòng đối chiếu. Hai object S3
+versioned dưới prefix acceptance được giữ làm sentinel; gateway không được cấp
+thêm quyền xóa object/version chỉ để dọn kiểm thử. Không ghi active-history pointer
+hoặc dữ liệu nghiệp vụ. Inventory, plan/state, log chi tiết, UUID/version/hash và
+định danh AWS nằm ngoài Git trong kho evidence riêng tư; public chỉ ghi kết quả.
 
-## Dependency và bàn giao
+## Sửa lỗi phát hiện khi chạy thật
 
-- Hai hard dependency W01-HUNG-03 và W02-HUNG-01 đã Done. Các task W2 về
-  pack/S3, Badger, policy, auth, read/cache và compatibility đã merge. Không
-  cần chờ toàn bộ W3 để dựng và kiểm môi trường hạ tầng.
-- [Mapping 20 bảng dev](../../infra/terraform/cloud/metadata-tables.md) là
-  inventory cho adapter DynamoDB W03-HAI-03/W4. Review tên/kiểu key trước
-  apply; không tuyên bố đã có adapter DynamoDB hoặc multi-node commit.
-- Handler S3/Admin và runtime wiring thật chưa hoàn chỉnh. Bài kiểm tra
-  hạ tầng không thay bằng chứng PUT/GET của W03-CHIEN-02 hay reader Warm
-  của W03-PHONG-01; cũng không lấy việc các handler đó chưa xong làm lý do
-  trì hoãn kiểm network, IAM, datastore và vòng đời hạ tầng.
-- Phiên CLI role dùng cho Terraform đã hết hạn lúc đối chiếu. Không dùng
-  root hoặc credential mặc định để thay thế; chưa tạo fresh AWS plan trong
-  lượt này. Bằng chứng plan/IAM ngày 22/10 ở
-  [dev preparation](../../infra/terraform/cloud/dev-preparation.md) là lịch
-  sử, không chứng minh IAM live hoặc AMI vẫn launch được ngày 25/10.
+- Terraform giữ `-var=paused=true/false` thành chuỗi trong JSON input. Gate hiện nhận
+  boolean hoặc đúng chuỗi chuẩn, tiếp tục từ chối kiểu/giá trị khác; có regression test.
+- Bổ sung đúng `ssm:DescribeParameters`, KMS EBS data-key/re-encryption qua EC2 và
+  quyền đọc inventory ALB theo Region. Không cấp object/data mutation cho deploy.
+- Dùng `BoolIfExists` cho SessionDocumentAccessCheck khi IAM đánh giá từng resource;
+  node vẫn cần tags Miles/dev và chỉ custom document audit được cấp StartSession.
+- Gate đã chặn các thay đổi computed sau khi resource con được tạo. Review riêng
+  refresh-only rồi mới tạo/gate session plan; không bỏ kiểm drift.
+- Provider 6.21.0 giữ association EIP cũ sau khi NAT bị xóa, làm pause lần đầu dừng
+  ở EIP. Quy trình đối chiếu association, refresh-only và plan pause mới đã thu hồi
+  được EIP; xem [phục hồi pause dở](../../infra/terraform/cloud/dev-sessions.md#đối-chiếu-state-và-xử-lý-pause-dở).
+  Không mở quyền disassociate toàn Region. Không coi lần apply đầu là bằng chứng
+  đã hết tài nguyên tính phí.
 
-## Phiên AWS thật cần báo cáo và được duyệt trước khi chạy
+## Kiểm offline và CI
 
-1. **Chuẩn bị plan:** đăng nhập lại deploy role bằng MFA, kiểm identity,
-   review/cập nhật riêng các policy data/compute/session/teardown và boundary.
-   Tạo fresh plan bootstrap và dev với config riêng; kiểm account, AMI,
-   mapping DynamoDB, ngân sách phiên và phí tài nguyên giữ lại. Lưu plan và
-   inventory ngoài Git. Không dùng plan cũ hoặc mock plan để apply.
-2. **Dựng backend và datastore:** sau khi được duyệt, bootstrap state và
-   kiểm lock/versioning; apply persistent plan đã review với `paused=true`.
-   Trạng thái này vẫn tạo tài nguyên có phí lưu trữ/key, không phải miễn phí.
-3. **Bật phiên dev:** tạo/gate/review resume plan cho một EC2 private và một
-   NAT, ALB tắt. Kiểm SSM Online, session log mã hóa, data-volume identity
-   và mount. Không format lại volume đã có dữ liệu hoặc chạy app khi thiếu
-   mount. Giữ Admin/metrics private.
-4. **Kiểm quyền và dữ liệu:** từ runtime identity, kiểm S3 put/get/hash,
-   metadata control-object reads và DynamoDB read/write có dọn probe; kiểm
-   truy cập state/quản trị IAM bị từ chối. Lưu sentinel/hash trên data EBS
-   và datastore để đối chiếu qua pause/resume; không dùng output Terraform
-   thay bằng chứng API/network. Dữ liệu kiểm thử phải tách khỏi dữ liệu cần giữ.
-5. **Thu hồi và kiểm lại:** drain/unmount, gate/apply pause plan, kiểm không
-   còn EC2/NAT/EIP/interface endpoints/ALB hoặc orphaned root volumes. Resume
-   một lần để đối chiếu sentinel/hash, rồi pause lại. Full destroy môi trường
-   disposable là kế hoạch riêng: kiểm dữ liệu/retention, quyền cleanup và
-   deletion protection trước khi xóa. Không tự gỡ bảo vệ data/key để đóng task.
+Terraform 1.15.2/AWS provider 6.21.0 giữ nguyên lockfile. Fmt, init/validate
+bootstrap + dev đạt; 21 Terraform mock tests, 12 Python guard tests và `make check`
+đạt. CI kiểm Go/race, benchmark contracts và Terraform đạt. Các apply/cleanup trong
+Terraform tests đều dùng mock; bằng chứng live trong bảng trên là phiên riêng.
+Lệnh tái hiện: [Terraform README](../../infra/terraform/cloud/README.md).
 
-Quy trình và lệnh cụ thể ở [dev sessions](../../infra/terraform/cloud/dev-sessions.md).
-Các API live, thời gian chạy, inventory sau thu hồi và chi phí thực phải có
-evidence riêng trước khi đề nghị Done. Chưa tick checklist triển khai thật.
+## Chi phí và trạng thái cuối
+
+Kết thúc ở `paused=true`: API AWS xác nhận không còn EC2 đang tồn tại, NAT đang
+hoạt động, EIP, interface endpoints, ALB hoặc root volume mồ côi của môi trường.
+Data EBS detached vẫn có, S3/DDB/key/secret/state và cấu hình được giữ để bật lại.
+
+Price List công khai Singapore đối chiếu 25/10/2026: NAT 0,059 USD/giờ + 0,059
+USD/GB, IPv4 0,005 USD/giờ, t4g.small Linux 0,0212 USD/giờ, gp3 0,096 USD/GiB-tháng,
+CMK 1 USD/key-tháng, secret metadata 0,40 USD/tháng. Khi bật: fixed rate khoảng
+0,0863 USD/giờ gồm root disk 8 GiB; khi nghỉ: EBS 20 GiB + key + secret khoảng
+3,32 USD/tháng. Chưa gồm S3/DDB/PITR/log/state/requests, data transfer, thuế/credit.
+NAT tính mỗi phần giờ thành tròn một giờ, nên hai lần tạo NAT ngắn vẫn có ít nhất
+hai NAT-hours; không nhân toàn bộ fixed rate với vài phút để gọi đó là hóa đơn.
+Chưa đối chiếu bill/Cost Explorer đã chốt; các con số trên là dự toán, không phải
+chi phí 0 hoặc hard cap.
+
+Nguồn: [EC2 regional Price List](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonEC2/current/ap-southeast-1/index.csv),
+[VPC regional Price List](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonVPC/current/ap-southeast-1/index.json),
+[KMS regional Price List](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/awskms/current/ap-southeast-1/index.json),
+[Secrets Manager Price List](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSSecretsManager/current/ap-southeast-1/index.json),
+[quy tắc tính NAT/IPv4](https://aws.amazon.com/vpc/pricing/).
+
+## Phần còn lại trước Done
+
+Checklist dựng IaC và kiểm quyền/network/control objects có bằng chứng live.
+Inventory và pause/resume đã kiểm; **full destroy môi trường disposable chưa chạy**.
+Việc đó cần review/xác nhận riêng dữ liệu cần giữ, backup/retention, gỡ bảo vệ data
+và quyền cleanup giới hạn, rồi nghiệm thu việc thu hồi thật. Giữ task Doing và
+checklist full destroy chưa tick; PR #30 vẫn chờ review.
+
+Hai hard dependency W01-HUNG-03/W02-HUNG-01 và các task W2 liên quan đã Done;
+không còn chờ W2 để kiểm hạ tầng. [Mapping 20 bảng](../../infra/terraform/cloud/metadata-tables.md)
+là bàn giao cho adapter DynamoDB W03-HAI-03/W4. Phiên này chưa deploy DSG, chưa kiểm
+S3/Admin HTTP end-to-end, adapter DynamoDB production, recovery R1/R2 hoặc multi-node.
+Interface mode và ALB chưa được nghiệm thu live. Runbook vận hành:
+[dev sessions](../../infra/terraform/cloud/dev-sessions.md).

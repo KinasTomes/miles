@@ -1,14 +1,13 @@
 # Chuẩn bị môi trường AWS dev
 
-Ngày kiểm tra: 2026-10-22. IAM operator/deploy đã bootstrap trước đó; các policy
-mở rộng trong lượt này chưa gắn lên AWS. **Không apply workload, chưa Done W03-HUNG-01.**
+Evidence lịch sử ngày 22/10/2026: IAM operator/deploy đã bootstrap trước đó;
+tại thời điểm đó policy mở rộng chưa gắn lên AWS và chưa apply workload.
 
-Đối chiếu lại 25/10/2026: đã đồng bộ `main` và kiểm lại 21 Terraform mock tests,
-11 Python guard tests cùng `make check`, tất cả đạt. Các dependency W2 đã sẵn
-sàng; không cần chờ handler W3 để kiểm hạ tầng. Phiên CLI đã hết hạn nên chưa
-tạo plan AWS mới. Xem [bằng chứng hiện tại và đề xuất phiên kiểm tra thật](../../../docs/testing/aws-dev-readiness.md).
-Các plan, IAM simulations và dự toán ngày 22/10 bên dưới giữ nguyên ngày nguồn;
-không coi là kiểm chứng quyền, AMI hoặc tổng chi phí hiện tại.
+Cập nhật 25/10/2026: các dependency W2 đã sẵn sàng; đã đăng nhập deploy role,
+cập nhật riêng IAM và chạy kiểm AWS thật theo phê duyệt. Xem
+[bằng chứng hiện tại](../../../docs/testing/aws-dev-readiness.md).
+Các plan, IAM simulations và dự toán ngày 22/10 bên dưới là lịch sử;
+không dùng chúng thay inventory, quyền, giá hoặc trạng thái AWS hiện tại.
 
 ## Đã chuẩn bị
 

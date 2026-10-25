@@ -12,7 +12,7 @@ Nguồn: kiến trúc §10.1/11/19, API §1/8/13 và
 - `bootstrap/state`: S3 backend riêng, versioning/encryption/native lockfile,
   prevent_destroy. Account input riêng, không chứa account thật trong Git.
 - `bootstrap/operator`: policy template operator MFA, deploy role, runtime boundary;
-  bản mới cho data/compute/session/teardown đang ở mức review, chưa gắn lên AWS.
+  bản data/compute/session/teardown đã kiểm trên AWS trong phiên được duyệt ngày 25/10.
 - `modules/data`: S3 Standard versioned, SSE-KMS, block public access/ACLs, TLS-only;
   20 bảng DDB on-demand/SSE-KMS/PITR 1 ngày, deletion protection, không TTL/GSI/seed.
   [Mapping vật lý và handoff adapter](metadata-tables.md).
@@ -85,5 +85,5 @@ Xem [readiness và dự toán](dev-preparation.md). [Inventory](inventory-and-co
 và [validation W2](validation.md) là evidence foundation tại ngày ghi trong tài liệu,
 không thay thế kết quả W3 hoặc nghiệm thu AWS thật.
 
-[Kết quả kiểm lại và kế hoạch nghiệm thu AWS dev](../../../docs/testing/aws-dev-readiness.md)
-ghi rõ phần đã kiểm offline và phần cần chạy thật sau review.
+[Kết quả kiểm tra AWS dev](../../../docs/testing/aws-dev-readiness.md)
+ghi rõ bằng chứng offline/live và các bước còn thiếu trước Done.

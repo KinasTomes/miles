@@ -132,9 +132,9 @@ ALB disabled trong Warm plan hiện tại; template teardown chỉ cho cleanup A
 cấp CreateLoadBalancer/listener/target group. Trước bật ALB phải generate/review
 policy bổ sung từ plan certificate thật. Không dùng AdministratorAccess để né lỗi.
 
-Quyền bootstrap/create/service integration chưa được kiểm bằng API apply thật;
-đặc biệt KMS tag/grant propagation và SSM managed-node/log delivery cần kiểm ở
-phiên AWS được duyệt. Simulation không thay đánh giá key policy, SCP hoặc context
+Quyền bootstrap/data/compute/NAT/session đã được kiểm bằng API AWS thật ngày
+25/10/2026; xem [bằng chứng và giới hạn](../../../../../docs/testing/aws-dev-readiness.md).
+Interface mode, ALB và full data/key teardown chưa được nghiệm thu live. Simulation không thay đánh giá key policy, SCP hoặc context
 thực. Các API thiếu phải bổ sung theo lỗi đã xác định và validate lại, không nới
 CreateTags/TagResource để nhận tài nguyên ngoài phạm vi. Xem
 [quy trình vận hành](../../dev-sessions.md).

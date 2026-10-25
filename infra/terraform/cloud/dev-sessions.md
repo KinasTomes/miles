@@ -1,8 +1,9 @@
 # Dựng, tạm nghỉ và bật lại dev
 
 Quy trình này dùng Terraform state đang quản lý môi trường. Không tạo lịch tự bật,
-không tự apply, không chạy destroy toàn bộ stack để tiết kiệm tiền. Hạ tầng thật
-chưa được triển khai; kiểm thử vòng đời hiện dùng mock provider.
+không tự apply, không chạy destroy toàn bộ stack để tiết kiệm tiền. Kết quả AWS thật ngày 25/10/2026 nằm ở
+[bằng chứng nghiệm thu](../../../docs/testing/aws-dev-readiness.md).
+Terraform tests trong CI vẫn dùng mock provider.
 
 ## Phần giữ và phần thu hồi
 
@@ -132,6 +133,27 @@ chặn update/replace/import/move, drift/deferred work và thay đổi datastore
 `session_configuration` trong state giữ AMI/topology đã review, phải khớp khi bật/tắt.
 Nếu gate chặn, review plan riêng để giải quyết drift; không mở rộng allowlist tùy tiện.
 Thay cấu hình topology (NAT↔interface) cũng là plan riêng, không phải resume.
+
+## Đối chiếu state và xử lý pause dở
+
+Gate giữ nguyên nguyên tắc chặn drift. Sau apply, provider có thể đọc thêm các
+thuộc tính computed do resource khác quản lý: inline policy của role, routes của
+route table, data-volume attachment/root tags của instance, association của EIP.
+Nếu gate chặn, đối chiếu từng field với resource sở hữu và API AWS trước khi lập
+**plan refresh-only riêng**. Dùng cùng config/giá trị `paused` của môi trường hiện
+hữu, review saved plan phải không có AWS resource actions rồi mới apply để cập
+nhật state. Sau đó tạo lại session plan và chạy gate; không dùng refresh-only để
+che thay đổi IAM/network/data chưa rõ nguồn.
+
+AWS provider 6.21.0 có thể giữ association EIP cũ trong destroy plan sau khi NAT đã
+xóa. Phiên kiểm thật gặp `DisassociateAddress` bị từ chối ở bước EIP, dù EC2/NAT đã
+thu hồi. Cách phục hồi đã kiểm: đối chiếu AllocationId thuộc state/tags Miles/dev;
+`describe-addresses` phải cho thấy EIP không còn AssociationId/NetworkInterfaceId.
+Review refresh-only riêng cho association và NAT routes đã mất, áp saved plan cập
+nhật state, rồi tạo/gate/apply **pause plan mới** để ReleaseAddress. Cuối cùng kiểm
+inventory không còn EIP. Không áp lại plan cũ hoặc cấp quyền disassociate toàn
+Region chỉ để vượt qua lỗi này. Vì vậy pause chưa được coi là xong chỉ dựa vào EC2
+terminated hay lần apply đầu; phải có bước kiểm orphan và phục hồi khi cần.
 
 ## Thu hồi hoàn toàn môi trường tạm
 
