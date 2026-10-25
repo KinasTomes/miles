@@ -281,6 +281,7 @@ Bảng mã lỗi cần hỗ trợ:
 | Mục | Giá trị | Ghi chú |
 |---|---|---|
 | Độ dài key | 1024 byte | Giống S3 |
+| Mã hóa key | UTF-8 hợp lệ sau khi decode path đúng một lần | S3 định nghĩa key là UTF-8; byte lỗi trả `InvalidArgument` 400 trước mọi ghi durable, không chuẩn hóa NFC/NFD |
 | Part tối thiểu | 5 MiB (trừ part cuối) | Giống S3 |
 | Số part tối đa | 10.000 | Giống S3 |
 | Kích thước PutObject đơn | 5 GiB | Lớn hơn phải dùng multipart |
@@ -443,11 +444,11 @@ Bảng route/operation và mã lỗi thực thi nằm ở `internal/api/s3` (`Re
 
 Acquire read view trước resolve pages, pin location generation trước fetch, pre-flight toàn khoảng cần trước header. GET object rỗng trả 200 length 0; Range trên object rỗng trả 416. Chỉ phát bytes chunk sau SHA-256 đúng. Chunk hỏng/expiry/backend lỗi sau header: abort stream, ghi integrity_error_total/mid_stream_abort_total; không cố trả XML error trong body dữ liệu.
 
-**Hiện thực fixture (W02-CHIEN-03)**: từng trường hợp biên của Range (unit lạ bị bỏ qua theo RFC 9110, `-0`, start ≥ size, kẹp end, multi-range, tràn số), empty object, HEAD và parser XML được pin trong `tests/fixtures/s3/compat.json` và kiểm bằng hàm tham chiếu từ mục này; quyết định chi tiết ở [ADR-0001](adr/0001-s3-compat-freeze-decisions.md). Handler W03-CHIEN-02 phải pass nguyên bộ row này.
+**Hiện thực fixture (W02-CHIEN-03)**: từng trường hợp biên của Range (unit so sánh không phân biệt hoa/thường theo RFC 9110 14.1, unit lạ bị bỏ qua, `-0`, start ≥ size, kẹp end, multi-range, tràn số), empty object, HEAD và parser XML được pin trong `tests/fixtures/s3/compat.json` và kiểm bằng hàm tham chiếu từ mục này; quyết định chi tiết ở [ADR-0001](adr/0001-s3-compat-freeze-decisions.md). Handler W03-CHIEN-02 phải pass nguyên bộ row này.
 
 #### HeadObject
 
-Cùng quyền/read metadata như GET, không body, kể cả lỗi HEAD không body. HEAD không tự restore. x-amz-restore chuẩn được trả cho mọi client có quyền, không phải x-dsg debug; cách tổng hợp mục 4.4. HEAD có thể đọc pack metadata nhưng không đọc payload. Checksum mode/type trả theo 2.7; partNumber P2 không âm thầm bỏ qua. Header `Range` trên HEAD bị bỏ qua (HEAD không trả 206); `If-Match` ở HEAD là P2 và trả 501 như bảng route.
+Cùng quyền/read metadata như GET, không body, kể cả lỗi HEAD không body. HEAD không tự restore. x-amz-restore chuẩn được trả cho mọi client có quyền, không phải x-dsg debug; cách tổng hợp mục 4.4. HEAD có thể đọc pack metadata nhưng không đọc payload. Checksum mode/type trả theo 2.7; partNumber P2 không âm thầm bỏ qua. HEAD nhận `Range` như HeadObject của S3: khoảng thỏa mãn trả 200 với `Content-Length` của khoảng được chọn (không 206, không body), khoảng không giao object trả 416; `If-Match` ở HEAD là P2 và trả 501 như bảng route.
 
 #### DeleteObject
 

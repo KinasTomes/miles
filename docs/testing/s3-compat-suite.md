@@ -13,10 +13,10 @@ ghi rõ section API v2 mà nó pin ở `sections`:
 
 | Nhóm | Pin gì | Chạy thế nào hiện tại |
 |---|---|---|
-| `keys` | Path decode đúng một lần: `+` literal, `//`, `..`, trailing `/`, NFC/NFD là hai key, byte không UTF-8 giữ nguyên; query decode một lần; key trong XML error escape đúng, byte hỏng thành U+FFFD | Qua `Resolve` và `WriteError` thật |
+| `keys` | Path decode đúng một lần: `+` literal, `//`, `..`, trailing `/`, NFC/NFD là hai key; key phải là UTF-8 hợp lệ, byte lỗi trả 400 `InvalidArgument` trước mọi ghi durable (S3 định nghĩa key là UTF-8); query decode một lần; key trong XML error escape đúng, byte hỏng hiển thị U+FFFD | Qua `Resolve` và `WriteError` thật |
 | `empty` | Empty PUT (aws-chunked của CLI 2.36.41 và plain Content-Length 0) decode 0 byte, lưu CRC64NVME `AAAAAAAAAAA=`, ETag MD5 rỗng; GET object rỗng 200 length 0; mọi Range trên object rỗng 416 | PUT qua `Router`/`Payload` thật (case `from` tham chiếu `transport.json`); GET/Range qua tham chiếu `parseRange` |
-| `range` | `bytes=a-b`, `bytes=a-`, `bytes=-n`; end clamp về size-1; suffix `-0`, start ≥ size, non-digit, khoảng trắng, multi-range, tràn số, unit khác bytes | Qua tham chiếu `parseRange` từ API v2 4.1 |
-| `head` | Response HEAD có header ETag/Last-Modified/Content-Length/Accept-Ranges, không body kể cả lỗi; checksum mode ENABLED/absent theo 2.7; `?partNumber` và `If-Match` trả 501 | Row có `request` qua `Resolve` thật; phần còn lại qua tham chiếu `headChecksumHeaders` và `WriteError` |
+| `range` | `bytes=a-b`, `bytes=a-`, `bytes=-n`; unit so sánh không phân biệt hoa/thường (RFC 9110 14.1), unit lạ bị bỏ qua; end clamp về size-1; suffix `-0`, start ≥ size, non-digit, khoảng trắng, multi-range, tràn số | Qua tham chiếu `parseRange` từ API v2 4.1 |
+| `head` | Response HEAD có đủ ETag/Last-Modified/Content-Type/Content-Length/Accept-Ranges, không body kể cả lỗi; HEAD nhận Range như S3 (khoảng thỏa mãn → 200 với Content-Length của khoảng, không giao → 416); checksum mode ENABLED/absent theo 2.7; `?partNumber` và `If-Match` trả 501 | Row có `request` qua `Resolve` thật; row lỗi qua `WriteError`; row thành công so với response tham chiếu `headResponse` dựng từ object metadata của row |
 | `xml` | Body XML đúng một document: DOCTYPE/two roots/text ngoài root/declaration giữa document/root sai/truncated/empty → `MalformedXML`; quá limit → `EntityTooLarge` | Qua `Payload.DecodeXML` thật |
 
 Mọi row mong đợi lỗi đều pin kèm HTTP status; `checkStatusPin` đối chiếu
@@ -52,9 +52,14 @@ và ghi lý do vào ADR.
 `internal/api/s3/fuzz_test.go` có bốn target trên bề mặt parser trước handler:
 `FuzzResolve`, `FuzzSigV4` (parse + canonical request), `FuzzAWSChunked`
 (framing, chữ ký chunk/trailer, trailer corruption đủ ba mode STREAMING-) và
-`FuzzDecodeXML`. Seed là request/body thật của client đã pin trong
-`transport.json`, `routes.json`, `compat.json`, `multipart.json`; corpus
-chạy trong mọi `go test`. Chạy fuzz bounded:
+`FuzzDecodeXML`. Corpus gồm hai lớp seed: (1) body **hợp lệ tới EOF** của
+từng mode STREAMING-, sinh bằng `validChunkedBody` với khóa của fuzz signer —
+`TestChunkedFuzzSeedsReachEOF` chứng minh cả chín seed (3 mode × 3 payload,
+kể cả empty PUT) đi qua toàn bộ decoder, nên mutation bắt đầu từ đường
+chạy thật và mọi check chữ ký/trailer đều nằm trong tầm fuzz; (2) request
+thật của client đã pin trong `transport.json`, `routes.json`, `compat.json`,
+`multipart.json` (framing thật, chữ ký thuộc khóa khác — near-miss seed).
+Corpus chạy trong mọi `go test`. Chạy fuzz bounded:
 
 ```sh
 make fuzz                # mỗi target 30s
@@ -90,3 +95,26 @@ một crasher thật sau ~2 s:
 Giới hạn: fuzz local chưa chạy dài, chưa chạy trong CI (mỗi PR chỉ chạy seed
 corpus kèm crasher regression), và các row tham chiếu chỉ chứng minh hợp đồng
 nội tại của fixture – bằng chứng hành vi thật của handler thuộc task W03.
+
+## Sửa theo review PR #29 (25/10/2026)
+
+Bốn điểm P2 của review đã sửa, code/fixture/API/ADR đổi đồng bộ:
+
+1. **Key UTF-8:** `Resolve` từ chối key không phải UTF-8 bằng 400
+   `InvalidArgument` trước mọi ghi durable (repro review cho thấy
+   reserve thành công rồi CommitObject hỏng vì Badger đổi byte lỗi thành
+   U+FFFD); hai row compat đổi sang 400, NFC/NFD giữ nguyên không chuẩn hóa,
+   ADR/API mục 2.5 cập nhật.
+2. **Seed fuzz aws-chunked:** seed hợp lệ tới EOF của từng mode (sinh bằng
+   `validChunkedBody`, đúng decoded length/trailer/thuật toán, chữ ký bằng
+   khóa fuzz signer) đứng trước seed capture; `TestChunkedFuzzSeedsReachEOF`
+   chứng minh cả ba mode đi qua decoder (review đo 0/114 seed cũ tới EOF —
+   chữ ký thuộc khóa khác, giờ các seed đó giữ vai trò near-miss).
+3. **Range unit hoa/thường:** `parseRange` so unit bằng `EqualFold`;
+   row `Bytes=0-1`/`BYTES=5-` kỳ vọng 206.
+4. **Row HEAD thành công:** test dựng response tham chiếu `headResponse`
+   từ object metadata của row rồi so status, mọi header pin và body rỗng;
+   HEAD nhận Range theo S3 (200 Content-Length của khoảng / 416, luôn không
+   body) với 3 row mới; đã mutate lại row `HEAD object response headers`
+   (status 201, Content-Length -1, Accept-Ranges none) và test fail đúng
+   chỗ, khôi phục thì pass.
