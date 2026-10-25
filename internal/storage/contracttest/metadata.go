@@ -407,6 +407,25 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 			t.Fatal("admin inherited data access", admin, err)
 		}
 	})
+	// The S3 router relies on this order (API v2 2.2.3 steps 1-3): a revoked
+	// credential or a disabled user is denied before the bucket is looked up,
+	// so neither learns whether a bucket exists.
+	t.Run("Authorize denies credential and user before the bucket lookup", func(t *testing.T) {
+		f := NewFixture()
+		f.Users[1].Active = false       // writer
+		f.Credentials[2].Active = false // admin-key
+		h := newStore(t, f)
+		for _, key := range []string{"writer-key", "admin-key", "unknown-key"} {
+			for _, bucket := range []string{f.Bucket.Name, "missing", ""} {
+				_, err := h.Store.Authorize(ctx, key, bucket)
+				requireError(t, err, s.ErrAccessDenied)
+			}
+		}
+		_, err := h.Store.Authorize(ctx, "owner-key", "missing")
+		requireError(t, err, s.ErrNotFound)
+		_, err = h.Store.Authorize(ctx, "owner-key", "")
+		requireError(t, err, s.ErrNotFound)
+	})
 	for _, change := range []string{"credential revoke", "grant revoke", "bucket ABA", "expired writer", "stale epoch", "service incarnation", "quota shrunk"} {
 		t.Run("commit rechecks "+change, func(t *testing.T) {
 			f := NewFixture()

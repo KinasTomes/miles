@@ -71,3 +71,6 @@ live S3 evidence or an explicit team-approved waiver. Do not label pages or R2
 event/checkpoint formats production-frozen merely because their W1 reference
 fixtures pass. W03 write orchestration still owns `Uploading → Warm`, writer
 fences, canonical location CAS, and orphan reconciliation.
+
+Decoder admission estimates and buffer ownership are specified in
+[decoder-memory.md](decoder-memory.md); they do not change the frozen wire format.

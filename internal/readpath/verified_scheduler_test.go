@@ -18,9 +18,8 @@ import (
 
 // This executor exists ONLY in tests. Entry bindings come from Builder.Finish,
 // never unchecked canonical metadata. No read authority or pin is fabricated.
-// Workspace allowance is deliberately generous for these small fixtures, NOT a
-// proven decoder upper bound. Do not promote this Estimate to production: byte
-// counts exclude allocator/GC overhead and do not prove RSS or peak live memory.
+// Decoder charges come from pack's audited estimator. Transport/cache copies
+// remain fixture-only charges, not a production backend allocation contract.
 type verifiedScheduleExecutor struct {
 	ref      storage.PackRef
 	entries  []pack.Entry
@@ -35,8 +34,13 @@ func (e *verifiedScheduleExecutor) Estimate(i int, c engine.PlannedChunk) (Cost,
 	if v.Key != c.Ref.Key || int64(v.RawLength) != c.Ref.RawBytes {
 		return Cost{}, storage.ErrInvalid
 	}
-	s, r := int64(v.StoredLen), int64(v.RawLength)
-	return Cost{ChunkSlots: 1, StoredBytes: 2*s + 64, IOSlots: 1, IOBytes: s + 1, RawBytes: 2*r + 64, WorkspaceBytes: 1 << 20, CopyBytes: 4*(s+r) + 128}, nil
+	m, err := pack.EstimateDecodeMemory(v)
+	if err != nil {
+		return Cost{}, err
+	}
+	s, r := m.InputBytes, m.OutputBytes
+	return Cost{ChunkSlots: 1, StoredBytes: 2*s + 64, IOSlots: 1, IOBytes: s + 1,
+		RawBytes: r, WorkspaceBytes: m.WorkspaceBytes, CopyBytes: 4*(s+r) + 128}, nil
 }
 func (e *verifiedScheduleExecutor) at(ctx context.Context, i int, stage string) error {
 	if e.hook != nil {
