@@ -15,7 +15,9 @@ import (
 
 const fixtureDir = "../../../tests/fixtures/s3/"
 
-func readFixture(t *testing.T, name string, v any) {
+// readFixture also serves the seed phase of the fuzz targets, which is why
+// it takes testing.TB.
+func readFixture(t testing.TB, name string, v any) {
 	t.Helper()
 	data, err := os.ReadFile(fixtureDir + name)
 	if err != nil {
