@@ -443,9 +443,11 @@ Bảng route/operation và mã lỗi thực thi nằm ở `internal/api/s3` (`Re
 
 Acquire read view trước resolve pages, pin location generation trước fetch, pre-flight toàn khoảng cần trước header. GET object rỗng trả 200 length 0; Range trên object rỗng trả 416. Chỉ phát bytes chunk sau SHA-256 đúng. Chunk hỏng/expiry/backend lỗi sau header: abort stream, ghi integrity_error_total/mid_stream_abort_total; không cố trả XML error trong body dữ liệu.
 
+**Hiện thực fixture (W02-CHIEN-03)**: từng trường hợp biên của Range (unit lạ bị bỏ qua theo RFC 9110, `-0`, start ≥ size, kẹp end, multi-range, tràn số), empty object, HEAD và parser XML được pin trong `tests/fixtures/s3/compat.json` và kiểm bằng hàm tham chiếu từ mục này; quyết định chi tiết ở [ADR-0001](adr/0001-s3-compat-freeze-decisions.md). Handler W03-CHIEN-02 phải pass nguyên bộ row này.
+
 #### HeadObject
 
-Cùng quyền/read metadata như GET, không body, kể cả lỗi HEAD không body. HEAD không tự restore. x-amz-restore chuẩn được trả cho mọi client có quyền, không phải x-dsg debug; cách tổng hợp mục 4.4. HEAD có thể đọc pack metadata nhưng không đọc payload. Checksum mode/type trả theo 2.7; partNumber P2 không âm thầm bỏ qua.
+Cùng quyền/read metadata như GET, không body, kể cả lỗi HEAD không body. HEAD không tự restore. x-amz-restore chuẩn được trả cho mọi client có quyền, không phải x-dsg debug; cách tổng hợp mục 4.4. HEAD có thể đọc pack metadata nhưng không đọc payload. Checksum mode/type trả theo 2.7; partNumber P2 không âm thầm bỏ qua. Header `Range` trên HEAD bị bỏ qua (HEAD không trả 206); `If-Match` ở HEAD là P2 và trả 501 như bảng route.
 
 #### DeleteObject
 
@@ -1185,7 +1187,7 @@ Client, version và cấu hình đã pin ở mục 11.1; không suy rằng mọi
 | boto3 | boto3 1.43.114, botocore 1.43.114, s3transfer 0.19.2, urllib3 2.8.0, không awscrt, Python 3.13.13 | Pin đủ dependency ở `scripts/s3capture/requirements.txt`; `pip install boto3` mặc định không có awscrt |
 | curl | 8.21.0 (Schannel) | Chỉ để gọi URL presigned |
 
-Cấu hình: Region `us-east-1`; `addressing_style = path`; `request_checksum_calculation` và `response_checksum_validation` để mặc định `when_supported`; `multipart_threshold`/`multipart_chunksize` mặc định 8MB (case multipart dùng profile 5MB để part nhỏ). TLS luôn verify bằng CA riêng qua `AWS_CA_BUNDLE`/`curl --cacert`, không dùng `--no-verify-ssl`. Fixture `tests/fixtures/s3/transport.json` ghi lại version, file config và lệnh của từng case.
+Cấu hình: Region `us-east-1`; `addressing_style = path`; `request_checksum_calculation` và `response_checksum_validation` để mặc định `when_supported`; `multipart_threshold`/`multipart_chunksize` mặc định 8MB (case multipart dùng profile 5MB để part nhỏ). TLS luôn verify bằng CA riêng qua `AWS_CA_BUNDLE`/`curl --cacert`, không dùng `--no-verify-ssl`. Fixture `tests/fixtures/s3/transport.json` ghi lại version, file config và lệnh của từng case. Hàng HTTP của bảng kịch bản trên (empty object, Range open/suffix/416, Unicode/space/%/+/ keys, HEAD error không body, malformed XML, payload/trailer corruption) được pin thêm trong `tests/fixtures/s3/compat.json` (W02-CHIEN-03, [suite và fuzz](testing/s3-compat-suite.md)), với fuzz SigV4/aws-chunked/trailer seeded từ request của client đã pin.
 
 Hành vi transport quan sát được (chi tiết checksum ở mục 2.7):
 
