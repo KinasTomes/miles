@@ -84,3 +84,6 @@ teardown dataset disposable cần data/retention review và quyền cleanup riê
 Xem [readiness và dự toán](dev-preparation.md). [Inventory](inventory-and-costs.md)
 và [validation W2](validation.md) là evidence foundation tại ngày ghi trong tài liệu,
 không thay thế kết quả W3 hoặc nghiệm thu AWS thật.
+
+[Kết quả kiểm lại và kế hoạch nghiệm thu AWS dev](../../../docs/testing/aws-dev-readiness.md)
+ghi rõ phần đã kiểm offline và phần cần chạy thật sau review.
