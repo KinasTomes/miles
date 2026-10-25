@@ -1,8 +1,10 @@
-// Package s3 is the S3 API contract of the gateway: the operation table that
-// maps a path-style request to exactly one operation, the query parameters,
-// headers and checksum combinations DSG rejects instead of ignoring, and the
-// XML error format (docs/dedup-storage-gateway-api.md sections 2.1, 2.4, 2.5,
-// 2.7 and 4.1). Request/response fixtures for router implementations live in
+// Package s3 is the S3 API of the gateway: the operation table that maps a
+// path-style request to exactly one operation, the query parameters, headers
+// and checksum combinations DSG rejects instead of ignoring, the XML error
+// format (docs/dedup-storage-gateway-api.md sections 2.1, 2.4, 2.5, 2.7 and
+// 4.1), and the transport of API v2 2.2.2 and 3: Router checks SigV4 header
+// and presigned signatures, and Payload decodes aws-chunked bodies and checks
+// their signatures, length and checksums. Request/response fixtures live in
 // tests/fixtures/s3.
 //
 // Resolve checks what can be decided from the request line and headers
@@ -19,6 +21,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Operation is the AWS operation name; it is also the op label of
@@ -53,7 +56,9 @@ const (
 
 // Route is a request resolved to one operation. Bucket is the first path
 // segment as sent. Key is the rest of the path decoded exactly once: "+"
-// stays "+", and "//", ".." and a trailing "/" are kept.
+// stays "+", and "//", ".." and a trailing "/" are kept. A key that is not
+// valid UTF-8 never resolves: Resolve answers InvalidArgument (S3 defines
+// keys as UTF-8, and no durable write may see such a key).
 type Route struct {
 	Op     Operation
 	Bucket string
@@ -168,6 +173,12 @@ func Resolve(r *http.Request) (Route, *Error) {
 	key, err := url.PathUnescape(rawKey)
 	if err != nil {
 		return Route{}, &Error{Code: ErrInvalidArgument, Message: "malformed key encoding", Bucket: bucket}
+	}
+	// S3 defines object keys as UTF-8, and the metadata layer (canonical
+	// JSON, Badger) cannot keep a key that is not; reject it here, before
+	// any durable write can see it.
+	if !utf8.ValidString(key) {
+		return Route{}, &Error{Code: ErrInvalidArgument, Message: "object key must be valid UTF-8", Bucket: bucket, Key: key}
 	}
 	fail := func(code ErrorCode, msg string) (Route, *Error) {
 		return Route{}, &Error{Code: code, Message: msg, Bucket: bucket, Key: key}
@@ -330,7 +341,7 @@ var checksumTypes = map[string][]string{
 
 // trailerPayloads are the x-amz-content-sha256 values whose aws-chunked body
 // carries the trailer named by x-amz-trailer.
-var trailerPayloads = []string{"STREAMING-UNSIGNED-PAYLOAD-TRAILER", "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"}
+var trailerPayloads = []string{streamingUnsignedTrailer, streamingSignedTrailer}
 
 // checkChecksum rejects checksum headers DSG cannot honour, before the body
 // is read: an algorithm outside checksumTypes; more than one checksum value
