@@ -263,6 +263,15 @@ func runPolicy(t *testing.T, newStore MetadataFactory) {
 		bad.Event.EntityID = "another-config"
 		_, err = h.Store.PutPolicy(ctx, bad)
 		requireError(t, err, s.ErrInvalid)
+		// A valid event ID is insufficient when its action contradicts the
+		// actual mutation. Rejection must leave policy and outbox untouched.
+		bad = policyRequest(f, "delete-action", 0, fixturePolicy)
+		bad.Event.Action = "entity_delete"
+		bad.Event.ID = fixtureEventID(bad.Event.OpID, "SystemConfig", "entity_delete")
+		_, err = h.Store.PutPolicy(ctx, bad)
+		requireError(t, err, s.ErrInvalid)
+		_, err = h.Store.GetOutbox(ctx, bad.Event.ID)
+		requireError(t, err, s.ErrNotFound)
 		current := f.Lease
 		current.Fence.Epoch++
 		h.SetWriter(current)
