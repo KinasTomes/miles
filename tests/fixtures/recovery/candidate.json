@@ -1,0 +1,28 @@
+{
+  "status": "PROPOSAL: illustrative single-bundle subset; NOT production R2 format or freeze",
+  "page": {
+    "body": "{\"effects\":[{\"key\":\"object/bucket-1/k\",\"revision\":1,\"value\":\"manifest-1\"},{\"key\":\"quota/owner\",\"revision\":1,\"value\":\"4\"}],\"epoch\":0,\"history\":\"history-1\",\"mutation\":\"mutation-1\",\"page\":0,\"r2_version\":1}",
+    "length": 202,
+    "sha256": "8dc5834b8550810f7ff31e5e60bbae300409d9ea02ac9b554cc5a5589d664510"
+  },
+  "descriptor": {
+    "body": "{\"history\":\"history-1\",\"mutation\":\"mutation-1\",\"pages\":[{\"length\":202,\"sha256\":\"8dc5834b8550810f7ff31e5e60bbae300409d9ea02ac9b554cc5a5589d664510\"}],\"r2_version\":1}",
+    "length": 163,
+    "sha256": "0a94b6e1f8a5b4510bc98e2213f13dd93d4180e5091dc9945f1edfb88a7e5b33"
+  },
+  "membership": {
+    "body": "{\"epoch\":0,\"events\":[{\"descriptor\":\"0a94b6e1f8a5b4510bc98e2213f13dd93d4180e5091dc9945f1edfb88a7e5b33\",\"mutation\":\"mutation-1\"}],\"history\":\"history-1\",\"r2_version\":1}",
+    "length": 165,
+    "sha256": "272d63363dc5c0f4531c192ebd892fd94129c60ce818ffd4916233eb665b9e39"
+  },
+  "seal": {
+    "body": "{\"epoch\":0,\"history\":\"history-1\",\"membership\":\"272d63363dc5c0f4531c192ebd892fd94129c60ce818ffd4916233eb665b9e39\",\"previous\":\"genesis\",\"r2_version\":1}",
+    "length": 149,
+    "sha256": "c182ca7f74e9365db30f303f258e5c38f3119e6ee78285929ccf7b961e21c0a0"
+  },
+  "checkpoint": {
+    "body": "{\"history\":\"history-1\",\"projection\":\"historical\",\"r2_version\":1,\"state\":[{\"key\":\"object/bucket-1/k\",\"revision\":1,\"value\":\"manifest-1\"},{\"key\":\"quota/owner\",\"revision\":1,\"value\":\"4\"}],\"terminal_seal\":\"c182ca7f74e9365db30f303f258e5c38f3119e6ee78285929ccf7b961e21c0a0\"}",
+    "length": 266,
+    "sha256": "6748a69bdc14271341d49f962a7286c79c7be83dcd68f62e0a76cb21ba5dd2e0"
+  }
+}
