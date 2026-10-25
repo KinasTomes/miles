@@ -1,9 +1,9 @@
 {
   "sections": {
-    "keys": "API v2 3 và 2.4: path-style decode đúng một lần, key echo trong XML error",
+    "keys": "API v2 3, 2.4 và 2.5: path-style decode đúng một lần, key phải là UTF-8 hợp lệ, key echo trong XML error",
     "empty": "API v2 2.2.2, 2.7 và 4.1: empty PUT, GET object rỗng 200 length 0, Range trên object rỗng 416",
-    "range": "API v2 4.1 GetObject: bytes=a-b, bytes=a-, bytes=-n; multi-range và invalid trả 416",
-    "head": "API v2 4.2 HeadObject: không body kể cả lỗi, checksum mode theo 2.7, partNumber P2 trả 501",
+    "range": "API v2 4.1 GetObject: bytes=a-b, bytes=a-, bytes=-n, unit không phân biệt hoa/thường; multi-range và invalid trả 416",
+    "head": "API v2 4.2 HeadObject: không body kể cả lỗi, Range như S3 (200 Content-Length của khoảng / 416), checksum mode theo 2.7, partNumber P2 trả 501",
     "xml": "API v2 2.2.2 bước 4 và 4.3.1: body XML đúng một document, sai trả MalformedXML"
   },
   "keys": [
@@ -14,10 +14,10 @@
     {"name":"key of only slashes","request":["GET /demo// HTTP/1.1","Host: localhost:8080"],"op":"GetObject","bucket":"demo","key":"/"},
     {"name":"NFD combining accent is a distinct key","request":["GET /demo/cafe%CC%81.txt HTTP/1.1","Host: localhost:8080"],"op":"GetObject","bucket":"demo","key":"café.txt","note":"NFC 'café' và NFD 'cafe+U+0301' là hai key byte khác nhau, không chuẩn hóa"},
     {"name":"lowercase percent hex decodes the same","request":["GET /demo/caf%c3%a9.txt HTTP/1.1","Host: localhost:8080"],"op":"GetObject","bucket":"demo","key":"café.txt"},
-    {"name":"invalid UTF-8 byte in key is kept raw","request":["GET /demo/a%FEb HTTP/1.1","Host: localhost:8080"],"op":"GetObject","bucket":"demo","key_hex":"61fe62","note":"key là chuỗi byte, không bắt buộc UTF-8; %FE giữ nguyên một byte"},
+    {"name":"invalid UTF-8 byte in key is rejected","request":["GET /demo/a%FEb HTTP/1.1","Host: localhost:8080"],"error":"InvalidArgument","status":400,"bucket":"demo","key_hex":"61fe62","note":"S3 định nghĩa key là UTF-8 và metadata không giữ được byte lỗi; Resolve trả 400 trước mọi ghi durable"},
     {"name":"query value decodes once","request":["GET /demo?list-type=2&prefix=caf%C3%A9%2B HTTP/1.1","Host: localhost:8080"],"op":"ListObjectsV2","bucket":"demo","key":"","query":{"prefix":"café+"}},
     {"name":"error echoes decoded and escaped key","request":["PUT /demo/caf%C3%A9%20%26%20%3Cx%3E.txt?acl HTTP/1.1","Host: localhost:8080"],"error":"NotImplemented","status":501,"bucket":"demo","key":"café & <x>.txt","error_body_key":"café &amp; &lt;x&gt;.txt","note":"Key decode một lần rồi escape XML, không encode lại"},
-    {"name":"invalid UTF-8 key in error becomes U+FFFD","request":["GET /demo/a%FEb?acl HTTP/1.1","Host: localhost:8080"],"error":"NotImplemented","status":501,"bucket":"demo","key_hex":"61fe62","error_body_key_hex":"61efbfbd62","note":"byte không hợp lệ trong XML error được thay bằng U+FFFD (2.4)"}
+    {"name":"invalid UTF-8 key is rejected before the subresource","request":["GET /demo/a%FEb?acl HTTP/1.1","Host: localhost:8080"],"error":"InvalidArgument","status":400,"bucket":"demo","key_hex":"61fe62","error_body_key_hex":"61efbfbd62","note":"key lỗi UTF-8 trả 400 trước cả ?acl; byte hỏng trong XML error vẫn thành U+FFFD (2.4)"}
   ],
   "empty": [
     {"name":"cli empty PUT over aws-chunked","from":"cli-put-empty","payload_sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","etag_md5":"1B2M2Y8AsgTpgAmY7PhCfg==","checksum":"CRC64NVME AAAAAAAAAAA=","note":"AWS CLI 2.36.41 PUT file rỗng: chunk 0 + trailer CRC64NVME của chuỗi rỗng"},
@@ -47,13 +47,19 @@
     {"name":"multi range","size":100,"range":"bytes=0-1,3-4","error":"InvalidRange","status":416,"note":"API v2 4.1: multi-range không hỗ trợ"},
     {"name":"number overflows int64","size":100,"range":"bytes=99999999999999999999-","error":"InvalidRange","status":416},
     {"name":"plus sign prefix","size":100,"range":"bytes=+1-","error":"InvalidRange","status":416,"note":"chữ số mới hợp lệ, không nhận '+1'"},
+    {"name":"capital unit Bytes","size":100,"range":"Bytes=0-1","status":206,"start":0,"length":2,"content_range":"bytes 0-1/100","note":"RFC 9110 14.1: range unit không phân biệt hoa/thường"},
+    {"name":"upper unit BYTES","size":100,"range":"BYTES=5-","status":206,"start":5,"length":95,"content_range":"bytes 5-99/100"},
     {"name":"other unit is ignored","size":100,"range":"items=0-1","status":200,"length":100,"note":"RFC 9110: unit không nhận diện được thì bỏ qua Range, trả cả object 200"},
     {"name":"no range header","size":100,"status":200,"length":100}
   ],
   "head": [
-    {"name":"HEAD object response headers","size":100,"status":200,"headers":{"ETag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","Content-Length":"100","Accept-Ranges":"bytes"},"no_body":true,"note":"ETag, Last-Modified, Content-Length, Content-Type, Accept-Ranges; không bao giờ có body"},
-    {"name":"HEAD with checksum mode ENABLED","size":100,"request_headers":{"x-amz-checksum-mode":"ENABLED"},"status":200,"headers":{"x-amz-checksum-crc64nvme":"AAAAAAAAAAA=","x-amz-checksum-type":"FULL_OBJECT"},"no_body":true,"note":"object lưu CRC64NVME mặc định (2.7); mode ENABLED trả checksum + type"},
-    {"name":"HEAD without checksum mode omits checksum","size":100,"status":200,"no_checksum":true,"no_body":true,"note":"mode vắng mặt không bắt buộc trả checksum (2.7)"},
+    {"name":"HEAD object response headers","object":{"size":100,"etag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","last_modified":"Sat, 18 Oct 2026 00:00:00 GMT","content_type":"text/plain","checksum":"CRC64NVME Y53hf1fT3M4="},"status":200,"headers":{"ETag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","Last-Modified":"Sat, 18 Oct 2026 00:00:00 GMT","Content-Type":"text/plain","Content-Length":"100","Accept-Ranges":"bytes"},"no_body":true,"note":"ETag, Last-Modified, Content-Length, Content-Type, Accept-Ranges; không bao giờ có body"},
+    {"name":"HEAD with checksum mode ENABLED","object":{"size":100,"etag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","last_modified":"Sat, 18 Oct 2026 00:00:00 GMT","content_type":"text/plain","checksum":"CRC64NVME Y53hf1fT3M4="},"request_headers":{"x-amz-checksum-mode":"ENABLED"},"status":200,"headers":{"ETag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","Last-Modified":"Sat, 18 Oct 2026 00:00:00 GMT","Content-Type":"text/plain","Content-Length":"100","Accept-Ranges":"bytes","x-amz-checksum-crc64nvme":"Y53hf1fT3M4=","x-amz-checksum-type":"FULL_OBJECT"},"no_body":true,"note":"object lưu CRC64NVME mặc định (2.7); mode ENABLED trả checksum + type"},
+    {"name":"HEAD without checksum mode omits checksum","object":{"size":100,"etag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","last_modified":"Sat, 18 Oct 2026 00:00:00 GMT","content_type":"text/plain","checksum":"CRC64NVME Y53hf1fT3M4="},"status":200,"headers":{"ETag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","Last-Modified":"Sat, 18 Oct 2026 00:00:00 GMT","Content-Type":"text/plain","Content-Length":"100","Accept-Ranges":"bytes"},"no_checksum":true,"no_body":true,"note":"mode vắng mặt không bắt buộc trả checksum (2.7)"},
+    {"name":"HEAD with satisfiable Range returns Content-Length of the range","object":{"size":100,"etag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","last_modified":"Sat, 18 Oct 2026 00:00:00 GMT","content_type":"text/plain","checksum":"CRC64NVME Y53hf1fT3M4="},"request_headers":{"Range":"bytes=10-19"},"status":200,"headers":{"ETag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","Content-Length":"10","Accept-Ranges":"bytes"},"no_body":true,"note":"HeadObject nhận Range như S3: 200 (không 206) với Content-Length của khoảng được chọn, không body"},
+    {"name":"HEAD with suffix Range","object":{"size":100,"etag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","last_modified":"Sat, 18 Oct 2026 00:00:00 GMT","content_type":"text/plain","checksum":"CRC64NVME Y53hf1fT3M4="},"request_headers":{"Range":"bytes=-10"},"status":200,"headers":{"Content-Length":"10","Accept-Ranges":"bytes"},"no_body":true},
+    {"name":"HEAD with Range past the object is 416","object":{"size":100,"etag":"\"5f9c4ab08a1f0574f2864e4f33f09e6f\"","last_modified":"Sat, 18 Oct 2026 00:00:00 GMT","content_type":"text/plain","checksum":"CRC64NVME Y53hf1fT3M4="},"request_headers":{"Range":"bytes=100-"},"error":"InvalidRange","status":416,"no_body":true,"note":"range không giao object trả 416 headers-only như GET"},
+    {"name":"HEAD Range on empty object is 416","object":{"size":0,"etag":"\"1B2M2Y8AsgTpgAmY7PhCfg==\"","last_modified":"Sat, 18 Oct 2026 00:00:00 GMT","content_type":"text/plain","checksum":"CRC64NVME AAAAAAAAAAA="},"request_headers":{"Range":"bytes=0-"},"error":"InvalidRange","status":416,"no_body":true},
     {"name":"HEAD missing key has headers only","error":"NoSuchKey","status":404,"no_body":true},
     {"name":"HEAD missing bucket has headers only","error":"NoSuchBucket","status":404,"no_body":true},
     {"name":"HEAD partNumber is P2","request":["HEAD /demo/k?partNumber=1 HTTP/1.1","Host: localhost:8080"],"error":"NotImplemented","status":501,"note":"Resolve trả 501 trước handler, không âm thầm bỏ qua"},
