@@ -138,3 +138,19 @@ Interface mode, ALB và full data/key teardown chưa được nghiệm thu live.
 thực. Các API thiếu phải bổ sung theo lỗi đã xác định và validate lại, không nới
 CreateTags/TagResource để nhận tài nguyên ngoài phạm vi. Xem
 [quy trình vận hành](../../dev-sessions.md).
+
+## Audit trước full teardown
+
+`teardown-audit.json.tmpl` là grant tạm chỉ đọc inventory cần cho
+[full teardown](../../full-teardown.md); không gắn vào role thường ngày. Render
+`ACCOUNT_ID` và `EXPIRES_AT` (UTC ISO 8601, thời điểm kết thúc cửa sổ audit), review
+và validate/simulate trước khi gắn bằng phiên quản trị IAM. Grant cho phép list
+versions/multipart của đúng bucket dev, Scan 20 bảng dev và đọc secret version
+metadata. `ListBackups`/`DescribeSnapshots` cần resource `*` cho metadata inventory,
+giới hạn Singapore và hạn dùng; không cấp đọc dữ liệu ngoài datastore dev.
+
+Gắn bằng inline policy riêng `MilesDevTeardownAuditTemporary`; không overwrite
+policy cùng tên chưa được đối chiếu. Chạy Scan với `--consistent-read --select COUNT`,
+phân trang đầy đủ; không in item hoặc secret value. DateLessThan giới hạn hiệu lực,
+vẫn phải gỡ policy bằng `iam:DeleteRolePolicy` sau audit/cleanup. Grant này không
+cấp quyền xóa object/datastore, gỡ bảo vệ, xóa key hoặc cập nhật IAM.

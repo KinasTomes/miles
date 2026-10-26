@@ -1,0 +1,88 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AuditDevBucketHistory",
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucketVersions",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "EXPIRES_AT"
+        }
+      }
+    },
+    {
+      "Sid": "CountDevMetadata",
+      "Effect": "Allow",
+      "Action": "dynamodb:Scan",
+      "Resource": [
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-AdminTokens",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-BucketGrants",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Buckets",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Chunks",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-CompletionPages",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Credentials",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Jobs",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Leases",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-ManifestPages",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Nodes",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Objects",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Outbox",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Packs",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-QuotaReservations",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-RecoveryEpochs",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-SystemConfig",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-UploadPartPages",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-UploadParts",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Uploads",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Users"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "EXPIRES_AT"
+        }
+      }
+    },
+    {
+      "Sid": "InventoryRegionalBackups",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:ListBackups",
+        "ec2:DescribeSnapshots"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "EXPIRES_AT"
+        }
+      }
+    },
+    {
+      "Sid": "AuditDevSecretVersions",
+      "Effect": "Allow",
+      "Action": "secretsmanager:ListSecretVersionIds",
+      "Resource": "arn:aws:secretsmanager:ap-southeast-1:ACCOUNT_ID:secret:miles-dev/runtime-secrets-*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "EXPIRES_AT"
+        }
+      }
+    }
+  ]
+}
