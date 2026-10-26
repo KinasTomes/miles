@@ -1,7 +1,8 @@
 # Terraform AWS dev Warm
 
-Môi trường dev một node ở Singapore, được chuẩn bị theo W03-HUNG-01. **Chưa apply
-hạ tầng workload lên AWS.** Terraform 1.15.2, AWS provider 6.21.0; lockfiles pin
+Môi trường dev một node ở Singapore, được chuẩn bị theo W03-HUNG-01. Hạ tầng đã
+kiểm trên AWS ngày 25/10/2026 và kết thúc ở pause; DSG chưa triển khai.
+Terraform 1.15.2, AWS provider 6.21.0; lockfiles pin
 provider cho linux_arm64/linux_amd64. Không thay kiến trúc/API hay triển khai Edge.
 
 Nguồn: kiến trúc §10.1/11/19, API §1/8/13 và
@@ -79,7 +80,8 @@ stop/unmount → pause plan/gate/apply → kiểm orphan/inventory. Scripts gate
 không gọi apply. Backend/provider phải dùng cùng role session đã kiểm tra.
 
 Không `terraform destroy` toàn bộ để pause: S3/DDB/EBS/KMS/state có bảo vệ. Full
-teardown dataset disposable cần data/retention review và quyền cleanup riêng.
+teardown dataset disposable theo [runbook full teardown](full-teardown.md), cần
+data/retention review và quyền cleanup riêng.
 
 Xem [readiness và dự toán](dev-preparation.md). [Inventory](inventory-and-costs.md)
 và [validation W2](validation.md) là evidence foundation tại ngày ghi trong tài liệu,

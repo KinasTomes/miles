@@ -163,6 +163,8 @@ retention, recovery roots, object versions/delete markers và state backup. Cầ
 riêng việc gỡ prevent_destroy/deletion protection, quyền cleanup giới hạn tài nguyên,
 plan destroy và thời gian chờ KMS/Secrets deletion. Role deploy thường ngày không có
 DeleteBucket/DeleteTable/DeleteVolume/ScheduleKeyDeletion. Không cấp Admin để lách.
+Các bước inventory, protection update, saved plans, nghiệm thu và phục hồi khi dở
+ở [runbook full teardown](full-teardown.md).
 
 Trước Done W03-HUNG-01 cần evidence AWS thật: dựng, quyền/kết nối, S3/DDB operations,
 sentinel/hash qua pause/resume, inventory sau thu hồi và chi phí. Mock test có thể
