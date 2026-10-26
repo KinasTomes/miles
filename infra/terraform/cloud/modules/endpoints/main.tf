@@ -1,5 +1,5 @@
 locals {
-  services = toset(["kms", "ssm", "secretsmanager", "logs", "monitoring", "sts", "elasticloadbalancing", "autoscaling"])
+  services = toset(["kms", "ssm", "ssmmessages", "secretsmanager", "logs", "monitoring", "sts", "elasticloadbalancing", "autoscaling"])
 }
 resource "aws_vpc_endpoint" "gateway" {
   for_each          = toset(["s3", "dynamodb"])

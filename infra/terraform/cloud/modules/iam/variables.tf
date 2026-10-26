@@ -7,3 +7,7 @@ variable "kms_key_arn" { type = string }
 variable "secret_arn" { type = string }
 variable "parameter_arn" { type = string }
 variable "log_group_arn" { type = string }
+variable "permissions_boundary_arn" {
+  type    = string
+  default = null
+}

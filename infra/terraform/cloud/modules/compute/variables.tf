@@ -1,0 +1,10 @@
+variable "name" { type = string }
+variable "enabled" { type = bool }
+variable "paused" { type = bool }
+variable "ami_id" { type = string }
+variable "zone" { type = string }
+variable "subnet_id" { type = string }
+variable "security_group_id" { type = string }
+variable "instance_profile" { type = string }
+variable "kms_key_arn" { type = string }
+variable "log_group_name" { type = string }
