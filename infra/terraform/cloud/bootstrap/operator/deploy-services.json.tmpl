@@ -1,0 +1,250 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateTaggedDevKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateKey"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "ReadAliases",
+      "Effect": "Allow",
+      "Action": [
+        "kms:ListAliases"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
+    },
+    {
+      "Sid": "ManageOwnedDevKeys",
+      "Effect": "Allow",
+      "Action": [
+        "kms:DescribeKey",
+        "kms:DisableKey",
+        "kms:DisableKeyRotation",
+        "kms:EnableKey",
+        "kms:EnableKeyRotation",
+        "kms:GetKeyPolicy",
+        "kms:GetKeyRotationStatus",
+        "kms:ListResourceTags",
+        "kms:PutKeyPolicy",
+        "kms:TagResource",
+        "kms:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "CreateRuntimeAlias",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateAlias"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:alias/miles-dev-runtime"
+      ]
+    },
+    {
+      "Sid": "BindAliasToOwnedKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateAlias"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "BootstrapSecretEncryption",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:Encrypt",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev",
+          "kms:ViaService": [
+            "ssm.ap-southeast-1.amazonaws.com",
+            "secretsmanager.ap-southeast-1.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "RuntimeSecretMetadata",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetResourcePolicy",
+        "secretsmanager:PutResourcePolicy",
+        "secretsmanager:TagResource",
+        "secretsmanager:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:ap-southeast-1:ACCOUNT_ID:secret:miles-dev/runtime-secrets-*"
+      ]
+    },
+    {
+      "Sid": "RuntimeLogGroup",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:ListTagsForResource",
+        "logs:PutRetentionPolicy",
+        "logs:TagLogGroup",
+        "logs:TagResource",
+        "logs:UntagResource",
+        "logs:AssociateKmsKey",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": [
+        "arn:aws:logs:ap-southeast-1:ACCOUNT_ID:log-group:/miles-dev/runtime",
+        "arn:aws:logs:ap-southeast-1:ACCOUNT_ID:log-group:/miles-dev/runtime:*"
+      ]
+    },
+    {
+      "Sid": "ReadLogGroupInventory",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogGroups"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
+    },
+    {
+      "Sid": "BootstrapParameter",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:AddTagsToResource",
+        "ssm:GetParameter",
+        "ssm:ListTagsForResource",
+        "ssm:PutParameter",
+        "ssm:RemoveTagsFromResource"
+      ],
+      "Resource": [
+        "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/miles-dev/bootstrap-config"
+      ]
+    },
+    {
+      "Sid": "ProvisionEncryptedDataServices",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateGrant"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "Bool": {
+          "kms:GrantIsForAWSResource": "true"
+        }
+      }
+    },
+    {
+      "Sid": "UseDevSessionKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:GenerateDataKey",
+        "kms:Decrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "ReadParameterInventory",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeParameters"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
+    },
+    {
+      "Sid": "UseOwnedEBSKeys",
+      "Effect": "Allow",
+      "Action": [
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:ReEncryptFrom",
+        "kms:ReEncryptTo"
+      ],
+      "Resource": [
+        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev",
+          "kms:ViaService": "ec2.ap-southeast-1.amazonaws.com"
+        }
+      }
+    }
+  ]
+}

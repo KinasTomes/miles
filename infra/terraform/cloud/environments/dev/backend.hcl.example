@@ -4,4 +4,5 @@ region = "ap-southeast-1"
 encrypt = true
 use_lockfile = true
 # No credentials here. Backend credentials come from the CLI environment/profile.
-# Supply backend assume_role separately if deployment role is used.
+# CLI is already a deploy-role session. Keep backend/provider on the same identity.
+profile = "miles-dev-terraform"

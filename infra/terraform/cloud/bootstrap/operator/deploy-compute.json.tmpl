@@ -1,0 +1,184 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadDevCompute",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeImages",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeInstanceCreditSpecifications",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeVolumesModifications",
+        "ec2:DescribeIamInstanceProfileAssociations",
+        "ec2:DescribeInstanceTypes"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchPinnedImage",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1::image/AMI_ID"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
+    },
+    {
+      "Sid": "UseOwnedRuntimeNetwork",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:subnet/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "PrivateRuntimeInterface",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:network-interface/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        },
+        "Bool": {
+          "ec2:AssociatePublicIpAddress": "false"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchTaggedRuntime",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev",
+          "ec2:InstanceType": "t4g.small",
+          "ec2:MetadataHttpTokens": "required",
+          "ec2:InstanceProfile": "arn:aws:iam::ACCOUNT_ID:instance-profile/miles/dev/miles-dev-gateway"
+        }
+      }
+    },
+    {
+      "Sid": "EncryptedDevVolumes",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:CreateVolume"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev",
+          "ec2:VolumeType": "gp3"
+        },
+        "Bool": {
+          "ec2:Encrypted": "true"
+        },
+        "NumericLessThanEquals": {
+          "ec2:VolumeSize": "20"
+        }
+      }
+    },
+    {
+      "Sid": "AttachRetainedVolume",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AttachVolume",
+        "ec2:DetachVolume"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:instance/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "EndDevCompute",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:TerminateInstances",
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:ModifyInstanceCreditSpecification"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "TagNewCompute",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:instance/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev",
+          "ec2:CreateAction": [
+            "RunInstances",
+            "CreateVolume"
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateBoundedRuntimeRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-jobs"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID:policy/miles/bootstrap/MilesDevRuntimeBoundary"
+        }
+      }
+    },
+    {
+      "Sid": "ManageRuntimeRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DeleteRole",
+        "iam:DeleteRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:GetRole",
+        "iam:GetRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:ListRoleTags",
+        "iam:PutRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-jobs"
+      ]
+    },
+    {
+      "Sid": "ManageRuntimeProfiles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AddRoleToInstanceProfile",
+        "iam:CreateInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:ListInstanceProfileTags",
+        "iam:ListInstanceProfilesForRole",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:TagInstanceProfile",
+        "iam:UntagInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID:instance-profile/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::ACCOUNT_ID:instance-profile/miles/dev/miles-dev-jobs",
+        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-jobs"
+      ]
+    },
+    {
+      "Sid": "PassOnlyRuntimeRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-jobs"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        }
+      }
+    }
+  ]
+}

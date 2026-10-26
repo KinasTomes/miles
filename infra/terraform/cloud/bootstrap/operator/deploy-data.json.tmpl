@@ -1,0 +1,116 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateMetadataTables",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:CreateTable"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-AdminTokens",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-BucketGrants",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Buckets",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Chunks",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-CompletionPages",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Credentials",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Jobs",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Leases",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-ManifestPages",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Nodes",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Objects",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Outbox",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Packs",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-QuotaReservations",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-RecoveryEpochs",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-SystemConfig",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-UploadPartPages",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-UploadParts",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Uploads",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Users"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "ConfigureMetadataTables",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:DescribeTable",
+        "dynamodb:DescribeContinuousBackups",
+        "dynamodb:DescribeTimeToLive",
+        "dynamodb:ListTagsOfResource",
+        "dynamodb:TagResource",
+        "dynamodb:UpdateTable",
+        "dynamodb:UpdateContinuousBackups",
+        "dynamodb:GetResourcePolicy"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-AdminTokens",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-BucketGrants",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Buckets",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Chunks",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-CompletionPages",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Credentials",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Jobs",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Leases",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-ManifestPages",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Nodes",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Objects",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Outbox",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Packs",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-QuotaReservations",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-RecoveryEpochs",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-SystemConfig",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-UploadPartPages",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-UploadParts",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Uploads",
+        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Users"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "ConfigureBackendBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:CreateBucket",
+        "s3:GetAccelerateConfiguration",
+        "s3:GetBucketAcl",
+        "s3:GetBucketCORS",
+        "s3:GetBucketLogging",
+        "s3:GetBucketObjectLockConfiguration",
+        "s3:GetBucketOwnershipControls",
+        "s3:GetBucketPolicy",
+        "s3:GetBucketPublicAccessBlock",
+        "s3:GetBucketRequestPayment",
+        "s3:GetBucketTagging",
+        "s3:GetBucketVersioning",
+        "s3:GetBucketWebsite",
+        "s3:GetEncryptionConfiguration",
+        "s3:GetLifecycleConfiguration",
+        "s3:GetReplicationConfiguration",
+        "s3:ListBucket",
+        "s3:PutBucketOwnershipControls",
+        "s3:PutBucketPolicy",
+        "s3:PutBucketPublicAccessBlock",
+        "s3:PutBucketTagging",
+        "s3:PutBucketVersioning",
+        "s3:PutEncryptionConfiguration"
+      ],
+      "Resource": [
+        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1"
+      ]
+    }
+  ]
+}

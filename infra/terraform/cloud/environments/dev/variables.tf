@@ -22,6 +22,15 @@ variable "deploy_role_arn" {
     error_message = "Supply an IAM role ARN, not a user/root ARN."
   }
 }
+variable "runtime_permissions_boundary_arn" {
+  type        = string
+  default     = null
+  description = "Pre-created runtime boundary; the deployment role requires it when creating EC2 roles."
+  validation {
+    condition     = var.runtime_permissions_boundary_arn == null ? true : var.runtime_permissions_boundary_arn == "arn:aws:iam::${var.account_id}:policy/miles/bootstrap/MilesDevRuntimeBoundary"
+    error_message = "Use the reviewed Miles dev runtime boundary in this account."
+  }
+}
 variable "vpc_cidr" {
   type    = string
   default = "10.0.0.0/16"
@@ -44,6 +53,28 @@ variable "egress_mode" {
   validation {
     condition     = contains(["isolated", "nat", "interface"], var.egress_mode)
     error_message = "Choose isolated (foundation only), nat, or interface."
+  }
+}
+variable "paused" {
+  type        = bool
+  default     = true
+  description = "Remove EC2/root disk and paid session networking; retain data volume, S3/DDB, network, IAM, keys and state. Retained resources still incur storage/key costs."
+}
+variable "enable_compute" {
+  type        = bool
+  default     = false
+  description = "Include the single-node Warm dev EC2 and retained data volume. Keep true across pause/resume."
+  validation {
+    condition     = !var.enable_compute || var.paused || (var.ami_id != null && var.egress_mode != "isolated")
+    error_message = "Active dev compute needs a reviewed AMI and NAT/interface API egress."
+  }
+}
+variable "ami_id" {
+  type    = string
+  default = null
+  validation {
+    condition     = var.ami_id == null ? true : can(regex("^ami-[0-9a-f]{17}$", var.ami_id))
+    error_message = "Use a pinned Amazon Linux 2023 ARM64 AMI ID in Singapore."
   }
 }
 variable "nat_per_az" {
