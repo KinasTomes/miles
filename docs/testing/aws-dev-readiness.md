@@ -50,9 +50,10 @@ bootstrap + dev đạt; 21 Terraform mock tests, 12 Python guard tests và `make
 Terraform tests đều dùng mock; bằng chứng live trong bảng trên là phiên riêng.
 Lệnh tái hiện: [Terraform README](../../infra/terraform/cloud/README.md).
 
-## Chi phí và trạng thái cuối
+## Chi phí và trạng thái cuối phiên 25/10/2026
 
-Kết thúc ở `paused=true`: API AWS xác nhận không còn EC2 đang tồn tại, NAT đang
+Các dự toán ở phần này thuộc phiên trước full teardown ngày 26/10, không đại diện
+chi phí còn lại sau thu hồi. Kết thúc phiên 25/10 ở `paused=true`: API AWS xác nhận không còn EC2 đang tồn tại, NAT đang
 hoạt động, EIP, interface endpoints, ALB hoặc root volume mồ côi của môi trường.
 Data EBS detached vẫn có, S3/DDB/key/secret/state và cấu hình được giữ để bật lại.
 
@@ -74,48 +75,57 @@ Nguồn: [EC2 regional Price List](https://pricing.us-east-1.amazonaws.com/offer
 
 ## Phần còn lại trước Done
 
-### Chuẩn bị full teardown ngày 26/10/2026
+### Full teardown ngày 26/10/2026
 
-Đăng nhập lại đúng deploy role; API inventory xác nhận vẫn pause, không còn
-EC2/NAT/EIP/interface endpoints/ALB/root volume mồ côi. Refresh-only plan không có
-thay đổi. Dùng cùng remote backend thật, bản cấu hình cleanup riêng đã tạo được
-plan chỉ update deletion protection của 20 bảng và preview destroy 70 resource dev;
-không gồm 5 resource bootstrap state. Chưa apply hai plan này.
+Đăng nhập lại đúng deploy role; trước teardown API xác nhận vẫn pause. Audit có
+phân trang: cả 20 bảng Scan COUNT nhất quán bằng 0; S3 chỉ có đúng hai acceptance
+versions khớp evidence cũ, không delete marker/multipart; secret không có version;
+không có backup DynamoDB hoặc snapshot EBS dùng runtime key. Tám audit log events
+đã lưu riêng ngoài Git. EBS chưa mount lại filesystem; việc xóa volume 20 GiB
+không snapshot đã được duyệt rõ trước khi thực hiện.
 
-Grant audit tạm chỉ đọc đúng datastore dev, có hạn 4 giờ, qua Access Analyzer
-không findings và 16 simulation cases. Phiên quản trị chỉ gọi IAM/validation;
-mọi kiểm tra workload dùng deploy role. Kết quả audit có phân trang:
+Cùng remote backend thật, đã review/apply plan chỉ update deletion protection của
+20 bảng, xóa đúng hai S3 versions, rồi lập/review destroy plan mới xóa đúng 70
+resource dev, giữ bootstrap/state. Quyền cleanup được generate từ plan bằng IAM
+Policy Autopilot 0.3.0 rồi thu hẹp tới action thiếu và ARN thực; bỏ replication,
+snapshot creation, Object Lock bypass và dịch vụ không dùng. Candidate qua Access
+Analyzer không findings, 28 simulation cases; chỉ cho window KMS/secret 30 ngày.
 
-- 20 bảng đều Scan COUNT nhất quán bằng 0; không có backup DynamoDB trong Region.
-- S3 có đúng hai object versions nghiệm thu khớp evidence cũ; không có delete
-  marker hoặc multipart upload. Chưa xóa object/version nào.
-- Secret metadata chưa có version. Không có EBS snapshot thuộc account dùng
-  runtime key; data volume 20 GiB vẫn detached. Chưa mount lại để kiểm filesystem
-  trong lượt này, nên chưa kết luận độc lập volume rỗng hoặc có backup để phục hồi.
-- Tám audit log events đã lưu riêng ngoài Git để giữ bằng chứng trước khi xóa log
-  group. Inventory/state/plans/policy/identifiers chi tiết tiếp tục nằm ngoài Git.
+Lần apply đầu xóa bảng thành công nhưng waiter DescribeTable gặp AccessDenied vì
+policy thường ngày yêu cầu tags của bảng đã mất. Grant audit tạm bổ sung
+DescribeTable trên đúng 20 ARN, không phụ thuộc tags, giữ cùng hạn dùng; validation
+không findings và 18 simulation cases đạt. API xác nhận 20 bảng ResourceNotFound;
+fresh recovery plan chỉ còn xóa runtime key. So sánh raw state với refreshed prior
+values đã giải thích 20 bảng mất, không dùng state rm hoặc áp lại saved plan cũ.
 
-Baseline quyền cleanup được generate bằng IAM Policy Autopilot 0.3.0 từ Terraform
-destroy preview, rồi thu hẹp tới action thiếu và ARN thực trong state. Bỏ quyền
-replication, tạo snapshot, Object Lock bypass và tài nguyên dịch vụ không dùng;
-không attach nguyên output của generator. Candidate qua Access Analyzer không
-findings, 28 simulation cases đạt: từ chối ngoài phạm vi/hết hạn/sai Region, giữ
-KMS/secret window 30 ngày và từ chối force-delete secret. Candidate chưa được gắn.
+Nghiệm thu sau recovery:
 
-Source dev vẫn giữ đủ bốn prevent_destroy, DynamoDB deletion protection và
-force_destroy=false. 12 Python guard tests, Terraform fmt và kiểm runbook shell
-syntax đạt. [Runbook full teardown](../../infra/terraform/cloud/full-teardown.md)
-ghi thứ tự data review, unprotect, fresh destroy plan, inventory và phục hồi khi dở.
+| Phần | Kết quả |
+|---|---|
+| Remote dev state | Không còn managed resource |
+| Datastore | Bucket và 20 bảng đều không còn qua API; hai versions đã xóa, EBS đã xóa theo quyết định không backup |
+| Runtime/network | Không còn EC2/NAT/EIP/ALB/volume/VPC/subnet/route table/SG/endpoints/IGW; runtime roles/profiles/SSM document/config/log group đã mất |
+| Bootstrap | State bucket vẫn versioned/SSE-S3/public block; operator/deploy/boundary được giữ |
+| Quyền tạm | Đã gỡ cả audit và cleanup grants; 7 principal simulation cases xác nhận quyền xóa/Scan bị từ chối trở lại; trust và 10 managed policy attachments không đổi; root đã logout |
 
-Chờ duyệt danh sách dữ liệu/tài nguyên được xóa, gồm quyết định EBS không có snapshot.
-Sau unprotect apply và dọn S3 phải tạo lại destroy plan từ remote state thật;
-preview hiện tại không được dùng làm saved plan thực thi. Task vẫn Doing, 2/3.
+KMS đang PendingDeletion, API ghi ngày dự kiến 25/11/2026 UTC. Secret đã được đánh
+xóa với recovery window 30 ngày; chưa coi là đã purge vật lý. ListBackups ALL sau
+teardown thấy 20 SYSTEM backups tự sinh từ PITR, API hiện báo BackupExpiryDateTime
+ngày 27/10/2026 UTC. Đây là trạng thái quan sát được, chưa chờ đến hạn để kiểm việc
+xóa cuối cùng. Không claim mọi tài nguyên AWS đã biến mất hoặc chi phí bằng không.
+Nguồn mô tả SYSTEM backup và trường expiry: [AWS BackupSummary](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_BackupSummary.html).
 
-Checklist dựng IaC và kiểm quyền/network/control objects có bằng chứng live.
-Inventory và pause/resume đã kiểm; **full destroy môi trường disposable chưa chạy**.
-Việc đó cần review/xác nhận riêng dữ liệu cần giữ, backup/retention, gỡ bảo vệ data
-và quyền cleanup giới hạn, rồi nghiệm thu việc thu hồi thật. Giữ task Doing và
-checklist full destroy chưa tick; PR #30 vẫn chờ review.
+Source dev vẫn giữ bốn prevent_destroy, DynamoDB deletion protection và
+force_destroy=false. 12 Python guard tests, Terraform fmt, runbook shell syntax
+và CI 3/3 tại head chuẩn bị `1ee9cd6` đạt; grant audit sửa waiter đã có bằng chứng
+IAM thật nêu trên. [Runbook](../../infra/terraform/cloud/full-teardown.md) ghi cách
+review/apply/recover. Inventory/state/plans/policy/UUID/identifiers lưu riêng ngoài
+Git; public chỉ ghi kết quả tổng hợp.
+
+Cả ba checklist có bằng chứng live, gồm thử destroy môi trường disposable. Task
+chưa tự coi Done trước review/CI/merge PR #30. Môi trường dev đã thu hồi; task tích
+hợp AWS cần dựng lại khi dùng, lưu ý tên secret còn trong recovery window cần
+restore/reconcile hoặc chờ xóa trước khi tạo lại.
 
 Hai hard dependency W01-HUNG-03/W02-HUNG-01 và các task W2 liên quan đã Done;
 không còn chờ W2 để kiểm hạ tầng. [Mapping 20 bảng](../../infra/terraform/cloud/metadata-tables.md)

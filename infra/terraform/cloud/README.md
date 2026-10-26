@@ -1,7 +1,9 @@
 # Terraform AWS dev Warm
 
 Môi trường dev một node ở Singapore, được chuẩn bị theo W03-HUNG-01. Hạ tầng đã
-kiểm trên AWS ngày 25/10/2026 và kết thúc ở pause; DSG chưa triển khai.
+kiểm trên AWS ngày 25/10/2026 với pause/resume; full teardown đã nghiệm thu ngày
+26/10, giữ bootstrap/state và ghi riêng key/secret/SYSTEM backups chờ xóa trong
+[readiness](../../../docs/testing/aws-dev-readiness.md). DSG chưa triển khai.
 Terraform 1.15.2, AWS provider 6.21.0; lockfiles pin
 provider cho linux_arm64/linux_amd64. Không thay kiến trúc/API hay triển khai Edge.
 

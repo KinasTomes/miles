@@ -111,6 +111,11 @@ Kiểm cả backup/snapshot còn giữ, secret scheduled deletion và KMS Pendin
 ghi thời điểm xóa dự kiến và chi phí còn lại. Terraform state rỗng không chứng minh
 AWS đã xóa mọi tài nguyên. Giữ bootstrap backend, state versions và audit evidence.
 
+Kiểm role/profile đã mất bằng quyền IAM đã duyệt; phiên quản trị IAM chỉ gọi IAM.
+Không dùng AccessDenied làm bằng chứng resource đã xóa. Sau khi xóa bảng có PITR,
+list backups với `--backup-type ALL` và ghi các SYSTEM backups tự sinh cùng
+BackupExpiryDateTime quan sát được; không coi chúng đã mất cùng Terraform state.
+
 KMS key và secret có thời gian chờ xóa. Báo riêng phần đã xóa và phần chờ xóa,
 không ghi toàn bộ đã biến mất hoặc chi phí bằng không. Secret chờ xóa có thể ngăn
 dựng lại cùng tên; cần restore/reconcile hoặc chờ xóa trước khi tạo lại. Dữ liệu
