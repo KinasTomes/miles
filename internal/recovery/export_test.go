@@ -126,6 +126,76 @@ func commitInput(t *testing.T, m metadataStore, f contracttest.Fixture, label st
 	}
 	return e, body
 }
+
+func TestExportEffectSemantics(t *testing.T) {
+	for _, backend := range []string{"fake", "badger"} {
+		for _, scenario := range []string{"duplicate-within-page", "duplicate-across-pages", "tombstone-with-value", "valid-multipage", "valid-tombstone"} {
+			t.Run(backend+"/"+scenario, func(t *testing.T) {
+				ctx := context.Background()
+				m, f, _ := producerFixture(t, backend)
+				r := f.Request("effect-semantics", 0)
+				first := Effect{Key: "object/file", Revision: 1, Value: "manifest"}
+				input := Input{Pages: []EventPage{
+					{Effects: []Effect{first}, Epoch: r.Event.Epoch, Event: r.Event.ID, History: r.Event.HistoryID, Number: 0, Version: 1},
+					{Effects: []Effect{{Key: "quota/owner", Revision: 1, Value: "4"}}, Epoch: r.Event.Epoch, Event: r.Event.ID, History: r.Event.HistoryID, Number: 1, Version: 1},
+				}}
+				switch scenario {
+				case "duplicate-within-page":
+					input.Pages[1].Effects = append(input.Pages[1].Effects, input.Pages[1].Effects[0])
+				case "duplicate-across-pages":
+					input.Pages[1].Effects[0] = first
+				case "tombstone-with-value":
+					input.Pages[1].Effects[0].Deleted = true
+				case "valid-tombstone":
+					input.Pages[1].Effects[0].Deleted = true
+					input.Pages[1].Effects[0].Value = ""
+				}
+				body, err := Encode(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.Event.PayloadSHA256 = digest(body)
+				contracttest.Prepare(t, m, f, r, 4)
+				if _, err = m.CommitObject(ctx, r); err != nil {
+					t.Fatal(err)
+				}
+				event, err := m.GetOutbox(ctx, r.Event.ID)
+				if err != nil || event.PayloadSHA256 != digest(body) {
+					t.Fatal("committed input digest", err)
+				}
+				sink := &memoryObjects{objects: map[string][]byte{}}
+				w := Exporter{m, memoryInputs{event.PayloadPointer: body}, sink}
+				err = w.Export(ctx, event.ID)
+				valid := strings.HasPrefix(scenario, "valid-")
+				if valid {
+					if err != nil {
+						t.Fatal(err)
+					}
+					if sink.calls != 3 || len(sink.objects) != 3 {
+						t.Fatal("missing valid artifacts")
+					}
+					if _, err = m.GetOutboxExport(ctx, event.ID); err != nil {
+						t.Fatal("missing valid export progress", err)
+					}
+					return
+				}
+				if !errors.Is(err, s.ErrInvalid) {
+					t.Fatalf("expected ErrInvalid, got %v", err)
+				}
+				if sink.calls != 0 || len(sink.objects) != 0 {
+					t.Fatal("invalid bundle attempted artifact writes")
+				}
+				if _, err = m.GetOutboxExport(ctx, event.ID); !errors.Is(err, s.ErrNotFound) {
+					t.Fatal("invalid bundle has export progress", err)
+				}
+				if got, err := m.GetOutbox(ctx, event.ID); err != nil || !reflect.DeepEqual(got, event) {
+					t.Fatal("source event changed", err)
+				}
+			})
+		}
+	}
+}
+
 func TestExporterCrashRetryAndRestart(t *testing.T) {
 	for _, backend := range []string{"fake", "badger"} {
 		for nth := 1; nth <= 3; nth++ {

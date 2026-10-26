@@ -206,14 +206,16 @@ func (w Exporter) Export(ctx context.Context, id string) error {
 	d := Descriptor{Action: e.Action, Entity: e.Entity, Epoch: e.Epoch, History: e.HistoryID, ID: e.ID, Logical: e.OpID, Mutation: e.OpID, Pages: []Reference{}, Version: 1, Source: e}
 	// Validate the whole bundle before creating any artifacts.
 	pages := make([][]byte, len(input.Pages))
+	seen := make(map[string]bool)
 	for i, p := range input.Pages {
 		if p.Version != 1 || p.Event != e.ID || p.History != e.HistoryID || p.Epoch != e.Epoch || p.Number != i || len(p.Effects) == 0 {
 			return s.ErrInvalid
 		}
 		for _, effect := range p.Effects {
-			if effect.Key == "" || effect.Revision == 0 || effect.Revision > maxInteger {
+			if effect.Key == "" || effect.Revision == 0 || effect.Revision > maxInteger || seen[effect.Key] || effect.Deleted && effect.Value != "" {
 				return s.ErrInvalid
 			}
+			seen[effect.Key] = true
 		}
 		pages[i], err = Encode(p)
 		if err != nil {
