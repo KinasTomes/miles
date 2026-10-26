@@ -268,11 +268,17 @@ func (m *Metadata) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySna
 		return s.PolicySnapshot{}, s.ErrConflict
 	}
 	e := r.Event
-	if e == nil || e.Validate() != nil || e.Entity != "SystemConfig" || e.Revision != r.ExpectedRevision+1 {
+	// Match the Badger mutation contract: PutPolicy cannot emit a delete event.
+	if e == nil || e.Validate() != nil || e.Entity != "SystemConfig" || e.Action != "entity_put" || e.Revision != r.ExpectedRevision+1 {
 		return s.PolicySnapshot{}, s.ErrInvalid
 	}
 	if _, ok := m.events[e.ID]; ok {
 		return s.PolicySnapshot{}, s.ErrConflict
+	}
+	for _, event := range m.events {
+		if event.OpID == e.OpID {
+			return s.PolicySnapshot{}, s.ErrConflict
+		}
 	}
 	if m.failBeforeCommit {
 		return s.PolicySnapshot{}, s.ErrUnavailable

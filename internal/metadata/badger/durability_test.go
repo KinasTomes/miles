@@ -113,7 +113,7 @@ func TestUncleanExitRecovery(t *testing.T) {
 	if err != nil || head.Revision != 1 {
 		t.Fatalf("head: %+v %v", head, err)
 	}
-	if receipt, err := m.GetCompletionReceipt(ctx, "upload"); err != nil || receipt.OpID != "crash" {
+	if receipt, err := m.GetCompletionReceipt(ctx, "upload"); err != nil || receipt.OpID != r.Head.OpID {
 		t.Fatalf("receipt: %+v %v", receipt, err)
 	}
 	if _, err = m.GetOutbox(ctx, r.Event.ID); err != nil {
@@ -127,7 +127,7 @@ func TestUncleanExitRecovery(t *testing.T) {
 		t.Fatalf("counters: %+v %v", q, err)
 	}
 	resolution, err := m.ClaimReservation(ctx, s.ReservationClaim{ID: r.ReservationID, OpID: r.Head.OpID, ExpectedRevision: 1, Writer: r.Writer})
-	if err != nil || resolution.Committed == nil || resolution.Committed.Head.OpID != "crash" {
+	if err != nil || resolution.Committed == nil || resolution.Committed.Head.OpID != r.Head.OpID {
 		t.Fatalf("outcome: %+v %v", resolution, err)
 	}
 }

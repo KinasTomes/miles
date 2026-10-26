@@ -34,7 +34,10 @@ type MetadataStore interface {
 	GetObject(ctx context.Context, object ObjectKey) (ObjectHead, error) // includes tombstones for CAS.
 	GetQuota(ctx context.Context, ownerID string) (LogicalQuota, error)
 	ReserveLogicalQuota(ctx context.Context, reservation Reservation) error
+	AdjustLogicalQuota(ctx context.Context, request ReservationAdjustment) (Reservation, error)
 	GetReservation(ctx context.Context, reservationID string) (Reservation, error)
+	// A missing outcome is only a snapshot observation, never proof of no commit.
+	GetCommitOutcome(ctx context.Context, opID string) (CommitResult, error)
 	ClaimReservation(ctx context.Context, request ReservationClaim) (ReservationResolution, error)
 	ReleaseLogicalQuota(ctx context.Context, request ReservationRelease) error
 	CommitObject(ctx context.Context, request CommitRequest) (CommitResult, error)

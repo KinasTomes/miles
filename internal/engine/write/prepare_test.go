@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"math/big"
 	"testing"
 	"time"
@@ -81,7 +82,13 @@ func TestPrepareObjectPublishesOnlyAfterPhysicalDependencies(t *testing.T) {
 	if _, err := meta.GetObject(ctx, object); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatalf("preparation itself exposed head: %v", err)
 	}
-	reservation := storage.Reservation{Version: 1, ID: "reservation-1", OpID: "operation-1", OwnerID: "owner", Object: object,
+	opID := fmt.Sprintf("%x", sha256.Sum256([]byte("operation-1")))[:32]
+	historyID := "11111111111111111111111111111111"
+	eventID, err := storage.EventID(historyID, opID, "Objects", "object_commit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation := storage.Reservation{Version: 1, ID: "reservation-1", OpID: opID, OwnerID: "owner", Object: object,
 		Revision: 1, State: storage.ReservationActive, Deadline: now.Add(time.Hour), Bytes: int64(len(body)),
 		StagedBytes: int64(len(body)), Writer: fence}
 	if err := meta.ReserveLogicalQuota(ctx, reservation); err != nil {
@@ -91,7 +98,7 @@ func TestPrepareObjectPublishesOnlyAfterPhysicalDependencies(t *testing.T) {
 		Size: prepared.Size, ETag: "test-etag", OpID: reservation.OpID, PageCount: prepared.PageCount,
 		ChunkCount: prepared.ChunkCount, PageIndex: prepared.PageIndex},
 		ExpectedRevision: 0, ReservationID: reservation.ID, ReservationRevision: 1, UserID: "owner", CredentialID: "owner-key", Writer: fence,
-		Event: storage.OutboxEvent{Version: 1, ID: "event-1", HistoryID: "history-1", Epoch: 1, Entity: "Objects", Object: object,
+		Event: storage.OutboxEvent{Version: 1, ID: eventID, HistoryID: historyID, Epoch: 1, Entity: "Objects", Action: "object_commit", Object: object,
 			Revision: 1, OpID: reservation.OpID, PayloadPointer: "prepared-test-payload", PayloadSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
 	committed, err := meta.CommitObject(ctx, request)
 	if err != nil || committed.Head.ManifestID != manifestID || committed.Head.Size != int64(len(body)) {
