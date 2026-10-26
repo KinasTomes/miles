@@ -295,6 +295,25 @@ func (m *Producers) ClosedMembers() (map[string][]string, error) {
 	return out, nil
 }
 
+// ClosedInputs returns an owned, stable mutation ID -> committed input digest
+// snapshot. IDs alone cannot prove which immutable payload was committed.
+// This fake retains input bindings across takeover; no live/partial cohort is
+// exposed and known-no-commit mutations are excluded.
+func (m *Producers) ClosedInputs() (map[string]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.gate != Closed {
+		return nil, ErrBusy
+	}
+	out := make(map[string]string)
+	for id, x := range m.mutations {
+		if x.outcome == Committed {
+			out[id] = x.input
+		}
+	}
+	return out, nil
+}
+
 // InvalidateAuthority models recovery/service-incarnation invalidation. It
 // closes all existing fences without changing any recorded mutation outcome.
 // The fixture driver must reconcile; a restart is not proof of no commit.

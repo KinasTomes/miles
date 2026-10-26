@@ -5,6 +5,42 @@ import (
 	"time"
 )
 
+func TestClosedInputsRetainsOwnedCommittedBindings(t *testing.T) {
+	_, c, _, _, _ := fixture(t)
+	m, e := NewProducers(c)
+	must(t, e)
+	d, e := c.Now().Instant.Add(time.Minute)
+	must(t, e)
+	p, e := m.Register("producer", d)
+	must(t, e)
+	x, e := m.Dispatch(p, "committed", "descriptor-digest")
+	must(t, e)
+	y, e := m.Dispatch(p, "aborted", "other-digest")
+	must(t, e)
+	must(t, m.Commit(x))
+	_, e = m.ClosedInputs()
+	want(t, e, ErrBusy)
+	must(t, m.BeginClose())
+	must(t, m.CloseProducer(p))
+	_, e = m.ClosedInputs()
+	want(t, e, ErrBusy)
+	_, e = m.Reconcile(y)
+	must(t, e)
+	must(t, m.FinishClose())
+	inputs, e := m.ClosedInputs()
+	must(t, e)
+	if len(inputs) != 1 || inputs["committed"] != "descriptor-digest" {
+		t.Fatal(inputs)
+	}
+	inputs["committed"] = "forged"
+	inputs["aborted"] = "injected"
+	again, e := m.ClosedInputs()
+	must(t, e)
+	if len(again) != 1 || again["committed"] != "descriptor-digest" {
+		t.Fatal("snapshot alias", again)
+	}
+}
+
 func TestClosingCohortAndStableOutcomes(t *testing.T) {
 	_, c, _, _, _ := fixture(t)
 	m, e := NewProducers(c)

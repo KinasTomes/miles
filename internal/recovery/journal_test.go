@@ -291,6 +291,11 @@ func (j journal) rebuild() (projection, error) {
 			return projection{}, invalid
 		}
 		last := ""
+		type verifiedBundle struct {
+			id, hash string
+			rows     []row
+		}
+		pending := []verifiedBundle{}
 		for _, event := range m.Events {
 			if event.ID <= last {
 				return projection{}, invalid
@@ -300,9 +305,42 @@ func (j journal) rebuild() (projection, error) {
 			if e != nil {
 				return projection{}, e
 			}
-			if e = p.apply(d.ID, event.Descriptor.SHA, rows); e != nil {
-				return projection{}, e
+			pending = append(pending, verifiedBundle{d.ID, event.Descriptor.SHA, rows})
+		}
+		// Membership hash order is canonical encoding, not causal order. Verify
+		// every bundle first, then apply only bundles whose ALL entity revisions
+		// are ready. Never split a transaction to make progress. No-progress
+		// means missing predecessors, conflicting revisions or a dependency cycle.
+		for len(pending) > 0 {
+			next := []verifiedBundle{}
+			progress := false
+			for _, b := range pending {
+				ready := true
+				for _, r := range b.rows {
+					if r.Revision != p.rows[r.Key].Revision+1 {
+						ready = false
+						break
+					}
+				}
+				if old, ok := p.applied[b.id]; ok {
+					if old != b.hash {
+						return projection{}, invalid
+					}
+					ready = true
+				}
+				if !ready {
+					next = append(next, b)
+					continue
+				}
+				if e := p.apply(b.id, b.hash, b.rows); e != nil {
+					return projection{}, e
+				}
+				progress = true
 			}
+			if !progress {
+				return projection{}, invalid
+			}
+			pending = next
 		}
 		previous = r.SHA
 	}

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"sort"
 	"testing"
 	"time"
 
@@ -91,7 +90,7 @@ func (m *exportModel) publish(ref reference) error {
 		}
 		return invalid
 	}
-	members, e := m.producers.ClosedMembers()
+	expected, e := m.producers.ClosedInputs()
 	if e != nil {
 		return e
 	}
@@ -109,12 +108,7 @@ func (m *exportModel) publish(ref reference) error {
 	if membership.History != s.History || membership.Epoch != s.Epoch || membership.Version != 1 {
 		return invalid
 	}
-	expected := []string{}
-	for _, ids := range members {
-		expected = append(expected, ids...)
-	}
-	sort.Strings(expected)
-	got := []string{}
+	got := map[string]string{}
 	last := ""
 	for _, event := range membership.Events {
 		if event.ID <= last {
@@ -124,7 +118,7 @@ func (m *exportModel) publish(ref reference) error {
 		if _, _, e = m.durable.bundle(event, 0); e != nil {
 			return e
 		}
-		got = append(got, event.ID)
+		got[event.ID] = event.Descriptor.SHA
 	}
 	if !reflect.DeepEqual(expected, got) {
 		return invalid

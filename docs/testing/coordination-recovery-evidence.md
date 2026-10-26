@@ -91,6 +91,21 @@ Takeover không cấp new authority khi Pending outcome chưa reconcile.
 
 ## Validation commands
 
+### Regression sau review PR #31
+
+- `TestSealBindsCommittedDescriptor`: dừng trước publish seal, thay payload nhưng
+  giữ event ID và tính lại mọi hash/length; seal phải bị từ chối. Payload nguyên
+  bản vẫn publish thành công. `ClosedInputs` cung cấp snapshot ID→input digest
+  đã commit sau closure; publisher đối chiếu exact binding cùng artifact checks.
+- `TestClosedInputsRetainsOwnedCommittedBindings`: không đọc cohort chưa Closed,
+  loại NoCommit và sửa snapshot trả về không thay đổi authoritative fake state.
+- `TestReplayIndependentOfMembershipHashOrder`: hai bundles object/quota revision
+  1→2 trong cùng epoch, thử cả hai thứ tự hash. Membership vẫn sorted theo ID,
+  nhưng replay chờ đủ predecessor revisions cho toàn bundle trước atomic apply.
+- `TestReplayUnresolvableDependenciesFailWithoutPartialProjection`: gap, conflicting
+  revisions hoặc cycle đều fail closed, không trả partial projection. Contiguous
+  revisions chỉ là quy tắc projection của fixture, không áp cho mọi production entity.
+
 ```text
 go test -count=20 ./internal/coordination/... ./internal/recovery/...
 go test ./...
