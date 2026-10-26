@@ -21,7 +21,10 @@
     {
       "Sid": "CountDevMetadata",
       "Effect": "Allow",
-      "Action": "dynamodb:Scan",
+      "Action": [
+        "dynamodb:DescribeTable",
+        "dynamodb:Scan"
+      ],
       "Resource": [
         "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-AdminTokens",
         "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-BucketGrants",

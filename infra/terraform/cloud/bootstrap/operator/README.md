@@ -145,7 +145,7 @@ CreateTags/TagResource để nhận tài nguyên ngoài phạm vi. Xem
 [full teardown](../../full-teardown.md); không gắn vào role thường ngày. Render
 `ACCOUNT_ID` và `EXPIRES_AT` (UTC ISO 8601, thời điểm kết thúc cửa sổ audit), review
 và validate/simulate trước khi gắn bằng phiên quản trị IAM. Grant cho phép list
-versions/multipart của đúng bucket dev, Scan 20 bảng dev và đọc secret version
+versions/multipart của đúng bucket dev, DescribeTable/Scan 20 bảng dev và đọc secret version
 metadata. `ListBackups`/`DescribeSnapshots` cần resource `*` cho metadata inventory,
 giới hạn Singapore và hạn dùng; không cấp đọc dữ liệu ngoài datastore dev.
 
@@ -154,3 +154,8 @@ policy cùng tên chưa được đối chiếu. Chạy Scan với `--consistent
 phân trang đầy đủ; không in item hoặc secret value. DateLessThan giới hạn hiệu lực,
 vẫn phải gỡ policy bằng `iam:DeleteRolePolicy` sau audit/cleanup. Grant này không
 cấp quyền xóa object/datastore, gỡ bảo vệ, xóa key hoặc cập nhật IAM.
+
+DescribeTable giới hạn ARN và hạn dùng, không yêu cầu resource tags: delete waiter
+và refresh phải nhận được ResourceNotFound khi bảng đã mất. Policy thường ngày có
+điều kiện tags sẽ trả AccessDenied trong tình huống đó. Giữ grant audit đến khi
+đã kiểm API và state sau destroy, rồi gỡ cùng quyền cleanup tạm.

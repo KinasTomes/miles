@@ -29,6 +29,8 @@ Role deploy thường ngày không có quyền Scan dữ liệu, đọc mọi ve
 datastore. Quyền audit tạm chỉ đọc đúng tài nguyên; quyền cleanup được review riêng,
 có hạn dùng và được gỡ khi xong. Cập nhật IAM qua phiên quản trị IAM; mọi thao tác
 workload vẫn dùng deploy role. Không đổi trust/boundary hoặc cấp AdministratorAccess.
+Grant đọc tạm cần DescribeTable trên đúng 20 ARN không phụ thuộc tags, để delete
+waiter/refresh phân biệt bảng đã mất với AccessDenied. Giữ grant đến hết nghiệm thu.
 
 ## Chuẩn bị cấu hình cleanup
 
