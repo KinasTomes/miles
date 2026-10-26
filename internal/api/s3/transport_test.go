@@ -46,7 +46,7 @@ type transportCase struct {
 	PayloadSHA256 string `json:"payload_sha256"`
 }
 
-func loadTransport(t *testing.T) transportFixture {
+func loadTransport(t testing.TB) transportFixture {
 	var f transportFixture
 	readFixture(t, "transport.json", &f)
 	return f
@@ -281,6 +281,8 @@ func TestChecksumHeaderValue(t *testing.T) {
 		{"checksum empty", "X-Amz-Checksum-Crc32", "", ErrInvalidRequest},
 		{"checksum not base64", "X-Amz-Checksum-Crc32", "1kLfoA", ErrInvalidRequest},
 		{"checksum of another digest size", "X-Amz-Checksum-Crc32", "Y53hf1fT3M4=", ErrInvalidRequest},
+		{"trailer names no checksum algorithm", "X-Amz-Trailer", "0", ErrInvalidRequest},
+		{"unknown checksum algorithm header", "X-Amz-Checksum-Md5", "1B2M2Y8AsgTpgAmY7PhCfg==", ErrInvalidRequest},
 		{"Content-MD5 matches", "Content-Md5", "/gHOKn+6yPr67XyYKgTiKQ==", ""},
 		{"Content-MD5 empty", "Content-Md5", "", ErrBadDigest},
 	} {

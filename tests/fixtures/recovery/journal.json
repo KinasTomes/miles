@@ -1,0 +1,45 @@
+{
+  "status": "REVIEW CANDIDATE: W2 bounded ASCII reference schema; not Frozen or production JCS",
+  "history": "11111111111111111111111111111111",
+  "objects": {
+    "5eacfeeb5f164c6303540de2f58be2a709a9391021bd3016540aa454756e3374": "{\"effects\":[{\"deleted\":false,\"key\":\"object/bucket-1/k\",\"revision\":1,\"value\":\"manifest-1\"}],\"epoch\":0,\"event\":\"8ad1cfa9e409f3f3a1304885a8773fde9c800e38498c4dda3bee4e00af874710\",\"history\":\"11111111111111111111111111111111\",\"number\":0,\"r2_version\":1}",
+    "65c32879f7d8814714e0fedb8f00fc75b91402707b75d58f10b2aa1ffe5bb154": "{\"effects\":[{\"deleted\":false,\"key\":\"quota/owner\",\"revision\":1,\"value\":\"4\"}],\"epoch\":0,\"event\":\"8ad1cfa9e409f3f3a1304885a8773fde9c800e38498c4dda3bee4e00af874710\",\"history\":\"11111111111111111111111111111111\",\"number\":1,\"r2_version\":1}",
+    "c1f44873417d93e7456b2f84837d6bbe94de15df5d50e1837e09803a4f5e02a9": "{\"action\":\"object_commit\",\"entity\":\"Objects\",\"epoch\":0,\"history\":\"11111111111111111111111111111111\",\"id\":\"8ad1cfa9e409f3f3a1304885a8773fde9c800e38498c4dda3bee4e00af874710\",\"logical_op\":\"request-0\",\"mutation\":\"22222222222222222222222222222222\",\"pages\":[{\"length\":247,\"sha256\":\"5eacfeeb5f164c6303540de2f58be2a709a9391021bd3016540aa454756e3374\"},{\"length\":232,\"sha256\":\"65c32879f7d8814714e0fedb8f00fc75b91402707b75d58f10b2aa1ffe5bb154\"}],\"r2_version\":1}",
+    "bb1168acb9bafa5e9440cfc3623d22f593fa046d6f354ef8e24c151d9eb67a79": "{\"epoch\":0,\"events\":[{\"descriptor\":{\"length\":450,\"sha256\":\"c1f44873417d93e7456b2f84837d6bbe94de15df5d50e1837e09803a4f5e02a9\"},\"id\":\"8ad1cfa9e409f3f3a1304885a8773fde9c800e38498c4dda3bee4e00af874710\"}],\"history\":\"11111111111111111111111111111111\",\"r2_version\":1}",
+    "3e621ce03f80ac2891cd89291329baebe215c579a8cc40c240062d1dfb6dedc1": "{\"epoch\":0,\"history\":\"11111111111111111111111111111111\",\"membership\":{\"length\":260,\"sha256\":\"bb1168acb9bafa5e9440cfc3623d22f593fa046d6f354ef8e24c151d9eb67a79\"},\"previous\":\"genesis\",\"r2_version\":1}",
+    "08fc29d7355dc5da60bc8592ea8e3aa07b448b4a47d29ca3adfee88b4632fc5d": "{\"effects\":[{\"deleted\":true,\"key\":\"object/bucket-1/k\",\"revision\":2,\"value\":\"\"}],\"epoch\":1,\"event\":\"da8ef9ff47e16806ae6cd885cd63ba97c43fe043e33bb8e2eafeb33a9035ceac\",\"history\":\"11111111111111111111111111111111\",\"number\":0,\"r2_version\":1}",
+    "8a27eed11b9a0bc0ae0cb9e96790b0088931185ead8d9bb12f014fe7f704a250": "{\"effects\":[{\"deleted\":false,\"key\":\"quota/owner\",\"revision\":2,\"value\":\"0\"}],\"epoch\":1,\"event\":\"da8ef9ff47e16806ae6cd885cd63ba97c43fe043e33bb8e2eafeb33a9035ceac\",\"history\":\"11111111111111111111111111111111\",\"number\":1,\"r2_version\":1}",
+    "6c7a77d4063b529b02a1fd11ebd1c603587b6554b55cb48154e757e87659bf85": "{\"action\":\"object_commit\",\"entity\":\"Objects\",\"epoch\":1,\"history\":\"11111111111111111111111111111111\",\"id\":\"da8ef9ff47e16806ae6cd885cd63ba97c43fe043e33bb8e2eafeb33a9035ceac\",\"logical_op\":\"request-1\",\"mutation\":\"33333333333333333333333333333333\",\"pages\":[{\"length\":236,\"sha256\":\"08fc29d7355dc5da60bc8592ea8e3aa07b448b4a47d29ca3adfee88b4632fc5d\"},{\"length\":232,\"sha256\":\"8a27eed11b9a0bc0ae0cb9e96790b0088931185ead8d9bb12f014fe7f704a250\"}],\"r2_version\":1}",
+    "7f8aedc82386b7987df8ddf57c2fed1b3dafea6c89c8098d4c9fa3da3a8ffd98": "{\"epoch\":1,\"events\":[{\"descriptor\":{\"length\":450,\"sha256\":\"6c7a77d4063b529b02a1fd11ebd1c603587b6554b55cb48154e757e87659bf85\"},\"id\":\"da8ef9ff47e16806ae6cd885cd63ba97c43fe043e33bb8e2eafeb33a9035ceac\"}],\"history\":\"11111111111111111111111111111111\",\"r2_version\":1}",
+    "37d8aaa6e901cacd8760495c2b2d96d450d6eedf1eab7c30e49f90617cf6e0f3": "{\"epoch\":1,\"history\":\"11111111111111111111111111111111\",\"membership\":{\"length\":260,\"sha256\":\"7f8aedc82386b7987df8ddf57c2fed1b3dafea6c89c8098d4c9fa3da3a8ffd98\"},\"previous\":\"3e621ce03f80ac2891cd89291329baebe215c579a8cc40c240062d1dfb6dedc1\",\"r2_version\":1}",
+    "5644e4ceea4c90ab85b204c5d3e83301001b642e98d1b5d7adc70c9bc1275bbb": "{\"history\":\"11111111111111111111111111111111\",\"projection\":\"historical\",\"r2_version\":1,\"seal\":{\"length\":253,\"sha256\":\"37d8aaa6e901cacd8760495c2b2d96d450d6eedf1eab7c30e49f90617cf6e0f3\"},\"state\":[{\"deleted\":true,\"key\":\"object/bucket-1/k\",\"revision\":2,\"value\":\"\"},{\"deleted\":false,\"key\":\"quota/owner\",\"revision\":2,\"value\":\"0\"}],\"target_epoch\":1}"
+  },
+  "seals": [
+    {
+      "length": 196,
+      "sha256": "3e621ce03f80ac2891cd89291329baebe215c579a8cc40c240062d1dfb6dedc1"
+    },
+    {
+      "length": 253,
+      "sha256": "37d8aaa6e901cacd8760495c2b2d96d450d6eedf1eab7c30e49f90617cf6e0f3"
+    }
+  ],
+  "checkpoint": {
+    "length": 342,
+    "sha256": "5644e4ceea4c90ab85b204c5d3e83301001b642e98d1b5d7adc70c9bc1275bbb"
+  },
+  "expected": [
+    {
+      "deleted": true,
+      "key": "object/bucket-1/k",
+      "revision": 2,
+      "value": ""
+    },
+    {
+      "deleted": false,
+      "key": "quota/owner",
+      "revision": 2,
+      "value": "0"
+    }
+  ]
+}
