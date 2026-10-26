@@ -13,6 +13,13 @@ và phải abort HTTP stream khi Read trả lỗi sau prefix. Decoder charges l�
 dependencies explicit, không có production defaults. Toàn requested range phải
 qua metadata/backend archive preflight trước cache/emit.
 
+Read rights được pin một lần tại admission: revoke/grant change chỉ tác động
+request mới. Safe points tiếp tục kiểm view/deadline/cancellation, bucket
+incarnation và physical lifecycle, không reauthorize mỗi chunk. `LastAccess`
+không thuộc read-safety snapshot. Read thành công gộp logical access theo exact
+PackRef (gồm cache hit) qua `UpdateAccessStats`, batch tối đa 100. Lỗi stats là
+diagnostic `access_stats_errors`, không đổi kết quả body đã verify/giao thành công.
+
 Evidence, checklist mapping và giới hạn deployment tại
 [warm-read-validation.md](../../docs/testing/warm-read-validation.md).
 

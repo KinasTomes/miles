@@ -23,10 +23,11 @@ Authorize + bucket incarnation + pinned policy
   -> metadata eligibility for the entire requested Range
   -> admitted backend HEAD preflight for the entire physical set
   -> Ready(response metadata)
-  -> per-occurrence reserve -> revalidate -> backend HEAD -> LRU/GetRange
+  -> per-occurrence reserve -> check view/lifecycle -> backend HEAD -> LRU/GetRange
   -> production ReadBlob -> best-effort verified cache fill
-  -> revalidate -> ordered verified logical slices
-  -> join workers / emitter return -> release reservations -> release pins
+  -> check view/lifetime -> ordered verified logical slices
+  -> quiesce/release payload reservations -> bounded access-stats flush
+  -> release view/request ticket
 ```
 
 Reader giữ đủ logical occurrences, kể cả repeated ChunkKey. Range là span đã
@@ -38,6 +39,11 @@ head/manifest resolution, và giữ xuyên preflight/streaming đến cleanup. N
 active-request limits cũng giới hạn số manifest plans đồng thời; không chỉ số
 requests đang fetch payload. `RunReadAhead` giữ public behavior, dùng chung helper
 chạy trên ticket đã admit để không double-admit một Warm request.
+
+Authorization snapshot được giữ từ admission đến hết read. Không gọi lại
+`Authorize` theo occurrence/emit: revoke/user/grant changes không cắt GET đã
+admit khi view và deadline còn hợp lệ. `GetBucket` ở safe points chỉ kiểm bucket
+lifetime/incarnation/domain; không đưa credential hoặc grants vào quyết định lại.
 
 ## Đối chiếu checklist trên Miles
 
@@ -131,12 +137,44 @@ join toàn bộ reads trước khi đóng store hoặc thay runtime. Cancellatio
   không fallback sang generation khác.
 - Mount `WarmMetrics` trên runtime metrics mux. Counter names dùng prefix
   `miles_warm_read_` và suffix `_total`: requests, aborted, integrity_failures,
-  cache_hits, cache_misses, emitted_bytes, cache_errors. Không có user/object labels.
+  cache_hits, cache_misses, emitted_bytes, cache_errors, access_stats_errors.
+  Không có user/object labels.
   emitted_bytes đếm slices mà emitter nhận thành công, không đo TCP delivery.
 - Bucket policy là immutable snapshot có revision/incarnation do caller pin.
   Không giả lập bucket policy persistence; phần đó thuộc W04.
 
 ## Validation
+
+### Bản sửa review PR #33
+
+Review commit `1451686` xác định ba lỗi P2. Regression trước sửa tái hiện:
+revoke và LastAccess-only update đều cắt stream ở 4/4508 bytes; hai lượt miss/hit
+không thay LastAccess. Đã sửa:
+
+| Finding | Thay đổi / evidence |
+|---|---|
+| Admitted authorization | Giữ snapshot từ admission; `TestWarmReaderAdmittedReadSurvivesCredentialRevoke`: read đang chạy hoàn tất, admission sau revoke bị deny trước cache |
+| Access observation gây conflict | So sánh version, exact PackRef, size, class, state/revision, restore expiry; loại LastAccess và writer/retention observations khỏi read eligibility. `TestWarmReaderLastAccessUpdateDoesNotInvalidateBinding` và lifecycle-negative tests |
+| Thiếu logical access | Gộp max wall UTC per exact PackRef sau emit thành công, flush read thành công qua port hiện có, tối đa 100 observations/batch. `TestWarmReaderRecordsAccessOnMissAndHit` và bounded/deterministic batch tests |
+
+Không dùng stats để cấp quyền, giữ protection hoặc quyết định durability. Backend
+`UpdateAccessStats` sở hữu monotonic-max persistence. Không có write mỗi chunk,
+background worker hoặc hidden retry. Cancellation/abort không khởi động flush;
+flush lỗi không đổi success outcome của body đã giao đủ, tăng
+`miles_warm_read_access_stats_errors_total` để runtime quan sát. Partial stats
+outcome không được coi là rollback hoặc được retry tự động.
+
+Các regression lifecycle/incarnation/deadline tiếp tục fail safely. Credential
+và lifecycle mutation tests dùng real Badger: ở emitter W=0 đã quiesce worker,
+test đóng adapter, cập nhật persisted fixture record rồi mở lại; không giả lập
+authorization trả true và không tuyên bố đã có online Admin mutation API.
+
+Validation local của bản sửa trên HEAD `1451686`: readpath/coordination ×20,
+`go test ./...`, `go vet ./...`, gofmt và whitespace đều PASS. Race local vẫn
+NOT VERIFIED do GCC/cgo 64-bit; cần CI xác minh trên commit sửa mới sau push.
+Kết quả CI 3/3 của commit được Lead review không được suy thành CI của bản sửa.
+
+### Lệnh kiểm tra
 
 ```text
 go test -count=20 ./internal/readpath/... ./internal/coordination/...
@@ -150,7 +188,7 @@ Kiểm gofmt/whitespace cả file mới untracked. CI race suite được bổ s
 `internal/coordination/...`; workflow hiện diện không đồng nghĩa CI đã PASS cho
 bản local. Không đánh dấu Miles Done trước review độc lập/sign-off.
 
-Kết quả local ngày 26/10/2026 trên baseline `9a800ed`:
+Kết quả local ban đầu ngày 26/10/2026 trên baseline `9a800ed` (trước review fixes):
 
 | Kiểm tra | Kết quả |
 |---|---|

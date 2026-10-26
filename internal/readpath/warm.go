@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/cache"
 	"github.com/KinasTomes/miles/internal/clock"
@@ -124,7 +125,7 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 	if head.Domain != auth.Bucket.Domain || head.Size > 0 && !plan.Validation.DescriptorVerified {
 		return result, engine.ErrIncompleteManifest
 	}
-	ex := &warmExecutor{reader: r, request: q, view: view, bucket: auth.Bucket, bindings: make([]warmBinding, len(plan.Chunks))}
+	ex := &warmExecutor{reader: r, request: q, view: view, admitted: auth, bindings: make([]warmBinding, len(plan.Chunks)), access: map[storage.PackRef]time.Time{}}
 	// Bound metadata batch fanout; preserve every logical occurrence, including
 	// repeated hashes. No physical I/O or cache lookup before full preflight.
 	for start := 0; start < len(plan.Chunks); start += 100 {
@@ -186,7 +187,7 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 		return result, err
 	}
 	result = WarmResult{Head: head, Range: plan.Range}
-	if err = ex.authorize(ctx); err != nil {
+	if err = ex.checkView(ctx); err != nil {
 		return result, err
 	}
 	if q.Ready != nil {
@@ -194,16 +195,30 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 			return result, err
 		}
 	}
-	err = runAdmittedReadAhead(ctx, o.Admission, BucketBinding{Name: q.Bucket, Policy: q.BucketPolicy}, plan, q.MaxOutstanding, ex, func(ctx context.Context, _ int, b []byte) error {
-		if e := ex.authorize(ctx); e != nil {
+	err = runAdmittedReadAhead(ctx, o.Admission, BucketBinding{Name: q.Bucket, Policy: q.BucketPolicy}, plan, q.MaxOutstanding, ex, func(ctx context.Context, index int, b []byte) error {
+		if e := ex.checkView(ctx); e != nil {
 			return e
 		}
 		if e := emit(ctx, b); e != nil {
 			return e
 		}
 		o.Metrics.emitted.Add(uint64(len(b)))
+		ref := ex.bindings[index].key.Pack
+		at := o.Clock.Now().WallUTC.UTC()
+		if old, ok := ex.access[ref]; !ok || at.After(old) {
+			ex.access[ref] = at
+		}
 		return nil
 	}, ticket)
+	// Observations are non-authoritative and never turn delivered, verified bytes
+	// into a failed/rolled-back read. Flush a successful logical read in bounded
+	// batches; canceled/aborted requests do not start this extra I/O. There is no
+	// detached worker, hidden retry or protection dependency on access stats.
+	if err == nil && ctx.Err() == nil && len(ex.access) > 0 {
+		if statsErr := persistPackAccess(ctx, ex.access, ex.reader.options.Metadata.UpdateAccessStats); statsErr != nil {
+			o.Metrics.accessStatsErrors.Add(1)
+		}
+	}
 	return result, err
 }
 
@@ -216,23 +231,27 @@ type warmExecutor struct {
 	reader   *WarmReader
 	request  WarmRequest
 	view     *coordination.WarmView
-	bucket   storage.Bucket
+	admitted storage.Authorization
 	bindings []warmBinding
+	access   map[storage.PackRef]time.Time // emitter-owned; speculation alone is not logical access
 }
 
-func (e *warmExecutor) authorize(ctx context.Context) error {
+// Read permission is decided ONCE at admission (API 2.2.3 / R1 14).
+// Later revoke/grant changes affect new requests. View authority and bucket
+// incarnation/lifetime remain independent checks; this never reauthorizes.
+func (e *warmExecutor) checkView(ctx context.Context) error {
 	if err := e.view.Check(ctx); err != nil {
 		return err
 	}
-	a, err := e.reader.options.Metadata.Authorize(ctx, e.request.CredentialID, e.bucket.Name)
+	bucket, err := e.reader.options.Metadata.GetBucket(ctx, e.admitted.Bucket.Name)
 	if err != nil {
 		return err
 	}
-	if a.Bucket.ID != e.bucket.ID || a.Bucket.Domain != e.bucket.Domain {
+	if bucket.ID != e.admitted.Bucket.ID || bucket.Domain != e.admitted.Bucket.Domain {
 		return storage.ErrConflict
 	}
-	if !a.Bucket.Active || !(a.Read || a.UserID == a.Bucket.OwnerID) {
-		return storage.ErrAccessDenied
+	if !bucket.Active {
+		return storage.ErrFenced
 	}
 	return nil
 }
@@ -284,7 +303,7 @@ func (e *warmExecutor) preflight(ctx context.Context, plan engine.ReadPlan, tick
 		if err != nil {
 			return err
 		}
-		err = e.authorize(ctx)
+		err = e.checkView(ctx)
 		if err == nil {
 			err = e.physical(ctx, b)
 		}
@@ -311,7 +330,7 @@ func (e *warmExecutor) physical(ctx context.Context, b warmBinding) error {
 func (e *warmExecutor) Execute(ctx context.Context, i int, _ engine.PlannedChunk) ([]byte, error) {
 	b := e.bindings[i]
 	o := e.reader.options
-	if err := e.authorize(ctx); err != nil {
+	if err := e.checkView(ctx); err != nil {
 		return nil, err
 	}
 	infos, err := o.Metadata.GetPacks(ctx, []storage.PackRef{b.key.Pack})
@@ -322,7 +341,7 @@ func (e *warmExecutor) Execute(ctx context.Context, i int, _ engine.PlannedChunk
 	if !ok {
 		return nil, storage.ErrNotFound
 	}
-	if !storage.SamePackInfo(current, b.info) {
+	if !sameWarmReadLifecycle(current, b.info) {
 		return nil, storage.ErrConflict
 	}
 	if err = e.eligible(ctx, b); err != nil {
@@ -331,7 +350,7 @@ func (e *warmExecutor) Execute(ctx context.Context, i int, _ engine.PlannedChunk
 	if err = e.physical(ctx, b); err != nil {
 		return nil, err
 	}
-	if err = e.authorize(ctx); err != nil {
+	if err = e.checkView(ctx); err != nil {
 		return nil, err
 	}
 	stored, hit, err := o.Cache.Get(ctx, b.key)
@@ -350,7 +369,7 @@ func (e *warmExecutor) Execute(ctx context.Context, i int, _ engine.PlannedChunk
 			return nil, err
 		}
 	}
-	if err = e.authorize(ctx); err != nil {
+	if err = e.checkView(ctx); err != nil {
 		return nil, err
 	}
 	raw, err := VerifyPackEntry(ctx, b.entry, stored)
@@ -364,7 +383,7 @@ func (e *warmExecutor) Execute(ctx context.Context, i int, _ engine.PlannedChunk
 		}
 		return nil, err
 	}
-	if err = e.authorize(ctx); err != nil {
+	if err = e.checkView(ctx); err != nil {
 		return nil, err
 	}
 	if !hit {
@@ -380,4 +399,11 @@ func (e *warmExecutor) Execute(ctx context.Context, i int, _ engine.PlannedChunk
 		}
 	}
 	return raw, nil
+}
+
+// LastAccess is a non-authoritative observation. Writer ownership and retention
+// deadlines do not change this pinned Warm generation's read eligibility either.
+// Keep identity, size, class/state/revision and restore-expiry checks explicit.
+func sameWarmReadLifecycle(a, b storage.PackInfo) bool {
+	return a.Version == b.Version && a.Ref == b.Ref && a.Size == b.Size && a.Class == b.Class && a.State == b.State && a.StateRevision == b.StateRevision && a.RestoredUntil.Equal(b.RestoredUntil)
 }

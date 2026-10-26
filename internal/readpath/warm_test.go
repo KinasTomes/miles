@@ -105,15 +105,16 @@ func (s *warmS3) GetObject(ctx context.Context, in *awss3.GetObjectInput, _ ...f
 func (s *warmS3) count() int { s.mu.Lock(); defer s.mu.Unlock(); return s.gets }
 
 type warmFixture struct {
-	reader   *WarmReader
-	request  WarmRequest
-	backend  *warmS3
-	body     []byte
-	first    []byte
-	entries  []pack.Entry
-	ref      storage.PackRef
-	clock    *clock.Virtual
-	metadata *badger.Store
+	reader       *WarmReader
+	request      WarmRequest
+	backend      *warmS3
+	body         []byte
+	first        []byte
+	entries      []pack.Entry
+	ref          storage.PackRef
+	clock        *clock.Virtual
+	metadata     *badger.Store
+	metadataPath string
 }
 
 func newWarmFixture(t *testing.T, w int64) *warmFixture {
@@ -185,12 +186,17 @@ func newWarmMode(t *testing.T, w int64, noFCS bool, rawSizes ...int) *warmFixtur
 	entries = []pack.Entry{first, second, first}
 	f.Packs = []storage.PackInfo{{Version: 1, Ref: ref, Size: int64(len(data)), State: "Warm", Class: storage.Standard, StateRevision: 1}}
 	f.Quota.Limit = 1 << 30 // Fixture-only logical quota, not a production default.
-	db, err := badger.Open(badger.Options{Path: t.TempDir(), Now: func() time.Time { return f.Now }})
+	path := t.TempDir()
+	db, err := badger.Open(badger.Options{Path: path, Now: func() time.Time { return f.Now }})
 	if err != nil {
 		t.Fatal(err)
 	}
+	holder := &warmFixture{metadata: db, metadataPath: path}
 	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
+		if holder.metadata == nil {
+			return
+		}
+		if err := holder.metadata.Close(); err != nil {
 			t.Error(err)
 		}
 	})
@@ -255,7 +261,8 @@ func newWarmMode(t *testing.T, w int64, noFCS bool, rawSizes ...int) *warmFixtur
 		t.Fatal(err)
 	}
 	body := append(append(bytes.Clone(raw), compressed...), raw...)
-	return &warmFixture{reader: reader, request: WarmRequest{CredentialID: "owner-key", Bucket: "demo", Key: "file", Deadline: d, BucketPolicy: bucket, Budget: budget(32 << 20), MaxOutstanding: 3}, backend: backend, body: body, first: raw, entries: entries, ref: ref, clock: c, metadata: db}
+	*holder = warmFixture{reader: reader, request: WarmRequest{CredentialID: "owner-key", Bucket: "demo", Key: "file", Deadline: d, BucketPolicy: bucket, Budget: budget(32 << 20), MaxOutstanding: 3}, backend: backend, body: body, first: raw, entries: entries, ref: ref, clock: c, metadata: db, metadataPath: path}
+	return holder
 }
 func (f *warmFixture) read(ctx context.Context, q WarmRequest) (WarmResult, []byte, error) {
 	var out []byte
