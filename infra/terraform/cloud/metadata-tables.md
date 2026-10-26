@@ -17,6 +17,10 @@ Number. Không dùng riêng `domain_id` làm partition key của Chunks.
 
 Các tên thuộc tính này là đầu vào bàn giao cho adapter DynamoDB W4. Chưa có adapter
 DynamoDB production trong checkout; thay schema sau khi có dữ liệu sẽ cần migration.
+W03-HAI-03 bổ sung [mapping adapter/record phụ, index và transaction](../../../docs/contracts/dynamodb-adapter.md).
+Go key helpers có test đối chiếu đủ 20 bảng với inventory Terraform. Baseline
+W4 đề xuất không GSI/TTL; record phụ dùng namespace SystemConfig có record_kind,
+cần review cùng metadata/R2 trước enablement, không thêm thuộc tính vào page v1.
 Review mapping này cùng adapter trước apply, không đổi encoding Badger/pack/pages
 hoặc tự thêm GSI/TTL khi các task W2 chưa hoàn tất. GSI chỉ tìm candidates, không là
 bằng chứng authorization/commit; TTL không xóa lease/outbox/reservations đang sống.
