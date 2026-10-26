@@ -122,10 +122,26 @@ type PackInfo struct {
 	Ref                                              PackRef
 	Size                                             int64
 	Class                                            StorageClass
+	Writer                                           WriterFence // Uploading -> Warm publication owner.
 	RestoredUntil, ProtectedUntil, MinRetentionUntil time.Time
 	StateRevision                                    uint64
 	LastAccess                                       time.Time
 }
+
+// SamePackInfo compares persisted pack metadata by value. time.Time.Equal
+// ignores monotonic clock readings and location pointers lost in JSON storage.
+func SamePackInfo(a, b PackInfo) bool {
+	if !a.RestoredUntil.Equal(b.RestoredUntil) || !a.ProtectedUntil.Equal(b.ProtectedUntil) ||
+		!a.MinRetentionUntil.Equal(b.MinRetentionUntil) || !a.LastAccess.Equal(b.LastAccess) {
+		return false
+	}
+	a.RestoredUntil, b.RestoredUntil = time.Time{}, time.Time{}
+	a.ProtectedUntil, b.ProtectedUntil = time.Time{}, time.Time{}
+	a.MinRetentionUntil, b.MinRetentionUntil = time.Time{}, time.Time{}
+	a.LastAccess, b.LastAccess = time.Time{}, time.Time{}
+	return a == b
+}
+
 type ChunkLocation struct {
 	Pack  PackRef
 	Range ByteRange

@@ -341,6 +341,18 @@ func (m *Metadata) GetManifest(ctx context.Context, id string) ([]s.ManifestPage
 	sort.Slice(out, func(i, j int) bool { return out[i].Number < out[j].Number })
 	return out, nil
 }
+func (m *Metadata) GetManifestPage(ctx context.Context, id string, number uint32) (s.ManifestPage, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return s.ManifestPage{}, err
+	}
+	page, ok := m.manifests[id][number]
+	if !ok {
+		return s.ManifestPage{}, s.ErrNotFound
+	}
+	return copyOf(page), nil
+}
 func (m *Metadata) GetObject(ctx context.Context, key s.ObjectKey) (s.ObjectHead, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
