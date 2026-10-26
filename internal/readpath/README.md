@@ -1,6 +1,22 @@
 # Read path — implementation, evidence và integration gates
 
-## Trạng thái sau khi tích hợp Badger metadata
+## W03-PHONG-01 — Warm reader một node
+
+`NewWarmReader` ghép Badger metadata, S3 PackStore, manifest planner, production
+pack verifier, LRU và admission/scheduler. `WarmMetrics` cung cấp integrity/abort
+counters. `coordination.WarmGate` giữ local exact-generation pins đến quiescence;
+không thay durable/distributed R1 và không cho maintenance bypass local gate.
+
+API consumer nhận metadata qua `Ready`, nhận verified slices theo logical order
+và phải abort HTTP stream khi Read trả lỗi sau prefix. Decoder charges lấy từ
+`pack.EstimateDecodeMemory`; transport bound và metadata planning limits là
+dependencies explicit, không có production defaults. Toàn requested range phải
+qua metadata/backend archive preflight trước cache/emit.
+
+Evidence, checklist mapping và giới hạn deployment tại
+[warm-read-validation.md](../../docs/testing/warm-read-validation.md).
+
+## Hồ sơ W2 sau khi tích hợp Badger metadata
 
 W02-PHONG-02 đã được nghiệm thu phạm vi prototype fake metadata/S3. Protected reader và C3 production tiếp tục ở W3; không thêm dependency ngược để chặn nghiệm thu W2.
 

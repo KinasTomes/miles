@@ -63,12 +63,21 @@ func RunReadAhead(ctx context.Context, admission *Admission, binding BucketBindi
 	if err := validateScheduledPlan(plan); err != nil {
 		return err
 	}
-	runCtx, cancel := context.WithCancelCause(ctx)
-	defer cancel(nil)
-	ticket, err := admission.AdmitRequest(runCtx, binding, requestBudget)
+	ticket, err := admission.AdmitRequest(ctx, binding, requestBudget)
 	if err != nil {
 		return err
 	}
+	defer ticket.Close()
+	return runAdmittedReadAhead(ctx, admission, binding, plan, maxOutstanding, executor, emit, ticket)
+}
+
+// The Warm reader acquires its ticket before manifest resolution, retaining the
+// same active-request slot and budgets through preflight and streaming. This
+// helper owns worker quiescence, while its caller owns the ticket lifetime.
+func runAdmittedReadAhead(ctx context.Context, admission *Admission, binding BucketBinding, plan engine.ReadPlan, maxOutstanding int, executor ChunkExecutor, emit ChunkEmitter, ticket *RequestTicket) error {
+	w := binding.Policy.Cache().ReadaheadChunks
+	runCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	// At most 65 job records/channels regardless of K or manifest length.
 	limit := min(maxOutstanding, int(w)+1, len(plan.Chunks))
 	jobs := make([]*readJob, 0, limit)
@@ -79,7 +88,6 @@ func RunReadAhead(ctx context.Context, admission *Admission, binding BucketBindi
 			job.raw = nil
 			job.reservation.Release()
 		}
-		ticket.Close()
 	}()
 	for i := 0; i < len(plan.Chunks); i++ {
 		// Completion alone never moves the window; i advances after emit returns.
@@ -100,7 +108,7 @@ func RunReadAhead(ctx context.Context, admission *Admission, binding BucketBindi
 			if len(jobs) == 0 {
 				reservation, err = admission.ReserveDemand(runCtx, ticket, cost)
 			} else {
-				reservation, err = admission.TryReservePrefetch(ticket, cost)
+				reservation, err = admission.reserve(runCtx, ticket, cost, true)
 				if errors.Is(err, ErrExhausted) {
 					break
 				}
