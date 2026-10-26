@@ -74,6 +74,43 @@ Nguồn: [EC2 regional Price List](https://pricing.us-east-1.amazonaws.com/offer
 
 ## Phần còn lại trước Done
 
+### Chuẩn bị full teardown ngày 26/10/2026
+
+Đăng nhập lại đúng deploy role; API inventory xác nhận vẫn pause, không còn
+EC2/NAT/EIP/interface endpoints/ALB/root volume mồ côi. Refresh-only plan không có
+thay đổi. Dùng cùng remote backend thật, bản cấu hình cleanup riêng đã tạo được
+plan chỉ update deletion protection của 20 bảng và preview destroy 70 resource dev;
+không gồm 5 resource bootstrap state. Chưa apply hai plan này.
+
+Grant audit tạm chỉ đọc đúng datastore dev, có hạn 4 giờ, qua Access Analyzer
+không findings và 16 simulation cases. Phiên quản trị chỉ gọi IAM/validation;
+mọi kiểm tra workload dùng deploy role. Kết quả audit có phân trang:
+
+- 20 bảng đều Scan COUNT nhất quán bằng 0; không có backup DynamoDB trong Region.
+- S3 có đúng hai object versions nghiệm thu khớp evidence cũ; không có delete
+  marker hoặc multipart upload. Chưa xóa object/version nào.
+- Secret metadata chưa có version. Không có EBS snapshot thuộc account dùng
+  runtime key; data volume 20 GiB vẫn detached. Chưa mount lại để kiểm filesystem
+  trong lượt này, nên chưa kết luận độc lập volume rỗng hoặc có backup để phục hồi.
+- Tám audit log events đã lưu riêng ngoài Git để giữ bằng chứng trước khi xóa log
+  group. Inventory/state/plans/policy/identifiers chi tiết tiếp tục nằm ngoài Git.
+
+Baseline quyền cleanup được generate bằng IAM Policy Autopilot 0.3.0 từ Terraform
+destroy preview, rồi thu hẹp tới action thiếu và ARN thực trong state. Bỏ quyền
+replication, tạo snapshot, Object Lock bypass và tài nguyên dịch vụ không dùng;
+không attach nguyên output của generator. Candidate qua Access Analyzer không
+findings, 28 simulation cases đạt: từ chối ngoài phạm vi/hết hạn/sai Region, giữ
+KMS/secret window 30 ngày và từ chối force-delete secret. Candidate chưa được gắn.
+
+Source dev vẫn giữ đủ bốn prevent_destroy, DynamoDB deletion protection và
+force_destroy=false. 12 Python guard tests, Terraform fmt và kiểm runbook shell
+syntax đạt. [Runbook full teardown](../../infra/terraform/cloud/full-teardown.md)
+ghi thứ tự data review, unprotect, fresh destroy plan, inventory và phục hồi khi dở.
+
+Chờ duyệt danh sách dữ liệu/tài nguyên được xóa, gồm quyết định EBS không có snapshot.
+Sau unprotect apply và dọn S3 phải tạo lại destroy plan từ remote state thật;
+preview hiện tại không được dùng làm saved plan thực thi. Task vẫn Doing, 2/3.
+
 Checklist dựng IaC và kiểm quyền/network/control objects có bằng chứng live.
 Inventory và pause/resume đã kiểm; **full destroy môi trường disposable chưa chạy**.
 Việc đó cần review/xác nhận riêng dữ liệu cần giữ, backup/retention, gỡ bảo vệ data
