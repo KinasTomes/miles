@@ -1,0 +1,7 @@
+{
+  "catalog": "{\"genesis\":{\"length\":12,\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"history\":\"11111111111111111111111111111111\",\"incarnation\":\"22222222222222222222222222222222\",\"r2_version\":1}",
+  "inventory": "{\"epoch\":0,\"events\":[{\"descriptor\":{\"length\":12,\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}],\"history\":\"11111111111111111111111111111111\",\"r2_version\":1,\"state\":\"Closed\"}",
+  "members": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ]
+}
