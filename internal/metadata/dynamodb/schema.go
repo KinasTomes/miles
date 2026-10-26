@@ -72,7 +72,7 @@ var mutationID = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // PageKey supports all frozen page namespaces. The codec must also verify the
 // kind/owner/number in body before any item is accepted.
 func PageKey(kind byte, owner string, number uint32) (Key, error) {
-	if !ownerID.MatchString(owner) || number >= 1024 {
+	if !ownerID.MatchString(owner) || number >= storage.MaxManifestPages {
 		return Key{}, storage.ErrInvalid
 	}
 	var table, name string

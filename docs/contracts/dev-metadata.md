@@ -36,6 +36,7 @@ Unknown schema versions fail closed. Future schema changes require migration.
 | packs/writers | Pack+generation / lease ID | Physical state/protection/access fields; current lease and incarnation/epoch |
 | heads | Bucket+incarnation+key | Complete head or tombstone, monotonic revision, operation ID, manifest descriptor |
 | pages | Manifest ID+page number | Exact `MILESPAG` binary body, not JSON |
+| part-pages | Part manifest ID+page number | Exact kind-2 `MILESPAG`; optional PartPageStore stages pages without publishing a part head |
 | manifest-seals | Manifest ID | Publishing operation ID and page count; forbids appending pages or reusing the manifest for another publication |
 | quotas | Owner | Limit, Used, Reserved, Staged, ActiveUploads |
 | reservations | Reservation ID | Operation/object/owner/upload binding, base size/revision, bytes, staged bytes, state, deadline, writer, revision |
@@ -94,7 +95,7 @@ renewal/takeover without changing logical input. Retry the same operation and
 input; changed input conflicts. A retry returns the original head even after a
 later overwrite. Current authorization/fencing still applies on retry.
 
-Outbox fields preserve Version, ID, HistoryID, Epoch, Entity/EntityID, Object,
+Outbox fields preserve Version, ID, HistoryID, Epoch, Entity/Action/EntityID, Object,
 Revision, OpID, PayloadPointer and PayloadSHA256. The adapter validates the
 envelope, not the external payload. The engine must durably prepare that payload
 before publication; a future worker exports/acknowledges it. No fake dispatch or
@@ -116,7 +117,7 @@ its quota released. Repeated release is idempotent.
 - Chiến: stable metadata port for authorization, LIST, multipart completion and
   receipt retries. Credential secret storage and S3 handlers are separate tasks.
 - Hải: use this adapter for engine canonical CAS and write publication; register
-  physical packs through the forthcoming lifecycle/admin ports, not test hooks.
+  physical packs through PackLifecycleStore, not test hooks.
 - Phong: head index and page reads support read/cache work; pack access timestamps
   are monotonic. This is not full R1 admission/closure or distributed recovery.
 - Hưng: lifecycle ownership belongs to application wiring. The existing `dev`
@@ -125,3 +126,9 @@ its quota released. Repeated release is idempotent.
 
 Worker loops, durable R1 admissions, recovery roots/epoch closure, outbox draining,
 GC, multipart upload creation and DynamoDB implementation remain later tasks.
+
+W03-HAI-03 adds the [storage handoff](storage-handoff.md), a distinct part-page
+staging capability and [DynamoDB preparation](dynamodb-adapter.md). Part pages
+survive reopen and validate kind/owner/number/checksum; they do not publish part
+heads or freeze uploads. Native item/request bounds are preparation for W4, not
+a distributed backend implementation.

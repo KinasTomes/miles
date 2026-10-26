@@ -44,6 +44,7 @@ type Metadata struct {
 	uploads                           map[string]s.Completion
 	chunks                            map[s.ChunkKey]s.Chunk
 	manifests                         map[string]map[uint32]s.ManifestPage
+	partPages                         map[string]map[uint32]s.ManifestPage
 	manifestSeals                     map[string]uint32
 	heads                             map[s.ObjectKey]s.ObjectHead
 	reservations                      map[string]s.Reservation

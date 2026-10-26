@@ -114,8 +114,10 @@ func TestWriteCommitWarmReadHandoff(t *testing.T) {
 	if err != nil || old.Revision != 1 {
 		t.Fatal(old, err)
 	}
-	r.Head.ManifestID, r.Head.Size = prepared.ManifestID, prepared.Size
-	r.Head.PageCount, r.Head.ChunkCount, r.Head.PageIndex = prepared.PageCount, prepared.ChunkCount, prepared.PageIndex
+	r.Head, err = prepared.BindHead(r.Head)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := f.metadata.ReserveLogicalQuota(ctx, storage.Reservation{Version: 1, ID: r.ReservationID, OpID: r.Head.OpID, OwnerID: seed.Bucket.OwnerID,
 		Object: r.Head.Object, BaseRevision: old.Revision, BaseSize: old.Size, Bytes: max(0, prepared.Size-old.Size), StagedBytes: prepared.Size,
 		Revision: 1, State: storage.ReservationActive, Deadline: seed.Now.Add(time.Hour), Writer: r.Writer}); err != nil {

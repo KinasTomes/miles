@@ -113,6 +113,7 @@ func NoPublication(t *testing.T, store s.MetadataStore, r s.CommitRequest) {
 }
 
 func RunMetadata(t *testing.T, newStore MetadataFactory) {
+	runPartPages(t, newStore)
 	runCanonicalDestinations(t, newStore)
 	runReservations(t, newStore)
 	runQueries(t, newStore)

@@ -52,6 +52,14 @@ type ManifestPageReader interface {
 	GetManifestPage(context.Context, string, uint32) (ManifestPage, error)
 }
 
+// PartPageStore stages immutable kind-2 pages in a distinct namespace. It does
+// not publish an UploadPart head, freeze an upload or grant a lease. A batch may
+// partially succeed; the multipart publisher must verify its full descriptor.
+type PartPageStore interface {
+	WritePartPages(context.Context, []ManifestPage, WriterFence) error
+	GetPartPage(context.Context, string, uint32) (ManifestPage, error)
+}
+
 // PackLifecycleStore controls the metadata side of an immutable physical
 // write. Register before physical I/O; mark Warm only after the complete pack
 // and sidecar are verified. Canonical chunk mutations reject other states.

@@ -10,6 +10,9 @@ acceptance from an actual AWS execution; a skipped test is not live evidence.
 | Controlled archive transitions/restore expiry and deletion | Remaining `RunPacks` cases; S3 adapter fault/class tests | Simulator only; not claimed as AWS archive acceptance |
 | Write/prepare -> overwrite/commit/retry -> full GET/Range -> delete despite populated cache | `readpath.TestWriteCommitWarmReadHandoff` | Real writer, pack codec, Badger, S3 adapter and Warm reader; SDK service double |
 | API error vocabulary | `s3.TestMetadataWriteError`, metadata contract bucket/auth/quota tests | Offline |
+| Part staging namespace, immutable retry, writer fence, wrong kind and reopen | Shared part contract; Badger `TestPartPagesSurviveReopenAndRejectWrongKind` | Fake/Badger |
+| Physical schema alignment, domain/generation identities, auxiliary namespaces | DynamoDB schema tests | Offline; no DynamoDB Store |
+| Native sizes, full-page/head-index bounds, oversized metadata/envelope/receipt, duplicate targets and aggregate transactions | DynamoDB item/limits/wire tests, manifest index tests | Native SDK attributes and SDK serializer seam; no AWS call |
 
 The Warm core intentionally performs no storage-class changes or deletes. Raw
 byte PackStore tests check the physical port; the writer/read handoff additionally
@@ -59,3 +62,24 @@ publication require separate tests and are not implied by a Warm pass.
 
 Live status for this task: **not executed; environment unavailable**. Complete
 checklist 1 live acceptance only after attaching a real execution record.
+
+## W03 checklist evidence and remaining gates
+
+1. Acceptance suite and write/read integration run offline; S3 SDK double passes
+   the same Warm core as fake PackStore. The opt-in live runner is prepared and
+   skips by default. Actual S3 dev evidence remains outstanding.
+2. Schema/keys, zero-index baseline, record namespaces, consistency, conditions,
+   bounded preparation and SDK API seam are prepared in dynamodb-adapter.md and
+   Go helpers; table inventory alignment is tested. Consumer review is required
+   before production mutation/registry/closure enablement.
+3. PartPageStore, prepared-head binding, strict descriptor/index codecs and native
+   size/transaction guards are implemented with tests. Multipart orchestration,
+   full completion/R2 codecs and a networked DynamoDB MetadataStore remain W4.
+
+Branch validation performed on Windows on 26/10/2026: `go test ./...`,
+`go vet ./...`, `go build ./...`, all 6 Python unit tests, doc-name checks,
+gofmt and `git diff --check` passed. An initial restricted run of the existing
+readpath HTTP test was denied loopback access; the full run with loopback allowed
+passed. CI configuration covers Linux race checks; no CI run is claimed for this
+branch, and local Windows race is unavailable without CGO/C compiler. A checklist
+implementation commit does not assert its live/consumer enablement gates passed.
