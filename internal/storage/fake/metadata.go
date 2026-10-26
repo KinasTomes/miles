@@ -48,6 +48,7 @@ type Metadata struct {
 	heads                             map[s.ObjectKey]s.ObjectHead
 	reservations                      map[string]s.Reservation
 	events                            map[string]s.OutboxEvent
+	exports                           map[string]s.OutboxExport
 	receipts                          map[string]s.CompletedReceipt
 	commits                           map[string]committed
 	failBeforeCommit, failAfterCommit bool
