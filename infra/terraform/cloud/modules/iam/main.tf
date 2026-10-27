@@ -6,9 +6,10 @@ locals {
   writable_prefixes = ["packs/", "packs-index/", "journal/", "checkpoints/"]
 }
 resource "aws_iam_role" "runtime" {
-  for_each = local.roles
-  name     = "${var.name}-${each.key}"
-  path     = "/miles/dev/"
+  for_each             = local.roles
+  name                 = "${var.name}-${each.key}"
+  path                 = "/miles/dev/"
+  permissions_boundary = var.permissions_boundary_arn
   assume_role_policy = jsonencode({
     Version   = "2012-10-17"
     Statement = [{ Effect = "Allow", Action = "sts:AssumeRole", Principal = { Service = "ec2.amazonaws.com" } }]
@@ -26,7 +27,11 @@ resource "aws_iam_role_policy" "runtime" {
   role     = aws_iam_role.runtime[each.key].id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = concat([
+    Statement = concat(each.key == "gateway" ? [
+      { Sid = "RegisterDevNode", Effect = "Allow", Action = ["ssm:UpdateInstanceInformation"], Resource = "arn:aws:ec2:${var.region}:${var.account_id}:instance/*", Condition = { StringEquals = { "aws:RequestedRegion" = var.region } } },
+      { Sid = "AgentChannels", Effect = "Allow", Action = ["ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"], Resource = "*", Condition = { StringEquals = { "aws:RequestedRegion" = var.region } } },
+      { Sid = "VerifySessionLogEncryption", Effect = "Allow", Action = ["logs:DescribeLogGroups"], Resource = "*", Condition = { StringEquals = { "aws:RequestedRegion" = var.region } } }
+      ] : [], [
       { Sid = "ListData", Effect = "Allow", Action = ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketMultipartUploads"], Resource = "arn:aws:s3:::${var.data_bucket_name}" },
       { Sid = "ReadData", Effect = "Allow", Action = ["s3:GetObject"], Resource = "arn:aws:s3:::${var.data_bucket_name}/*" },
       { Sid = "WriteData", Effect = "Allow", Action = ["s3:PutObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts", "s3:RestoreObject"], Resource = [for p in local.writable_prefixes : "arn:aws:s3:::${var.data_bucket_name}/${p}*"] },
@@ -44,4 +49,7 @@ resource "aws_iam_role_policy" "runtime" {
   })
 }
 output "role_arns" { value = { for n, r in aws_iam_role.runtime : n => r.arn } }
-output "instance_profile_names" { value = { for n, p in aws_iam_instance_profile.runtime : n => p.name } }
+output "instance_profile_names" {
+  value      = { for n, p in aws_iam_instance_profile.runtime : n => p.name }
+  depends_on = [aws_iam_role_policy.runtime]
+}

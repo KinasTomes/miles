@@ -24,7 +24,7 @@ jobs:
       - name: Format, vet, test and build
         run: make check
       - name: Storage and runtime race checks
-        run: go test -race ./internal/storage/... ./internal/metadata/... ./internal/manifest ./internal/engine ./internal/pack ./internal/cache ./internal/readpath ./internal/config ./internal/app ./internal/observability ./cmd/miles
+        run: go test -race ./internal/storage/... ./internal/metadata/... ./internal/manifest ./internal/engine ./internal/pack ./internal/cache ./internal/readpath ./internal/coordination/... ./internal/config ./internal/app ./internal/observability ./cmd/miles
 
   terraform-check:
     runs-on: ubuntu-24.04
@@ -55,10 +55,10 @@ jobs:
           terraform -chdir=infra/terraform/cloud/bootstrap/state validate
           terraform -chdir=infra/terraform/cloud/environments/dev init -backend=false -input=false -lockfile=readonly
           terraform -chdir=infra/terraform/cloud/environments/dev validate
-      - name: Test plans with mock AWS (no credentials or apply)
+      - name: Test dev lifecycle with mock AWS (no AWS API calls)
         run: terraform -chdir=infra/terraform/cloud/environments/dev test
 
-      - name: Test deployment identity gate (offline)
+      - name: Test deployment identity and session plan guards (offline)
         run: python3 -B -m unittest discover -s infra/terraform/cloud/scripts/tests -v
 
   benchmark-contracts:

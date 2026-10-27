@@ -1,0 +1,154 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateTaggedStandaloneNetwork",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateVpc",
+        "ec2:AllocateAddress",
+        "ec2:CreateInternetGateway"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:elastic-ip/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:internet-gateway/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "CreateTaggedSubnet",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSubnet"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:subnet/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "CreateTaggedRouteTable",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateRouteTable"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:route-table/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "CreateTaggedSecurityGroup",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSecurityGroup"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "CreateTaggedNat",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateNatGateway"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:natgateway/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "CreateTaggedEndpoint",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateVpcEndpoint"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc-endpoint/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "CreateOnlyInsideOwnedNetwork",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateSubnet",
+        "ec2:CreateRouteTable",
+        "ec2:CreateSecurityGroup",
+        "ec2:CreateNatGateway",
+        "ec2:CreateVpcEndpoint"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:subnet/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:elastic-ip/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:route-table/*",
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Sid": "CreateTaggedRules",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AuthorizeSecurityGroupIngress",
+        "ec2:AuthorizeSecurityGroupEgress"
+      ],
+      "Resource": [
+        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group-rule/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        }
+      }
+    }
+  ]
+}

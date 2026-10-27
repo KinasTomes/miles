@@ -48,7 +48,7 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 			return err
 		}
 		if a.Bucket.ID != r.Head.Object.BucketID {
-			return s.ErrNotFound
+			return s.ErrBucketNotFound
 		}
 		if a.UserID != r.UserID || !a.Write {
 			return s.ErrAccessDenied
@@ -84,6 +84,13 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 			return s.ErrConflict
 		}
 		found, err := exists(t, key("events", r.Event.ID))
+		if err != nil {
+			return err
+		}
+		if found {
+			return s.ErrConflict
+		}
+		found, err = exists(t, key("event-ops", r.Event.OpID))
 		if err != nil {
 			return err
 		}
@@ -245,10 +252,13 @@ func (m *Store) ReserveLogicalQuota(ctx context.Context, r s.Reservation) error 
 		}
 		b, err := get[s.Bucket](t, key("buckets", r.Object.Bucket))
 		if err != nil {
+			if errors.Is(err, s.ErrNotFound) {
+				return s.ErrBucketNotFound
+			}
 			return err
 		}
 		if !b.Active || b.ID != r.Object.BucketID {
-			return s.ErrNotFound
+			return s.ErrBucketNotFound
 		}
 		if b.OwnerID != r.OwnerID {
 			return s.ErrInvalid

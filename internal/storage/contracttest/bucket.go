@@ -129,7 +129,7 @@ func runBucketCreate(t *testing.T, newStore MetadataFactory) {
 		if err != nil || !a.Write {
 			t.Fatal("grant on the first incarnation is not effective", a, err)
 		}
-		h.DeleteBucket("recycled") // cleanup path, not the S3 DeleteBucket
+		h.RemoveBucket("recycled") // cleanup path, not the S3 DeleteBucket
 		second, created, err := h.Store.CreateBucket(ctx, s.BucketCreate{CredentialID: "owner-key", UserID: "owner", Name: "recycled"})
 		if err != nil || !created {
 			t.Fatalf("recreate: created=%v err=%v", created, err)

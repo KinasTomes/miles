@@ -3,6 +3,7 @@ package config_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -28,7 +29,10 @@ func TestPolicyCandidateSharedPortCompatibility(t *testing.T) {
 	})
 	ctx := context.Background()
 	event := func(id string, revision uint64) *storage.OutboxEvent {
-		return &storage.OutboxEvent{Version: storage.ModelVersion, ID: id, HistoryID: "history", Entity: "SystemConfig", EntityID: "global-policy", Revision: revision, OpID: id, PayloadPointer: "payload/" + id, PayloadSHA256: strings.Repeat("a", 64)}
+		opID := fmt.Sprintf("%x", sha256.Sum256([]byte(id)))[:32]
+		historyID := strings.Repeat("1", 32)
+		eventID, _ := storage.EventID(historyID, opID, "SystemConfig", "entity_put")
+		return &storage.OutboxEvent{Version: storage.ModelVersion, ID: eventID, HistoryID: historyID, Entity: "SystemConfig", Action: "entity_put", EntityID: "global-policy", Revision: revision, OpID: opID, PayloadPointer: "payload/" + id, PayloadSHA256: strings.Repeat("a", 64)}
 	}
 	bootstrap, err := globalSnapshot(t, v, 1).StorageSnapshot()
 	if err != nil {
@@ -97,7 +101,10 @@ func TestConcurrentPolicyProposalsPreserveCASAndHistory(t *testing.T) {
 	})
 	ctx := context.Background()
 	event := func(id string, revision uint64) *storage.OutboxEvent {
-		return &storage.OutboxEvent{Version: storage.ModelVersion, ID: id, HistoryID: "history", Entity: "SystemConfig", EntityID: "global-policy", Revision: revision, OpID: id, PayloadPointer: "payload/" + id, PayloadSHA256: strings.Repeat("a", 64)}
+		opID := fmt.Sprintf("%x", sha256.Sum256([]byte(id)))[:32]
+		historyID := strings.Repeat("1", 32)
+		eventID, _ := storage.EventID(historyID, opID, "SystemConfig", "entity_put")
+		return &storage.OutboxEvent{Version: storage.ModelVersion, ID: eventID, HistoryID: historyID, Entity: "SystemConfig", Action: "entity_put", EntityID: "global-policy", Revision: revision, OpID: opID, PayloadPointer: "payload/" + id, PayloadSHA256: strings.Repeat("a", 64)}
 	}
 	// Reach actual R3 through shared CAS: R1 level1, R2 level7, R3 W1 default3.
 	// Revision0 is used only for the fake's existing empty-store bootstrap.

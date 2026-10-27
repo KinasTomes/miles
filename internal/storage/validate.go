@@ -49,7 +49,9 @@ func (r CommitRequest) Validate() error {
 		return fmt.Errorf("%w: head version/revision/identity/size", ErrInvalid)
 	}
 	if h.Deleted {
-		if h.Size != 0 || h.ManifestID != "" || r.Receipt != nil || r.Completion != nil {
+		if h.Size != 0 || h.ManifestID != "" || h.PageCount != 0 || h.ChunkCount != 0 || len(h.PageIndex) != 0 ||
+			h.ETag != "" || h.ETagKind != "" || h.Checksum != (Checksum{}) || len(h.Metadata) != 0 ||
+			r.Receipt != nil || r.Completion != nil {
 			return fmt.Errorf("%w: tombstone payload", ErrInvalid)
 		}
 	} else if h.ManifestID == "" || h.ETag == "" {
@@ -78,6 +80,10 @@ func (r CommitRequest) Validate() error {
 func (e OutboxEvent) Validate() error {
 	if e.Version != ModelVersion || e.ID == "" || e.HistoryID == "" || e.OpID == "" || e.Revision == 0 || e.PayloadPointer == "" || !sha256Hex.MatchString(e.PayloadSHA256) {
 		return fmt.Errorf("%w: authoritative outbox event", ErrInvalid)
+	}
+	id, err := EventID(e.HistoryID, e.OpID, e.Entity, e.Action)
+	if err != nil || e.ID != id {
+		return fmt.Errorf("%w: outbox event identity", ErrInvalid)
 	}
 	switch e.Entity {
 	case "Objects":

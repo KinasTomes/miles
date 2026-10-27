@@ -305,10 +305,13 @@ func (m *Store) authorize(t *db.Txn, credential, bucket string) (s.Authorization
 	}
 	b, err := get[s.Bucket](t, key("buckets", bucket))
 	if err != nil {
+		if errors.Is(err, s.ErrNotFound) {
+			return s.Authorization{}, s.ErrBucketNotFound
+		}
 		return s.Authorization{}, err
 	}
 	if !b.Active {
-		return s.Authorization{}, s.ErrNotFound
+		return s.Authorization{}, s.ErrBucketNotFound
 	}
 	g, err := optional[s.Grant](t, key("grants", b.ID, u.ID))
 	if err != nil {

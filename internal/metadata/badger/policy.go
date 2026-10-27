@@ -123,10 +123,19 @@ func (m *Store) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySnapsh
 			return s.ErrConflict
 		}
 		e := r.Event
-		if e == nil || e.Validate() != nil || e.Entity != "SystemConfig" || e.Revision != revision+1 {
+		// PutPolicy only publishes a put event; a valid delete identity would
+		// misrepresent the authoritative mutation to recovery consumers.
+		if e == nil || e.Validate() != nil || e.Entity != "SystemConfig" || e.Action != "entity_put" || e.Revision != revision+1 {
 			return s.ErrInvalid
 		}
 		found, err := exists(t, key("events", e.ID))
+		if err != nil {
+			return err
+		}
+		if found {
+			return s.ErrConflict
+		}
+		found, err = exists(t, key("event-ops", e.OpID))
 		if err != nil {
 			return err
 		}

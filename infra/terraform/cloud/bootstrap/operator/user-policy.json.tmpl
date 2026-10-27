@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadPasswordRulesAndMFAInventory",
+      "Effect": "Allow",
+      "Action": ["iam:GetAccountPasswordPolicy", "iam:ListVirtualMFADevices"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageOwnPasswordAndEnrollMFA",
+      "Effect": "Allow",
+      "Action": ["iam:GetUser", "iam:ChangePassword", "iam:EnableMFADevice", "iam:GetMFADevice", "iam:ListMFADevices", "iam:ResyncMFADevice"],
+      "Resource": "arn:aws:iam::ACCOUNT_ID:user/miles/operators/hung-deploy"
+    },
+    {
+      "Sid": "CreateOwnVirtualMFA",
+      "Effect": "Allow",
+      "Action": ["iam:CreateVirtualMFADevice", "iam:TagMFADevice"],
+      "Resource": "arn:aws:iam::ACCOUNT_ID:mfa/hung-deploy"
+    },
+    {
+      "Sid": "AssumeDevDeployWithMFA",
+      "Effect": "Allow",
+      "Action": "sts:AssumeRole",
+      "Resource": "arn:aws:iam::ACCOUNT_ID:role/miles/bootstrap/miles-dev-deploy",
+      "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
+    },
+    {
+      "Sid": "NeverCreateLongTermAccessKeys",
+      "Effect": "Deny",
+      "Action": "iam:CreateAccessKey",
+      "Resource": "*"
+    }
+  ]
+}

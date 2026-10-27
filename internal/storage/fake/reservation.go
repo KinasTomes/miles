@@ -51,7 +51,7 @@ func (m *Metadata) ReserveLogicalQuota(ctx context.Context, r s.Reservation) err
 	}
 	b, ok := m.buckets[r.Object.Bucket]
 	if !ok || !b.Active || b.ID != r.Object.BucketID {
-		return s.ErrNotFound
+		return s.ErrBucketNotFound
 	}
 	if b.OwnerID != r.OwnerID {
 		return s.ErrInvalid
@@ -81,6 +81,74 @@ func (m *Metadata) ReserveLogicalQuota(ctx context.Context, r s.Reservation) err
 	m.quotas[r.OwnerID] = q
 	m.reservations[r.ID] = r
 	return nil
+}
+
+func (m *Metadata) AdjustLogicalQuota(ctx context.Context, a s.ReservationAdjustment) (s.Reservation, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return s.Reservation{}, err
+	}
+	if err := m.fence(a.Writer); err != nil {
+		return s.Reservation{}, err
+	}
+	if a.ID == "" || a.OpID == "" || a.ExpectedRevision == 0 {
+		return s.Reservation{}, s.ErrInvalid
+	}
+	r, ok := m.reservations[a.ID]
+	if !ok {
+		return s.Reservation{}, s.ErrNotFound
+	}
+	if r.OpID != a.OpID || r.State != s.ReservationActive {
+		return s.Reservation{}, s.ErrConflict
+	}
+	if r.Writer != a.Writer || !m.now().Before(r.Deadline) {
+		return s.Reservation{}, s.ErrFenced
+	}
+	if r.Revision != a.ExpectedRevision {
+		if a.ExpectedRevision != ^uint64(0) && r.Revision == a.ExpectedRevision+1 && r.Bytes == a.Bytes && r.StagedBytes == a.StagedBytes {
+			return r, nil
+		}
+		return s.Reservation{}, s.ErrConflict
+	}
+	if r.Revision == ^uint64(0) {
+		return s.Reservation{}, s.ErrConflict
+	}
+	q, ok := m.quotas[r.OwnerID]
+	if !ok {
+		return s.Reservation{}, s.ErrNotFound
+	}
+	q, err := s.AdjustReservationQuota(q, r, a.Bytes, a.StagedBytes)
+	if err != nil {
+		return s.Reservation{}, err
+	}
+	r.Bytes, r.StagedBytes, r.Revision = a.Bytes, a.StagedBytes, r.Revision+1
+	m.quotas[r.OwnerID] = q
+	m.reservations[r.ID] = r
+	return r, nil
+}
+
+func (m *Metadata) GetCommitOutcome(ctx context.Context, opID string) (s.CommitResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return s.CommitResult{}, err
+	}
+	if opID == "" {
+		return s.CommitResult{}, s.ErrInvalid
+	}
+	if m.failReconcile {
+		return s.CommitResult{}, s.ErrUnavailable
+	}
+	if done, ok := m.commits[opID]; ok {
+		return s.CommitResult{Head: copyOf(done.Head), AlreadyCommitted: true}, nil
+	}
+	for _, event := range m.events {
+		if event.OpID == opID {
+			return s.CommitResult{}, s.ErrUnavailable
+		}
+	}
+	return s.CommitResult{}, s.ErrNotFound
 }
 
 // outcome is an authoritative read within the same transaction as claim/release.

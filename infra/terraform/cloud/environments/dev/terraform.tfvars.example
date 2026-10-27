@@ -3,13 +3,18 @@ account_id = "123456789012"
 region = "ap-southeast-1"
 vpc_cidr = "10.0.0.0/16"
 availability_zones = ["ap-southeast-1a", "ap-southeast-1b"]
-egress_mode = "isolated" # W2 foundation only: not runtime-ready
+paused = true # Retains S3/DDB/EBS/KMS; not zero-cost if applied.
+enable_compute = false # Warm dev: true, plus pinned AL2023 ARM64 AMI below.
+# ami_id = "ami-0123456789abcdef0" # Fixture only; supply a reviewed real image.
+egress_mode = "nat" # Desired egress when paused=false; one NAT is not HA.
 nat_per_az = false
 # For dev runtime select nat; single NAT is not HA across AZ failure.
-# Or select interface (eight services * two AZs), bake dependencies into AMI.
+# Or select interface (nine services * two AZs, including ssmmessages), bake dependencies into AMI.
 enable_alb = false
 client_cidrs = []
 admin_ssh_cidrs = []
 # enable_alb=true needs an ISSUED ACM cert in the same account/Region.
 # certificate_arn = "..."
-# deploy_role_arn = "..." # required operationally before apply; never root apply
+# With CLI already signed in as the deploy role, leave deploy_role_arn unset.
+# Required when creating runtime roles using the scoped Miles deploy role:
+# runtime_permissions_boundary_arn = "arn:aws:iam::123456789012:policy/miles/bootstrap/MilesDevRuntimeBoundary"

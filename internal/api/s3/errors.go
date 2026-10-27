@@ -3,9 +3,12 @@ package s3
 import (
 	"crypto/rand"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+
+	"github.com/KinasTomes/miles/internal/storage"
 )
 
 // ErrorCode is an S3 error code of API v2 2.4.
@@ -93,6 +96,29 @@ type Error struct {
 	Message string
 	Bucket  string
 	Key     string
+}
+
+// MetadataWriteError maps the dev metadata publication result to the frozen
+// S3 error vocabulary. In particular, an unknown commit outcome stays retryable.
+func MetadataWriteError(err error) *Error {
+	var code ErrorCode
+	switch {
+	case errors.Is(err, storage.ErrBucketNotFound):
+		code = ErrNoSuchBucket
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		code = ErrQuotaExceeded
+	case errors.Is(err, storage.ErrConflict):
+		code = ErrOperationAborted
+	case errors.Is(err, storage.ErrUnavailable), errors.Is(err, storage.ErrFenced):
+		code = ErrServiceUnavailable
+	case errors.Is(err, storage.ErrAccessDenied):
+		code = ErrAccessDenied
+	case errors.Is(err, storage.ErrInvalid):
+		code = ErrInvalidRequest
+	default:
+		code = ErrInternalError
+	}
+	return &Error{Code: code}
 }
 
 func (e *Error) Error() string { return string(e.Code) + ": " + e.message() }

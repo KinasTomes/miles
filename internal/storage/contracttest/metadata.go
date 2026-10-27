@@ -4,6 +4,8 @@ package contracttest
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"reflect"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/manifest"
 	s "github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -30,7 +33,7 @@ type MetadataHarness struct {
 	FailReconcile func(bool)
 	Store         s.MetadataStore
 	SetBucket     func(s.Bucket)
-	DeleteBucket  func(string)
+	RemoveBucket  func(string)
 	SetCredential func(s.Credential)
 	SetUser       func(s.User)
 	SetGrant      func(s.Grant)
@@ -41,6 +44,21 @@ type MetadataHarness struct {
 }
 type MetadataFactory func(*testing.T, Fixture) MetadataHarness
 
+const fixtureHistoryID = "11111111111111111111111111111111"
+
+func fixtureOpID(label string) string {
+	sum := sha256.Sum256([]byte(label))
+	return hex.EncodeToString(sum[:16])
+}
+
+func fixtureEventID(opID, entity, action string) string {
+	id, err := s.EventID(fixtureHistoryID, opID, entity, action)
+	if err != nil {
+		panic(err)
+	}
+	return id
+}
+
 func NewFixture() Fixture {
 	now := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 	return Fixture{Now: now, Bucket: s.Bucket{Name: "demo", ID: "bucket-1", OwnerID: "owner", Domain: "default", Revision: 1, Active: true}, Users: []s.User{{ID: "owner", Active: true, Revision: 1}, {ID: "writer", Active: true, Revision: 1}, {ID: "admin", Active: true, Revision: 1}}, Credentials: []s.Credential{{ID: "owner-key", UserID: "owner", Active: true, Revision: 1}, {ID: "writer-key", UserID: "writer", Active: true, Revision: 1}, {ID: "admin-key", UserID: "admin", Active: true, SystemAdmin: true, Revision: 1}}, Grant: s.Grant{BucketID: "bucket-1", UserID: "writer", Write: true, Revision: 1}, Quota: s.LogicalQuota{OwnerID: "owner", Limit: 8}, Packs: []s.PackInfo{{Version: s.ModelVersion, Ref: s.PackRef{ID: "pack-a", Generation: "gen-1"}, Size: 64, Class: s.Standard, State: "Warm"}, {Version: s.ModelVersion, Ref: s.PackRef{ID: "pack-b", Generation: "gen-2"}, Size: 64, Class: s.Standard, State: "Warm"}}, Lease: s.WriterLease{Fence: s.WriterFence{LeaseID: "writer-lease", ServiceIncarnation: "history-1", Epoch: 1}, ExpiresAt: now.Add(time.Minute)}}
@@ -50,7 +68,8 @@ func (f Fixture) Chunk(domain string) s.Chunk {
 }
 func (f Fixture) Request(op string, revision uint64) s.CommitRequest {
 	object := s.ObjectKey{Bucket: f.Bucket.Name, BucketID: f.Bucket.ID, Key: "file"}
-	return s.CommitRequest{ReservationRevision: 1, Head: s.ObjectHead{Version: s.ModelVersion, Object: object, Domain: f.Bucket.Domain, ManifestID: "manifest-" + op, Size: 4, ETag: "\"fixture-etag\"", ETagKind: "put-md5", Metadata: map[string]string{"content-type": "application/octet-stream"}, OpID: op}, ExpectedRevision: revision, UserID: "writer", CredentialID: "writer-key", ReservationID: "reservation-" + op, Writer: f.Lease.Fence, Event: s.OutboxEvent{Version: s.ModelVersion, ID: "event-" + op, HistoryID: "history-1", Epoch: 0, Entity: "Objects", Object: object, Revision: revision + 1, OpID: op, PayloadPointer: "journal/input/" + op, PayloadSHA256: strings.Repeat("b", 64)}}
+	opID := fixtureOpID(op)
+	return s.CommitRequest{ReservationRevision: 1, Head: s.ObjectHead{Version: s.ModelVersion, Object: object, Domain: f.Bucket.Domain, ManifestID: "manifest-" + op, Size: 4, ETag: "\"fixture-etag\"", ETagKind: "put-md5", Metadata: map[string]string{"content-type": "application/octet-stream"}, OpID: opID}, ExpectedRevision: revision, UserID: "writer", CredentialID: "writer-key", ReservationID: "reservation-" + op, Writer: f.Lease.Fence, Event: s.OutboxEvent{Version: s.ModelVersion, ID: fixtureEventID(opID, "Objects", "object_commit"), HistoryID: fixtureHistoryID, Epoch: 0, Entity: "Objects", Action: "object_commit", Object: object, Revision: revision + 1, OpID: opID, PayloadPointer: "journal/input/" + op, PayloadSHA256: strings.Repeat("b", 64)}}
 }
 func Prepare(t *testing.T, store s.MetadataStore, f Fixture, r s.CommitRequest, reserved int64) {
 	t.Helper()
@@ -229,6 +248,79 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 			t.Fatal("page mutation through returned slice")
 		}
 	})
+	t.Run("empty manifest publishes zero pages", func(t *testing.T) {
+		f := NewFixture()
+		h := newStore(t, f)
+		r := f.Request("empty-object", 0)
+		r.Head.Size = 0
+		reservation := s.Reservation{Version: s.ModelVersion, ID: r.ReservationID, OpID: r.Head.OpID, OwnerID: f.Bucket.OwnerID,
+			Object: r.Head.Object, Revision: 1, State: s.ReservationActive, Deadline: f.Now.Add(30 * time.Minute), Writer: r.Writer}
+		if err := h.Store.ReserveLogicalQuota(ctx, reservation); err != nil {
+			t.Fatal(err)
+		}
+		NoPublication(t, h.Store, r)
+		result, err := h.Store.CommitObject(ctx, r)
+		if err != nil || result.Head.Size != 0 || result.Head.PageCount != 0 || result.Head.ChunkCount != 0 {
+			t.Fatal(result, err)
+		}
+		pages, err := h.Store.GetManifest(ctx, r.Head.ManifestID)
+		if err != nil || len(pages) != 0 {
+			t.Fatal("empty committed manifest", pages, err)
+		}
+		quota, _ := h.Store.GetQuota(ctx, f.Bucket.OwnerID)
+		if quota.Used != 0 || quota.Reserved != 0 || quota.Staged != 0 {
+			t.Fatal(quota)
+		}
+	})
+	t.Run("multi-page manifest publishes only after every page", func(t *testing.T) {
+		f := NewFixture()
+		r := f.Request("large-manifest", 0)
+		capacity, err := manifest.RefCapacity(r.Head.ManifestID, r.Head.Domain)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Head.Size = int64(capacity+1) * 4
+		f.Quota.Limit = r.Head.Size
+		h := newStore(t, f)
+		chunk := f.Chunk(r.Head.Domain)
+		if _, _, err := h.Store.PutChunkIfAbsent(ctx, chunk, r.Writer); err != nil {
+			t.Fatal(err)
+		}
+		first := s.ManifestPage{Version: s.ModelVersion, ManifestID: r.Head.ManifestID, Domain: r.Head.Domain, Number: 0}
+		for i := 0; i < capacity; i++ {
+			first.Chunks = append(first.Chunks, s.ChunkRef{Key: chunk.Key, RawBytes: 4, LogicalOffset: int64(i) * 4})
+		}
+		last := s.ManifestPage{Version: s.ModelVersion, ManifestID: r.Head.ManifestID, Domain: r.Head.Domain, Number: 1,
+			Chunks: []s.ChunkRef{{Key: chunk.Key, RawBytes: 4, LogicalOffset: int64(capacity) * 4}}}
+		if err := h.Store.WriteManifestPages(ctx, []s.ManifestPage{first}, r.Writer); err != nil {
+			t.Fatal(err)
+		}
+		reservation := s.Reservation{Version: s.ModelVersion, ID: r.ReservationID, OpID: r.Head.OpID, OwnerID: f.Bucket.OwnerID,
+			Object: r.Head.Object, Revision: 1, State: s.ReservationActive, Deadline: f.Now.Add(30 * time.Minute),
+			Bytes: r.Head.Size, StagedBytes: r.Head.Size, Writer: r.Writer}
+		if err := h.Store.ReserveLogicalQuota(ctx, reservation); err != nil {
+			t.Fatal(err)
+		}
+		_, err = h.Store.CommitObject(ctx, r)
+		requireError(t, err, s.ErrInvalid)
+		NoPublication(t, h.Store, r)
+		if err := h.Store.WriteManifestPages(ctx, []s.ManifestPage{last}, r.Writer); err != nil {
+			t.Fatal(err)
+		}
+		result, err := h.Store.CommitObject(ctx, r)
+		if err != nil || result.Head.PageCount != 2 || result.Head.ChunkCount != uint64(capacity+1) ||
+			!reflect.DeepEqual(result.Head.PageIndex, []uint64{0, uint64(capacity * 4)}) {
+			t.Fatal(result, err)
+		}
+		_, err = h.Store.CommitObject(ctx, r)
+		if err != nil {
+			t.Fatal("large manifest retry", err)
+		}
+		quota, _ := h.Store.GetQuota(ctx, f.Bucket.OwnerID)
+		if quota.Used != r.Head.Size || quota.Reserved != 0 || quota.Staged != 0 {
+			t.Fatal(quota)
+		}
+	})
 	t.Run("atomic commit retry and immutable op input", func(t *testing.T) {
 		f := NewFixture()
 		h := newStore(t, f)
@@ -293,7 +385,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 			t.Fatalf("head winners=%d", won.Load())
 		}
 		head, _ := h.Store.GetObject(ctx, a.Head.Object)
-		eventID := "event-" + head.OpID
+		eventID := fixtureEventID(head.OpID, "Objects", "object_commit")
 		if _, err := h.Store.GetOutbox(ctx, eventID); err != nil {
 			t.Fatal(err)
 		}
@@ -337,7 +429,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 		_, err = h.Store.Authorize(ctx, "owner-key", "")
 		requireError(t, err, s.ErrNotFound)
 	})
-	for _, change := range []string{"credential revoke", "grant revoke", "bucket ABA", "expired writer", "stale epoch", "service incarnation", "quota shrunk"} {
+	for _, change := range []string{"credential revoke", "grant revoke", "bucket removed", "bucket inactive", "bucket ABA", "expired writer", "stale epoch", "service incarnation", "quota shrunk"} {
 		t.Run("commit rechecks "+change, func(t *testing.T) {
 			f := NewFixture()
 			h := newStore(t, f)
@@ -358,12 +450,20 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 				g.Read = true
 				g.Revision++
 				h.SetGrant(g)
+			case "bucket removed":
+				h.RemoveBucket(f.Bucket.Name)
+				want = s.ErrBucketNotFound
+			case "bucket inactive":
+				b := f.Bucket
+				b.Active = false
+				h.SetBucket(b)
+				want = s.ErrBucketNotFound
 			case "bucket ABA":
 				b := f.Bucket
 				b.ID = "bucket-2"
 				b.Revision = 1
 				h.SetBucket(b)
-				want = s.ErrNotFound
+				want = s.ErrBucketNotFound
 			case "expired writer":
 				lease := f.Lease
 				lease.ExpiresAt = f.Now
@@ -388,6 +488,9 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 			before, _ := h.Store.GetQuota(ctx, "owner")
 			_, err := h.Store.CommitObject(ctx, r)
 			requireError(t, err, want)
+			if change == "bucket removed" || change == "bucket inactive" || change == "bucket ABA" {
+				requireError(t, err, s.ErrNotFound) // Preserve the established storage contract.
+			}
 			NoPublication(t, h.Store, r)
 			after, _ := h.Store.GetQuota(ctx, "owner")
 			if after != before {
@@ -395,6 +498,17 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 			}
 		})
 	}
+	t.Run("missing reservation is not a missing bucket", func(t *testing.T) {
+		f := NewFixture()
+		h := newStore(t, f)
+		r := f.Request("missing-reservation", 0)
+		_, err := h.Store.CommitObject(ctx, r)
+		requireError(t, err, s.ErrNotFound)
+		if errors.Is(err, s.ErrBucketNotFound) {
+			t.Fatal("internal absence misclassified as bucket", err)
+		}
+		NoPublication(t, h.Store, r)
+	})
 	t.Run("full quota overwrite credit and tombstone CAS", func(t *testing.T) {
 		f := NewFixture()
 		f.Quota.Limit = 4
@@ -413,6 +527,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 		del.Head.Deleted = true
 		del.Head.ManifestID = ""
 		del.Head.Size = 0
+		del.Head.ETag, del.Head.ETagKind, del.Head.Metadata = "", "", nil
 		if err := h.Store.ReserveLogicalQuota(ctx, s.Reservation{Version: s.ModelVersion, OpID: del.Head.OpID, BaseRevision: 2, BaseSize: 4, State: s.ReservationActive, Revision: 1, Deadline: f.Now.Add(30 * time.Minute), ID: del.ReservationID, OwnerID: "owner", Object: del.Head.Object, Writer: del.Writer}); err != nil {
 			t.Fatal(err)
 		}

@@ -310,7 +310,7 @@ func TestBucketRecreateChangesIdentity(t *testing.T) {
 	if rec, e := w.send(t, http.MethodHead, "/recycled", "reader", ""); e != nil || rec.Code != http.StatusOK {
 		t.Fatalf("granted HEAD: e=%v status=%d", e, rec.Code)
 	}
-	w.store.DeleteBucket("recycled")
+	w.store.RemoveBucket("recycled")
 	if rec, e := w.send(t, http.MethodPut, "/recycled", "owner", ""); e != nil || rec.Code != http.StatusOK {
 		t.Fatalf("recreate: e=%v status=%d body=%q", e, rec.Code, rec.Body.String())
 	}

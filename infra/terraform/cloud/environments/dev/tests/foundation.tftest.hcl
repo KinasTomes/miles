@@ -1,7 +1,10 @@
 mock_provider "aws" {}
 
 # AWS documentation example account, never a live deployment target.
-variables { account_id = "123456789012" }
+variables {
+  account_id = "123456789012"
+  paused     = false
+}
 
 run "isolated_foundation" {
   command = plan
@@ -37,8 +40,8 @@ run "private_aws_apis" {
   command = plan
   variables { egress_mode = "interface" }
   assert {
-    condition     = length(output.network_inventory.interface_endpoints) == 8 && output.network_inventory.nat_count == 0
-    error_message = "Interface mode must cover eight AWS APIs without NAT."
+    condition     = length(output.network_inventory.interface_endpoints) == 9 && output.network_inventory.nat_count == 0
+    error_message = "Interface mode must cover nine AWS APIs without NAT."
   }
 }
 run "reject_alb_without_tls" {
@@ -71,4 +74,19 @@ run "smallest_supported_vpc" {
     condition     = length(output.network_inventory.public_subnets) == 2 && alltrue([for c in values(output.network_inventory.public_subnet_cidrs) : endswith(c, "/27")])
     error_message = "A /19 VPC must still plan two public /27 subnets."
   }
+}
+
+run "bounded_runtime_roles" {
+  command = plan
+  variables {
+    runtime_permissions_boundary_arn = "arn:aws:iam::123456789012:policy/miles/bootstrap/MilesDevRuntimeBoundary"
+  }
+}
+
+run "reject_foreign_runtime_boundary" {
+  command = plan
+  variables {
+    runtime_permissions_boundary_arn = "arn:aws:iam::111122223333:policy/miles/bootstrap/MilesDevRuntimeBoundary"
+  }
+  expect_failures = [var.runtime_permissions_boundary_arn]
 }
