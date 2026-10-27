@@ -90,8 +90,9 @@ environment. All six exact test versions from both runs were removed after
 preserving evidence; post-cleanup audit confirms zero versions/markers/multipart
 uploads. Bucket/key/role remain intentionally retained (CMK still Enabled and
 chargeable); this is not full teardown. Current budget/notification configuration
-was read-only audited. Infrastructure/IAM/budget consumer review and final PR #35
-gates are still open. Live PASS does
+was read-only audited. The consolidated lead review found the W03 evidence
+cross-check satisfactory; checksum verification and final PR #35 approval remain
+open. Live PASS does
 not by itself complete task acceptance or permit merge.
 
 ## W03 checklist evidence and remaining gates
@@ -99,7 +100,8 @@ not by itself complete task acceptance or permit merge.
 1. Acceptance suite and write/read integration run offline; S3 SDK double passes
    the same Warm core as fake PackStore. The opt-in live runner is prepared and
    skips by default. Actual personal-account S3 Warm evidence is linked above;
-   controlled artifact cleanup is audited; consumer/runtime acceptance remains open.
+   controlled artifact cleanup is audited; consolidated lead evidence review is
+   satisfactory, with final checksum verification/re-review pending.
 2. Schema/keys, zero-index baseline, record namespaces, consistency, conditions,
    bounded preparation and SDK API seam are prepared in dynamodb-adapter.md and
    Go helpers; table inventory alignment is tested. Consumer review is required
@@ -122,14 +124,18 @@ document names, trimpath builds). DynamoDB baseline regression tests passed.
 Actual `make check` and Linux race are checked by CI on the final pushed head;
 use PR #35 checks for the current revision rather than old-head CI results.
 
-## Outstanding merge and enablement gates
+## Consolidated review and remaining gates
 
-* Chien: explicit kind-2 -> fresh kind-1 multipart handoff confirmation.
-* Phong: explicit indexed read/outcome/atomic transaction/R1-R2 roots confirmation.
-* Hung: explicit inventory/IAM/budget and personal-lab live/cleanup evidence acceptance.
-* Green final-head CI and lead re-review after these confirmations. No merge or
-  task-board Done change before all required acceptance gates are satisfied.
+The [27/10/2026 consolidated lead review](https://github.com/KinasTomes/miles/pull/35#pullrequestreview-5668488011)
+replaces the separate Chien/Phong/Hung sign-off gate and finds contract/handoff,
+live logs, inventory delta and exact-version cleanup satisfactory for W03. No
+individual consumer signature is claimed. Remaining merge gates:
 
-Design approval does not replace these confirmations. Production DynamoDB,
+* Both checksum manifests must match canonical Git bytes and pass
+  `sha256sum -c sha256sums.txt` in a fresh Linux checkout.
+* Green CI on the final head, including evidence checksum verification.
+* Lead re-review/final approval. Backlog Done is a separate process.
+
+Production DynamoDB,
 distributed authority/fault proofs and multipart runtime remain W04, not missing
 W03 implementation requirements.

@@ -107,8 +107,21 @@ creation (WinError 1314) and its python3 app alias could not launch (WinError
 the local invocation is not reported as a passing suite.
 
 The physical Warm live test and controlled artifact cleanup have execution
-evidence. Final merge still requires explicit Chien/Phong/Hung consumer sign-off,
-including acceptance of this personal lab's inventory/IAM/budget scope, and green
-CI on the final head. See the [handoff matrix](../../../contracts/storage-handoff.md).
+evidence. The [27/10/2026 consolidated lead review](https://github.com/KinasTomes/miles/pull/35#pullrequestreview-5668488011)
+found the W03 contract/handoff and evidence cross-check satisfactory, replacing
+the earlier separate Chien/Phong/Hung sign-off gate. No individual signatures
+are claimed. Final merge requires canonical checksum verification, green CI on
+the final head and lead re-review/approval. See the
+[handoff matrix](../../../contracts/storage-handoff.md).
 No DynamoDB adapter, shared Terraform deployment, distributed fencing/sealing,
 multipart runtime, archive restore or multi-node commit proof is claimed.
+
+## Canonical checksum correction
+
+The original manifests were calculated from Windows CRLF working files, while
+Git stored normalized LF blobs. This caused 13/14 final-run and 5/6 initial-run
+checksum failures on Linux; it did not change or invalidate the S3 results.
+Both manifests are regenerated from raw staged Git blobs after final document
+edits. Evidence files are pinned to LF in `.gitattributes`, and CI verifies both
+manifests using `sha256sum -c` in its fresh Linux checkout. Captured logs/audit
+results are preserved; no AWS rerun or reprovisioning is involved in this fix.

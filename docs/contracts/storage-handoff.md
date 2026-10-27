@@ -119,27 +119,31 @@ enable multiple gateways merely because these preparation tests pass.
 The lead-approved W04 design baseline is exactly 20 base tables, no GSI/LSI/TTL,
 isolated SystemConfig record kinds, frozen/protected manifest preparation and one
 atomic publication transaction. Part kind-2 remains isolated; Complete rebases to
-a fresh kind-1 object manifest. Approval of this design is distinct from consumer
-sign-off on these integration bindings.
+a fresh kind-1 object manifest. The
+[consolidated lead review](https://github.com/KinasTomes/miles/pull/35#pullrequestreview-5668488011)
+found the W03 contract/handoff and evidence cross-check satisfactory and replaces
+the earlier separate Chien/Phong/Hung sign-off gate. The matrix below preserves
+integration ownership; it does not assert individual consumer signatures.
 
-| Owner/consumer | Required confirmation | Status / evidence |
+| Owner/consumer | Integration responsibility | W03 review status |
 |---|---|---|
-| Hai (adapter/manifest owner) | Domain-aware keys; Building->Closing->Verified->Published; exact outcome lookup; complete native item/transaction bounds | Implementation and tests supplied in this PR; cross-consumer acceptance pending |
-| Chien (multipart/API) | Fresh part owners, frozen kind-2 input, rebase into fresh kind-1 pages, receipt/head publication boundary | Pending explicit consumer confirmation in PR #35 |
-| Phong (read/recovery) | Binary u64 index <=1024 entries; consistent outcome lookup; merged transaction predicates; R1/R2 retained roots/authority | Pending explicit consumer confirmation in PR #35 |
-| Hung (infrastructure) | 20-table Terraform inventory, runtime trust/IAM/budget, personal-account live evidence and controlled cleanup | Pending explicit consumer confirmation in PR #35 |
+| Hai (adapter/manifest owner) | Domain-aware keys; Building->Closing->Verified->Published; exact outcome lookup; complete native item/transaction bounds | Supplied in this PR; covered by consolidated lead review |
+| Chien (multipart/API) | Fresh part owners, frozen kind-2 input, rebase into fresh kind-1 pages, receipt/head publication boundary | Covered by consolidated lead review; no individual signature claimed |
+| Phong (read/recovery) | Binary u64 index <=1024 entries; consistent outcome lookup; merged transaction predicates; R1/R2 retained roots/authority | Covered by consolidated lead review; no individual signature claimed |
+| Hung (infrastructure) | 20-table Terraform inventory, runtime trust/IAM/budget, personal-account live evidence and controlled cleanup | Covered by consolidated lead review; no individual signature claimed |
 
-Record each confirmation with reviewer, date and PR/comment link. Do not treat a
-test pass, this table or design approval as another consumer's sign-off. W03
+Lead review on 27/10/2026 supersedes the earlier separate-signature requirement.
+Final approval remains pending canonical evidence checksum verification, green
+final-head CI and lead re-review. W03
 provides contracts/helpers/evidence; distributed authority/fault proof, networked
 DynamoDB Store and multipart runtime remain W04 implementation work. PR #35 must
-retain its acceptance gate until consumer confirmations and final CI are present.
+retains that final approval gate; review acceptance does not mark the backlog Done.
 
 See [acceptance evidence](../testing/storage-handoff-validation.md). Hải owns
 storage/schema fixes; Chiến consumes multipart/API helpers; Phong consumes indexed
 reads, protected roots, outbox/outcome semantics and R1/R2 extensions; Hưng reviews
 runtime inventory/session/IAM wiring. Personal-account S3 Warm PASS is recorded in
 the linked acceptance evidence; exact-version artifact cleanup is audited.
-Bucket/key/role remain intentionally retained. Shared-runtime/IAM/budget scope
-acceptance and consumer sign-off remain explicit gates. This branch makes no
+Bucket/key/role remain intentionally retained. The personal-lab scope and evidence
+were assessed in the consolidated W03 lead review. This branch makes no
 Terraform apply, task-board Done mutation or multi-node commit claim.
