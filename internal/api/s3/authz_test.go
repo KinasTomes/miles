@@ -244,12 +244,18 @@ func (c authCase) request() *http.Request {
 }
 
 // sign adds the SigV4 header of the principal's credential, signing host and
-// every x-amz-* header.
+// every x-amz-* header over an empty payload.
 func sign(r *http.Request, accessKeyID, secret string) {
+	signPayload(r, accessKeyID, secret, emptySHA256)
+}
+
+// signPayload is sign with the payload hash the request actually carries; the
+// caller sets the matching x-amz-content-sha256 header value.
+func signPayload(r *http.Request, accessKeyID, secret, payloadHash string) {
 	amzDate := authNow.Format(amzDateLayout)
 	r.Header.Set("X-Amz-Date", amzDate)
-	r.Header.Set("X-Amz-Content-Sha256", emptySHA256)
-	s := sigV4{accessKeyID: accessKeyID, scope: amzDate[:8] + "/" + authRegion + "/s3/aws4_request", amzDate: amzDate, signedHeaders: []string{"host"}, payloadHash: emptySHA256}
+	r.Header.Set("X-Amz-Content-Sha256", payloadHash)
+	s := sigV4{accessKeyID: accessKeyID, scope: amzDate[:8] + "/" + authRegion + "/s3/aws4_request", amzDate: amzDate, signedHeaders: []string{"host"}, payloadHash: payloadHash}
 	for name := range r.Header {
 		if lower := strings.ToLower(name); strings.HasPrefix(lower, "x-amz-") {
 			s.signedHeaders = append(s.signedHeaders, lower)

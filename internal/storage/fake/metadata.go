@@ -109,6 +109,11 @@ func (m *Metadata) RemoveBucket(name string) {
 	defer m.mu.Unlock()
 	delete(m.buckets, name)
 }
+func (m *Metadata) SetUser(v s.User) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.users[v.ID] = v
+}
 func (m *Metadata) SetCredential(v s.Credential) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -169,6 +174,45 @@ func (m *Metadata) GetCredential(ctx context.Context, id string) (s.Credential, 
 		return s.Credential{}, s.ErrNotFound
 	}
 	return v, nil
+}
+
+// CreateBucket mirrors the API v2 2.2.3/3.5 transaction: credential and user
+// rechecked inside the lock, then the name; the domain is the owner's current
+// default_domain, and a taken name returns the existing incarnation.
+func (m *Metadata) CreateBucket(ctx context.Context, r s.BucketCreate) (s.Bucket, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return s.Bucket{}, false, err
+	}
+	if err := r.Validate(); err != nil {
+		return s.Bucket{}, false, err
+	}
+	c, ok := m.credentials[r.CredentialID]
+	if !ok || !c.Active || c.UserID != r.UserID {
+		return s.Bucket{}, false, s.ErrAccessDenied
+	}
+	u, ok := m.users[r.UserID]
+	if !ok || !u.Active {
+		return s.Bucket{}, false, s.ErrAccessDenied
+	}
+	if old, ok := m.buckets[r.Name]; ok {
+		return old, false, nil
+	}
+	id, err := s.NewBucketID()
+	if err != nil {
+		return s.Bucket{}, false, err
+	}
+	domain := u.DefaultDomain
+	if domain == "" {
+		domain = "default"
+	}
+	if err := s.ValidateDomain(domain); err != nil {
+		return s.Bucket{}, false, err
+	}
+	b := s.Bucket{Name: r.Name, ID: id, OwnerID: u.ID, Domain: domain, Revision: 1, Active: true, CreatedAt: m.now()}
+	m.buckets[r.Name] = b
+	return b, true, nil
 }
 func (m *Metadata) authorize(credential, bucket string) (s.Authorization, error) {
 	c, ok := m.credentials[credential]

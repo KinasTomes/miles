@@ -14,6 +14,8 @@ curl http://127.0.0.1:9100/metrics
 
 `run-dev` chọn `configs/dev.json` một cách explicit. Shared MetadataStore/PackStore/Cache ports được nối với in-memory fixtures hiện có. Fixture probes kiểm metadata bucket, pack HEAD và cache sentinel; clock readiness là giả lập của dev, không phải UTC uncertainty proof. Metrics có label `mode="dev"`, startup log cũng ghi rõ volatile fixtures. Process này chỉ mở health port; S3/Admin listeners, durable storage, R1/R2 và chính sách Clock/Policy W02-PHONG-01 chưa được implement ở task này.
 
+Dev provisioning (W03-CHIEN-01) mint đúng một cặp SigV4 test credential mỗi lần khởi động process: access key 20 ký tự [A-Z0-9] và secret base64 của 30 byte CSPRNG (format API v2 3.5), gắn user `dev` — chủ của bucket probe — không có cờ system admin. Cặp này nằm trong `Dependencies.DevCredentials` để task nối S3 listener (W03-HUNG-03) đưa ra phía client tương ứng; nó không nằm trong repo, không được ghi log và runtime mode không mint. Credential backend AWS vẫn tách khỏi bảng này như mục 2.2 đã ghi.
+
 `./bin/miles -version` và `-help` vẫn có. Không truyền config thì dùng runtime mode: process sống, `/healthz=200`, `/readyz=503` vì real storage/validated clock adapters chưa được wiring. `configs/cloud.example.json` minh họa cùng binary trong Cloud profile, không phải deployment đã hoàn tất. Không fallback sang fake ở runtime. Real adapter factory phải cung cấp shared ports và bounded dependency/clock probe từ owners tương ứng trước khi runtime có thể ready.
 
 ## Startup config và network boundary
