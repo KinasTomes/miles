@@ -1,6 +1,9 @@
 # DynamoDB adapter preparation
 
-W03-HAI-03, schema proposal v1 for W4 consumer review. Implemented here:
+W03-HAI-03, **lead-approved W04 design baseline**, recorded in
+[PR #35 review and final acceptance gate](https://github.com/KinasTomes/miles/pull/35#issuecomment-6436239260).
+The design decisions below are settled; consumer sign-off, implementation and
+fault/authority proofs remain separate gates. Implemented here:
 `internal/metadata/dynamodb` supplies SDK key constructors and the narrow API
 seam. It does **not** implement MetadataStore, deploy tables, execute transaction
 recipes, or establish distributed R1/R2 publication authority.
@@ -49,8 +52,9 @@ representation; a process-local monotonic instant is never serialized as authori
 
 Keep the 20 physical tables. Reserve disjoint `SystemConfig.config_id` namespaces
 instead of adding attributes to frozen page items or relying on eventual GSIs.
-These are internal records, not additional global-policy entities. They require
-metadata/R2 and infrastructure consumer review before the W4 writer is enabled.
+These are internal records, not additional global-policy entities. This placement
+is approved; metadata/R2 and infrastructure consumers must confirm the integration
+bindings before the W4 writer is enabled.
 
 | Key | record_kind / contents | Badger equivalent |
 |---|---|---|
@@ -77,8 +81,13 @@ is an envelope and does not yet implement this full projection/registry protocol
 
 ## Index decision and read API
 
-W4 correctness baseline uses **no GSI/LSI and no TTL**. The Terraform inventory
-already has this shape; no infrastructure apply is needed for this proposal.
+The approved W04 baseline keeps **exactly 20 base tables, no GSI/LSI and no TTL**.
+The Terraform inventory already has this shape; no resource change or apply is
+needed. TestInventoryMatchesTerraform fixes the count/key map;
+TestTerraformBaselineHasNoIndexesOrTTL checks all data-module `.tf` files,
+including dynamic index/TTL blocks, and the resource's exact local.tables binding.
+It is a lexical regression guard, not a replacement for Terraform validation.
+Any later table/index/TTL change requires reviewed migration and guard updates.
 
 * Auth, head, outcome, ledger, chunk/location and policy: exact GetItem with
   ConsistentRead=true; use TransactGetItems when a bounded coherent bundle is
@@ -133,7 +142,12 @@ without frozen membership and retained dependencies is insufficient.
 Build one TransactWriteItems request and validate unique table+key targets,
 item/action limits and retained dependencies before dispatch. SDK seam is API in
 `internal/metadata/dynamodb/api.go`. Table resolution is explicit. Never split
-head/quota/ledger/outbox publication into multiple visible transactions.
+head/quota/ledger/outbox publication into multiple visible transactions. The same
+atomic boundary includes the durable operation outcome and manifest-owner
+Verified->Published transition; Complete also includes upload state/receipt.
+All effects share the admitted authority/conditions. Coalesce predicates for the
+same target into its single action. If item/action/aggregate or wire budgets do
+not fit, fail closed or rework preparation; do not publish a subset first.
 
 | Operation | Atomic effects and conditions |
 |---|---|

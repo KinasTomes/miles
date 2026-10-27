@@ -3,6 +3,21 @@
 Task W03-HAI-03. Baseline main: `87d0769`. This document separates offline
 acceptance from an actual AWS execution; a skipped test is not live evidence.
 
+## Approved design decisions
+
+Lead decisions and final merge gate:
+[PR #35](https://github.com/KinasTomes/miles/pull/35#issuecomment-6436239260).
+W04 keeps exactly 20 base tables, no GSI/LSI/TTL, strong base-table reads and
+conditional transactions; bounded Scan discovers candidates only. SystemConfig
+operation/manifest-owner records are isolated from global-policy. Prepare/freeze/
+verify/protect precedes a single atomic head/quota/ledger/outbox/outcome/owner
+publication (plus upload state/receipt for Complete). Overflow fails closed;
+publication cannot be split. Part kind-2 is rebased into a fresh kind-1 manifest;
+head page_index is Binary little-endian u64, <=1024 entries / 8192 bytes.
+These decisions are approved; implementation/fault proofs remain W04 obligations.
+
+## Offline contract evidence
+
 | Boundary | Reusable evidence | Backend |
 |---|---|---|
 | Metadata, CAS, quota, outcomes, auth and tombstones | `contracttest.RunMetadata` | Fake and Badger |

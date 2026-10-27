@@ -116,6 +116,25 @@ enable multiple gateways merely because these preparation tests pass.
 
 ## Validation and handoff owners
 
+The lead-approved W04 design baseline is exactly 20 base tables, no GSI/LSI/TTL,
+isolated SystemConfig record kinds, frozen/protected manifest preparation and one
+atomic publication transaction. Part kind-2 remains isolated; Complete rebases to
+a fresh kind-1 object manifest. Approval of this design is distinct from consumer
+sign-off on these integration bindings.
+
+| Owner/consumer | Required confirmation | Status / evidence |
+|---|---|---|
+| Hai (adapter/manifest owner) | Domain-aware keys; Building->Closing->Verified->Published; exact outcome lookup; complete native item/transaction bounds | Implementation and tests supplied in this PR; cross-consumer acceptance pending |
+| Chien (multipart/API) | Fresh part owners, frozen kind-2 input, rebase into fresh kind-1 pages, receipt/head publication boundary | Pending explicit consumer confirmation in PR #35 |
+| Phong (read/recovery) | Binary u64 index <=1024 entries; consistent outcome lookup; merged transaction predicates; R1/R2 retained roots/authority | Pending explicit consumer confirmation in PR #35 |
+| Hung (infrastructure) | 20-table Terraform inventory, runtime trust/IAM/budget, personal-account live evidence and controlled cleanup | Pending explicit consumer confirmation in PR #35 |
+
+Record each confirmation with reviewer, date and PR/comment link. Do not treat a
+test pass, this table or design approval as another consumer's sign-off. W03
+provides contracts/helpers/evidence; distributed authority/fault proof, networked
+DynamoDB Store and multipart runtime remain W04 implementation work. PR #35 must
+retain its acceptance gate until consumer confirmations and final CI are present.
+
 See [acceptance evidence](../testing/storage-handoff-validation.md). Hải owns
 storage/schema fixes; Chiến consumes multipart/API helpers; Phong consumes indexed
 reads, protected roots, outbox/outcome semantics and R1/R2 extensions; Hưng reviews
