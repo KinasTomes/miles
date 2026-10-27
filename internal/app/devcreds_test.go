@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"github.com/KinasTomes/miles/internal/config"
@@ -36,6 +37,19 @@ func TestDevCredentialFormat(t *testing.T) {
 	}
 	if cred.UserID != DevUser {
 		t.Fatalf("credential bound to %q, want %q", cred.UserID, DevUser)
+	}
+}
+
+// TestRandomAlphabetRejectsBoundary pins rejection sampling: 252 = 7*36 is the
+// first byte that would bias the alphabet, so it is dropped like 255.
+func TestRandomAlphabetRejectsBoundary(t *testing.T) {
+	src := append(bytes.Repeat([]byte{252}, 40), bytes.Repeat([]byte{1}, 40)...)
+	got, err := randomAlphabet(bytes.NewReader(src), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Repeat("B", 20); got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 

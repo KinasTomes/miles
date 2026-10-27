@@ -30,8 +30,8 @@ const (
 
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-// alphabetMax is the largest byte multiple of the alphabet size; bytes above
-// it are rejected so every character stays equally likely.
+// alphabetMax is the largest multiple of the alphabet size that fits a byte
+// (7*36); bytes from it up are rejected so every character stays equally likely.
 const alphabetMax = 252
 
 func randomAlphabet(r io.Reader, n int) (string, error) {
@@ -42,7 +42,7 @@ func randomAlphabet(r io.Reader, n int) (string, error) {
 			return "", fmt.Errorf("dev credential: %w", err)
 		}
 		for _, b := range buf {
-			if b > alphabetMax {
+			if b >= alphabetMax {
 				continue
 			}
 			out = append(out, alphabet[int(b)%len(alphabet)])

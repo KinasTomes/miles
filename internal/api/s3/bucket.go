@@ -5,9 +5,12 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/storage"
 )
@@ -37,8 +40,8 @@ func NewBucketHandlers(store BucketStore) map[Operation]Handler {
 // one location constraint and nothing else.
 const maxBucketConfigBytes = 16 << 10
 
-// createBucketConfiguration is the CreateBucket body (API v2 4.2): an absent
-// body means the gateway's own region, exactly like us-east-1 clients.
+// createBucketConfiguration is the CreateBucket body (API v2 4.2): an empty
+// logical payload means the gateway's own region, exactly like us-east-1 clients.
 type createBucketConfiguration struct {
 	XMLName            xml.Name `xml:"CreateBucketConfiguration"`
 	LocationConstraint string   `xml:"LocationConstraint"`
@@ -55,10 +58,18 @@ func (b *Buckets) CreateBucket(w http.ResponseWriter, r *Request) error {
 	if !validBucketName(r.Bucket) {
 		return &Error{Code: ErrInvalidBucketName, Bucket: r.Bucket}
 	}
-	if r.HTTP.ContentLength != 0 {
+	// The payload is read to EOF even when empty, so x-amz-content-sha256,
+	// Content-MD5 and checksum headers are verified before the transaction.
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxBucketConfigBytes+1))
+	switch {
+	case err != nil:
+		return err
+	case len(data) > maxBucketConfigBytes:
+		return &Error{Code: ErrEntityTooLarge, Message: fmt.Sprintf("The XML body exceeds %d bytes.", maxBucketConfigBytes)}
+	case len(data) > 0:
 		var config createBucketConfiguration
-		if err := r.Body.DecodeXML(&config, maxBucketConfigBytes); err != nil {
-			return err
+		if !decodeDocument(data, &config) {
+			return &Error{Code: ErrMalformedXML}
 		}
 		if config.LocationConstraint != "" && config.LocationConstraint != r.Region() {
 			return &Error{Code: ErrInvalidRequest, Message: fmt.Sprintf("The location constraint '%s' does not match the gateway region '%s'; the request was not ignored.", config.LocationConstraint, r.Region()), Bucket: r.Bucket}
@@ -110,35 +121,43 @@ type bucketSummary struct {
 }
 
 // bucketCreationDate formats CreationDate the way S3 clients parse it
-// (ISO 8601, UTC).
+// (ISO 8601, UTC). A record without CreatedAt (seeded before the field was
+// set) reports the Unix epoch: clients reject an empty timestamp.
 type bucketCreationDate struct{ storage.Bucket }
 
 func (d bucketCreationDate) MarshalXML(e *xml.Encoder, start xml.StartElement) error {
-	if d.CreatedAt.IsZero() {
-		return e.EncodeElement("", start)
+	t := d.CreatedAt
+	if t.IsZero() {
+		t = time.Unix(0, 0)
 	}
-	return e.EncodeElement(d.CreatedAt.UTC().Format("2006-01-02T15:04:05.000Z"), start)
+	return e.EncodeElement(t.UTC().Format("2006-01-02T15:04:05.000Z"), start)
 }
 
-// maxBucketPage is one page of ListBuckets. The S3 operation has no paging
-// parameters, so callers see at most this many buckets of their own.
+// maxBucketPage is one store page of ListBuckets. The S3 operation has no
+// paging parameters, so the handler reads every page before it answers.
 const maxBucketPage = 1000
 
 // ListBuckets returns only the buckets the caller owns or holds a read or
 // write grant on (API v2 2.2.1, 4.2): system admin alone lists nothing.
 func (b *Buckets) ListBuckets(w http.ResponseWriter, r *Request) error {
-	page, err := b.Store.ListAccessibleBuckets(r.HTTP.Context(), storage.BucketListRequest{PrincipalID: r.Caller.UserID, Limit: maxBucketPage})
-	if errors.Is(err, storage.ErrAccessDenied) {
-		return &Error{Code: ErrAccessDenied}
-	}
-	if err != nil {
-		return fmt.Errorf("s3: list buckets of %s: %w", r.Caller.UserID, err)
-	}
 	var out listAllMyBucketsResult
 	out.Owner.ID = r.Caller.UserID
-	out.Buckets.Bucket = make([]bucketSummary, 0, len(page.Buckets))
-	for _, bucket := range page.Buckets {
-		out.Buckets.Bucket = append(out.Buckets.Bucket, bucketSummary{Name: bucket.Name, CreationDate: bucketCreationDate{bucket}})
+	out.Buckets.Bucket = []bucketSummary{}
+	for after := ""; ; {
+		page, err := b.Store.ListAccessibleBuckets(r.HTTP.Context(), storage.BucketListRequest{PrincipalID: r.Caller.UserID, After: after, Limit: maxBucketPage})
+		if errors.Is(err, storage.ErrAccessDenied) {
+			return &Error{Code: ErrAccessDenied}
+		}
+		if err != nil {
+			return fmt.Errorf("s3: list buckets of %s: %w", r.Caller.UserID, err)
+		}
+		for _, bucket := range page.Buckets {
+			out.Buckets.Bucket = append(out.Buckets.Bucket, bucketSummary{Name: bucket.Name, CreationDate: bucketCreationDate{bucket}})
+		}
+		if page.NextAfter == "" {
+			break
+		}
+		after = page.NextAfter
 	}
 	body, err := xml.Marshal(out)
 	if err != nil {
@@ -158,7 +177,8 @@ func (b *Buckets) ListBuckets(w http.ResponseWriter, r *Request) error {
 // validBucketName is the S3 bucket naming of API v2 4.2 (3-63 characters of
 // lowercase letters, digits, hyphens and dot-separated labels that begin and
 // end with a letter or digit), minus the forms S3 reserves: an IP-address
-// shape, the xn-- and sthree- prefixes and the -s3alias/--ol-s3 suffixes.
+// shape, the xn--, sthree- and amzn-s3-demo- prefixes and the -s3alias,
+// --ol-s3, .mrap, --x-s3 and --table-s3 suffixes.
 func validBucketName(name string) bool {
 	if len(name) < 3 || len(name) > 63 {
 		return false
@@ -172,13 +192,13 @@ func validBucketName(name string) bool {
 	if _, err := netip.ParseAddr(name); err == nil {
 		return false
 	}
-	for _, reserved := range []string{"xn--", "sthree-"} {
-		if len(name) >= len(reserved) && name[:len(reserved)] == reserved {
+	for _, reserved := range []string{"xn--", "sthree-", "amzn-s3-demo-"} {
+		if strings.HasPrefix(name, reserved) {
 			return false
 		}
 	}
-	for _, reserved := range []string{"-s3alias", "--ol-s3"} {
-		if len(name) >= len(reserved) && name[len(name)-len(reserved):] == reserved {
+	for _, reserved := range []string{"-s3alias", "--ol-s3", ".mrap", "--x-s3", "--table-s3"} {
+		if strings.HasSuffix(name, reserved) {
 			return false
 		}
 	}

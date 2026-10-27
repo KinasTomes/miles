@@ -2,10 +2,13 @@ package s3
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,8 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/app"
+	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/fake"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
 // buckets.json is the pinned contract of the P0 bucket operations (API v2
@@ -343,6 +350,110 @@ func TestBucketCreateRechecksCaller(t *testing.T) {
 	}
 	if _, err := w.store.GetBucket(context.Background(), "fresh"); err == nil {
 		t.Fatal("denied create published a bucket")
+	}
+}
+
+// TestBucketCreateChecksEmptyPayload pins that an empty CreateBucket body is
+// still verified to EOF: a wrong x-amz-content-sha256, Content-MD5 or
+// checksum header fails the request and publishes no bucket.
+func TestBucketCreateChecksEmptyPayload(t *testing.T) {
+	otherSHA := sha256.Sum256([]byte("x"))
+	otherMD5 := md5.Sum([]byte("x"))
+	cases := []struct {
+		name, header, value, payloadHash string
+		want                             ErrorCode
+	}{
+		{"x-amz-content-sha256", "", "", hex.EncodeToString(otherSHA[:]), ErrXAmzContentSHA256Mismatch},
+		{"Content-MD5", "Content-Md5", base64.StdEncoding.EncodeToString(otherMD5[:]), emptySHA256, ErrBadDigest},
+		{"x-amz-checksum-crc32", "X-Amz-Checksum-Crc32", "AAAAAQ==", emptySHA256, ErrBadDigest},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := newBucketWorld(t)
+			r := httptest.NewRequest(http.MethodPut, "/fresh", nil)
+			if c.header != "" {
+				r.Header.Set(c.header, c.value)
+			}
+			signPayload(r, accessKey("owner"), "secret-owner", c.payloadHash)
+			err := w.router.serve(httptest.NewRecorder(), r, "BUCKETTEST")
+			var e *Error
+			if !errors.As(err, &e) || e.Code != c.want {
+				t.Fatalf("err = %v, want %s", err, c.want)
+			}
+			if _, err := w.store.GetBucket(context.Background(), "fresh"); err == nil {
+				t.Fatal("rejected payload published a bucket")
+			}
+		})
+	}
+}
+
+// TestBucketListReadsEveryPage pins that ListBuckets, which has no paging
+// parameters, returns every accessible bucket past one store page, and that
+// a record without CreatedAt still lists a timestamp clients can parse.
+func TestBucketListReadsEveryPage(t *testing.T) {
+	w := newBucketWorld(t)
+	const extra = maxBucketPage + 2
+	for i := range extra {
+		w.store.SetBucket(storage.Bucket{Name: fmt.Sprintf("bulk-%04d", i), ID: fmt.Sprintf("bkt-bulk-%04d", i), OwnerID: "user-owner", Domain: "alpha", Revision: 1, Active: true})
+	}
+	rec, e := w.send(t, http.MethodGet, "/", "owner", "")
+	if e != nil || rec.Code != http.StatusOK {
+		t.Fatalf("e=%v status=%d", e, rec.Code)
+	}
+	var out struct {
+		Buckets []struct{ Name, CreationDate string } `xml:"Buckets>Bucket"`
+	}
+	if err := xml.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Buckets) != extra+1 { // + demo
+		t.Fatalf("listed %d buckets, want %d", len(out.Buckets), extra+1)
+	}
+	seen := map[string]bool{}
+	for _, b := range out.Buckets {
+		if seen[b.Name] {
+			t.Fatalf("bucket %s listed twice", b.Name)
+		}
+		seen[b.Name] = true
+		if _, err := time.Parse(time.RFC3339, b.CreationDate); err != nil {
+			t.Fatalf("bucket %s CreationDate %q: %v", b.Name, b.CreationDate, err)
+		}
+	}
+}
+
+// TestBucketListDevSeedSDK lists the dev Bootstrap store with the AWS SDK
+// over HTTP using the minted dev credential: the probe bucket must come back
+// with a CreationDate the client parses.
+func TestBucketListDevSeedSDK(t *testing.T) {
+	c := config.DefaultStartup()
+	c.Mode = "dev"
+	deps, err := app.Bootstrap(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred := deps.DevCredentials[0]
+	srv := httptest.NewServer(&Router{
+		Region:      authRegion,
+		Credentials: credentialMap{cred.AccessKeyID: {UserID: cred.UserID, Secret: cred.Secret, Active: true}},
+		Access:      deps.Metadata,
+		Now:         time.Now,
+		Handlers:    NewBucketHandlers(deps.Metadata),
+	})
+	defer srv.Close()
+	client := awss3.New(awss3.Options{
+		Region:       authRegion,
+		BaseEndpoint: aws.String(srv.URL),
+		UsePathStyle: true,
+		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+			return aws.Credentials{AccessKeyID: cred.AccessKeyID, SecretAccessKey: cred.Secret}, nil
+		}),
+	})
+	out, err := client.ListBuckets(context.Background(), &awss3.ListBucketsInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Buckets) != 1 || aws.ToString(out.Buckets[0].Name) != "miles-dev-probe" || out.Buckets[0].CreationDate == nil || out.Buckets[0].CreationDate.IsZero() {
+		t.Fatalf("buckets = %+v", out.Buckets)
 	}
 }
 

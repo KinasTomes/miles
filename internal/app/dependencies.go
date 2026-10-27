@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/storage"
@@ -46,7 +47,7 @@ func Bootstrap(c config.Startup) (Dependencies, error) {
 	if err != nil {
 		return Dependencies{}, err
 	}
-	m := fake.NewMetadata(fake.Seed{Buckets: []storage.Bucket{{Name: bucket, ID: "dev-probe", OwnerID: user.ID, Domain: user.DefaultDomain, Active: true, Revision: 1}}, Users: []storage.User{user}, Credentials: []storage.Credential{credential}})
+	m := fake.NewMetadata(fake.Seed{Buckets: []storage.Bucket{{Name: bucket, ID: "dev-probe", OwnerID: user.ID, Domain: user.DefaultDomain, Active: true, Revision: 1, CreatedAt: time.Now().UTC()}}, Users: []storage.User{user}, Credentials: []storage.Credential{credential}})
 	p := fake.NewPacks(nil)
 	cache := fake.NewCache()
 	ctx := context.Background()

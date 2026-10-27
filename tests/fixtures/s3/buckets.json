@@ -22,6 +22,10 @@
     { "name": "sthree-bucket", "valid": false },
     { "name": "abc-s3alias", "valid": false },
     { "name": "abc--ol-s3", "valid": false },
+    { "name": "amzn-s3-demo-bucket", "valid": false },
+    { "name": "abc.mrap", "valid": false },
+    { "name": "abc--x-s3", "valid": false },
+    { "name": "abc--table-s3", "valid": false },
     { "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "valid": false },
     { "name": "นี้คือถังของฉัน", "valid": false }
   ],
