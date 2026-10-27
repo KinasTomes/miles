@@ -139,6 +139,7 @@ See [acceptance evidence](../testing/storage-handoff-validation.md). Hải owns
 storage/schema fixes; Chiến consumes multipart/API helpers; Phong consumes indexed
 reads, protected roots, outbox/outcome semantics and R1/R2 extensions; Hưng reviews
 runtime inventory/session/IAM wiring. Personal-account S3 Warm PASS is recorded in
-the linked acceptance evidence; controlled cleanup, shared-runtime/IAM/budget
-review and consumer sign-off remain explicit gates. This branch makes no
+the linked acceptance evidence; exact-version artifact cleanup is audited.
+Bucket/key/role remain intentionally retained. Shared-runtime/IAM/budget scope
+acceptance and consumer sign-off remain explicit gates. This branch makes no
 Terraform apply, task-board Done mutation or multi-node commit claim.

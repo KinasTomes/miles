@@ -78,14 +78,20 @@ publication require separate tests and are not implied by a Warm pass.
 
 Live physical-port status: **PASS on 27/10/2026**, using a dedicated personal
 S3/KMS lab in `ap-southeast-1`, temporary `MilesHai03S3Test` role credentials,
-and source commit `f4a13f2a8c04ad12651056bc158a046602266879`. Both subtests passed
-(no SKIP). AWS version/HEAD audit confirms exactly three new versions (21 bytes),
+and integrated source commit `fee31e07a2979d657a4a39490a22c9203605a747` (includes
+main `00df615`). Both subtests passed (no SKIP). AWS version/HEAD audit confirms
+exactly three new versions (21 bytes) per run,
 STANDARD and SSE-KMS with the expected CMK. Bucket ownership is
 BucketOwnerEnforced, public access blocked, Versioning and Bucket Key enabled.
-See [execution log and AWS audits](evidence/w03-hai-03-s3-live-20261027/acceptance-record.md).
+See [integrated run and audited cleanup](evidence/s3-warm-final-20261027/acceptance-record.md)
+and [initial run](evidence/w03-hai-03-s3-live-20261027/acceptance-record.md).
 This run used manually provisioned personal resources, not the shared Terraform
-environment. Artifacts/key remain retained; audited cleanup, infrastructure/IAM/
-budget consumer review and remaining PR #35 gates are still open. Live PASS does
+environment. All six exact test versions from both runs were removed after
+preserving evidence; post-cleanup audit confirms zero versions/markers/multipart
+uploads. Bucket/key/role remain intentionally retained (CMK still Enabled and
+chargeable); this is not full teardown. Current budget/notification configuration
+was read-only audited. Infrastructure/IAM/budget consumer review and final PR #35
+gates are still open. Live PASS does
 not by itself complete task acceptance or permit merge.
 
 ## W03 checklist evidence and remaining gates
@@ -93,7 +99,7 @@ not by itself complete task acceptance or permit merge.
 1. Acceptance suite and write/read integration run offline; S3 SDK double passes
    the same Warm core as fake PackStore. The opt-in live runner is prepared and
    skips by default. Actual personal-account S3 Warm evidence is linked above;
-   controlled cleanup and consumer/runtime acceptance remain outstanding.
+   controlled artifact cleanup is audited; consumer/runtime acceptance remains open.
 2. Schema/keys, zero-index baseline, record namespaces, consistency, conditions,
    bounded preparation and SDK API seam are prepared in dynamodb-adapter.md and
    Go helpers; table inventory alignment is tested. Consumer review is required
@@ -109,3 +115,21 @@ readpath HTTP test was denied loopback access; the full run with loopback allowe
 passed. CI configuration covers Linux race checks; no CI run is claimed for this
 branch, and local Windows race is unavailable without CGO/C compiler. A checklist
 implementation commit does not assert its live/consumer enablement gates passed.
+
+Revalidated 27/10/2026 after integrating main `00df615`: Windows equivalents of
+all `make check` targets passed (gofmt, vet, full Go tests, six Python tests,
+document names, trimpath builds). DynamoDB baseline regression tests passed.
+Actual `make check` and Linux race are checked by CI on the final pushed head;
+use PR #35 checks for the current revision rather than old-head CI results.
+
+## Outstanding merge and enablement gates
+
+* Chien: explicit kind-2 -> fresh kind-1 multipart handoff confirmation.
+* Phong: explicit indexed read/outcome/atomic transaction/R1-R2 roots confirmation.
+* Hung: explicit inventory/IAM/budget and personal-lab live/cleanup evidence acceptance.
+* Green final-head CI and lead re-review after these confirmations. No merge or
+  task-board Done change before all required acceptance gates are satisfied.
+
+Design approval does not replace these confirmations. Production DynamoDB,
+distributed authority/fault proofs and multipart runtime remain W04, not missing
+W03 implementation requirements.

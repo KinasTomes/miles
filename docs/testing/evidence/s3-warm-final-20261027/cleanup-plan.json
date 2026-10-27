@@ -1,0 +1,46 @@
+{
+  "TimeUtc": "2026-10-27T12:32:54.7391974Z",
+  "Bucket": "miles-hai03-s3-lab-demo-bucket",
+  "Actor": "IAM user miles-admin",
+  "Operation": "Delete only six audited test versions by exact key and VersionId",
+  "VersionCount": 6,
+  "Bytes": 42,
+  "DeleteTargets": [
+    {
+      "Key": "packs-index/6d/6d86424320f6b6953d7ebc3d5dfecbff/bddf3a9f77d06e80bf787e5493f307cd.idx",
+      "VersionId": "KwvxKEcW3WEY2eSx4NaAPO7yVCArpwuk",
+      "Size": 5
+    },
+    {
+      "Key": "packs-index/d9/d94fe719648a9069daea16c9e867614c/5b6bd59058441f33f64307ebc0031a41.idx",
+      "VersionId": "Ps0SvFOJaeHEbQr2ObEd9oESLQryOPgD",
+      "Size": 5
+    },
+    {
+      "Key": "packs/6d/6d86424320f6b6953d7ebc3d5dfecbff/bddf3a9f77d06e80bf787e5493f307cd",
+      "VersionId": "I7pUUHbZSFpuhCqG7a7vLUtCT0zlikOB",
+      "Size": 8
+    },
+    {
+      "Key": "packs/6d/6d86424320f6b6953d7ebc3d5dfecbff/other",
+      "VersionId": "i1BL9r8GFCTjlpbnC6WEftJzKdMewoIH",
+      "Size": 8
+    },
+    {
+      "Key": "packs/d9/d94fe719648a9069daea16c9e867614c/5b6bd59058441f33f64307ebc0031a41",
+      "VersionId": "HJEGeShyg2wy8RtcjH0bscqsiMRdNzAN",
+      "Size": 8
+    },
+    {
+      "Key": "packs/d9/d94fe719648a9069daea16c9e867614c/other",
+      "VersionId": "7WRL16KBrs_XylWZ388h6c5YxYTgij15",
+      "Size": 8
+    }
+  ],
+  "Retain": [
+    "bucket",
+    "CMK",
+    "test role"
+  ],
+  "NoTerraformApply": true
+}

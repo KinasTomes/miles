@@ -4,6 +4,11 @@ Executed 2026-10-27, 18:11:01-18:11:03 UTC+07:00 against commit
 `f4a13f2a8c04ad12651056bc158a046602266879` on
 `codex/w03-hai-03-storage-handoff-dynamodb` (PR #35).
 
+Historical snapshot: the retention/cleanup status below describes the first run.
+The [integrated rerun and subsequent cleanup](../s3-warm-final-20261027/acceptance-record.md)
+supersedes it: all three versions from this run and three from the rerun were
+audited and removed. Bucket/CMK/role remain intentionally retained.
+
 ## Runtime and provenance
 
 * Dedicated personal-account bucket: `miles-hai03-s3-lab-demo-bucket`.

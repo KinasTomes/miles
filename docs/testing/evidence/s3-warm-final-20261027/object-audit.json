@@ -1,0 +1,29 @@
+[
+  {
+    "Key": "packs/6d/6d86424320f6b6953d7ebc3d5dfecbff/bddf3a9f77d06e80bf787e5493f307cd",
+    "VersionId": "I7pUUHbZSFpuhCqG7a7vLUtCT0zlikOB",
+    "Bytes": 8,
+    "StorageClass": "STANDARD",
+    "Encryption": "aws:kms",
+    "KmsKeyArn": "arn:aws:kms:ap-southeast-1:PERSONAL_ACCOUNT_ID:key/3d9ce284-47e8-460a-be55-86916485bac8",
+    "BucketKeyEnabled": true
+  },
+  {
+    "Key": "packs/6d/6d86424320f6b6953d7ebc3d5dfecbff/other",
+    "VersionId": "i1BL9r8GFCTjlpbnC6WEftJzKdMewoIH",
+    "Bytes": 8,
+    "StorageClass": "STANDARD",
+    "Encryption": "aws:kms",
+    "KmsKeyArn": "arn:aws:kms:ap-southeast-1:PERSONAL_ACCOUNT_ID:key/3d9ce284-47e8-460a-be55-86916485bac8",
+    "BucketKeyEnabled": true
+  },
+  {
+    "Key": "packs-index/6d/6d86424320f6b6953d7ebc3d5dfecbff/bddf3a9f77d06e80bf787e5493f307cd.idx",
+    "VersionId": "KwvxKEcW3WEY2eSx4NaAPO7yVCArpwuk",
+    "Bytes": 5,
+    "StorageClass": "STANDARD",
+    "Encryption": "aws:kms",
+    "KmsKeyArn": "arn:aws:kms:ap-southeast-1:PERSONAL_ACCOUNT_ID:key/3d9ce284-47e8-460a-be55-86916485bac8",
+    "BucketKeyEnabled": true
+  }
+]
