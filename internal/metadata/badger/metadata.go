@@ -20,6 +20,61 @@ func (m *Store) GetBucket(ctx context.Context, name string) (s.Bucket, error) {
 	}
 	return v, err
 }
+
+// CreateBucket is the API v2 2.2.3/3.5 transaction in one Badger write: the
+// credential and user that admitted the request are rechecked, the name must
+// still be free, and the new incarnation gets its own bucket_id, the owner's
+// current default_domain and CreatedAt. A taken name returns the existing
+// bucket without writing.
+func (m *Store) CreateBucket(ctx context.Context, r s.BucketCreate) (s.Bucket, bool, error) {
+	var out s.Bucket
+	created := false
+	err := m.update(ctx, func(t *db.Txn) error {
+		if err := r.Validate(); err != nil {
+			return err
+		}
+		c, err := optional[s.Credential](t, key("credentials", r.CredentialID))
+		if err != nil {
+			return err
+		}
+		if !c.Active || c.UserID != r.UserID {
+			return s.ErrAccessDenied
+		}
+		u, err := optional[s.User](t, key("users", r.UserID))
+		if err != nil {
+			return err
+		}
+		if !u.Active {
+			return s.ErrAccessDenied
+		}
+		old, err := get[s.Bucket](t, key("buckets", r.Name))
+		if err == nil {
+			out = old
+			return nil
+		}
+		if !errors.Is(err, s.ErrNotFound) {
+			return err
+		}
+		id, err := s.NewBucketID()
+		if err != nil {
+			return err
+		}
+		domain := u.DefaultDomain
+		if domain == "" {
+			domain = "default"
+		}
+		if err := s.ValidateDomain(domain); err != nil {
+			return err
+		}
+		out = s.Bucket{Name: r.Name, ID: id, OwnerID: u.ID, Domain: domain, Revision: 1, Active: true, CreatedAt: m.now()}
+		created = true
+		return put(t, key("buckets", r.Name), out)
+	})
+	if err != nil {
+		return s.Bucket{}, false, err
+	}
+	return out, created, nil
+}
 func (m *Store) GetCredential(ctx context.Context, id string) (s.Credential, error) {
 	return read[s.Credential](m, ctx, key("credentials", id))
 }
