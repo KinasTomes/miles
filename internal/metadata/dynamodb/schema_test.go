@@ -27,6 +27,9 @@ func TestInventoryMatchesTerraform(t *testing.T) {
 		}
 		actual[m[1]] = table
 	}
+	if len(actual) != 20 || len(Tables()) != 20 {
+		t.Fatalf("lead-approved W04 baseline requires exactly 20 tables: terraform=%d schema=%d", len(actual), len(Tables()))
+	}
 	if !reflect.DeepEqual(Tables(), actual) {
 		t.Fatalf("schema/infrastructure drift: schema=%v infrastructure=%v", Tables(), actual)
 	}
