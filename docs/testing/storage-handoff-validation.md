@@ -28,7 +28,8 @@ go test -v ./internal/storage/s3 -run '^TestS3DevWarmContract$'
 
 The second command must report SKIP unless explicitly enabled. Full `make check`
 and CI's Linux race job remain required. Local Windows race needs CGO and a C
-compiler. No live AWS acceptance was run for the offline results above.
+compiler. The offline results above are separate from the personal-account live
+run recorded below.
 
 ## Opt-in S3 dev
 
@@ -60,14 +61,24 @@ private evidence. Check encryption/ownership from the approved environment's
 inventory. Archive restore, KMS denial, crash/fault scheduling and multi-node
 publication require separate tests and are not implied by a Warm pass.
 
-Live status for this task: **not executed; environment unavailable**. Complete
-checklist 1 live acceptance only after attaching a real execution record.
+Live physical-port status: **PASS on 27/10/2026**, using a dedicated personal
+S3/KMS lab in `ap-southeast-1`, temporary `MilesHai03S3Test` role credentials,
+and source commit `f4a13f2a8c04ad12651056bc158a046602266879`. Both subtests passed
+(no SKIP). AWS version/HEAD audit confirms exactly three new versions (21 bytes),
+STANDARD and SSE-KMS with the expected CMK. Bucket ownership is
+BucketOwnerEnforced, public access blocked, Versioning and Bucket Key enabled.
+See [execution log and AWS audits](evidence/w03-hai-03-s3-live-20261027/acceptance-record.md).
+This run used manually provisioned personal resources, not the shared Terraform
+environment. Artifacts/key remain retained; audited cleanup, infrastructure/IAM/
+budget consumer review and remaining PR #35 gates are still open. Live PASS does
+not by itself complete task acceptance or permit merge.
 
 ## W03 checklist evidence and remaining gates
 
 1. Acceptance suite and write/read integration run offline; S3 SDK double passes
    the same Warm core as fake PackStore. The opt-in live runner is prepared and
-   skips by default. Actual S3 dev evidence remains outstanding.
+   skips by default. Actual personal-account S3 Warm evidence is linked above;
+   controlled cleanup and consumer/runtime acceptance remain outstanding.
 2. Schema/keys, zero-index baseline, record namespaces, consistency, conditions,
    bounded preparation and SDK API seam are prepared in dynamodb-adapter.md and
    Go helpers; table inventory alignment is tested. Consumer review is required
