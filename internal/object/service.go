@@ -150,6 +150,7 @@ type WriterRequest struct {
 // AdmittedWriter carries fresh backend authority and the coordinator's verified
 // protection window for this request, not a process-wide reusable fence.
 type AdmittedWriter struct {
+	Producer       *storage.MutationContext
 	Fence          storage.WriterFence
 	ProtectedUntil time.Time
 }
@@ -213,7 +214,7 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 			baseSize = 0
 		}
 	}
-	session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID)
+	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID)
 	if err != nil {
 		return PutResult{}, err
 	}
@@ -324,7 +325,7 @@ func (s *Service) DeleteObject(ctx context.Context, r DeleteRequest) error {
 	case base.Deleted:
 		return nil
 	}
-	session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID)
+	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID)
 	if err != nil {
 		return err
 	}
@@ -372,30 +373,39 @@ func (s *Service) ListObjects(ctx context.Context, r storage.ListObjectsRequest)
 
 // begin admits one logical write of object and opens its managed session. The
 // caller must end the session through publish or Close.
-func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentialID string) (*write.WriteSession, string, storage.WriterFence, time.Time, error) {
+func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentialID string) (context.Context, *write.WriteSession, string, storage.WriterFence, time.Time, error) {
 	deadline, wallDeadline, err := s.deadline(ctx)
 	if err != nil {
-		return nil, "", storage.WriterFence{}, time.Time{}, err
+		return ctx, nil, "", storage.WriterFence{}, time.Time{}, err
 	}
 	opID, err := write.NewManifestID()
 	if err != nil {
-		return nil, "", storage.WriterFence{}, time.Time{}, err
+		return ctx, nil, "", storage.WriterFence{}, time.Time{}, err
 	}
 	admitted, err := s.o.AdmitWriter(ctx, WriterRequest{Object: object, OpID: opID, CredentialID: credentialID, Deadline: deadline, WallDeadline: wallDeadline})
 	if err != nil {
-		return nil, "", storage.WriterFence{}, time.Time{}, err
+		return ctx, nil, "", storage.WriterFence{}, time.Time{}, err
 	}
 	if admitted.Fence.LeaseID == "" || admitted.Fence.ServiceIncarnation == "" || admitted.Fence.Epoch == 0 || admitted.ProtectedUntil.Before(wallDeadline.Add(15*time.Minute)) {
-		return nil, "", storage.WriterFence{}, time.Time{}, storage.ErrFenced
+		return ctx, nil, "", storage.WriterFence{}, time.Time{}, storage.ErrFenced
+	}
+	// Carry trusted admission through both the managed session and all PUT/DELETE
+	// event/commit calls. The backend binds it again in the final transaction.
+	if admitted.Producer != nil {
+		c := *admitted.Producer
+		if c.Validate() != nil || c.Object != object || c.Writer != admitted.Fence || c.MutationID != opID || c.LogicalOpID != opID {
+			return ctx, nil, "", storage.WriterFence{}, time.Time{}, storage.ErrFenced
+		}
+		ctx = storage.WithMutation(ctx, c)
 	}
 	session, err := write.BeginWriteSession(ctx, write.SessionOptions{
 		Registry: s.o.Registry, Metadata: s.o.Metadata, Packs: s.o.Packs, Fence: admitted.Fence,
 		Deadline: deadline, Object: object, OpID: opID, CredentialID: credentialID, ProtectedUntil: admitted.ProtectedUntil,
 	})
 	if err != nil {
-		return nil, "", storage.WriterFence{}, time.Time{}, fmt.Errorf("begin: %w", err)
+		return ctx, nil, "", storage.WriterFence{}, time.Time{}, fmt.Errorf("begin: %w", err)
 	}
-	return session, opID, admitted.Fence, wallDeadline, nil
+	return ctx, session, opID, admitted.Fence, wallDeadline, nil
 }
 
 // publish commits a head or tombstone through session and always closes it.
@@ -404,6 +414,9 @@ func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentia
 func (s *Service) publish(ctx context.Context, session *write.WriteSession, commit storage.CommitRequest) (storage.CommitResult, error) {
 	var result storage.CommitResult
 	var err error
+	if producer, ok := storage.MutationFromContext(ctx); ok {
+		commit.Producer = &producer
+	}
 	if commit.Head.Deleted {
 		result, err = session.Delete(commit)
 	} else {

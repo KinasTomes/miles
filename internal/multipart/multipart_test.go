@@ -41,7 +41,7 @@ func (u fixtureUpload) upload() Upload {
 func (u fixtureUpload) heads() map[int]Head {
 	heads := map[int]Head{}
 	for _, p := range u.Parts {
-		heads[p.PartNumber] = Head{p.PartNumber, p.ETag, p.Size, p.Checksum}
+		heads[p.PartNumber] = Head{PartNumber: p.PartNumber, ETag: p.ETag, Size: p.Size, Checksum: p.Checksum}
 	}
 	return heads
 }
@@ -125,7 +125,7 @@ func TestCanonicalFixture(t *testing.T) {
 			if err != nil {
 				t.Fatalf("frozen parts rejected: %v", err)
 			}
-			if want := (Result{c.Response.ETag, c.Response.Checksum, c.Response.ChecksumType}); res != want {
+			if want := (Result{ETag: c.Response.ETag, Checksum: c.Response.Checksum, ChecksumType: c.Response.ChecksumType}); res != want {
 				t.Errorf("response %+v, want %+v", res, want)
 			}
 		})

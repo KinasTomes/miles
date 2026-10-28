@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
 	"io"
 	"math/big"
 	"reflect"
@@ -93,6 +94,20 @@ func (m *Store) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySnapsh
 		if err := activeUser(t, c.UserID); err != nil {
 			return err
 		}
+
+		if err := m.producerGate(multipartTx{t}, ctx, r.Writer); err != nil {
+			return err
+		}
+		replay, replayErr := operations.Replay(multipartTx{t}, ctx, "SystemConfig", "entity_put", "global-policy", r.Candidate)
+		if replayErr == nil {
+			if json.Unmarshal(replay.Value, &out) != nil {
+				return s.ErrUnavailable
+			}
+			return nil
+		}
+		if !errors.Is(replayErr, s.ErrNotFound) {
+			return replayErr
+		}
 		revision, err := optional[uint64](t, "policy-current")
 		if err != nil {
 			return err
@@ -115,7 +130,7 @@ func (m *Store) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySnapsh
 			}
 			if reflect.DeepEqual(candidate, old) {
 				out = current
-				return nil
+				return operations.NoOp(multipartTx{t}, ctx, "SystemConfig", "global-policy", r.Candidate, current)
 			}
 		} else if !errors.Is(err, s.ErrNotFound) {
 			return err
@@ -153,6 +168,18 @@ func (m *Store) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySnapsh
 		}
 		if err := put(t, "policy-current", out.Revision); err != nil {
 			return err
+		}
+
+		if context, ok := s.MutationFromContext(ctx); ok {
+			if context.MutationID != e.OpID || context.HistoryID != e.HistoryID || context.Epoch != e.Epoch {
+				return s.ErrInvalid
+			}
+			produced, err := operations.Journal(multipartTx{t}, ctx, true, r.Writer, "SystemConfig", "entity_put", "global-policy", out.Revision, r.Candidate, out)
+			if err != nil {
+				return err
+			}
+			eventCopy := produced.Event
+			e = &eventCopy
 		}
 		if err := put(t, key("events", e.ID), *e); err != nil {
 			return err
