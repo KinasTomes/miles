@@ -21,7 +21,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(io.Discard)
 	version := flags.Bool("version", false, "Hiển thị phiên bản")
 	endpoint := flags.String("endpoint", "http://127.0.0.1:9000", "Admin API origin; HTTP chỉ qua loopback/tunnel, remote dùng HTTPS")
-	tokenFile := flags.String("token-file", "", "Bearer token file permission 0600; không truyền raw token")
+	tokenFile := flags.String("token-file", "", "Bắt buộc: bearer token file permission 0600; không truyền raw token")
 	timeout := flags.Duration("timeout", 30*time.Second, "Thời hạn toàn bộ request, tối đa 30m")
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "CLI quản trị Miles\n\nRead commands: stats, policy get, user ls, pack ls, job ls, node ls\nCác lệnh còn lại chưa hỗ trợ. Đặt flags trước command.")
@@ -59,6 +59,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		path = "/admin/v1/cluster/nodes"
 	default:
 		return adminclient.ErrUnsupported
+	}
+	if *tokenFile == "" {
+		return errors.New("--token-file is required")
 	}
 	client, err := adminclient.New(*endpoint, *tokenFile, *timeout)
 	if err != nil {

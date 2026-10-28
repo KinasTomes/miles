@@ -114,7 +114,7 @@ func (c Startup) Validate() error {
 		return fmt.Errorf("health_address must bind loopback/private, never wildcard/public")
 	}
 	if c.Mode != "runtime" && !ip.IsLoopback() {
-		return fmt.Errorf("dev mode must bind loopback")
+		return fmt.Errorf("%s mode must bind loopback", c.Mode)
 	}
 	if c.S3Address != "" {
 		a, err := netip.ParseAddrPort(c.S3Address)

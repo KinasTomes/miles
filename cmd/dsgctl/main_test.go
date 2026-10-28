@@ -55,3 +55,21 @@ func TestCLICommandsAndErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCLIRequiresTokenOnlyForSupportedReadCommands(t *testing.T) {
+	for _, args := range [][]string{{"stats"}, {"policy", "get"}, {"node", "ls"}} {
+		var out, diagnostics bytes.Buffer
+		err := run(context.Background(), args, &out, &diagnostics)
+		if err == nil || err.Error() != "--token-file is required" || out.Len() != 0 {
+			t.Fatalf("missing required flag was not explained for %v: %v", args, err)
+		}
+	}
+	for _, args := range [][]string{{"--version"}, {"--help"}} {
+		if err := run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+			t.Fatal("help/version must not require a token", err)
+		}
+	}
+	if err := run(context.Background(), []string{"job", "run", "scrub"}, &bytes.Buffer{}, &bytes.Buffer{}); !errors.Is(err, adminclient.ErrUnsupported) {
+		t.Fatal("unsupported commands must remain explicit", err)
+	}
+}

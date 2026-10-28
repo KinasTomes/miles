@@ -43,3 +43,13 @@ func TestLocalStorageAndS3Boundary(t *testing.T) {
 		}
 	}
 }
+
+func TestDevelopmentHealthAddressErrorNamesMode(t *testing.T) {
+	for _, mode := range []string{"dev", "local"} {
+		c := DefaultStartup()
+		c.Mode, c.HealthAddress = mode, "10.0.0.1:9100"
+		if err := c.Validate(); err == nil || err.Error() != mode+" mode must bind loopback" {
+			t.Fatalf("wrong mode in address error: %v", err)
+		}
+	}
+}
