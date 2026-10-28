@@ -52,6 +52,11 @@ func BeginWriteSession(ctx context.Context, o SessionOptions) (*WriteSession, er
 	if ctx == nil || o.Registry == nil || o.Metadata == nil || o.Packs == nil || o.Object.Validate() != nil || o.OpID == "" || o.CredentialID == "" || o.ProtectedUntil.IsZero() {
 		return nil, storage.ErrInvalid
 	}
+	if c, ok := storage.MutationFromContext(ctx); ok {
+		if c.Validate() != nil || c.Object != o.Object || c.Writer != o.Fence || c.MutationID != o.OpID || c.LogicalOpID != o.OpID {
+			return nil, storage.ErrFenced
+		}
+	}
 	auth, err := o.Metadata.Authorize(ctx, o.CredentialID, o.Object.Bucket)
 	if err != nil {
 		return nil, err

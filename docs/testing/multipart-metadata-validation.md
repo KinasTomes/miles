@@ -43,3 +43,34 @@ reopen under the same logical completion ID, atomic full receipt/counters,
 idempotent completion, receipt after Active expiry and exact receipt-expiry
 equality. Remaining producer/protection integration and fault coverage are
 tracked separately below; this evidence does not claim distributed R1/R2 safety.
+
+## Checklist 2: authoritative producers and immutable payloads
+
+Typed ProducerStore mutations cover Users, Buckets, BucketGrants, Credentials
+(ciphertext only), AdminTokens, global policy, canonical chunk/location CAS and
+object head/quota/receipt transactions. Stable child mutations retain the original
+logical operation identity. Exact retries return the persisted original result;
+no-ops persist terminal outcomes without adding events. Strict RequireProducers
+mode rejects writes without admission. Native ProducerAuthority observations are
+included in the same CAS; fixtures provide local test authority, not R1 consensus.
+
+Object payloads include immutable manifest/completion dependencies. Export splits
+large binary pages into bounded artifacts, then independently verifies their
+hashes, order, envelope and stream digest. Unicode is preserved with UTF-16 member
+ordering and safe integer validation. Shared tests export all control entities,
+chunk CAS and a two-page object with a page larger than 256 KiB; deleting an
+exported binary segment is detected. Bucket deletion requires a verified empty
+namespace counter, never an absent counter.
+
+Executed 2026-10-28 with required DynamoDB Local:
+
+```text
+go test ./internal/recovery/... ./internal/metadata/... ./internal/object/... ./internal/storage/... -count=1 -timeout=4m
+recovery PASS 7.332s; format PASS; Badger PASS 18.636s;
+DynamoDB PASS 63.621s; object PASS; storage/shared/S3 PASS.
+```
+
+Strict admission is opt-in for compatibility. Production integration must supply
+trusted writer/producer/multipart authority; enabling the option is not a claim
+that a distributed R1/R2 coordinator has been implemented. Heartbeat Nodes are
+operational telemetry and remain outside authoritative recovery producer coverage.

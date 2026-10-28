@@ -33,6 +33,9 @@ func (m *Store) DeleteObject(ctx context.Context, r s.CommitRequest) (s.CommitRe
 func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, error) {
 	var result s.CommitResult
 	err := m.update(ctx, func(t *db.Txn) error {
+		if m.requireProducers && r.Producer == nil {
+			return s.ErrFenced
+		}
 		if err := r.Validate(); err != nil {
 			return err
 		}
@@ -111,7 +114,7 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if reservation.Writer != r.Writer || !m.now().Before(reservation.Deadline) {
 			return s.ErrFenced
 		}
-		if !operations.ValidStaging(multipartTx{m, t}, r, reservation) {
+		if !operations.ValidStaging(multipartTx{m: m, t: t, ctx: ctx}, r, reservation) {
 			return s.ErrInvalid
 		}
 		q, err := get[s.LogicalQuota](t, key("quotas", a.Bucket.OwnerID))
@@ -174,7 +177,7 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 			return s.ErrInvalid
 		}
 		h.Revision = r.ExpectedRevision + 1
-		if err := operations.Finish(multipartTx{m, t}, r, h, m.now()); err != nil {
+		if err := operations.Finish(multipartTx{m: m, t: t, ctx: ctx}, r, h, m.now()); err != nil {
 			return err
 		}
 		q.Used = used + h.Size
@@ -182,16 +185,32 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		q.Staged -= reservation.StagedBytes
 		reservation.State = s.ReservationCommitted
 		reservation.Revision++
+		delta := int64(0)
+		if old.Revision == 0 || old.Deleted {
+			if !h.Deleted {
+				delta = 1
+			}
+		} else if h.Deleted {
+			delta = -1
+		}
+		if err := operations.Namespace(multipartTx{m: m, t: t, ctx: ctx}, h.Object.Bucket, delta, 0, m.requireProducers); err != nil {
+			return err
+		}
+		event, eventErr := operations.ObjectEvent(multipartTx{m: m, t: t, ctx: ctx}, r, h, old, q, reservation)
+		if eventErr != nil {
+			return eventErr
+		}
+
 		if err := put(t, key("quotas", q.OwnerID), q); err != nil {
 			return err
 		}
 		if err := put(t, headKey(h.Object), h); err != nil {
 			return err
 		}
-		if err := put(t, key("events", r.Event.ID), r.Event); err != nil {
+		if err := put(t, key("events", event.ID), event); err != nil {
 			return err
 		}
-		if err := put(t, key("event-ops", r.Event.OpID), r.Event.ID); err != nil {
+		if err := put(t, key("event-ops", event.OpID), event.ID); err != nil {
 			return err
 		}
 		if err := put(t, key("reservations", reservation.ID), reservation); err != nil {

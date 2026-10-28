@@ -273,6 +273,9 @@ func (m Multipart) Terminal(ctx context.Context, r s.MultipartRequest, reopen bo
 			q.Reserved -= ledger.Bytes
 			q.Staged -= ledger.StagedBytes
 			q.ActiveUploads--
+			if err := Namespace(t, u.Object.Bucket, 0, -1, false); err != nil {
+				return err
+			}
 			ledger.State = s.ReservationReleased
 			ledger.Revision++
 			u.State = "Aborted"
@@ -317,6 +320,9 @@ func Finish(t Tx, r s.CommitRequest, h s.ObjectHead, now time.Time) error {
 		return s.ErrConflict
 	}
 	u.State = "Completed"
+	if err := Namespace(t, u.Object.Bucket, 0, -1, false); err != nil {
+		return err
+	}
 	if err = advance(&u); err != nil {
 		return err
 	}

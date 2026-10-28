@@ -15,10 +15,13 @@ import (
 
 	"github.com/KinasTomes/miles/internal/manifest"
 	multipart "github.com/KinasTomes/miles/internal/multipart/core"
+	"github.com/KinasTomes/miles/internal/recovery/format"
 	s "github.com/KinasTomes/miles/internal/storage"
 )
 
 type Tx interface {
+	Attach(byte, string, string, uint32, int64, string) (format.PayloadDependency, error)
+	Admit(s.MutationContext) error
 	Get(string, []string, any) error
 	Put(string, []string, any) error
 	Authorize(string, string) (s.Authorization, error)
@@ -168,6 +171,9 @@ func (m Multipart) Create(ctx context.Context, r s.CreateUploadRequest) (s.Multi
 		u.Prepared = s.ObjectHead{}
 		ledger := s.Reservation{Version: 1, ID: u.ReservationID, OpID: r.Request.OpID, OwnerID: u.Owner, UploadID: u.ID, Object: u.Object, BaseRevision: base.Revision, BaseSize: base.Size, Revision: 1, State: s.ReservationActive, Deadline: u.ExpiresAt, Writer: r.Request.Writer}
 		q.ActiveUploads++
+		if err := Namespace(t, u.Object.Bucket, 0, 1, false); err != nil {
+			return err
+		}
 		for _, write := range []func() error{func() error { return put(t, "upload-record", u, u.ID) }, func() error { return put(t, "quotas", q, q.OwnerID) }, func() error { return put(t, "reservations", ledger, ledger.ID) }} {
 			if err := write(); err != nil {
 				return err

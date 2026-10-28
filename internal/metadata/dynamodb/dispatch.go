@@ -15,6 +15,11 @@ import (
 // still own atomic permission/revision checks; this is not a server-clock LP.
 func (m *Store) dispatchDeadline(ctx context.Context, r s.CommitRequest) (time.Time, error) {
 	t := m.transaction(ctx)
+	if r.Producer != nil {
+		if err := (multipartTx{t}).Admit(*r.Producer); err != nil {
+			return time.Time{}, err
+		}
+	}
 	if err := m.fence(t, r.Writer); err != nil {
 		return time.Time{}, err
 	}

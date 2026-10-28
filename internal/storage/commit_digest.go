@@ -10,6 +10,13 @@ import (
 // transaction retains its original receipt/expiry; a retry cannot refresh it.
 func CommitInputDigest(r CommitRequest) ([32]byte, error) {
 	r.Writer = WriterFence{}
+	if r.Producer != nil {
+		copy := *r.Producer
+		copy.Writer = WriterFence{}
+		r.Producer = &copy
+		r.Event.PayloadPointer = ""
+		r.Event.PayloadSHA256 = ""
+	}
 	r.Completion = nil
 	r.ReservationRevision = 0
 	if r.MultipartAttempt > 0 && r.Receipt != nil {

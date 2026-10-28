@@ -126,6 +126,7 @@ type WriterRequest struct {
 // AdmittedWriter carries fresh backend authority and the coordinator's verified
 // protection window for this request, not a process-wide reusable fence.
 type AdmittedWriter struct {
+	Producer       *storage.MutationContext
 	Fence          storage.WriterFence
 	ProtectedUntil time.Time
 }
@@ -204,6 +205,13 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		return PutResult{}, storage.ErrFenced
 	}
 	fence := admitted.Fence
+	if admitted.Producer != nil {
+		c := *admitted.Producer
+		if c.Validate() != nil || c.Object != object || c.Writer != fence || c.MutationID != opID || c.LogicalOpID != opID {
+			return PutResult{}, storage.ErrFenced
+		}
+		ctx = storage.WithMutation(ctx, c)
+	}
 	session, err := write.BeginWriteSession(ctx, write.SessionOptions{
 		Registry: s.o.Registry, Metadata: s.o.Metadata, Packs: s.o.Packs, Fence: fence,
 		Deadline: deadline, Object: object, OpID: opID, CredentialID: r.CredentialID, ProtectedUntil: admitted.ProtectedUntil,
@@ -275,6 +283,7 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		return PutResult{}, err
 	}
 	commit := storage.CommitRequest{
+		Producer:            admitted.Producer,
 		ReservationRevision: 1, Head: head, ExpectedRevision: baseRevision,
 		UserID: r.UserID, CredentialID: r.CredentialID, ReservationID: reservationID, Writer: fence, Event: event,
 	}

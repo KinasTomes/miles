@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/KinasTomes/miles/internal/recovery/format"
 	"strconv"
 	"time"
 
@@ -17,18 +18,19 @@ import (
 
 type multipartBridge struct{ m *Store }
 type multipartTx struct {
-	m *Store
-	t *db.Txn
+	m   *Store
+	t   *db.Txn
+	ctx context.Context
 }
 
 func (m *Store) multipartOps() operations.Multipart {
 	return operations.Multipart{Backend: multipartBridge{m}}
 }
 func (b multipartBridge) Update(ctx context.Context, fn func(operations.Tx) error) error {
-	return b.m.update(ctx, func(t *db.Txn) error { return fn(multipartTx{b.m, t}) })
+	return b.m.update(ctx, func(t *db.Txn) error { return fn(multipartTx{m: b.m, t: t, ctx: ctx}) })
 }
 func (b multipartBridge) View(ctx context.Context, fn func(operations.Tx) error) error {
-	return b.m.view(ctx, func(t *db.Txn) error { return fn(multipartTx{b.m, t}) })
+	return b.m.view(ctx, func(t *db.Txn) error { return fn(multipartTx{m: b.m, t: t, ctx: ctx}) })
 }
 func (b multipartBridge) Now() time.Time            { return b.m.now() }
 func (b multipartBridge) Metadata() s.MetadataStore { return b.m }
@@ -64,7 +66,18 @@ func (t multipartTx) Put(kind string, ids []string, value any) error {
 func (t multipartTx) Authorize(c, b string) (s.Authorization, error) { return t.m.authorize(t.t, c, b) }
 
 // Badger is the local development authority; it supplies no distributed proof.
-func (t multipartTx) Fence(w s.WriterFence, _ string) error { return t.m.fence(t.t, w) }
+func (t multipartTx) Fence(w s.WriterFence, _ string) error {
+	if t.m.requireProducers {
+		c, ok := s.MutationFromContext(t.ctx)
+		if !ok || c.Writer != w {
+			return s.ErrFenced
+		}
+		if err := t.Admit(c); err != nil {
+			return err
+		}
+	}
+	return t.m.fence(t.t, w)
+}
 func (t multipartTx) CloseOperation(op, reservation string) error {
 	r, err := get[s.Reservation](t.t, key("reservations", reservation))
 	if err != nil {
@@ -183,4 +196,20 @@ func (m *Store) ReadCompletionPage(ctx context.Context, kind byte, id string, n 
 	}
 	_, err = manifest.DecodeCompletionPage(body, kind, id, n)
 	return body, err
+}
+
+func (t multipartTx) Attach(kind byte, owner, domain string, pages uint32, length int64, digest string) (format.PayloadDependency, error) {
+	return operations.Attach(t, kind, owner, domain, pages, length, digest, func(n uint32) ([]byte, error) {
+		if kind == 1 {
+			page, err := t.m.GetManifestPage(t.ctx, owner, n)
+			if err != nil {
+				return nil, err
+			}
+			if page.Domain != domain {
+				return nil, s.ErrInvalid
+			}
+			return manifest.Encode(1, page)
+		}
+		return t.m.ReadCompletionPage(t.ctx, kind, owner, n)
+	})
 }

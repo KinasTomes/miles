@@ -370,8 +370,8 @@ func TestCanonicalSchemaAndMembership(t *testing.T) {
 	if v.ValidateExact(h, 0, []string{}) != nil {
 		t.Fatal("explicit empty inventory")
 	}
-	if _, err := Encode(map[string]any{"unicode": "Tiếng Việt"}); err == nil {
-		t.Fatal("unsupported JCS subset accepted")
+	if _, err := Encode(map[string]any{"unicode": "Ti\u1ebfng Vi\u1ec7t"}); err != nil {
+		t.Fatal("canonical Unicode rejected", err)
 	}
 	if Decode(bytes.Repeat([]byte("x"), MaxMetadataBytes+1), new(Input)) == nil {
 		t.Fatal("oversize accepted")
@@ -474,10 +474,10 @@ func TestConfigProducerExportAndUnsupportedProducers(t *testing.T) {
 			if err = w.Export(ctx, id); err != nil {
 				t.Fatal(err)
 			}
-			// Current shared producer boundary has no rights events or chunk outbox.
-			// Do not widen/fake that support just to make recovery look complete.
-			if _, err = s.EventID(history, op, "BucketGrants", "entity_put"); err == nil {
-				t.Fatal("unexpected rights support")
+			// Runtime heartbeat entities remain outside authoritative business producers.
+			// Native rights/location producers are covered by the backend suite.
+			if _, err = s.EventID(history, op, "Nodes", "entity_put"); err == nil {
+				t.Fatal("unexpected heartbeat producer support")
 			}
 			chunk := e
 			chunk.Entity = "Chunks"

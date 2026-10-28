@@ -15,9 +15,10 @@ import (
 )
 
 type MultipartHarness struct {
-	Metadata s.MetadataStore
-	Store    s.MultipartStore
-	SetTime  func(time.Time)
+	SetStrict func(bool)
+	Metadata  s.MetadataStore
+	Store     s.MultipartStore
+	SetTime   func(time.Time)
 }
 type MultipartFactory func(*testing.T, Fixture) MultipartHarness
 

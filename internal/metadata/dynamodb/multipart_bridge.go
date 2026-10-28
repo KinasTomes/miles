@@ -2,6 +2,7 @@ package dynamodb
 
 import (
 	"context"
+	"github.com/KinasTomes/miles/internal/recovery/format"
 	"reflect"
 	"time"
 
@@ -57,6 +58,14 @@ func (t multipartTx) Get(kind string, ids []string, out any) error {
 	if row.after == nil {
 		return s.ErrNotFound
 	}
+	if a.scope == "quotas" && row.after["owner_id"] == nil {
+		for _, name := range []string{"limit", "used", "reserved", "staged", "active_uploads"} {
+			if row.after[name] != nil {
+				return s.ErrUnavailable
+			}
+		}
+		return s.ErrNotFound
+	}
 	if a.incarnation != "" {
 		actual, ok := row.after["bucket_id"].(*types.AttributeValueMemberS)
 		if !ok || actual == nil {
@@ -82,6 +91,16 @@ func (t multipartTx) Authorize(credential, bucket string) (s.Authorization, erro
 	return t.store.authorize(t.transaction, credential, bucket)
 }
 func (t multipartTx) Fence(w s.WriterFence, id string) error {
+	if t.store.requireProducers {
+		c, ok := s.MutationFromContext(t.ctx)
+		if !ok || c.Writer != w {
+			return s.ErrFenced
+		}
+		if err := t.Admit(c); err != nil {
+			return err
+		}
+	}
+
 	if err := t.store.fence(t.transaction, w); err != nil {
 		return err
 	}
@@ -266,4 +285,20 @@ func (m *Store) ReadCompletionPage(ctx context.Context, kind byte, id string, n 
 	}
 	_, err = manifest.DecodeCompletionPage(body, kind, id, n)
 	return body, err
+}
+
+func (t multipartTx) Attach(kind byte, owner, domain string, pages uint32, length int64, digest string) (format.PayloadDependency, error) {
+	return operations.Attach(t, kind, owner, domain, pages, length, digest, func(n uint32) ([]byte, error) {
+		if kind == 1 {
+			page, err := t.store.GetManifestPage(t.ctx, owner, n)
+			if err != nil {
+				return nil, err
+			}
+			if page.Domain != domain {
+				return nil, s.ErrInvalid
+			}
+			return manifest.Encode(1, page)
+		}
+		return t.store.ReadCompletionPage(t.ctx, kind, owner, n)
+	})
 }

@@ -79,6 +79,9 @@ func (a fixtureAuthority) CheckManifest(ctx context.Context, w s.WriterFence, _ 
 func (a fixtureAuthority) CheckMultipart(ctx context.Context, w s.WriterFence, _ string, observe Observe) error {
 	return a.Check(ctx, w, observe)
 }
+func (a fixtureAuthority) CheckProducer(ctx context.Context, c s.MutationContext, observe Observe) error {
+	return a.Check(ctx, c.Writer, observe)
+}
 
 func writerKey(id string) Key {
 	k := stringKey("Leases", "resource_id", "writer")
