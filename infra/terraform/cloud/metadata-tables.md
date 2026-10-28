@@ -17,9 +17,22 @@ Number. Không dùng riêng `domain_id` làm partition key của Chunks.
 
 Các tên thuộc tính này là đầu vào bàn giao cho adapter DynamoDB W4. Chưa có adapter
 DynamoDB production trong checkout; thay schema sau khi có dữ liệu sẽ cần migration.
-Review mapping này cùng adapter trước apply, không đổi encoding Badger/pack/pages
-hoặc tự thêm GSI/TTL khi các task W2 chưa hoàn tất. GSI chỉ tìm candidates, không là
-bằng chứng authorization/commit; TTL không xóa lease/outbox/reservations đang sống.
+W03-HAI-03 bổ sung [mapping adapter/record phụ, index và transaction](../../../docs/contracts/dynamodb-adapter.md).
+Baseline W04 đã được lead duyệt tại
+[PR #35](https://github.com/KinasTomes/miles/pull/35#issuecomment-6436239260):
+giữ đúng **20 base tables, không GSI/LSI/TTL**. Go regression tests đối chiếu
+count/PK/SK và kiểm tất cả file `.tf` của module data để chặn index/TTL cả dạng
+dynamic, resource bảng phát sinh hoặc đổi nguồn `for_each = local.tables`.
+Inventory hiện khớp nên PR này không sửa Terraform resources hoặc apply AWS.
+
+Record phụ dùng namespace SystemConfig và `record_kind` phân biệt với global-policy;
+không export operation/manifest-owner như policy changes, không thêm thuộc tính
+vào page v1. Strongly consistent base reads và conditional transactions giữ
+correctness; bounded Scan chỉ discovery candidates, không chứng minh authorization
+hoặc epoch completeness. Cleanup explicit theo roots/retention, không dựa vào TTL.
+Consumer sign-off và implementation/fault proofs vẫn là gate riêng trước enablement.
+Mọi thay đổi table/index/TTL tương lai cần reviewed migration và cập nhật guard;
+baseline này không cấm tối ưu sau khi đã review. Không đổi encoding Badger/pack/pages.
 
 Mỗi bảng dùng on-demand, giới hạn dev 10 read/10 write request units mỗi giây,
 SSE-KMS và PITR 1 ngày theo kiến trúc. Hết throughput sẽ throttle; đây không phải

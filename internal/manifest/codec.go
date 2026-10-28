@@ -14,7 +14,7 @@ import (
 )
 
 const MaxPageBytes = 384 << 10
-const MaxPages = 1024
+const MaxPages = s.MaxManifestPages
 const ObjectPage byte = 1
 const PartPage byte = 2
 

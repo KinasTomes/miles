@@ -8,3 +8,5 @@
 *.tf text eol=lf
 *.sh text eol=lf
 Makefile text eol=lf
+# Evidence manifests verify the same bytes on Windows and clean Linux checkouts.
+docs/testing/evidence/** text eol=lf

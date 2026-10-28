@@ -1,0 +1,12 @@
+{
+  "TimeUtc": "2026-10-27T12:33:09.9980413Z",
+  "Bucket": "miles-hai03-s3-lab-demo-bucket",
+  "Versions": 0,
+  "DeleteMarkers": 0,
+  "MultipartUploads": 0,
+  "KmsKeyId": "3d9ce284-47e8-460a-be55-86916485bac8",
+  "KmsState": "Enabled",
+  "Role": "MilesHai03S3Test",
+  "FullTeardown": false,
+  "Note": "Bucket, enabled CMK and role intentionally retained; CMK charges can continue. No unrelated resources audited or deleted."
+}

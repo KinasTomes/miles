@@ -1,0 +1,51 @@
+{
+  "RoleName": "MilesHai03S3Test",
+  "Trust": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "AWS": "arn:aws:iam::PERSONAL_ACCOUNT_ID:user/miles-admin"
+        },
+        "Action": "sts:AssumeRole"
+      }
+    ]
+  },
+  "InlinePolicyName": "MilesHai03S3TestData",
+  "Policy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Sid": "InspectLabBucket",
+        "Effect": "Allow",
+        "Action": [
+          "s3:ListBucket",
+          "s3:GetBucketLocation"
+        ],
+        "Resource": "arn:aws:s3:::miles-hai03-s3-lab-demo-bucket"
+      },
+      {
+        "Sid": "ReadWriteTestPacks",
+        "Effect": "Allow",
+        "Action": [
+          "s3:GetObject",
+          "s3:PutObject"
+        ],
+        "Resource": [
+          "arn:aws:s3:::miles-hai03-s3-lab-demo-bucket/packs/*",
+          "arn:aws:s3:::miles-hai03-s3-lab-demo-bucket/packs-index/*"
+        ]
+      },
+      {
+        "Sid": "UseLabEncryptionKey",
+        "Effect": "Allow",
+        "Action": [
+          "kms:GenerateDataKey",
+          "kms:Decrypt"
+        ],
+        "Resource": "arn:aws:kms:ap-southeast-1:PERSONAL_ACCOUNT_ID:key/3d9ce284-47e8-460a-be55-86916485bac8"
+      }
+    ]
+  }
+}

@@ -28,6 +28,20 @@ type PreparedObject struct {
 	PackCount  uint64
 }
 
+// BindHead copies the complete prepared descriptor onto a candidate head. It
+// does not publish, assign revision/ETag, authorize or release any protection.
+func (p PreparedObject) BindHead(h storage.ObjectHead) (storage.ObjectHead, error) {
+	if h.Deleted || h.Revision != 0 || h.Domain != p.Domain {
+		return storage.ObjectHead{}, storage.ErrInvalid
+	}
+	h.ManifestID, h.Size, h.PageCount, h.ChunkCount = p.ManifestID, p.Size, p.PageCount, p.ChunkCount
+	h.PageIndex = append([]uint64(nil), p.PageIndex...)
+	if err := h.ValidateManifestDescriptor(); err != nil {
+		return storage.ObjectHead{}, err
+	}
+	return h, nil
+}
+
 func NewManifestID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

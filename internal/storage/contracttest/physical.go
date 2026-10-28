@@ -13,6 +13,8 @@ import (
 )
 
 type PackHarness struct {
+	// Ref isolates live acceptance runs; zero selects the offline fixture identity.
+	Ref             s.PackRef
 	CompleteRestore func(s.PackRef, time.Time) error
 	Store           s.PackStore
 	SidecarInfo     func(s.PackRef) (s.PackInfo, bool)
@@ -20,39 +22,59 @@ type PackHarness struct {
 type PackFactory func(*testing.T, func() time.Time) PackHarness
 
 func RunPacks(t *testing.T, newStore PackFactory) {
+	runPacks(t, newStore, false)
+}
+
+// RunWarmPacks shares the portable, non-destructive acceptance subset with S3.
+// Restore completion/expiry and physical deletion require separate evidence.
+func RunWarmPacks(t *testing.T, newStore PackFactory) {
+	runPacks(t, newStore, true)
+}
+
+func packInfo(h PackHarness) s.PackInfo {
+	info := NewFixture().Packs[0]
+	if h.Ref.ID != "" {
+		info.Ref = h.Ref
+	}
+	return info
+}
+
+func runPacks(t *testing.T, newStore PackFactory, warmOnly bool) {
 	ctx := context.Background()
 
-	t.Run("cold pack cannot become Warm in place", func(t *testing.T) {
-		for _, cold := range []s.StorageClass{s.GlacierIR, s.Glacier} {
-			for _, warm := range []s.StorageClass{s.Standard, s.StandardIA} {
-				t.Run(string(cold)+"-to-"+string(warm), func(t *testing.T) {
-					now := NewFixture().Now
-					h := newStore(t, func() time.Time { return now })
-					info := NewFixture().Packs[0]
-					info.Size = 4
-					if err := h.Store.PutPack(ctx, info, strings.NewReader("data")); err != nil {
-						t.Fatal(err)
-					}
-					if err := h.Store.ChangeStorageClass(ctx, info.Ref, cold); err != nil {
-						t.Fatal(err)
-					}
-					before, err := h.Store.HeadPack(ctx, info.Ref)
-					if err != nil {
-						t.Fatal(err)
-					}
-					requireError(t, h.Store.ChangeStorageClass(ctx, info.Ref, warm), s.ErrInvalid)
-					after, err := h.Store.HeadPack(ctx, info.Ref)
-					if err != nil || after != before {
-						t.Fatal("rejected transition changed pack", after, err)
-					}
-				})
+	if !warmOnly {
+		t.Run("cold pack cannot become Warm in place", func(t *testing.T) {
+			for _, cold := range []s.StorageClass{s.GlacierIR, s.Glacier} {
+				for _, warm := range []s.StorageClass{s.Standard, s.StandardIA} {
+					t.Run(string(cold)+"-to-"+string(warm), func(t *testing.T) {
+						now := NewFixture().Now
+						h := newStore(t, func() time.Time { return now })
+						info := packInfo(h)
+						info.Size = 4
+						if err := h.Store.PutPack(ctx, info, strings.NewReader("data")); err != nil {
+							t.Fatal(err)
+						}
+						if err := h.Store.ChangeStorageClass(ctx, info.Ref, cold); err != nil {
+							t.Fatal(err)
+						}
+						before, err := h.Store.HeadPack(ctx, info.Ref)
+						if err != nil {
+							t.Fatal(err)
+						}
+						requireError(t, h.Store.ChangeStorageClass(ctx, info.Ref, warm), s.ErrInvalid)
+						after, err := h.Store.HeadPack(ctx, info.Ref)
+						if err != nil || after != before {
+							t.Fatal("rejected transition changed pack", after, err)
+						}
+					})
+				}
 			}
-		}
-	})
+		})
+	}
 	t.Run("immutable pack range and generation", func(t *testing.T) {
 		now := time.Date(2026, 10, 20, 0, 0, 0, 0, time.UTC)
 		h := newStore(t, func() time.Time { return now })
-		info := NewFixture().Packs[0]
+		info := packInfo(h)
 		info.Size = 8
 		body := []byte("abcdefgh")
 		if err := h.Store.PutPack(ctx, info, bytes.NewReader(body)); err != nil {
@@ -76,6 +98,27 @@ func RunPacks(t *testing.T, newStore PackFactory) {
 		if string(got) != "cde" {
 			t.Fatalf("range=%q", got)
 		}
+		if err := h.Store.PutSidecar(ctx, info.Ref, 5, strings.NewReader("index")); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.Store.PutSidecar(ctx, info.Ref, 5, strings.NewReader("index")); err != nil {
+			t.Fatal(err)
+		}
+		requireError(t, h.Store.PutSidecar(ctx, info.Ref, 5, strings.NewReader("other")), s.ErrConflict)
+		index, ok := h.Store.(interface {
+			ReadSidecar(context.Context, s.PackRef) ([]byte, error)
+		})
+		if !ok {
+			t.Fatal("sidecar reader required for acceptance")
+		}
+		b, err := index.ReadSidecar(ctx, info.Ref)
+		if err != nil || string(b) != "index" {
+			t.Fatal("sidecar read", string(b), err)
+		}
+		sidecar, ok := h.SidecarInfo(info.Ref)
+		if !ok || sidecar.Class != s.Standard {
+			t.Fatal("sidecar is not STANDARD", sidecar)
+		}
 		unknown := info.Ref
 		unknown.Generation = "other"
 		_, err = h.Store.RangeGet(ctx, unknown, s.ByteRange{Length: 1})
@@ -89,8 +132,10 @@ func RunPacks(t *testing.T, newStore PackFactory) {
 		if err := h.Store.PutPack(ctx, other, strings.NewReader("ijklmnop")); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.Store.DeletePack(ctx, info.Ref); err != nil {
-			t.Fatal(err)
+		if !warmOnly {
+			if err := h.Store.DeletePack(ctx, info.Ref); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if _, err := h.Store.HeadPack(ctx, other.Ref); err != nil {
 			t.Fatal("deleting old generation removed new generation", err)
@@ -99,7 +144,7 @@ func RunPacks(t *testing.T, newStore PackFactory) {
 	t.Run("body errors and cancellation leave no pack", func(t *testing.T) {
 		now := NewFixture().Now
 		h := newStore(t, func() time.Time { return now })
-		info := NewFixture().Packs[0]
+		info := packInfo(h)
 		info.Size = 4
 		for _, body := range []string{"abc", "abcde"} {
 			requireError(t, h.Store.PutPack(ctx, info, strings.NewReader(body)), s.ErrInvalid)
@@ -117,83 +162,85 @@ func RunPacks(t *testing.T, newStore PackFactory) {
 		_, err = h.Store.HeadPack(ctx, info.Ref)
 		requireError(t, err, s.ErrNotFound)
 	})
-	t.Run("instant retrieval restore expiry and Standard sidecar", func(t *testing.T) {
-		now := NewFixture().Now
-		h := newStore(t, func() time.Time { return now })
-		info := NewFixture().Packs[0]
-		info.Size = 4
-		if err := h.Store.PutPack(ctx, info, strings.NewReader("data")); err != nil {
-			t.Fatal(err)
-		}
-		if err := h.Store.PutSidecar(ctx, info.Ref, 5, strings.NewReader("index")); err != nil {
-			t.Fatal(err)
-		}
-		if err := h.Store.ChangeStorageClass(ctx, info.Ref, s.GlacierIR); err != nil {
-			t.Fatal(err)
-		}
-		r, err := h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
-		if err != nil {
-			t.Fatal("GLACIER_IR must read immediately", err)
-		}
-		r.Close()
-		if err := h.Store.ChangeStorageClass(ctx, info.Ref, s.Glacier); err != nil {
-			t.Fatal(err)
-		}
-		_, err = h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
-		requireError(t, err, s.ErrCold)
-		if err := h.Store.Restore(ctx, info.Ref, s.RestoreRequest{Days: 1, Tier: "Standard"}); err != nil {
-			t.Fatal(err)
-		}
-		_, err = h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
-		requireError(t, err, s.ErrCold)
-		requireError(t, h.Store.ChangeStorageClass(ctx, info.Ref, s.Standard), s.ErrInvalid)
-		if err := h.CompleteRestore(info.Ref, now.Add(time.Hour)); err != nil {
-			t.Fatal(err)
-		}
-		r, err = h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, err := io.ReadAll(r)
-		r.Close()
-		if err != nil || string(got) != "data" {
-			t.Fatal("restore changed bytes", err)
-		}
-		before, err := h.Store.HeadPack(ctx, info.Ref)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, class := range []s.StorageClass{s.Standard, s.StandardIA, s.GlacierIR} {
-			requireError(t, h.Store.ChangeStorageClass(ctx, info.Ref, class), s.ErrInvalid)
-		}
-		if err := h.Store.ChangeStorageClass(ctx, info.Ref, s.Glacier); err != nil {
-			t.Fatal(err)
-		}
-		after, err := h.Store.HeadPack(ctx, info.Ref)
-		if err != nil || before != after {
-			t.Fatal("rejected promotion or same-class retry altered restore", after, err)
-		}
-		promoted := info
-		promoted.Ref.Generation = "promoted-generation"
-		if err := h.Store.PutPack(ctx, promoted, bytes.NewReader(got)); err != nil {
-			t.Fatal("new Warm generation", err)
-		}
-		warm, err := h.Store.HeadPack(ctx, promoted.Ref)
-		if err != nil || warm.Class != s.Standard || warm.Ref == before.Ref {
-			t.Fatal("promotion did not create separate Warm data", warm, err)
-		}
-		now = now.Add(time.Hour)
-		_, err = h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
-		requireError(t, err, s.ErrCold)
-		sidecar, ok := h.SidecarInfo(info.Ref)
-		if !ok || sidecar.Class != s.Standard {
-			t.Fatal("sidecar followed pack into archive")
-		}
-		head, err := h.Store.HeadPack(ctx, info.Ref)
-		if err != nil || head.Ref != info.Ref {
-			t.Fatal("class change altered generation", err)
-		}
-	})
+	if !warmOnly {
+		t.Run("instant retrieval restore expiry and Standard sidecar", func(t *testing.T) {
+			now := NewFixture().Now
+			h := newStore(t, func() time.Time { return now })
+			info := packInfo(h)
+			info.Size = 4
+			if err := h.Store.PutPack(ctx, info, strings.NewReader("data")); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Store.PutSidecar(ctx, info.Ref, 5, strings.NewReader("index")); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.Store.ChangeStorageClass(ctx, info.Ref, s.GlacierIR); err != nil {
+				t.Fatal(err)
+			}
+			r, err := h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
+			if err != nil {
+				t.Fatal("GLACIER_IR must read immediately", err)
+			}
+			r.Close()
+			if err := h.Store.ChangeStorageClass(ctx, info.Ref, s.Glacier); err != nil {
+				t.Fatal(err)
+			}
+			_, err = h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
+			requireError(t, err, s.ErrCold)
+			if err := h.Store.Restore(ctx, info.Ref, s.RestoreRequest{Days: 1, Tier: "Standard"}); err != nil {
+				t.Fatal(err)
+			}
+			_, err = h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
+			requireError(t, err, s.ErrCold)
+			requireError(t, h.Store.ChangeStorageClass(ctx, info.Ref, s.Standard), s.ErrInvalid)
+			if err := h.CompleteRestore(info.Ref, now.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			r, err = h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := io.ReadAll(r)
+			r.Close()
+			if err != nil || string(got) != "data" {
+				t.Fatal("restore changed bytes", err)
+			}
+			before, err := h.Store.HeadPack(ctx, info.Ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, class := range []s.StorageClass{s.Standard, s.StandardIA, s.GlacierIR} {
+				requireError(t, h.Store.ChangeStorageClass(ctx, info.Ref, class), s.ErrInvalid)
+			}
+			if err := h.Store.ChangeStorageClass(ctx, info.Ref, s.Glacier); err != nil {
+				t.Fatal(err)
+			}
+			after, err := h.Store.HeadPack(ctx, info.Ref)
+			if err != nil || before != after {
+				t.Fatal("rejected promotion or same-class retry altered restore", after, err)
+			}
+			promoted := info
+			promoted.Ref.Generation = "promoted-generation"
+			if err := h.Store.PutPack(ctx, promoted, bytes.NewReader(got)); err != nil {
+				t.Fatal("new Warm generation", err)
+			}
+			warm, err := h.Store.HeadPack(ctx, promoted.Ref)
+			if err != nil || warm.Class != s.Standard || warm.Ref == before.Ref {
+				t.Fatal("promotion did not create separate Warm data", warm, err)
+			}
+			now = now.Add(time.Hour)
+			_, err = h.Store.RangeGet(ctx, info.Ref, s.ByteRange{Length: 4})
+			requireError(t, err, s.ErrCold)
+			sidecar, ok := h.SidecarInfo(info.Ref)
+			if !ok || sidecar.Class != s.Standard {
+				t.Fatal("sidecar followed pack into archive")
+			}
+			head, err := h.Store.HeadPack(ctx, info.Ref)
+			if err != nil || head.Ref != info.Ref {
+				t.Fatal("class change altered generation", err)
+			}
+		})
+	}
 }
 
 type failingReader struct{ err error }

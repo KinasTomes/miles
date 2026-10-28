@@ -1,0 +1,102 @@
+{
+  "Versions": [
+    {
+      "ETag": "\"e7c8d50e12927dc1b2fa3f7b7fe507db\"",
+      "ChecksumAlgorithm": [
+        "CRC64NVME"
+      ],
+      "ChecksumType": "FULL_OBJECT",
+      "Size": 5,
+      "StorageClass": "STANDARD",
+      "Key": "packs-index/6d/6d86424320f6b6953d7ebc3d5dfecbff/bddf3a9f77d06e80bf787e5493f307cd.idx",
+      "VersionId": "KwvxKEcW3WEY2eSx4NaAPO7yVCArpwuk",
+      "IsLatest": true,
+      "LastModified": "2026-10-27T19:31:56+07:00",
+      "Owner": {
+        "ID": "32c3a80ed98323768c6f0f17af5a6382a76b358e9fe3736a41a5795eb0f1ab34"
+      }
+    },
+    {
+      "ETag": "\"77b0257b9494e0ffcb977e5f9648a99d\"",
+      "ChecksumAlgorithm": [
+        "CRC64NVME"
+      ],
+      "ChecksumType": "FULL_OBJECT",
+      "Size": 5,
+      "StorageClass": "STANDARD",
+      "Key": "packs-index/d9/d94fe719648a9069daea16c9e867614c/5b6bd59058441f33f64307ebc0031a41.idx",
+      "VersionId": "Ps0SvFOJaeHEbQr2ObEd9oESLQryOPgD",
+      "IsLatest": true,
+      "LastModified": "2026-10-27T18:11:03+07:00",
+      "Owner": {
+        "ID": "32c3a80ed98323768c6f0f17af5a6382a76b358e9fe3736a41a5795eb0f1ab34"
+      }
+    },
+    {
+      "ETag": "\"580d9082ef737cc8a0d495fa62c3fa5e\"",
+      "ChecksumAlgorithm": [
+        "CRC64NVME"
+      ],
+      "ChecksumType": "FULL_OBJECT",
+      "Size": 8,
+      "StorageClass": "STANDARD",
+      "Key": "packs/6d/6d86424320f6b6953d7ebc3d5dfecbff/bddf3a9f77d06e80bf787e5493f307cd",
+      "VersionId": "I7pUUHbZSFpuhCqG7a7vLUtCT0zlikOB",
+      "IsLatest": true,
+      "LastModified": "2026-10-27T19:31:55+07:00",
+      "Owner": {
+        "ID": "32c3a80ed98323768c6f0f17af5a6382a76b358e9fe3736a41a5795eb0f1ab34"
+      }
+    },
+    {
+      "ETag": "\"d989de0d5f570d71ea1925dd68c2b0a9\"",
+      "ChecksumAlgorithm": [
+        "CRC64NVME"
+      ],
+      "ChecksumType": "FULL_OBJECT",
+      "Size": 8,
+      "StorageClass": "STANDARD",
+      "Key": "packs/6d/6d86424320f6b6953d7ebc3d5dfecbff/other",
+      "VersionId": "i1BL9r8GFCTjlpbnC6WEftJzKdMewoIH",
+      "IsLatest": true,
+      "LastModified": "2026-10-27T19:31:57+07:00",
+      "Owner": {
+        "ID": "32c3a80ed98323768c6f0f17af5a6382a76b358e9fe3736a41a5795eb0f1ab34"
+      }
+    },
+    {
+      "ETag": "\"bb9d16c0a03f56cde71360d78eb1ba7a\"",
+      "ChecksumAlgorithm": [
+        "CRC64NVME"
+      ],
+      "ChecksumType": "FULL_OBJECT",
+      "Size": 8,
+      "StorageClass": "STANDARD",
+      "Key": "packs/d9/d94fe719648a9069daea16c9e867614c/5b6bd59058441f33f64307ebc0031a41",
+      "VersionId": "HJEGeShyg2wy8RtcjH0bscqsiMRdNzAN",
+      "IsLatest": true,
+      "LastModified": "2026-10-27T18:11:02+07:00",
+      "Owner": {
+        "ID": "32c3a80ed98323768c6f0f17af5a6382a76b358e9fe3736a41a5795eb0f1ab34"
+      }
+    },
+    {
+      "ETag": "\"932074761a6167ba589d669b3a52272e\"",
+      "ChecksumAlgorithm": [
+        "CRC64NVME"
+      ],
+      "ChecksumType": "FULL_OBJECT",
+      "Size": 8,
+      "StorageClass": "STANDARD",
+      "Key": "packs/d9/d94fe719648a9069daea16c9e867614c/other",
+      "VersionId": "7WRL16KBrs_XylWZ388h6c5YxYTgij15",
+      "IsLatest": true,
+      "LastModified": "2026-10-27T18:11:04+07:00",
+      "Owner": {
+        "ID": "32c3a80ed98323768c6f0f17af5a6382a76b358e9fe3736a41a5795eb0f1ab34"
+      }
+    }
+  ],
+  "RequestCharged": null,
+  "Prefix": ""
+}

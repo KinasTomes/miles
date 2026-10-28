@@ -10,6 +10,12 @@ Status: implementation for review, not a production storage feature or task-comp
 | Reusable contract suite, metadata/pack/cache fakes | [contracttest](../../internal/storage/contracttest/metadata.go), [physical contracts](../../internal/storage/contracttest/physical.go), [reference wiring](../../internal/storage/contracttest/reference_test.go), [fake stores](../../internal/storage/fake/metadata.go) | Architecture §9.0, §10.2, §16; API §2.6/4.3/4.4 |
 | Domain-aware PK, bucket incarnation, head/location CAS | ChunkKey.PartitionKey, NewBucketID, ExpectedRevision, WriterFence; identity/CAS/race tests | Architecture §1.5, §8.2, §10.1–10.2; API §2.2.3 |
 
+W03-HAI-03 [handoff helpers and boundaries](storage-handoff.md) add optional
+PartPageStore staging alongside ManifestPageReader. Fake/Badger use separate
+object/part namespaces; this is not another MetadataStore or a multipart head
+publication interface. [DynamoDB schema preparation](dynamodb-adapter.md) reuses
+these models and is checked against Terraform's table keys.
+
 `internal/storage` owns common Go types and ports so engine, API, metadata and physical adapters can import the same definitions without importing each other. Future BadgerDB/DynamoDB/S3 adapters implement these ports; engine orchestration does not belong in a backend adapter. No AWS SDK or new dependency is added.
 
 These are typed logical records, **not a frozen binary or DynamoDB encoding**. `ModelVersion=1` is the first domain-aware Go model; it is not architecture v1 or a fallback to legacy hash-only identities. Footer/sidecar bytes, page encoding/size accounting and journal/checkpoint serialization remain the separate format tasks, with a freeze in W2. Unknown model versions fail validation before mutations.
