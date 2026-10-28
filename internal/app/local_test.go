@@ -31,6 +31,11 @@ func TestLocalPersistenceAndBackendProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	credentialPath := filepath.Join(c.LocalDataPath, "credentials.json")
+	original, err := os.ReadFile(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cred := first.DevCredentials[0]
 	ref := storage.PackRef{ID: "local-probe", Generation: "1"}
 	if err := first.Packs.DeletePack(context.Background(), ref); !errors.Is(err, coordination.ErrMaintenanceDisabled) {
@@ -69,11 +74,51 @@ func TestLocalPersistenceAndBackendProbe(t *testing.T) {
 	if err := second.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Join(c.LocalDataPath, "credentials.json")); err != nil {
+	if err := os.Remove(credentialPath); err != nil {
 		t.Fatal(err)
 	}
 	if d, err := Bootstrap(c); err == nil {
 		d.Close()
 		t.Fatal("missing credential silently reseeded existing metadata")
+	}
+	if _, err := os.Lstat(credentialPath); !os.IsNotExist(err) {
+		t.Fatal("failed startup must not create a mismatched credential file")
+	}
+	if err := os.WriteFile(credentialPath, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := Bootstrap(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Close()
+	got, err = recovered.Metadata.GetBucket(context.Background(), b.Name)
+	if err != nil || got.ID != b.ID || recovered.DevCredentials[0] != cred {
+		t.Fatal("restoring original credential must recover the same installation")
+	}
+}
+
+func TestLocalBootstrapReusesPreparedCredential(t *testing.T) {
+	c := config.DefaultStartup()
+	c.Mode, c.LocalDataPath, c.PackEndpoint, c.PackBucket = "local", filepath.Join(t.TempDir(), "local"), "http://127.0.0.1:1", "packs"
+	if err := os.Mkdir(c.LocalDataPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Model restart after secret persistence but before the metadata transaction.
+	prepared, err := localCredential(filepath.Join(c.LocalDataPath, "credentials.json"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := Bootstrap(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.DevCredentials[0] != prepared {
+		t.Fatal("restart must reuse the durably prepared secret")
+	}
+	stored, err := d.Metadata.GetCredential(context.Background(), prepared.AccessKeyID)
+	if err != nil || !stored.Active || stored.UserID != prepared.UserID {
+		t.Fatal("prepared credential was not provisioned")
 	}
 }

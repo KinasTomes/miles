@@ -208,6 +208,17 @@ type Bootstrap struct {
 	Uploads     []s.Completion
 }
 
+// Bootstrapped reports whether one-time dev provisioning has committed.
+func (m *Store) Bootstrapped(ctx context.Context) (bool, error) {
+	var seeded bool
+	err := m.view(ctx, func(t *db.Txn) error {
+		var err error
+		seeded, err = exists(t, "bootstrapped")
+		return err
+	})
+	return seeded, err
+}
+
 func (m *Store) Bootstrap(ctx context.Context, b Bootstrap) error {
 	return m.update(ctx, func(t *db.Txn) error {
 		seeded, err := exists(t, "bootstrapped")

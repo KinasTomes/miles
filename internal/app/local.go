@@ -40,7 +40,11 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 			_ = m.Close()
 		}
 	}()
-	cred, err := localCredential(filepath.Join(c.LocalDataPath, "credentials.json"))
+	seeded, err := m.Bootstrapped(context.Background())
+	if err != nil {
+		return d, err
+	}
+	cred, err := localCredential(filepath.Join(c.LocalDataPath, "credentials.json"), !seeded)
 	if err != nil {
 		return d, err
 	}
@@ -90,11 +94,14 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 	return Dependencies{Metadata: m, Packs: coordination.ProtectPackStore(packs), Cache: lru, Probe: probe, DevCredentials: []DevCredential{cred}, Close: func() error { transport.CloseIdleConnections(); return m.Close() }}, nil
 }
 
-func localCredential(path string) (DevCredential, error) {
+func localCredential(path string, allowCreate bool) (DevCredential, error) {
 	b, err := secretfile.Read(path, 4096)
 	if err != nil {
 		if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
 			return DevCredential{}, err
+		}
+		if !allowCreate {
+			return DevCredential{}, errors.New("local credential file missing; restore original credentials.json; existing metadata is preserved")
 		}
 		cred, err := newDevCredential(rand.Reader, DevUser)
 		if err != nil {
