@@ -26,12 +26,6 @@ type Inventory struct {
 	State   string   `json:"state"`
 }
 
-func (r Reference) Validate() error {
-	if r.Length <= 0 || r.Length > MaxMetadataBytes || !isHex(r.SHA256, 64) {
-		return s.ErrInvalid
-	}
-	return nil
-}
 func (c Catalog) Validate() error {
 	if c.Version != 1 || !isHex(c.History, 32) || !isHex(c.Incarnation, 32) || c.Genesis.Validate() != nil {
 		return s.ErrInvalid

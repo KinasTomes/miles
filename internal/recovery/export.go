@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/KinasTomes/miles/internal/recovery/format"
 	"io"
 	"strconv"
 
@@ -32,45 +34,27 @@ type PayloadSource interface {
 	Open(context.Context, string) (io.ReadCloser, error)
 }
 
-type Reference struct {
-	Length int    `json:"length"`
-	SHA256 string `json:"sha256"`
-}
-type Effect struct {
-	Deleted  bool   `json:"deleted"`
-	Key      string `json:"key"`
-	Revision uint64 `json:"revision"`
-	Value    string `json:"value"`
-}
-type EventPage struct {
-	Effects []Effect `json:"effects"`
-	Epoch   uint64   `json:"epoch"`
-	Event   string   `json:"event"`
-	History string   `json:"history"`
-	Number  int      `json:"number"`
-	Version int      `json:"r2_version"`
-}
+type Reference = format.Reference
+type Effect = format.Effect
+type EventPage = format.EventPage
+type Input = format.Input
 
-// Input is a retained prototype bundle. Binary FORMAT attachments are not
-// embedded in this schema. Full producer projections remain an integration gate.
-type Input struct {
-	Pages []EventPage `json:"pages"`
-}
 type Descriptor struct {
-	Action   string        `json:"action"`
-	Entity   string        `json:"entity"`
-	Epoch    uint64        `json:"epoch"`
-	History  string        `json:"history"`
-	ID       string        `json:"id"`
-	Logical  string        `json:"logical_op"`
-	Mutation string        `json:"mutation"`
-	Pages    []Reference   `json:"pages"`
-	Version  int           `json:"r2_version"`
-	Source   s.OutboxEvent `json:"source"`
+	Dependencies []AttachmentReference `json:"dependencies,omitempty"`
+	Action       string                `json:"action"`
+	Entity       string                `json:"entity"`
+	Epoch        uint64                `json:"epoch"`
+	History      string                `json:"history"`
+	ID           string                `json:"id"`
+	Logical      string                `json:"logical_op"`
+	Mutation     string                `json:"mutation"`
+	Pages        []Reference           `json:"pages"`
+	Version      int                   `json:"r2_version"`
+	Source       s.OutboxEvent         `json:"source"`
 }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
-func ref(b []byte) Reference { return Reference{len(b), digest(b)} }
+func ref(b []byte) Reference { return Reference{Length: len(b), SHA256: digest(b)} }
 func isHex(v string, n int) bool {
 	if len(v) != n {
 		return false
@@ -83,82 +67,8 @@ func isHex(v string, n int) bool {
 	return true
 }
 
-// Encode implements only the explicit ASCII/nonnegative-integer JCS subset of
-// the W02 fixtures. Unsupported Unicode, null and number forms fail closed.
-// This deliberately makes no full RFC8785 conformance or format-freeze claim.
-func Encode(v any) ([]byte, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil, s.ErrInvalid
-	}
-	var tree any
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.UseNumber()
-	if d.Decode(&tree) != nil || !subset(tree, 0) {
-		return nil, s.ErrInvalid
-	}
-	b, err = json.Marshal(tree)
-	if err != nil || len(b) == 0 || len(b) > MaxMetadataBytes {
-		return nil, s.ErrInvalid
-	}
-	return b, nil
-}
-func subset(v any, depth int) bool {
-	if depth > 8 {
-		return false
-	}
-	switch x := v.(type) {
-	case string:
-		for _, c := range x {
-			if c < 32 || c > 126 || c == '<' || c == '>' || c == '&' {
-				return false
-			}
-		}
-		return true
-	case bool:
-		return true
-	case json.Number:
-		n, err := strconv.ParseUint(string(x), 10, 53)
-		return err == nil && n <= maxInteger && strconv.FormatUint(n, 10) == string(x)
-	case []any:
-		if len(x) > MaxFanout {
-			return false
-		}
-		for _, a := range x {
-			if !subset(a, depth+1) {
-				return false
-			}
-		}
-		return true
-	case map[string]any:
-		if len(x) > MaxFanout {
-			return false
-		}
-		for k, a := range x {
-			if !subset(k, depth+1) || !subset(a, depth+1) {
-				return false
-			}
-		}
-		return true
-	default:
-		return false
-	}
-}
-func Decode(b []byte, out any) error {
-	if len(b) == 0 || len(b) > MaxMetadataBytes {
-		return s.ErrInvalid
-	}
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	if d.Decode(out) != nil || d.Decode(new(any)) != io.EOF {
-		return s.ErrInvalid
-	}
-	canonical, err := Encode(out)
-	if err != nil || !bytes.Equal(b, canonical) {
-		return s.ErrInvalid
-	}
-	return nil
-}
+func Encode(v any) ([]byte, error)   { return format.Encode(v) }
+func Decode(b []byte, out any) error { return format.Decode(b, out) }
 
 type Exporter struct {
 	Metadata s.OutboxExportStore
@@ -216,6 +126,32 @@ func (w Exporter) Export(ctx context.Context, id string) error {
 				return s.ErrInvalid
 			}
 			seen[effect.Key] = true
+			if effect.Key == "ProducerScope/"+hex.EncodeToString([]byte(e.OpID)) {
+				raw, err := base64.StdEncoding.Strict().DecodeString(effect.Value)
+				if err != nil {
+					return s.ErrInvalid
+				}
+				var projection format.Projection
+				if json.Unmarshal(raw, &projection) != nil || projection.Version != 1 || projection.Entity != "ProducerScope" {
+					return s.ErrInvalid
+				}
+				var scope format.ProducerScope
+				if json.Unmarshal(projection.Value, &scope) != nil || scope.History != e.HistoryID || scope.Mutation != e.OpID || scope.Epoch != e.Epoch || scope.Entity != e.Entity || scope.Action != e.Action || !isHex(scope.Logical, 32) {
+					return s.ErrInvalid
+				}
+				d.Logical = scope.Logical
+				identity := e.EntityID
+				if e.Entity == "Objects" {
+					body, err := json.Marshal(e.Object)
+					if err != nil {
+						return err
+					}
+					identity = string(body)
+				}
+				if scope.Identity != identity {
+					return s.ErrInvalid
+				}
+			}
 		}
 		pages[i], err = Encode(p)
 		if err != nil {
@@ -227,6 +163,13 @@ func (w Exporter) Export(ctx context.Context, id string) error {
 		if err := putVerified(ctx, w.Objects, eventRoot(e)+"pages/"+strconv.Itoa(i)+".json", body); err != nil {
 			return err
 		}
+	}
+	for i, dep := range input.Dependencies {
+		exported, err := w.exportAttachment(ctx, e, dep, i)
+		if err != nil {
+			return err
+		}
+		d.Dependencies = append(d.Dependencies, exported)
 	}
 	body, err := Encode(d)
 	if err != nil {

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/gob"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -31,11 +30,7 @@ func attemptCodec() {
 	})
 }
 func commitDigest(r s.CommitRequest) ([32]byte, error) {
-	r.Writer = s.WriterFence{}
-	r.Completion = nil
-	r.ReservationRevision = 0
-	body, err := json.Marshal(r)
-	return sha256.Sum256(body), err
+	return s.CommitInputDigest(r)
 }
 
 // A pending request is a bounded internal attempt record, NOT an R2 event body.

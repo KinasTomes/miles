@@ -15,6 +15,7 @@ func EventID(historyID, mutationID, entity, action string) (string, error) {
 	}
 	switch entity + "/" + action {
 	case "Objects/object_commit", "Chunks/location_set", "SystemConfig/entity_put", "SystemConfig/entity_delete":
+	case "Users/entity_put", "Users/entity_delete", "Buckets/entity_put", "Buckets/entity_delete", "BucketGrants/entity_put", "BucketGrants/entity_delete", "Credentials/entity_put", "Credentials/entity_delete", "AdminTokens/entity_put", "AdminTokens/entity_delete":
 	default:
 		return "", fmt.Errorf("%w: event entity/action", ErrInvalid)
 	}

@@ -3,8 +3,10 @@ package badger
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
 	"reflect"
 	"strconv"
 
@@ -47,10 +49,25 @@ func (m *Store) CreateBucket(ctx context.Context, r s.BucketCreate) (s.Bucket, b
 		if !u.Active {
 			return s.ErrAccessDenied
 		}
+
+		if err := m.producerGate(multipartTx{m: m, t: t, ctx: ctx}, ctx, s.WriterFence{}); err != nil {
+			return err
+		}
+		replay, replayErr := operations.Replay(multipartTx{m: m, t: t, ctx: ctx}, ctx, "Buckets", "entity_put", r.Name, r)
+		if replayErr == nil {
+			if json.Unmarshal(replay.Value, &out) != nil {
+				return s.ErrUnavailable
+			}
+			created = false
+			return nil
+		}
+		if !errors.Is(replayErr, s.ErrNotFound) {
+			return replayErr
+		}
 		old, err := get[s.Bucket](t, key("buckets", r.Name))
 		if err == nil {
 			out = old
-			return nil
+			return operations.NoOp(multipartTx{m: m, t: t, ctx: ctx}, ctx, "Buckets", r.Name, r, old)
 		}
 		if !errors.Is(err, s.ErrNotFound) {
 			return err
@@ -67,8 +84,20 @@ func (m *Store) CreateBucket(ctx context.Context, r s.BucketCreate) (s.Bucket, b
 			return err
 		}
 		out = s.Bucket{Name: r.Name, ID: id, OwnerID: u.ID, Domain: domain, Revision: 1, Active: true, CreatedAt: m.now()}
+
 		created = true
-		return put(t, key("buckets", r.Name), out)
+		if err := put(t, key("buckets", r.Name), out); err != nil {
+			return err
+		}
+		if _, ok := s.MutationFromContext(ctx); ok {
+			if err := put(t, key("bucket-namespace", r.Name), s.BucketNamespace{Version: 1}); err != nil {
+				return err
+			}
+		}
+		context, _ := s.MutationFromContext(ctx)
+		_, err = operations.Journal(multipartTx{m: m, t: t, ctx: ctx}, ctx, m.requireProducers, context.Writer, "Buckets", "entity_put", r.Name, out.Revision, r, out)
+		return err
+
 	})
 	if err != nil {
 		return s.Bucket{}, false, err
@@ -135,6 +164,25 @@ func (m *Store) PutChunkIfAbsent(ctx context.Context, c s.Chunk, w s.WriterFence
 	var out s.Chunk
 	won := false
 	err := m.update(ctx, func(t *db.Txn) error {
+
+		if err := m.producerGate(multipartTx{m: m, t: t, ctx: ctx}, ctx, w); err != nil {
+			return err
+		}
+		identity, identityErr := c.Key.PartitionKey()
+		if identityErr != nil {
+			return identityErr
+		}
+		replay, replayErr := operations.Replay(multipartTx{m: m, t: t, ctx: ctx}, ctx, "Chunks", "location_set", identity)
+		if replayErr == nil {
+			if json.Unmarshal(replay.Value, &out) != nil {
+				return s.ErrUnavailable
+			}
+			won = false
+			return nil
+		}
+		if !errors.Is(replayErr, s.ErrNotFound) {
+			return replayErr
+		}
 		if err := m.fence(t, w); err != nil {
 			return err
 		}
@@ -160,7 +208,8 @@ func (m *Store) PutChunkIfAbsent(ctx context.Context, c s.Chunk, w s.WriterFence
 		}
 		out = c
 		won = true
-		return nil
+		_, journalErr := operations.Journal(multipartTx{m: m, t: t, ctx: ctx}, ctx, m.requireProducers, w, "Chunks", "location_set", identity, c.LocationRevision, c.Key, c)
+		return journalErr
 	})
 	if err != nil {
 		return s.Chunk{}, false, err
@@ -170,6 +219,24 @@ func (m *Store) PutChunkIfAbsent(ctx context.Context, c s.Chunk, w s.WriterFence
 func (m *Store) CompareAndSwapChunkLocation(ctx context.Context, k s.ChunkKey, revision uint64, next s.ChunkLocation, w s.WriterFence) (s.Chunk, error) {
 	var out s.Chunk
 	err := m.update(ctx, func(t *db.Txn) error {
+
+		if err := m.producerGate(multipartTx{m: m, t: t, ctx: ctx}, ctx, w); err != nil {
+			return err
+		}
+		identity, identityErr := k.PartitionKey()
+		if identityErr != nil {
+			return identityErr
+		}
+		replay, replayErr := operations.Replay(multipartTx{m: m, t: t, ctx: ctx}, ctx, "Chunks", "location_set", identity)
+		if replayErr == nil {
+			if json.Unmarshal(replay.Value, &out) != nil {
+				return s.ErrUnavailable
+			}
+			return nil
+		}
+		if !errors.Is(replayErr, s.ErrNotFound) {
+			return replayErr
+		}
 		if err := m.fence(t, w); err != nil {
 			return err
 		}
@@ -189,7 +256,11 @@ func (m *Store) CompareAndSwapChunkLocation(ctx context.Context, k s.ChunkKey, r
 		v.Location = next
 		v.LocationRevision++
 		out = v
-		return put(t, chunkKey(k), v)
+		if err := put(t, chunkKey(k), v); err != nil {
+			return err
+		}
+		_, journalErr := operations.Journal(multipartTx{m: m, t: t, ctx: ctx}, ctx, m.requireProducers, w, "Chunks", "location_set", identity, v.LocationRevision, k, v)
+		return journalErr
 	})
 	return out, err
 }

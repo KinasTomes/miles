@@ -95,6 +95,14 @@ func (e OutboxEvent) Validate() error {
 		if e.EntityID == "global-policy" && e.Object == (ObjectKey{}) {
 			return nil
 		}
+	case "Chunks":
+		if e.EntityID != "" && e.Object == (ObjectKey{}) {
+			return nil
+		}
+	case "Users", "Buckets", "BucketGrants", "Credentials", "AdminTokens":
+		if e.EntityID != "" && e.Object == (ObjectKey{}) {
+			return nil
+		}
 	}
 	return ErrInvalid
 }
