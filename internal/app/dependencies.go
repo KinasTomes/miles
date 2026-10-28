@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/fake"
 )
@@ -71,5 +72,5 @@ func Bootstrap(c config.Startup) (Dependencies, error) {
 		}
 		return ctx.Err()
 	}
-	return Dependencies{Metadata: m, Packs: p, Cache: cache, Probe: probe, DevCredentials: []DevCredential{minted}}, nil
+	return Dependencies{Metadata: m, Packs: coordination.ProtectPackStore(p), Cache: cache, Probe: probe, DevCredentials: []DevCredential{minted}}, nil
 }
