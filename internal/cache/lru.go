@@ -40,6 +40,7 @@ type LRU struct {
 	entries       map[storage.CacheKey]*list.Element
 	order         list.List // front is MRU
 	residentBytes int64
+	evictions     uint64
 }
 
 var _ storage.Cache = (*LRU)(nil)
@@ -124,10 +125,30 @@ func (c *LRU) Put(ctx context.Context, key storage.CacheKey, data []byte) error 
 	// LP: commit this indivisible locked mutation. Subtraction avoids addition
 	// overflow even when CapacityBytes is MaxInt64. No fallible work follows.
 	for c.residentBytes > c.limits.CapacityBytes-n || len(c.entries) >= c.limits.MaxEntries {
+		c.evictions++
 		c.remove(c.order.Back())
 	}
 	c.entries[key] = c.order.PushFront(&entry{key: key, data: owned})
 	c.residentBytes += n
+	return nil
+}
+
+// Occupancy counts payload bytes only; it is not a process RSS estimate.
+func (c *LRU) Occupancy() (bytes int64, entries int, evictions uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.residentBytes, len(c.entries), c.evictions
+}
+
+func (c *LRU) Purge(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	c.entries = make(map[storage.CacheKey]*list.Element)
+	c.order.Init()
+	c.residentBytes = 0
 	return nil
 }
 

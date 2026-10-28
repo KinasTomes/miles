@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"time"
 
-	"github.com/KinasTomes/miles/internal/cache"
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
@@ -25,7 +24,7 @@ import (
 type WarmOptions struct {
 	Metadata  storage.MetadataStore
 	Packs     *packs3.Store
-	Cache     *cache.LRU
+	Cache     storage.Cache
 	Admission *Admission
 	Gate      *coordination.WarmGate
 	Clock     clock.Clock
@@ -61,7 +60,7 @@ type WarmResult struct {
 }
 
 func NewWarmReader(o WarmOptions) (*WarmReader, error) {
-	if o.Metadata == nil || (reflect.ValueOf(o.Metadata).Kind() == reflect.Ptr && reflect.ValueOf(o.Metadata).IsNil()) || o.Packs == nil || o.Cache == nil || o.Admission == nil || o.Gate == nil || o.Clock == nil || o.Metrics == nil || o.Global.Revision() == 0 || o.TransportBytes <= 0 || o.TransportBytes > math.MaxInt64-pack.MaxPackBytes || o.MaxManifestPages == 0 || o.MaxManifestPages > 1024 || o.MaxManifestChunks == 0 {
+	if o.Metadata == nil || (reflect.ValueOf(o.Metadata).Kind() == reflect.Ptr && reflect.ValueOf(o.Metadata).IsNil()) || o.Packs == nil || o.Cache == nil || (reflect.ValueOf(o.Cache).Kind() == reflect.Ptr && reflect.ValueOf(o.Cache).IsNil()) || o.Admission == nil || o.Gate == nil || o.Clock == nil || o.Metrics == nil || o.Global.Revision() == 0 || o.TransportBytes <= 0 || o.TransportBytes > math.MaxInt64-pack.MaxPackBytes || o.MaxManifestPages == 0 || o.MaxManifestPages > 1024 || o.MaxManifestChunks == 0 {
 		return nil, storage.ErrInvalid
 	}
 	if err := o.Gate.CheckClock(o.Clock); err != nil {
@@ -389,6 +388,7 @@ func (e *warmExecutor) Execute(ctx context.Context, i int, _ engine.PlannedChunk
 			}
 			return nil, err
 		}
+		o.Metrics.backendBytes.Add(uint64(len(stored)))
 	}
 	if err = e.checkView(ctx); err != nil {
 		return nil, err

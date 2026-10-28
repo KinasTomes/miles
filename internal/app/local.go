@@ -79,6 +79,17 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		transport.CloseIdleConnections()
 		return d, err
 	}
+	disk, err := cache.NewDisk(filepath.Join(c.LocalDataPath, "cache"), cache.Limits{CapacityBytes: 1 << 30, MaxEntries: 16384, MaxCopyBytes: 4 << 20})
+	if err != nil {
+		transport.CloseIdleConnections()
+		return d, err
+	}
+	node, err := cache.NewNode("local", lru, disk)
+	if err != nil {
+		_ = disk.Close()
+		transport.CloseIdleConnections()
+		return d, err
+	}
 	probe := func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()
@@ -90,7 +101,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		}
 		return ctx.Err()
 	}
-	return Dependencies{Metadata: m, Packs: coordination.ProtectPackStore(packs), Cache: lru, Probe: probe, DevCredentials: []DevCredential{cred}, Close: func() error { transport.CloseIdleConnections(); return m.Close() }}, nil
+	return Dependencies{Metadata: m, Packs: coordination.ProtectPackStore(packs), Cache: node, Probe: probe, DevCredentials: []DevCredential{cred}, Close: func() error { transport.CloseIdleConnections(); return errors.Join(node.Close(), m.Close()) }}, nil
 }
 
 func localCredential(path string, allowCreate bool) (DevCredential, error) {

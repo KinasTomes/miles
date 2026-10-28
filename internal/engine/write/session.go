@@ -120,7 +120,7 @@ func (s *WriteSession) Prepare(pipeline Pipeline, body io.Reader, manifestID str
 		return PreparedObject{}, storage.ErrConflict
 	}
 	pipeline.Lookup = s.metadata
-	pipeline.Publisher = &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil}
+	pipeline.Publisher = &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil, WriteCache: pipeline.WriteCache, AdmitOnWrite: pipeline.AdmitOnWrite}
 	p, err := PrepareObject(s.ctx, pipeline, s.metadata, s.writer.Fence(), body, s.auth.Bucket.Domain, manifestID)
 	if err != nil {
 		s.failed = true

@@ -1,5 +1,13 @@
 # Local runtime, CLI và fixture runner
 
+Local durable mode có cache node hai tầng: memory64MiB và disk1GiB tại
+`<local_data_path>/cache`, node ID `local`. Cache là disposable, không là nguồn
+recovery. Nếu process bị kill để lại `cache/owner.lock`, chỉ bỏ marker sau khi
+xác nhận process cũ đã dừng; không xóa metadata/credentials. Stats/purge hook
+có scope node; Admin cluster job vẫn thuộc W05. Xem
+[cache node validation](../testing/cache-node-validation.md) cho limits,
+admit-on-write, methodology và evidence.
+
 ## Chạy process
 
 Yêu cầu Go1.27.2, GNU Make và Python3. Chạy từ repository root:
