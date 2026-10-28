@@ -17,7 +17,7 @@ func TestObjectRouterRejectsUnsupportedConditionsBeforeService(t *testing.T) {
 					w := newBucketWorld(t)
 					reader := &fakeObjectReader{get: objectInfo(3, `"etag"`), stat: objectInfo(3, `"etag"`), body: []byte("abc")}
 					writer := &fakeObjectWriter{}
-					w.router.Handlers = NewObjectHandlers(writer, reader)
+					w.router.Handlers = NewObjectHandlers(writer, reader, nil)
 					r := httptest.NewRequest(method, "/demo/k", nil)
 					r.Header.Set(header, value)
 					sign(r, accessKey("owner"), "secret-owner")
@@ -56,7 +56,7 @@ func TestObjectRouterPreservesGetIfMatch(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newBucketWorld(t)
 			reader := &fakeObjectReader{get: objectInfo(3, `"etag"`), body: []byte("abc")}
-			w.router.Handlers = NewObjectHandlers(nil, reader)
+			w.router.Handlers = NewObjectHandlers(nil, reader, nil)
 			r := httptest.NewRequest(http.MethodGet, "/demo/k", nil)
 			r.Header.Set("If-Match", tc.match)
 			if tc.span != "" {

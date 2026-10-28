@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,10 +16,12 @@ import (
 // maxObjectKeyBytes is the S3 object key limit (API v2 4.1).
 const maxObjectKeyBytes = 1024
 
-// ObjectWriter is the stateful PutObject port. The service streams the body to
-// packs and publishes the head; the handler owns HTTP validation and responses.
+// ObjectWriter is the stateful write port. The service streams the body to
+// packs and publishes the head or tombstone; the handler owns HTTP validation
+// and responses.
 type ObjectWriter interface {
 	PutObject(ctx context.Context, r object.PutRequest) (object.PutResult, error)
+	DeleteObject(ctx context.Context, r object.DeleteRequest) error
 }
 
 // ObjectReader is the Warm read port. GetObject evaluates SelectRange against
@@ -28,17 +31,26 @@ type ObjectReader interface {
 	Stat(ctx context.Context, r object.GetRequest) (object.GetResult, error)
 }
 
+// ObjectLister is the consistent LIST port: one logical page per call.
+type ObjectLister interface {
+	ListObjects(ctx context.Context, r storage.ListObjectsRequest) (object.ListPage, error)
+}
+
 // Objects serves the P0 object operations of API v2 4.2: PutObject,
-// GetObject and HeadObject.
+// GetObject, HeadObject, DeleteObject and ListObjectsV2.
 type Objects struct {
 	Writer ObjectWriter
 	Reader ObjectReader
+	Lister ObjectLister
 }
 
 // NewObjectHandlers wires the object handlers into a Router's Handlers map.
-func NewObjectHandlers(writer ObjectWriter, reader ObjectReader) map[Operation]Handler {
-	o := &Objects{Writer: writer, Reader: reader}
-	return map[Operation]Handler{PutObject: o.PutObject, GetObject: o.GetObject, HeadObject: o.HeadObject}
+func NewObjectHandlers(writer ObjectWriter, reader ObjectReader, lister ObjectLister) map[Operation]Handler {
+	o := &Objects{Writer: writer, Reader: reader, Lister: lister}
+	return map[Operation]Handler{
+		PutObject: o.PutObject, GetObject: o.GetObject, HeadObject: o.HeadObject,
+		DeleteObject: o.DeleteObject, ListObjectsV2: o.ListObjectsV2,
+	}
 }
 
 func objectKey(r *Request) error {
@@ -220,6 +232,30 @@ func (o *Objects) HeadObject(w http.ResponseWriter, r *Request) error {
 		writeResponseChecksum(h, r.HTTP.Header.Get("X-Amz-Checksum-Mode"), stat.Info.Checksum)
 	}
 	w.WriteHeader(http.StatusOK)
+	return nil
+}
+
+// DeleteObject answers 204 for a caller the router authorized with write,
+// whether or not the key exists (API v2 4.2). The payload is read to EOF
+// first, so a bad x-amz-content-sha256 or checksum header fails the request
+// before the tombstone transaction.
+func (o *Objects) DeleteObject(w http.ResponseWriter, r *Request) error {
+	if o.Writer == nil {
+		return &Error{Code: ErrNotImplemented, Message: "DeleteObject is not implemented"}
+	}
+	if err := objectKey(r); err != nil {
+		return err
+	}
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		return err
+	}
+	err := o.Writer.DeleteObject(r.HTTP.Context(), object.DeleteRequest{
+		Bucket: r.Access.Bucket, Key: r.Key, UserID: r.Caller.UserID, CredentialID: r.Caller.AccessKeyID,
+	})
+	if err != nil {
+		return objectError(err, r.Bucket, r.Key)
+	}
+	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 
