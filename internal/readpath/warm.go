@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/cache"
@@ -12,18 +13,17 @@ import (
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/engine"
-	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/pack"
 	"github.com/KinasTomes/miles/internal/policy"
 	"github.com/KinasTomes/miles/internal/storage"
 	packs3 "github.com/KinasTomes/miles/internal/storage/s3"
 )
 
-// WarmOptions wires the concrete single-node adapters. Badger's decoder enforces
-// canonical CRC presence (zero included); arbitrary unchecked metadata cannot be
-// substituted. Snapshot and budgets are explicit, without production defaults.
+// WarmOptions accepts contract-conforming metadata adapters. Each adapter must
+// validate canonical CRC presence (zero included) when decoding persisted chunks.
+// WarmGate remains a single-node boundary; this wiring does not establish R1.
 type WarmOptions struct {
-	Metadata  *badger.Store
+	Metadata  storage.MetadataStore
 	Packs     *packs3.Store
 	Cache     *cache.LRU
 	Admission *Admission
@@ -57,7 +57,7 @@ type WarmResult struct {
 }
 
 func NewWarmReader(o WarmOptions) (*WarmReader, error) {
-	if o.Metadata == nil || o.Packs == nil || o.Cache == nil || o.Admission == nil || o.Gate == nil || o.Clock == nil || o.Metrics == nil || o.Global.Revision() == 0 || o.TransportBytes <= 0 || o.TransportBytes > math.MaxInt64-pack.MaxPackBytes || o.MaxManifestPages == 0 || o.MaxManifestPages > 1024 || o.MaxManifestChunks == 0 {
+	if o.Metadata == nil || (reflect.ValueOf(o.Metadata).Kind() == reflect.Ptr && reflect.ValueOf(o.Metadata).IsNil()) || o.Packs == nil || o.Cache == nil || o.Admission == nil || o.Gate == nil || o.Clock == nil || o.Metrics == nil || o.Global.Revision() == 0 || o.TransportBytes <= 0 || o.TransportBytes > math.MaxInt64-pack.MaxPackBytes || o.MaxManifestPages == 0 || o.MaxManifestPages > 1024 || o.MaxManifestChunks == 0 {
 		return nil, storage.ErrInvalid
 	}
 	if err := o.Gate.CheckClock(o.Clock); err != nil {

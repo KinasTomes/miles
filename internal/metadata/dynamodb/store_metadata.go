@@ -282,7 +282,9 @@ func (m *Store) WriteManifestPages(ctx context.Context, pages []s.ManifestPage, 
 			if owner.State != "Building" || owner.Domain != p.Domain || owner.Writer != w {
 				return s.ErrConflict
 			}
-			owner.Revision++
+			if err := advanceOwner(&owner); err != nil {
+				return err
+			}
 			if err := put(t, ownerKey, owner); err != nil {
 				return err
 			}

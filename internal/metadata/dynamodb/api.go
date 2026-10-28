@@ -1,5 +1,6 @@
-// Package dynamodb prepares schema and bounded SDK requests for the W4 adapter.
-// It does not implement storage.MetadataStore or execute distributed commits.
+// Package dynamodb implements native metadata CAS and atomic object publication.
+// Production use requires a separately supplied R1/manifest authority provider;
+// passing local contracts does not establish multi-node commit safety.
 package dynamodb
 
 import (
@@ -8,7 +9,7 @@ import (
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
-// API is the SDK seam for the future adapter. Conditional page publication uses
+// API is the SDK seam for the adapter. Conditional page publication uses
 // TransactWriteItems with its owner/fence conditions, never blind BatchWriteItem.
 type API interface {
 	GetItem(context.Context, *ddb.GetItemInput, ...func(*ddb.Options)) (*ddb.GetItemOutput, error)

@@ -13,6 +13,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dynamodb-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Start pinned ephemeral DynamoDB Local
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f deploy/local/compose.yaml -p miles-metadata-contract up -d dynamodb
+          address=$(docker compose -f deploy/local/compose.yaml -p miles-metadata-contract port dynamodb 8000)
+          echo "MILES_DDB_LOCAL_ENDPOINT=http://${address}" >> "$GITHUB_ENV"
+          echo "MILES_DDB_LOCAL_REQUIRED=1" >> "$GITHUB_ENV"
+      - name: Run shared contracts and fault tests against native DynamoDB
+        run: go test -v -race -count=1 -timeout=10m ./internal/metadata/dynamodb ./internal/metadata/badger ./internal/storage/contracttest ./internal/readpath
+      - name: Remove only this job's ephemeral fixtures
+        if: always()
+        run: docker compose -f deploy/local/compose.yaml -p miles-metadata-contract down --volumes --remove-orphans
+
   check:
     runs-on: ubuntu-24.04
     steps:

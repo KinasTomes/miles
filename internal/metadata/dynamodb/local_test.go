@@ -34,10 +34,17 @@ func localClient(t *testing.T) *ddb.Client {
 	client := ddb.New(ddb.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(endpoint), Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 		return aws.Credentials{AccessKeyID: "mileslocal", SecretAccessKey: "mileslocal"}, nil
 	})})
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if _, err := client.ListTables(ctx, &ddb.ListTablesInput{Limit: aws.Int32(1)}); err != nil {
-		t.Fatal("DDB Local API readiness", err)
+	for {
+		if _, err := client.ListTables(ctx, &ddb.ListTablesInput{Limit: aws.Int32(1)}); err == nil {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("DDB Local API readiness", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	return client
 }

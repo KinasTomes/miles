@@ -151,7 +151,9 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 				return err
 			}
 			owner.State = "Published"
-			owner.Revision++
+			if err := advanceOwner(&owner); err != nil {
+				return err
+			}
 			if err := put(t, key("manifest-owner", h.ManifestID), owner); err != nil {
 				return err
 			}

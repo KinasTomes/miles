@@ -29,6 +29,14 @@ type manifestOwner struct {
 	Index               []byte
 }
 
+func advanceOwner(owner *manifestOwner) error {
+	if owner.Revision == 0 || owner.Revision == ^uint64(0) {
+		return s.ErrUnavailable
+	}
+	owner.Revision++
+	return nil
+}
+
 func (m *Store) protect(t *transaction, w s.WriterFence, id string) error {
 	authority, ok := m.authority.(ManifestAuthority)
 	if !ok {
@@ -64,13 +72,18 @@ func (m *Store) prepareManifest(ctx context.Context, w s.WriterFence, h *s.Objec
 		if owner.Domain != h.Domain || owner.State == "Published" || (owner.OpID != "" && owner.OpID != h.OpID) {
 			return s.ErrConflict
 		}
+		if owner.Revision == 0 || owner.Revision == ^uint64(0) || (owner.State != "Building" && owner.State != "Closing" && owner.State != "Verified") {
+			return s.ErrUnavailable
+		}
 		if owner.State == "Verified" {
 			return nil
 		}
 		owner.State = "Closing"
 		owner.Writer = w
 		owner.OpID = h.OpID
-		owner.Revision++
+		if err := advanceOwner(&owner); err != nil {
+			return err
+		}
 		return put(t, k, owner)
 	}); err != nil {
 		return err
@@ -109,7 +122,9 @@ func (m *Store) prepareManifest(ctx context.Context, w s.WriterFence, h *s.Objec
 			return err
 		}
 		owner.State = "Verified"
-		owner.Revision++
+		if err := advanceOwner(&owner); err != nil {
+			return err
+		}
 		if err := put(t, k, owner); err != nil {
 			return err
 		}
@@ -239,7 +254,9 @@ func (m *Store) reopenRejectedPreparation(ctx context.Context, w s.WriterFence, 
 		}
 		owner.State = "Building"
 		owner.OpID = ""
-		owner.Revision++
+		if err := advanceOwner(&owner); err != nil {
+			return err
+		}
 		return put(t, key("manifest-owner", id), owner)
 	})
 }
