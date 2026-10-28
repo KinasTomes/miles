@@ -64,6 +64,9 @@ type GetRequest struct {
 	Key          string
 	CredentialID string
 	Range        *storage.ByteRange
+	// SelectRange runs against the read view's bound head before payload planning.
+	// Mutually exclusive with Range; HTTP callers use it for Range and If-Match.
+	SelectRange func(Info) (*storage.ByteRange, error)
 	// Ready sees the committed head and resolved range before the first body
 	// byte; an error aborts the read before any header is committed.
 	Ready ReadyFunc
@@ -324,9 +327,13 @@ func (s *Service) GetObject(ctx context.Context, r GetRequest) (GetResult, error
 	if err != nil {
 		return GetResult{}, fmt.Errorf("get policy: %w", err)
 	}
+	var selectRange func(storage.ObjectHead) (*storage.ByteRange, error)
+	if r.SelectRange != nil {
+		selectRange = func(head storage.ObjectHead) (*storage.ByteRange, error) { return r.SelectRange(info(head)) }
+	}
 	var result GetResult
 	_, err = s.o.Reader.Read(ctx, readpath.WarmRequest{
-		CredentialID: r.CredentialID, Bucket: r.Bucket, Key: r.Key, Range: r.Range,
+		CredentialID: r.CredentialID, Bucket: r.Bucket, Key: r.Key, Range: r.Range, SelectRange: selectRange,
 		Deadline: deadline, BucketPolicy: policy, Budget: s.o.Budget, MaxOutstanding: s.o.MaxOutstanding,
 		Ready: func(w readpath.WarmResult) error {
 			result = GetResult{Info: info(w.Head), Range: w.Range}

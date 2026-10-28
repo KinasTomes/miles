@@ -21,7 +21,8 @@ type ObjectWriter interface {
 	PutObject(ctx context.Context, r object.PutRequest) (object.PutResult, error)
 }
 
-// ObjectReader is the Warm read port. Stat answers HEAD without payload.
+// ObjectReader is the Warm read port. GetObject evaluates SelectRange against
+// its bound head before Ready or Emit. Stat answers HEAD without payload.
 type ObjectReader interface {
 	GetObject(ctx context.Context, r object.GetRequest) (object.GetResult, error)
 	Stat(ctx context.Context, r object.GetRequest) (object.GetResult, error)
@@ -112,33 +113,12 @@ func (o *Objects) GetObject(w http.ResponseWriter, r *Request) error {
 		return err
 	}
 	ctx := r.HTTP.Context()
-	// The Range grammar and If-Match need the current size/ETag before the read
-	// view exists. The Warm reader binds its own head and the Ready proof below
-	// rechecks the condition on the head it actually reads.
-	stat, err := o.Reader.Stat(ctx, object.GetRequest{Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID})
-	if err != nil {
-		return objectError(err, r.Bucket, r.Key)
-	}
-	start, length, hasRange, ok := parseObjectRange(r.HTTP.Header.Get("Range"), stat.Info.Size)
-	if hasRange && !ok {
-		return &Error{Code: ErrInvalidRange, Bucket: r.Bucket, Key: r.Key}
-	}
-	var span *storage.ByteRange
-	if hasRange {
-		span = &storage.ByteRange{Offset: start, Length: length}
-	}
-	if err := checkIfMatch(r, stat.Info.ETag); err != nil {
-		return err
-	}
+	// Range and If-Match are selected after the reader binds its head. A prior
+	// Stat could observe a different object size during a concurrent overwrite.
+	hasRange := false
 	status := http.StatusOK
-	if hasRange {
-		status = http.StatusPartialContent
-	}
 	wrote := false
 	proof := func(result object.GetResult) error {
-		if err := checkIfMatch(r, result.Info.ETag); err != nil {
-			return err
-		}
 		length := result.Info.Size
 		if hasRange {
 			if result.Range.Length <= 0 || result.Range.Validate(result.Info.Size) != nil {
@@ -162,9 +142,23 @@ func (o *Objects) GetObject(w http.ResponseWriter, r *Request) error {
 		wrote = true
 		return nil
 	}
-	_, err = o.Reader.GetObject(ctx, object.GetRequest{
+	_, err := o.Reader.GetObject(ctx, object.GetRequest{
 		Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID,
-		Range: span, Ready: proof,
+		SelectRange: func(info object.Info) (*storage.ByteRange, error) {
+			start, length, selected, ok := parseObjectRange(r.HTTP.Header.Get("Range"), info.Size)
+			if selected && !ok {
+				return nil, &Error{Code: ErrInvalidRange, Bucket: r.Bucket, Key: r.Key}
+			}
+			if err := checkIfMatch(r, info.ETag); err != nil {
+				return nil, err
+			}
+			hasRange = selected
+			if selected {
+				status = http.StatusPartialContent
+				return &storage.ByteRange{Offset: start, Length: length}, nil
+			}
+			return nil, nil
+		}, Ready: proof,
 		Emit: func(_ context.Context, b []byte) error {
 			_, err := w.Write(b)
 			return err

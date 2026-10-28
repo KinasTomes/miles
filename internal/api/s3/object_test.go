@@ -48,8 +48,18 @@ func (f *fakeObjectReader) GetObject(ctx context.Context, r object.GetRequest) (
 	if f.getErr != nil {
 		return f.get, f.getErr
 	}
+	result := f.get
+	if r.SelectRange != nil {
+		span, err := r.SelectRange(result.Info)
+		if err != nil {
+			return result, err
+		}
+		if span != nil {
+			result.Range = *span
+		}
+	}
 	if r.Ready != nil {
-		if err := r.Ready(f.get); err != nil {
+		if err := r.Ready(result); err != nil {
 			return f.get, err
 		}
 	}
@@ -219,7 +229,6 @@ func TestGetObjectRangeAndPreconditionErrors(t *testing.T) {
 	for name, tc := range map[string]struct {
 		header map[string]string
 		code   ErrorCode
-		calls  int
 	}{
 		"past object":   {header: map[string]string{"Range": "bytes=100-"}, code: ErrInvalidRange},
 		"multi range":   {header: map[string]string{"Range": "bytes=0-1,5-6"}, code: ErrInvalidRange},
@@ -233,8 +242,8 @@ func TestGetObjectRangeAndPreconditionErrors(t *testing.T) {
 			if got := code(t, err); got != tc.code {
 				t.Fatalf("code %s, want %s", got, tc.code)
 			}
-			if reader.getCalls != tc.calls {
-				t.Fatalf("GetObject called %d times", reader.getCalls)
+			if reader.getCalls != 1 || reader.statCalls != 0 {
+				t.Fatalf("selection must use the bound read head: GetObject=%d Stat=%d", reader.getCalls, reader.statCalls)
 			}
 		})
 	}

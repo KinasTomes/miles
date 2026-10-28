@@ -42,11 +42,15 @@ type WarmOptions struct {
 type WarmReader struct{ options WarmOptions }
 type WarmRequest struct {
 	CredentialID, Bucket, Key string
-	Range                     *storage.ByteRange // normalized by HTTP consumer; nil means full object
-	Deadline                  clock.Instant
-	BucketPolicy              config.BucketSnapshot
-	Budget                    Budget
-	MaxOutstanding            int
+	Range                     *storage.ByteRange // already normalized; nil means full object
+	// SelectRange resolves a size-dependent range or precondition against the
+	// head bound by this read view, before resolving pages or fetching payload.
+	// Mutually exclusive with Range; the callback must treat the head as read-only.
+	SelectRange    func(storage.ObjectHead) (*storage.ByteRange, error)
+	Deadline       clock.Instant
+	BucketPolicy   config.BucketSnapshot
+	Budget         Budget
+	MaxOutstanding int
 	// Ready exposes metadata after preflight, also for empty objects. HTTP
 	// consumers may delay committing headers until the first verified body slice.
 	Ready func(WarmResult) error
@@ -71,7 +75,7 @@ func NewWarmReader(o WarmOptions) (*WarmReader, error) {
 // the stream; it cannot send a new success/error body. No HTTP endpoint is owned
 // here (W03-CHIEN-02). WarmGate is a local no-maintenance boundary, not distributed R1.
 func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.Context, []byte) error) (result WarmResult, err error) {
-	if r == nil || r.options.Metadata == nil || ctx == nil || emit == nil || q.CredentialID == "" || q.MaxOutstanding <= 0 || !validBudget(q.Budget) {
+	if r == nil || r.options.Metadata == nil || ctx == nil || emit == nil || q.CredentialID == "" || q.MaxOutstanding <= 0 || !validBudget(q.Budget) || (q.Range != nil && q.SelectRange != nil) {
 		return result, storage.ErrInvalid
 	}
 	o := r.options
@@ -128,7 +132,14 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 	if head.PageCount > o.MaxManifestPages || head.ChunkCount > o.MaxManifestChunks {
 		return result, ErrExhausted
 	}
-	plan, err := engine.ResolveReadPlan(ctx, o.Metadata, object, head, q.Range)
+	span := q.Range
+	if q.SelectRange != nil {
+		span, err = q.SelectRange(head)
+		if err != nil {
+			return result, err
+		}
+	}
+	plan, err := engine.ResolveReadPlan(ctx, o.Metadata, object, head, span)
 	if err != nil {
 		return result, err
 	}
