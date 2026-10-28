@@ -228,6 +228,7 @@ type transaction struct {
 	rows            map[string]*observedRow
 	operationID     string
 	operationDigest [32]byte
+	dispatchRequest *s.CommitRequest
 }
 
 func (m *Store) transaction(ctx context.Context) *transaction {

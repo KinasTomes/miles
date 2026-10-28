@@ -3,6 +3,7 @@ package dynamodb
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -57,6 +58,10 @@ func (m *Store) CloseCommitAttempt(ctx context.Context, request s.ReservationCla
 			}
 		}
 		if operationClosed(row.after) {
+			marker, ok := row.after["closed_attempt"].(*types.AttributeValueMemberS)
+			if row.after["pending_request"] != nil || !ok || marker == nil || marker.Value == "" {
+				return s.ErrUnavailable
+			}
 			result.Reservation = r
 			return nil
 		}
@@ -106,7 +111,10 @@ func closeOperation(row *observedRow, r s.Reservation) error {
 func (m *Store) rejectPending(ctx context.Context, r s.CommitRequest, cause error) (s.CommitResult, bool, error) {
 	resolution, err := m.CloseCommitAttempt(ctx, s.ReservationClaim{ID: r.ReservationID, OpID: r.Head.OpID, ExpectedRevision: r.ReservationRevision, Writer: r.Writer})
 	if err != nil {
-		return s.CommitResult{}, true, err
+		// A rejection by this reconciler is not proof that the original request
+		// did not commit. Do not expose ErrFenced/AccessDenied as a terminal
+		// publication result while pending closure itself is unconfirmed.
+		return s.CommitResult{}, true, fmt.Errorf("%w: attempt closure: %v", s.ErrUnavailable, err)
 	}
 	if resolution.Committed != nil {
 		return *resolution.Committed, true, nil

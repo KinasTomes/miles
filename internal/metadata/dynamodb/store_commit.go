@@ -59,6 +59,7 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 			return s.ErrInvalid
 		}
 		t.operationID, t.operationDigest = r.Head.OpID, digest
+		t.dispatchRequest = &r
 		operation, err := t.load(key("outcomes", r.Head.OpID))
 		if err != nil {
 			return err

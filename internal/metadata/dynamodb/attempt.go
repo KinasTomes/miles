@@ -105,17 +105,19 @@ func (t *transaction) dispatchOperation(input *ddb.TransactWriteItemsInput, imag
 	}
 	prepareToken := sha256.Sum256([]byte("miles-ddb-attempt-v1/" + aws.ToString(input.ClientRequestToken)))
 	registration := &ddb.TransactWriteItemsInput{ClientRequestToken: aws.String(hex.EncodeToString(prepareToken[:16]) + "0000"), TransactItems: []types.TransactWriteItem{{Put: &types.Put{TableName: final.TableName, Item: pending, ConditionExpression: oldCondition, ExpressionAttributeNames: oldNames, ExpressionAttributeValues: oldValues}}}}
+	if t.dispatchRequest == nil {
+		return s.ErrInvalid
+	}
+	// Preparation/serialization may cross the deadline. Reject before registering
+	// an attempt; registration itself may also take time, so final dispatch checks
+	// again. This guard does not change the saved transaction or token.
+	if _, err := t.store.dispatchDeadline(t.ctx, *t.dispatchRequest); err != nil {
+		return err
+	}
 	if _, err := t.store.api.TransactWriteItems(t.ctx, registration); err != nil {
 		return backend(err)
 	}
-	_, err = t.store.api.TransactWriteItems(t.ctx, input)
-	if isKnownCancellation(err) {
-		if clearErr := t.store.retireAttempt(t.ctx, a.key, pending); clearErr != nil {
-			return clearErr
-		}
-		return s.ErrConflict
-	}
-	return backend(err)
+	return t.store.publishAttempt(t.ctx, *t.dispatchRequest, input, a.key, pending)
 }
 
 func isKnownCancellation(err error) bool {
@@ -183,6 +185,11 @@ func (m *Store) resumeCommit(ctx context.Context, r s.CommitRequest) (s.CommitRe
 		return zero, true, s.ErrConflict
 	}
 	if err := m.fence(t, r.Writer); err != nil {
+		// Pending remains unknown when this writer cannot establish reconciliation
+		// authority. A trusted replacement can use CloseCommitAttempt instead.
+		if errors.Is(err, s.ErrFenced) {
+			return zero, true, s.ErrUnavailable
+		}
 		return zero, true, err
 	}
 	auth, err := m.authorize(t, r.CredentialID, r.Head.Object.Bucket)
@@ -236,15 +243,12 @@ func (m *Store) resumeCommit(ctx context.Context, r s.CommitRequest) (s.CommitRe
 			return zero, true, s.ErrUnavailable
 		}
 	}
-	_, err = m.api.TransactWriteItems(ctx, &input)
+	err = m.publishAttempt(ctx, r, &input, row.key, row.after)
 	if err != nil {
-		if isKnownCancellation(err) {
-			if clearErr := m.retireAttempt(ctx, row.key, row.after); clearErr != nil {
-				return zero, true, clearErr
-			}
+		if errors.Is(err, s.ErrConflict) {
 			return zero, false, nil
 		}
-		return zero, true, backend(err)
+		return zero, true, err
 	}
 	result, err := m.GetCommitOutcome(ctx, r.Head.OpID)
 	return result, true, err

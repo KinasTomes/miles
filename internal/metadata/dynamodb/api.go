@@ -11,6 +11,8 @@ import (
 
 // API is the SDK seam for the adapter. Conditional page publication uses
 // TransactWriteItems with its owner/fence conditions, never blind BatchWriteItem.
+// Implementations must honor per-call SDK options: final publication disables
+// hidden SDK retries so every explicit send passes the remaining-authority guard.
 type API interface {
 	GetItem(context.Context, *ddb.GetItemInput, ...func(*ddb.Options)) (*ddb.GetItemOutput, error)
 	BatchGetItem(context.Context, *ddb.BatchGetItemInput, ...func(*ddb.Options)) (*ddb.BatchGetItemOutput, error)

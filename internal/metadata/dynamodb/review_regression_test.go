@@ -3,11 +3,15 @@ package dynamodb
 import (
 	"context"
 	"errors"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/contracttest"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
@@ -29,6 +33,79 @@ func revokeRequest(t *testing.T, m *Store, f contracttest.Fixture, r s.CommitReq
 		return put(tx, key("credentials", c.ID), c)
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type registrationClock struct {
+	API
+	advance func()
+}
+
+func (a *registrationClock) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, opts ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
+	out, err := a.API.TransactWriteItems(ctx, in, opts...)
+	for _, action := range in.TransactItems {
+		if action.Put != nil && action.Put.Item["pending_request"] != nil {
+			a.advance()
+		}
+	}
+	return out, err
+}
+
+func TestLocalExpiryDuringAttemptRegistrationClosesWithoutPublishing(t *testing.T) {
+	ctx := context.Background()
+	f := contracttest.NewFixture()
+	f.Lease.ExpiresAt = f.Now.Add(2 * time.Hour)
+	m, _ := fixtureStore(t, f)
+	now := f.Now
+	m.now = func() time.Time { return now }
+	m.authority = fixtureAuthority{m.now}
+	r := f.Request("registration-expiry", 0)
+	contracttest.Prepare(t, m, f, r, 4)
+	m.api = &registrationClock{API: m.api, advance: func() { now = f.Now.Add(30 * time.Minute) }}
+	if _, err := m.CommitObject(ctx, r); !errors.Is(err, s.ErrFenced) {
+		t.Fatal(err)
+	}
+	contracttest.NoPublication(t, m, r)
+	if err := m.ReleaseLogicalQuota(ctx, s.ReservationRelease{ID: r.ReservationID, OpID: r.Head.OpID, ExpectedRevision: 1, Writer: r.Writer}); err != nil {
+		t.Fatal("expired pending was not safely closed", err)
+	}
+}
+
+type finalSDK struct {
+	API
+	client      *ddb.Client
+	objectTable string
+}
+
+func (a *finalSDK) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, opts ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
+	for _, action := range in.TransactItems {
+		if action.Put != nil && *action.Put.TableName == a.objectTable {
+			return a.client.TransactWriteItems(ctx, in, opts...)
+		}
+	}
+	return a.API.TransactWriteItems(ctx, in, opts...)
+}
+
+func TestLocalFinalSDKCannotRetryBehindDeadlineGuard(t *testing.T) {
+	ctx := context.Background()
+	f := contracttest.NewFixture()
+	m, _ := fixtureStore(t, f)
+	r := f.Request("no-hidden-retry", 0)
+	contracttest.Prepare(t, m, f, r, 4)
+	calls := 0
+	sdk := ddb.New(ddb.Options{Region: "us-east-1", Credentials: aws.AnonymousCredentials{}, HTTPClient: wireClient(func(request *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: 500, Header: http.Header{"Content-Type": []string{"application/x-amz-json-1.0"}}, Body: io.NopCloser(strings.NewReader(`{"__type":"InternalServerError","message":"injected"}`)), Request: request}, nil
+	})})
+	m.api = &finalSDK{API: m.api, client: sdk, objectTable: m.tables["Objects"]}
+	if _, err := m.CommitObject(ctx, r); !errors.Is(err, s.ErrUnavailable) {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatal("SDK bypassed guard with hidden retries", calls)
+	}
+	if err := m.ReleaseLogicalQuota(ctx, s.ReservationRelease{ID: r.ReservationID, OpID: r.Head.OpID, ExpectedRevision: 1, Writer: r.Writer}); !errors.Is(err, s.ErrUnavailable) {
+		t.Fatal("unknown send released quota", err)
 	}
 }
 

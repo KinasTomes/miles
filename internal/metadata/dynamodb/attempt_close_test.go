@@ -159,3 +159,58 @@ func TestLocalUnknownClosureCannotAuthorizeCleanup(t *testing.T) {
 		t.Fatal(q, err)
 	}
 }
+
+func TestLocalReplacementReconcilesWithoutOriginalCredential(t *testing.T) {
+	ctx := context.Background()
+	f := contracttest.NewFixture()
+	m, client := fixtureStore(t, f)
+	r := f.Request("replacement-close", 0)
+	contracttest.Prepare(t, m, f, r, 4)
+	m.api = &dispatchFault{API: client, objectTable: m.tables["Objects"], before: true}
+	if _, err := m.CommitObject(ctx, r); !errors.Is(err, s.ErrUnavailable) {
+		t.Fatal(err)
+	}
+	revokeRequest(t, m, f, r, false)
+	lease := f.Lease
+	lease.Fence.Epoch++
+	claim := s.ReservationClaim{ID: r.ReservationID, OpID: r.Head.OpID, ExpectedRevision: 1, Writer: lease.Fence}
+	if _, err := m.CloseCommitAttempt(ctx, claim); !errors.Is(err, s.ErrFenced) {
+		t.Fatal("unregistered reconciler closed pending", err)
+	}
+	if err := m.update(ctx, func(tx *transaction) error {
+		row, err := tx.observe(writerKey(lease.Fence.LeaseID))
+		if err != nil {
+			return err
+		}
+		row.after, err = nativeItem(lease)
+		if err != nil {
+			return err
+		}
+		for k, v := range row.key.Attributes {
+			row.after[k] = v
+		}
+		row.dirty = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restartFixture(t, m).CommitObject(ctx, r); !errors.Is(err, s.ErrUnavailable) {
+		t.Fatal("stale writer classified pending as terminal", err)
+	}
+	if _, err := m.CloseCommitAttempt(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := m.ClaimReservation(ctx, claim)
+	if err != nil || resolution.Reservation.Writer != lease.Fence {
+		t.Fatal(resolution, err)
+	}
+	claim.ExpectedRevision = resolution.Reservation.Revision
+	if err := m.ReleaseLogicalQuota(ctx, s.ReservationRelease(claim)); err != nil {
+		t.Fatal(err)
+	}
+	contracttest.NoPublication(t, m, r)
+	q, err := m.GetQuota(ctx, f.Quota.OwnerID)
+	if err != nil || q.Reserved != 0 || q.Staged != 0 || q.Used != 0 {
+		t.Fatal(q, err)
+	}
+}
