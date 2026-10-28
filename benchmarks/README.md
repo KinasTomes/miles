@@ -1,5 +1,8 @@
 # W02-HUNG-02 — Pricing, dataset và baseline
 
+Harness W03-HUNG-02: [runner, artifact và lệnh chạy](warm-harness.md),
+[validation và phần nghiệm thu còn thiếu](warm-harness-validation.md).
+
 Bản triển khai chuẩn bị hợp đồng/đầu vào để lead review, chưa đóng task và chưa có benchmark DSG/AWS. Phụ thuộc W01-HUNG-02/W01-HUNG-03; không yêu cầu thêm host Edge hoặc triển khai Cloud để nghiệm thu phần W2.
 
 | Checklist W02-HUNG-02 | Đầu ra |

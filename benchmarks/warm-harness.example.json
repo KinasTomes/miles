@@ -1,0 +1,22 @@
+{
+  "target": "local-s3-smoke",
+  "endpoint": "http://127.0.0.1:5000",
+  "region": "us-east-1",
+  "bucket": "benchmark-test",
+  "credentials_file": "/private/test/credentials.json",
+  "kms_key_id": "",
+  "environment": {
+    "topology": "loopback emulator; not direct AWS or Miles",
+    "host": "fill actual test host type, without its private hostname",
+    "cpu": "fill actual CPU model and allocation",
+    "disk": "fill actual volume/filesystem",
+    "network": "loopback",
+    "metadata": "none",
+    "gateway_commit": "",
+    "policy_revision": "",
+    "encryption": "none; emulator only",
+    "cache_state": "uncontrolled; not used for hit-ratio claims",
+    "isolation": "fill actual fresh backend/domain/reset method",
+    "async_work": "none for emulator; not a Miles flush observation"
+  }
+}
