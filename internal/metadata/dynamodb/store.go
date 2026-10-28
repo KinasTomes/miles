@@ -223,9 +223,11 @@ type observedRow struct {
 	dirty         bool
 }
 type transaction struct {
-	store *Store
-	ctx   context.Context
-	rows  map[string]*observedRow
+	store           *Store
+	ctx             context.Context
+	rows            map[string]*observedRow
+	operationID     string
+	operationDigest [32]byte
 }
 
 func (m *Store) transaction(ctx context.Context) *transaction {
@@ -239,7 +241,7 @@ func (t *transaction) observe(k Key) (*observedRow, error) {
 	if t.store.tables[k.Table] == "" {
 		return nil, s.ErrInvalid
 	}
-	out, err := t.store.api.GetItem(t.ctx, &ddb.GetItemInput{TableName: aws.String(t.store.tables[k.Table]), Key: k.Attributes, ConsistentRead: aws.Bool(true)})
+	out, err := t.store.readItem(t.ctx, &ddb.GetItemInput{TableName: aws.String(t.store.tables[k.Table]), Key: k.Attributes, ConsistentRead: aws.Bool(true)})
 	if err != nil {
 		return nil, backend(err)
 	}
@@ -283,12 +285,8 @@ func (m *Store) update(ctx context.Context, fn func(*transaction) error) error {
 		if attempt+1 == m.maxAttempts {
 			return err
 		}
-		timer := time.NewTimer(time.Duration(attempt+1) * 5 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
+		if err := retryPause(ctx, attempt); err != nil {
+			return err
 		}
 	}
 	return s.ErrConflict
@@ -305,7 +303,8 @@ func backend(err error) error {
 			}
 		}
 	}
-	return fmt.Errorf("%w: %v", s.ErrUnavailable, err)
+	// Preserve cancellation identity without treating it as proof of no commit.
+	return fmt.Errorf("%w: %w", s.ErrUnavailable, err)
 }
 
 func (t *transaction) commit() error {
@@ -378,20 +377,14 @@ func (t *transaction) commit() error {
 	if err := ValidateTransactionPlan(input, images, inventory); err != nil {
 		return err
 	}
+	if err := validateWireBudget(input); err != nil {
+		return err
+	}
+	if t.operationID != "" {
+		return t.dispatchOperation(input, images, inventory)
+	}
 	_, err := t.store.api.TransactWriteItems(t.ctx, input)
 	return backend(err)
-}
-
-func retryPause(ctx context.Context, attempt int) error {
-	delay := time.Duration(1<<min(attempt, 6)) * 5 * time.Millisecond
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 func get[T any](t *transaction, k string) (T, error) {
@@ -426,7 +419,7 @@ func get[T any](t *transaction, k string) (T, error) {
 	if err := unmarshalNative(attr, reflect.ValueOf(&out).Elem()); err != nil {
 		return out, err
 	}
-	if chunk, ok := any(out).(s.Chunk); ok && chunk.Validate() != nil {
+	if chunk, ok := any(out).(s.Chunk); ok && (chunk.Validate() != nil || chunkKey(chunk.Key) != k) {
 		return out, s.ErrUnavailable
 	}
 	return out, nil

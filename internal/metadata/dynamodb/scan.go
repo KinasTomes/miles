@@ -177,6 +177,12 @@ func (t *transaction) batch(logical []string, consistent bool) error {
 			}
 			out, err := t.store.api.BatchGetItem(t.ctx, &ddb.BatchGetItemInput{RequestItems: pending})
 			if err != nil {
+				if retryableRead(err) && attempt+1 < t.store.maxAttempts {
+					if err := retryPause(t.ctx, attempt); err != nil {
+						return err
+					}
+					continue
+				}
 				return backend(err)
 			}
 			if out == nil {

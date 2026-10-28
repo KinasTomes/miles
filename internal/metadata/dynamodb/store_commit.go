@@ -2,8 +2,6 @@ package dynamodb
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
 
 	s "github.com/KinasTomes/miles/internal/storage"
@@ -24,6 +22,12 @@ func (m *Store) DeleteObject(ctx context.Context, r s.CommitRequest) (s.CommitRe
 	return m.commit(ctx, r)
 }
 func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, error) {
+	if err := r.Validate(); err != nil {
+		return s.CommitResult{}, err
+	}
+	if resumed, handled, err := m.resumeCommit(ctx, r); handled {
+		return resumed, err
+	}
 	var result s.CommitResult
 	err := m.update(ctx, func(t *transaction) error {
 		result = s.CommitResult{}
@@ -50,15 +54,19 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if a.Bucket.Domain != r.Head.Domain {
 			return s.ErrInvalid
 		}
-		input := r
-		input.Writer = s.WriterFence{}
-		input.Completion = nil
-		input.ReservationRevision = 0
-		b, err := json.Marshal(input)
+		digest, err := commitDigest(r)
 		if err != nil {
 			return s.ErrInvalid
 		}
-		digest := sha256.Sum256(b)
+		t.operationID, t.operationDigest = r.Head.OpID, digest
+		operation, err := t.load(key("outcomes", r.Head.OpID))
+		if err != nil {
+			return err
+		}
+		if operation.after != nil && operation.after["pending_request"] != nil {
+			return s.ErrUnavailable
+		}
+
 		done, err := get[outcome](t, key("outcomes", r.Head.OpID))
 		if err == nil {
 			if done.Digest != digest {

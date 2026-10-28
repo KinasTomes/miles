@@ -17,6 +17,13 @@ func (m *Store) resolve(t *transaction, r s.Reservation) (*s.CommitResult, error
 			return nil, err
 		}
 	}
+	row, lookupErr := t.load(key("outcomes", r.OpID))
+	if lookupErr != nil {
+		return nil, lookupErr
+	}
+	if row.after != nil && row.after["pending_request"] != nil {
+		return nil, s.ErrUnavailable
+	}
 	done, err := get[outcome](t, key("outcomes", r.OpID))
 	if err == nil {
 		if r.State != s.ReservationCommitted {
@@ -145,6 +152,13 @@ func (m *Store) GetCommitOutcome(ctx context.Context, opID string) (s.CommitResu
 			if err := m.reconcile(); err != nil {
 				return err
 			}
+		}
+		row, lookupErr := t.load(key("outcomes", opID))
+		if lookupErr != nil {
+			return lookupErr
+		}
+		if row.after != nil && row.after["pending_request"] != nil {
+			return s.ErrUnavailable
 		}
 		v, err := get[outcome](t, key("outcomes", opID))
 		if err != nil {
