@@ -1,0 +1,798 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "target": "local-s3-smoke",
+  "region": "ap-southeast-1",
+  "started_at": "2026-10-28T16:31:37.259177772Z",
+  "finished_at": "2026-10-28T16:31:37.505083376Z",
+  "prefix": "warmbench/e3429ce0708e69446299ebabc242d58e/",
+  "manifest_sha256": "d1c22927f59278a124a703df74e5600fd39421e54feed267a57af668a32d1a08",
+  "dataset": {
+    "schema_version": 1,
+    "generator": "miles-aesctr-gzip-v1",
+    "go_version": "go1.27.2",
+    "profile": "smoke",
+    "seed": "miles-w02-v1",
+    "versions": 3,
+    "raw_bytes_per_version": 65536,
+    "total_bytes": 589914,
+    "files": [
+      {
+        "path": "low-entropy-v00.bin",
+        "group": "low-entropy",
+        "version": 0,
+        "bytes": 65536,
+        "sha256": "49da097c8a791cf7bc839a8ae7bdd9503ef0e0e1dfdce79a606e797ed5156aa8"
+      },
+      {
+        "path": "compressed-identical-v00.gz",
+        "group": "compressed-identical",
+        "version": 0,
+        "bytes": 65566,
+        "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+      },
+      {
+        "path": "random-distinct-v00.bin",
+        "group": "random-distinct",
+        "version": 0,
+        "bytes": 65536,
+        "sha256": "fadc86b2b66538304fb412b2ff142e4721414dc9305820b8139fc672e412a080"
+      },
+      {
+        "path": "low-entropy-v01.bin",
+        "group": "low-entropy",
+        "version": 1,
+        "bytes": 65536,
+        "sha256": "e9a660088305abb7a1851d096af0bead34b26b030855a5fcf0c7df5a5ff3e07a"
+      },
+      {
+        "path": "compressed-identical-v01.gz",
+        "group": "compressed-identical",
+        "version": 1,
+        "bytes": 65566,
+        "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+      },
+      {
+        "path": "random-distinct-v01.bin",
+        "group": "random-distinct",
+        "version": 1,
+        "bytes": 65536,
+        "sha256": "3496fb93eba865a961e2e034df7e63bbcd1e0a77089cc18bdb832dfd3fbdaeb6"
+      },
+      {
+        "path": "low-entropy-v02.bin",
+        "group": "low-entropy",
+        "version": 2,
+        "bytes": 65536,
+        "sha256": "66c5df83a1347ee6e097b2b124870212592fc25998968216a24b982ea0b00102"
+      },
+      {
+        "path": "compressed-identical-v02.gz",
+        "group": "compressed-identical",
+        "version": 2,
+        "bytes": 65566,
+        "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+      },
+      {
+        "path": "random-distinct-v02.bin",
+        "group": "random-distinct",
+        "version": 2,
+        "bytes": 65536,
+        "sha256": "88fd4b1ae06cd26955fd886b3e8ba12e2f688710b1dc832d5763e014d797440c"
+      }
+    ]
+  },
+  "concurrency": 4,
+  "read_repeats": 3,
+  "declared_environment": {
+    "topology": "single development VM; physical S3 is pinned Moto, not AWS",
+    "host": "Linux aarch64 development VM",
+    "cpu": "unknown; 4 logical CPUs",
+    "disk": "ext2/ext3",
+    "network": "loopback Docker-published HTTP",
+    "metadata": "none",
+    "gateway_commit": "",
+    "policy_revision": "",
+    "encryption": "none; emulator only",
+    "cache_state": "emulator internals uncontrolled",
+    "isolation": "new direct bucket per trial",
+    "async_work": "producer payload/outbox retained in Badger; no exporter/seal/checkpoint worker"
+  },
+  "client": {
+    "arch": "arm64",
+    "executable_sha256": "b35988fccda14cd079f887f4b24bc857796470449b26f0243b739ad3b0ef26e6",
+    "github.com/aws/aws-sdk-go-v2": "v1.47.3",
+    "github.com/aws/aws-sdk-go-v2/service/s3": "v1.114.3",
+    "go": "go1.27.2",
+    "gomaxprocs": "4",
+    "http_decompression": "disabled",
+    "logical_cpus": "4",
+    "os": "linux",
+    "protocol": "S3 path-style / single PutObject / SHA256 header",
+    "sdk_max_attempts": "1",
+    "timeout": "30m0s",
+    "vcs.modified": "false",
+    "vcs.revision": "ba0589418c60e69cfb011b61cccfd846802872cb",
+    "vcs_revision": "ba0589418c60e69cfb011b61cccfd846802872cb"
+  },
+  "phases": [
+    {
+      "name": "preflight-list",
+      "samples": 1,
+      "failed": 0,
+      "elapsed_ns": 4999376,
+      "successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0,
+      "p50_ns": 4998456,
+      "p95_ns": 4998456,
+      "max_ns": 4998456
+    },
+    {
+      "name": "put",
+      "samples": 9,
+      "failed": 0,
+      "elapsed_ns": 37172475,
+      "successful_logical_bytes": 589914,
+      "successful_logical_bytes_per_second": 15869645.483654236,
+      "p50_ns": 15079047,
+      "p95_ns": 19170019,
+      "max_ns": 19170019
+    },
+    {
+      "name": "head",
+      "samples": 9,
+      "failed": 0,
+      "elapsed_ns": 28694969,
+      "successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0,
+      "p50_ns": 11572675,
+      "p95_ns": 15689049,
+      "max_ns": 15689049
+    },
+    {
+      "name": "verify-get",
+      "samples": 9,
+      "failed": 0,
+      "elapsed_ns": 31484178,
+      "successful_logical_bytes": 589914,
+      "successful_logical_bytes_per_second": 18736839.818400215,
+      "p50_ns": 12950321,
+      "p95_ns": 15739769,
+      "max_ns": 15739769
+    },
+    {
+      "name": "list",
+      "samples": 1,
+      "failed": 0,
+      "elapsed_ns": 9531230,
+      "successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0,
+      "p50_ns": 9519030,
+      "p95_ns": 9519030,
+      "max_ns": 9519030
+    },
+    {
+      "name": "repeat-get-1",
+      "samples": 9,
+      "failed": 0,
+      "elapsed_ns": 29511771,
+      "successful_logical_bytes": 589914,
+      "successful_logical_bytes_per_second": 19989108.75257198,
+      "p50_ns": 11692276,
+      "p95_ns": 15012886,
+      "max_ns": 15012886
+    },
+    {
+      "name": "repeat-get-2",
+      "samples": 9,
+      "failed": 0,
+      "elapsed_ns": 28992450,
+      "successful_logical_bytes": 589914,
+      "successful_logical_bytes_per_second": 20347159.346657492,
+      "p50_ns": 11822756,
+      "p95_ns": 14458565,
+      "max_ns": 14458565
+    },
+    {
+      "name": "repeat-get-3",
+      "samples": 9,
+      "failed": 0,
+      "elapsed_ns": 31369737,
+      "successful_logical_bytes": 589914,
+      "successful_logical_bytes_per_second": 18805194.318332985,
+      "p50_ns": 12437119,
+      "p95_ns": 16488092,
+      "max_ns": 16488092
+    },
+    {
+      "name": "delete",
+      "samples": 9,
+      "failed": 0,
+      "elapsed_ns": 30234974,
+      "successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0,
+      "p50_ns": 12119118,
+      "p95_ns": 15212567,
+      "max_ns": 15212567
+    },
+    {
+      "name": "after-delete-list",
+      "samples": 1,
+      "failed": 0,
+      "elapsed_ns": 3725372,
+      "successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0,
+      "p50_ns": 3723652,
+      "p95_ns": 3723652,
+      "max_ns": 3723652
+    }
+  ],
+  "samples": [
+    {
+      "phase": "preflight-list",
+      "operation": "ListObjectsV2",
+      "latency_ns": 4998456,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "put",
+      "operation": "PutObject",
+      "file": "low-entropy-v00.bin",
+      "group": "low-entropy",
+      "latency_ns": 10871834,
+      "payload_bytes": 65536
+    },
+    {
+      "phase": "put",
+      "operation": "PutObject",
+      "file": "compressed-identical-v00.gz",
+      "group": "compressed-identical",
+      "latency_ns": 6246420,
+      "payload_bytes": 65566
+    },
+    {
+      "phase": "put",
+      "operation": "PutObject",
+      "file": "random-distinct-v00.bin",
+      "group": "random-distinct",
+      "latency_ns": 19170019,
+      "payload_bytes": 65536
+    },
+    {
+      "phase": "put",
+      "operation": "PutObject",
+      "file": "low-entropy-v01.bin",
+      "group": "low-entropy",
+      "latency_ns": 15079047,
+      "payload_bytes": 65536
+    },
+    {
+      "phase": "put",
+      "operation": "PutObject",
+      "file": "compressed-identical-v01.gz",
+      "group": "compressed-identical",
+      "latency_ns": 16981533,
+      "payload_bytes": 65566
+    },
+    {
+      "phase": "put",
+      "operation": "PutObject",
+      "file": "random-distinct-v01.bin",
+      "group": "random-distinct",
+      "latency_ns": 16394611,
+      "payload_bytes": 65536
+    },
+    {
+      "phase": "put",
+      "operation": "PutObject",
+      "file": "low-entropy-v02.bin",
+      "group": "low-entropy",
+      "latency_ns": 15692849,
+      "payload_bytes": 65536
+    },
+    {
+      "phase": "put",
+      "operation": "PutObject",
+      "file": "compressed-identical-v02.gz",
+      "group": "compressed-identical",
+      "latency_ns": 14771446,
+      "payload_bytes": 65566
+    },
+    {
+      "phase": "put",
+      "operation": "PutObject",
+      "file": "random-distinct-v02.bin",
+      "group": "random-distinct",
+      "latency_ns": 13751882,
+      "payload_bytes": 65536
+    },
+    {
+      "phase": "head",
+      "operation": "HeadObject",
+      "file": "low-entropy-v00.bin",
+      "group": "low-entropy",
+      "latency_ns": 15689049,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "head",
+      "operation": "HeadObject",
+      "file": "compressed-identical-v00.gz",
+      "group": "compressed-identical",
+      "latency_ns": 8392866,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "head",
+      "operation": "HeadObject",
+      "file": "random-distinct-v00.bin",
+      "group": "random-distinct",
+      "latency_ns": 5461657,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "head",
+      "operation": "HeadObject",
+      "file": "low-entropy-v01.bin",
+      "group": "low-entropy",
+      "latency_ns": 11707676,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "head",
+      "operation": "HeadObject",
+      "file": "compressed-identical-v01.gz",
+      "group": "compressed-identical",
+      "latency_ns": 11519275,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "head",
+      "operation": "HeadObject",
+      "file": "random-distinct-v01.bin",
+      "group": "random-distinct",
+      "latency_ns": 12391518,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "head",
+      "operation": "HeadObject",
+      "file": "low-entropy-v02.bin",
+      "group": "low-entropy",
+      "latency_ns": 11768436,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "head",
+      "operation": "HeadObject",
+      "file": "compressed-identical-v02.gz",
+      "group": "compressed-identical",
+      "latency_ns": 10425552,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "head",
+      "operation": "HeadObject",
+      "file": "random-distinct-v02.bin",
+      "group": "random-distinct",
+      "latency_ns": 11572675,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "verify-get",
+      "operation": "GetObject",
+      "file": "low-entropy-v00.bin",
+      "group": "low-entropy",
+      "latency_ns": 15739769,
+      "payload_bytes": 65536,
+      "sha256": "49da097c8a791cf7bc839a8ae7bdd9503ef0e0e1dfdce79a606e797ed5156aa8"
+    },
+    {
+      "phase": "verify-get",
+      "operation": "GetObject",
+      "file": "compressed-identical-v00.gz",
+      "group": "compressed-identical",
+      "latency_ns": 12046958,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "verify-get",
+      "operation": "GetObject",
+      "file": "random-distinct-v00.bin",
+      "group": "random-distinct",
+      "latency_ns": 5106576,
+      "payload_bytes": 65536,
+      "sha256": "fadc86b2b66538304fb412b2ff142e4721414dc9305820b8139fc672e412a080"
+    },
+    {
+      "phase": "verify-get",
+      "operation": "GetObject",
+      "file": "low-entropy-v01.bin",
+      "group": "low-entropy",
+      "latency_ns": 8395786,
+      "payload_bytes": 65536,
+      "sha256": "e9a660088305abb7a1851d096af0bead34b26b030855a5fcf0c7df5a5ff3e07a"
+    },
+    {
+      "phase": "verify-get",
+      "operation": "GetObject",
+      "file": "compressed-identical-v01.gz",
+      "group": "compressed-identical",
+      "latency_ns": 14048484,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "verify-get",
+      "operation": "GetObject",
+      "file": "random-distinct-v01.bin",
+      "group": "random-distinct",
+      "latency_ns": 14353365,
+      "payload_bytes": 65536,
+      "sha256": "3496fb93eba865a961e2e034df7e63bbcd1e0a77089cc18bdb832dfd3fbdaeb6"
+    },
+    {
+      "phase": "verify-get",
+      "operation": "GetObject",
+      "file": "low-entropy-v02.bin",
+      "group": "low-entropy",
+      "latency_ns": 13648042,
+      "payload_bytes": 65536,
+      "sha256": "66c5df83a1347ee6e097b2b124870212592fc25998968216a24b982ea0b00102"
+    },
+    {
+      "phase": "verify-get",
+      "operation": "GetObject",
+      "file": "compressed-identical-v02.gz",
+      "group": "compressed-identical",
+      "latency_ns": 12950321,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "verify-get",
+      "operation": "GetObject",
+      "file": "random-distinct-v02.bin",
+      "group": "random-distinct",
+      "latency_ns": 12049877,
+      "payload_bytes": 65536,
+      "sha256": "88fd4b1ae06cd26955fd886b3e8ba12e2f688710b1dc832d5763e014d797440c"
+    },
+    {
+      "phase": "list",
+      "operation": "ListObjectsV2",
+      "latency_ns": 9519030,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "repeat-get-1",
+      "operation": "GetObject",
+      "file": "low-entropy-v00.bin",
+      "group": "low-entropy",
+      "latency_ns": 8842627,
+      "payload_bytes": 65536,
+      "sha256": "49da097c8a791cf7bc839a8ae7bdd9503ef0e0e1dfdce79a606e797ed5156aa8"
+    },
+    {
+      "phase": "repeat-get-1",
+      "operation": "GetObject",
+      "file": "compressed-identical-v00.gz",
+      "group": "compressed-identical",
+      "latency_ns": 15012886,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "repeat-get-1",
+      "operation": "GetObject",
+      "file": "random-distinct-v00.bin",
+      "group": "random-distinct",
+      "latency_ns": 11692276,
+      "payload_bytes": 65536,
+      "sha256": "fadc86b2b66538304fb412b2ff142e4721414dc9305820b8139fc672e412a080"
+    },
+    {
+      "phase": "repeat-get-1",
+      "operation": "GetObject",
+      "file": "low-entropy-v01.bin",
+      "group": "low-entropy",
+      "latency_ns": 5472617,
+      "payload_bytes": 65536,
+      "sha256": "e9a660088305abb7a1851d096af0bead34b26b030855a5fcf0c7df5a5ff3e07a"
+    },
+    {
+      "phase": "repeat-get-1",
+      "operation": "GetObject",
+      "file": "compressed-identical-v01.gz",
+      "group": "compressed-identical",
+      "latency_ns": 12929640,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "repeat-get-1",
+      "operation": "GetObject",
+      "file": "random-distinct-v01.bin",
+      "group": "random-distinct",
+      "latency_ns": 13003401,
+      "payload_bytes": 65536,
+      "sha256": "3496fb93eba865a961e2e034df7e63bbcd1e0a77089cc18bdb832dfd3fbdaeb6"
+    },
+    {
+      "phase": "repeat-get-1",
+      "operation": "GetObject",
+      "file": "low-entropy-v02.bin",
+      "group": "low-entropy",
+      "latency_ns": 12121438,
+      "payload_bytes": 65536,
+      "sha256": "66c5df83a1347ee6e097b2b124870212592fc25998968216a24b982ea0b00102"
+    },
+    {
+      "phase": "repeat-get-1",
+      "operation": "GetObject",
+      "file": "compressed-identical-v02.gz",
+      "group": "compressed-identical",
+      "latency_ns": 11632396,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "repeat-get-1",
+      "operation": "GetObject",
+      "file": "random-distinct-v02.bin",
+      "group": "random-distinct",
+      "latency_ns": 10979234,
+      "payload_bytes": 65536,
+      "sha256": "88fd4b1ae06cd26955fd886b3e8ba12e2f688710b1dc832d5763e014d797440c"
+    },
+    {
+      "phase": "repeat-get-2",
+      "operation": "GetObject",
+      "file": "low-entropy-v00.bin",
+      "group": "low-entropy",
+      "latency_ns": 8219185,
+      "payload_bytes": 65536,
+      "sha256": "49da097c8a791cf7bc839a8ae7bdd9503ef0e0e1dfdce79a606e797ed5156aa8"
+    },
+    {
+      "phase": "repeat-get-2",
+      "operation": "GetObject",
+      "file": "compressed-identical-v00.gz",
+      "group": "compressed-identical",
+      "latency_ns": 11383715,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "repeat-get-2",
+      "operation": "GetObject",
+      "file": "random-distinct-v00.bin",
+      "group": "random-distinct",
+      "latency_ns": 4680494,
+      "payload_bytes": 65536,
+      "sha256": "fadc86b2b66538304fb412b2ff142e4721414dc9305820b8139fc672e412a080"
+    },
+    {
+      "phase": "repeat-get-2",
+      "operation": "GetObject",
+      "file": "low-entropy-v01.bin",
+      "group": "low-entropy",
+      "latency_ns": 14458565,
+      "payload_bytes": 65536,
+      "sha256": "e9a660088305abb7a1851d096af0bead34b26b030855a5fcf0c7df5a5ff3e07a"
+    },
+    {
+      "phase": "repeat-get-2",
+      "operation": "GetObject",
+      "file": "compressed-identical-v01.gz",
+      "group": "compressed-identical",
+      "latency_ns": 12648879,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "repeat-get-2",
+      "operation": "GetObject",
+      "file": "random-distinct-v01.bin",
+      "group": "random-distinct",
+      "latency_ns": 12554999,
+      "payload_bytes": 65536,
+      "sha256": "3496fb93eba865a961e2e034df7e63bbcd1e0a77089cc18bdb832dfd3fbdaeb6"
+    },
+    {
+      "phase": "repeat-get-2",
+      "operation": "GetObject",
+      "file": "low-entropy-v02.bin",
+      "group": "low-entropy",
+      "latency_ns": 12165158,
+      "payload_bytes": 65536,
+      "sha256": "66c5df83a1347ee6e097b2b124870212592fc25998968216a24b982ea0b00102"
+    },
+    {
+      "phase": "repeat-get-2",
+      "operation": "GetObject",
+      "file": "compressed-identical-v02.gz",
+      "group": "compressed-identical",
+      "latency_ns": 11822756,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "repeat-get-2",
+      "operation": "GetObject",
+      "file": "random-distinct-v02.bin",
+      "group": "random-distinct",
+      "latency_ns": 11278915,
+      "payload_bytes": 65536,
+      "sha256": "88fd4b1ae06cd26955fd886b3e8ba12e2f688710b1dc832d5763e014d797440c"
+    },
+    {
+      "phase": "repeat-get-3",
+      "operation": "GetObject",
+      "file": "low-entropy-v00.bin",
+      "group": "low-entropy",
+      "latency_ns": 5730418,
+      "payload_bytes": 65536,
+      "sha256": "49da097c8a791cf7bc839a8ae7bdd9503ef0e0e1dfdce79a606e797ed5156aa8"
+    },
+    {
+      "phase": "repeat-get-3",
+      "operation": "GetObject",
+      "file": "compressed-identical-v00.gz",
+      "group": "compressed-identical",
+      "latency_ns": 9341309,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "repeat-get-3",
+      "operation": "GetObject",
+      "file": "random-distinct-v00.bin",
+      "group": "random-distinct",
+      "latency_ns": 12724919,
+      "payload_bytes": 65536,
+      "sha256": "fadc86b2b66538304fb412b2ff142e4721414dc9305820b8139fc672e412a080"
+    },
+    {
+      "phase": "repeat-get-3",
+      "operation": "GetObject",
+      "file": "low-entropy-v01.bin",
+      "group": "low-entropy",
+      "latency_ns": 16488092,
+      "payload_bytes": 65536,
+      "sha256": "e9a660088305abb7a1851d096af0bead34b26b030855a5fcf0c7df5a5ff3e07a"
+    },
+    {
+      "phase": "repeat-get-3",
+      "operation": "GetObject",
+      "file": "compressed-identical-v01.gz",
+      "group": "compressed-identical",
+      "latency_ns": 13714282,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "repeat-get-3",
+      "operation": "GetObject",
+      "file": "random-distinct-v01.bin",
+      "group": "random-distinct",
+      "latency_ns": 14171164,
+      "payload_bytes": 65536,
+      "sha256": "3496fb93eba865a961e2e034df7e63bbcd1e0a77089cc18bdb832dfd3fbdaeb6"
+    },
+    {
+      "phase": "repeat-get-3",
+      "operation": "GetObject",
+      "file": "low-entropy-v02.bin",
+      "group": "low-entropy",
+      "latency_ns": 12437119,
+      "payload_bytes": 65536,
+      "sha256": "66c5df83a1347ee6e097b2b124870212592fc25998968216a24b982ea0b00102"
+    },
+    {
+      "phase": "repeat-get-3",
+      "operation": "GetObject",
+      "file": "compressed-identical-v02.gz",
+      "group": "compressed-identical",
+      "latency_ns": 12018197,
+      "payload_bytes": 65566,
+      "sha256": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b"
+    },
+    {
+      "phase": "repeat-get-3",
+      "operation": "GetObject",
+      "file": "random-distinct-v02.bin",
+      "group": "random-distinct",
+      "latency_ns": 11859756,
+      "payload_bytes": 65536,
+      "sha256": "88fd4b1ae06cd26955fd886b3e8ba12e2f688710b1dc832d5763e014d797440c"
+    },
+    {
+      "phase": "delete",
+      "operation": "DeleteObject",
+      "file": "low-entropy-v00.bin",
+      "group": "low-entropy",
+      "latency_ns": 5603978,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "delete",
+      "operation": "DeleteObject",
+      "file": "compressed-identical-v00.gz",
+      "group": "compressed-identical",
+      "latency_ns": 15212567,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "delete",
+      "operation": "DeleteObject",
+      "file": "random-distinct-v00.bin",
+      "group": "random-distinct",
+      "latency_ns": 8723067,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "delete",
+      "operation": "DeleteObject",
+      "file": "low-entropy-v01.bin",
+      "group": "low-entropy",
+      "latency_ns": 12119118,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "delete",
+      "operation": "DeleteObject",
+      "file": "compressed-identical-v01.gz",
+      "group": "compressed-identical",
+      "latency_ns": 13201921,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "delete",
+      "operation": "DeleteObject",
+      "file": "random-distinct-v01.bin",
+      "group": "random-distinct",
+      "latency_ns": 12938560,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "delete",
+      "operation": "DeleteObject",
+      "file": "low-entropy-v02.bin",
+      "group": "low-entropy",
+      "latency_ns": 12457639,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "delete",
+      "operation": "DeleteObject",
+      "file": "compressed-identical-v02.gz",
+      "group": "compressed-identical",
+      "latency_ns": 11984637,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "delete",
+      "operation": "DeleteObject",
+      "file": "random-distinct-v02.bin",
+      "group": "random-distinct",
+      "latency_ns": 11382435,
+      "payload_bytes": 0
+    },
+    {
+      "phase": "after-delete-list",
+      "operation": "ListObjectsV2",
+      "latency_ns": 3723652,
+      "payload_bytes": 0
+    }
+  ],
+  "cleanup": "logical_delete_verified_physical_retention_unknown",
+  "limitations": [
+    "Preliminary only. smoke validates the harness; it is not a performance or R1/R2 acceptance result.",
+    "Single PutObject, SHA256 header, no multipart, no SDK retries; queue dispatch follows manifest order, completion order is concurrent.",
+    "Latency includes SDK/signing/body I/O and GET hashing; throughput uses each phase wall time. Payload bytes are logical, not wire/backend/billed bytes.",
+    "GET passes are separate; no cache purge is performed and no cold/warm hit ratio is inferred. Fresh keys do not reset domain dedup.",
+    "Delete verifies logical absence only; versions, tombstones, retained packs and asynchronous work can remain. No physical/cost accounting."
+  ]
+}

@@ -24,6 +24,8 @@ Completed local gates:
 
 ## Binary smoke run actually executed
 
+### Initial harness-only evidence
+
 On 2026-10-28, built `bin/warmbench` with `go build -trimpath` from clean source
 `40b13ff2d91c5070ef966aab0c4f42a1ef46d0e5` using Go 1.27.2. Executable SHA-256:
 `7aa0efd748da5a18b3ab9fddb789f87b82ba229b51ca792c748147907bca349d`.
@@ -58,6 +60,41 @@ Raw evidence: [concurrency 1](evidence/harness-smoke/concurrency-1.json),
 No payloads, private config/endpoint/bucket, credential paths or tokens are included.
 These are two emulator harness runs, **not a direct-S3/Miles comparison**. Their
 latencies must not be used as a production baseline or a task performance result.
+
+### Integrated Miles process versus direct emulator
+
+After merging #41/#42, `scripts/warm_benchmark_smoke.py` ran from clean source
+`ba05894` with Go 1.27.2. Its direct target is pinned Moto; its other target is the
+actual Miles binary with Badger, strict producers, SDK packs, LRU and WarmReader.
+This is a paired **protocol smoke**, not real AWS performance evidence.
+
+Both concurrency 1 and 4 pairs passed: four completed runs, each 10 phases,
+66 samples, 9 files/589914 input bytes and 36 verified full-file GET hashes.
+All builds record `vcs.modified=false`; raw samples carry executable SHA-256 and
+source revision. Each pair used fresh metadata/cache and physical/direct buckets.
+No fixture event builder was used. Logical delete completed; physical packs and
+outbox remain retained until the disposable fixture is removed. The script joined
+both Miles processes and removed only its Docker projects; private runtime configs,
+Badger and evidence were retained outside the repository for inspection.
+
+[C1 direct](evidence/warm-runtime-smoke/direct-concurrency-1.json) ·
+[C1 Miles](evidence/warm-runtime-smoke/miles-concurrency-1.json) ·
+[C4 direct](evidence/warm-runtime-smoke/direct-concurrency-4.json) ·
+[C4 Miles](evidence/warm-runtime-smoke/miles-concurrency-4.json) ·
+[summary/tool versions/gateway build hash](evidence/warm-runtime-smoke/summary.json) ·
+[SHA-256 inventory](evidence/warm-runtime-smoke/sha256sums.txt).
+
+Additional native tests verify retained producer payload hash, persistent history/
+quota, distinct per-request writer fences, stale incarnation rejection and refusing
+unknown legacy accounting. Startup tests keep local loopback-only and require
+explicit HTTPS, temporary-session file and KMS key for benchmark mode. Full process
+CLI checks verify PUT/GET/HEAD/Range/LIST/DELETE and bytes across restart; they also
+exercise lost backend readiness, invalid backend identity and graceful shutdown.
+
+The dedicated [real AWS run and cleanup plan](warm-aws-run-plan.md) is prepared
+for approval; code integration no longer waits for another task. Real AWS evidence,
+backup30 and the paired preliminary Badger/Warm performance measurements are still
+pending approval/execution. Keep the task open until those artifacts exist.
 
 No AWS resources were created or resumed. No direct AWS or Miles Warm performance
 numbers, R1/R2 proof, backup30 run, cost saving or target throughput is claimed.

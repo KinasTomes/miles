@@ -1,0 +1,36 @@
+{
+  "kind": "local-protocol-smoke-only",
+  "gateway_sha256": "f97da558520fe808f1c07f111d5f9f8a6574865dce1faaaec1c161db110edfea",
+  "aws_cli_version": "aws-cli/2.38.1 Python/3.14.6 Linux/6.17.0-1020-oracle script-exe/aarch64.ubuntu.24",
+  "docker_version": "Docker version 29.9.1, build dfc520d",
+  "runs": [
+    {
+      "target": "local-s3-smoke",
+      "concurrency": 1,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "13d051ce78858a442d8e777524ad39e7f2004622e9e781629ab88fe3a550ae94"
+    },
+    {
+      "target": "miles-warm",
+      "concurrency": 1,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "f9390f3833bd1488c5ab3e864ae10d420479a7b8cd6fa772e65d01087666214e"
+    },
+    {
+      "target": "local-s3-smoke",
+      "concurrency": 4,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "dcaa50729bebff5059e8f6117f31e393c2175bd8d637964aef5c31a77f5f34d0"
+    },
+    {
+      "target": "miles-warm",
+      "concurrency": 4,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "772e4a7a72ff6f6dc3d22a5f528bbd54ce43fefa64de37319ff97c4216bd61d4"
+    }
+  ]
+}
