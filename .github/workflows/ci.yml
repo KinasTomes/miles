@@ -46,6 +46,7 @@ jobs:
           for evidence in \
             benchmarks/evidence/harness-smoke \
             benchmarks/evidence/warm-runtime-smoke \
+            benchmarks/evidence/warm-aws \
             docs/testing/evidence/s3-warm-final-20261027 \
             docs/testing/evidence/w03-hai-03-s3-live-20261027; do
             echo "Verifying ${evidence}"

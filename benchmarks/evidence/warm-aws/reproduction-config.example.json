@@ -1,0 +1,16 @@
+{
+  "account": "YOUR_ACCOUNT_ID",
+  "region": "ap-southeast-1",
+  "name": "YOUR_FRESH_BENCHMARK_NODE_ROLE",
+  "buckets": {
+    "direct": "YOUR_FRESH_DIRECT_BUCKET",
+    "packs": "YOUR_FRESH_PACK_BUCKET"
+  },
+  "source_commit": "590b1c6c604446b13d843a49fc211a43d95ab44d",
+  "binary_hashes": {
+    "miles": "76d3dd1081593a3f162ccbad38ffd52e0100734cdc8ef003ab8efadcea578456",
+    "warmbench": "ead7b9930d3a29b5373532c261f20383df5b148d7e8edfeb6828cbfe43a43eb4",
+    "datasetgen": "2158cb74df7d5486327b8a6fac0c8f5ef97859b94d5848c633259f256198b81f"
+  },
+  "instance_type": "m7i-flex.large"
+}
