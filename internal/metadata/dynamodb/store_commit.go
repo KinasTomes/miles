@@ -66,6 +66,9 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if operation.after != nil && operation.after["pending_request"] != nil {
 			return s.ErrUnavailable
 		}
+		if operationClosed(operation.after) {
+			return s.ErrFenced
+		}
 
 		done, err := get[outcome](t, key("outcomes", r.Head.OpID))
 		if err == nil {

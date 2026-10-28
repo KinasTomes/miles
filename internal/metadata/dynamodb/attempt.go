@@ -156,18 +156,44 @@ func (m *Store) resumeCommit(ctx context.Context, r s.CommitRequest) (s.CommitRe
 	if err != nil {
 		return zero, true, err
 	}
+	digest, err := commitDigest(r)
+	if err != nil {
+		return zero, true, s.ErrInvalid
+	}
+	// The original immutable outcome remains reconcilable after revocation or
+	// expiry. This internal metadata port does not grant public API access.
+	done, outcomeErr := get[outcome](t, key("outcomes", r.Head.OpID))
+	if outcomeErr == nil {
+		if done.Digest != digest {
+			return zero, true, s.ErrConflict
+		}
+		return s.CommitResult{Head: done.Head, AlreadyCommitted: true}, true, nil
+	}
+	if !errors.Is(outcomeErr, s.ErrNotFound) {
+		return zero, true, outcomeErr
+	}
+	if operationClosed(row.after) {
+		return zero, true, s.ErrFenced
+	}
 	if row.after == nil || row.after["pending_request"] == nil {
 		return zero, false, nil
+	}
+	binding, ok := row.after["input_sha256"].(*types.AttributeValueMemberS)
+	if !ok || binding.Value != hex.EncodeToString(digest[:]) {
+		return zero, true, s.ErrConflict
 	}
 	if err := m.fence(t, r.Writer); err != nil {
 		return zero, true, err
 	}
 	auth, err := m.authorize(t, r.CredentialID, r.Head.Object.Bucket)
 	if err != nil {
+		if errors.Is(err, s.ErrAccessDenied) || errors.Is(err, s.ErrBucketNotFound) {
+			return m.rejectPending(ctx, r, err)
+		}
 		return zero, true, err
 	}
 	if auth.UserID != r.UserID || !auth.Write {
-		return zero, true, s.ErrAccessDenied
+		return m.rejectPending(ctx, r, s.ErrAccessDenied)
 	}
 	if auth.Bucket.ID != r.Head.Object.BucketID {
 		return zero, true, s.ErrBucketNotFound
@@ -176,14 +202,6 @@ func (m *Store) resumeCommit(ctx context.Context, r s.CommitRequest) (s.CommitRe
 		if err := m.protect(t, r.Writer, r.Head.ManifestID); err != nil {
 			return zero, true, err
 		}
-	}
-	digest, err := commitDigest(r)
-	if err != nil {
-		return zero, true, s.ErrInvalid
-	}
-	binding, ok := row.after["input_sha256"].(*types.AttributeValueMemberS)
-	if !ok || binding.Value != hex.EncodeToString(digest[:]) {
-		return zero, true, s.ErrConflict
 	}
 	body, err := CloneBinary(row.after["pending_request"])
 	if err != nil {

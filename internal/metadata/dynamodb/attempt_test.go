@@ -127,25 +127,15 @@ func TestLocalKnownConflictRetiresAttemptWithoutPartialPublication(t *testing.T)
 	}
 	if err := m.update(context.Background(), func(tx *transaction) error {
 		grant := f.Grant
-		grant.Write = false
 		grant.Revision++
 		return put(tx, key("grants", grant.BucketID, grant.UserID), grant)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := restartFixture(t, m).CommitObject(context.Background(), r); !errors.Is(err, s.ErrAccessDenied) {
-		t.Fatal(err)
-	}
 	contracttest.NoPublication(t, m, r)
-	// Restore current authorization with a new revision. Replaying the exact old
-	// request must cancel on its stale grant predicate, then retire the attempt.
-	if err := m.update(context.Background(), func(tx *transaction) error {
-		grant := f.Grant
-		grant.Revision += 2
-		return put(tx, key("grants", grant.BucketID, grant.UserID), grant)
-	}); err != nil {
-		t.Fatal(err)
-	}
+	// Permission stays valid but its revision changed. The exact old request
+	// cancels on the stale predicate, then safely retires and rebuilds. Revocation
+	// is covered separately and closes the operation without requiring restoration.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if _, err := restartFixture(t, m).CommitObject(ctx, r); err != nil {
