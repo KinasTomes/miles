@@ -83,6 +83,8 @@ func TestShutdownWaitsForAdmittedWorkAndReportsTimeout(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			closed := false
+			d.Close = func() error { closed = true; return nil }
 			a := new(Admission)
 			release, ok := a.Acquire()
 			if !ok {
@@ -119,6 +121,9 @@ func TestShutdownWaitsForAdmittedWorkAndReportsTimeout(t *testing.T) {
 			case err := <-done:
 				if complete && err != nil {
 					t.Fatal(err)
+				}
+				if closed != complete {
+					t.Fatalf("backend closed=%v, work quiescent=%v", closed, complete)
 				}
 				if !complete && err == nil {
 					t.Fatal("timed out work reported shutdown complete")
