@@ -32,6 +32,32 @@ with the same data directory, then removes the temporary Compose project,
 processes, files and test buckets. It uses dummy credentials and validated
 loopback endpoints, never the operator AWS profile.
 
+## Review regressions
+
+Follow-up fixes: `94c4dc3` (probe/transfer deadlines), `a0a8800`
+(credential restart), `59d292a` (CLI/config diagnostics).
+
+- Slow SDK pack upload and streamed download both finish beyond one second;
+  a shorter caller deadline still interrupts transfer. The dependency probe
+  retains its independent one-second context deadline.
+- Missing credentials on an already bootstrapped Badger installation fail
+  without creating a replacement file. Restoring the original file recovers
+  the same bucket identity. A restart after secret persistence but before
+  metadata bootstrap reuses the prepared secret; secret-before-commit ordering
+  is preserved. `Bootstrapped` is a read-only concrete Badger helper, with no
+  change to the shared MetadataStore interface or mutation contracts.
+- Supported read commands without a token report `--token-file is required`;
+  help/version and unsupported commands keep their existing behavior. Local
+  address validation reports the selected mode. Permission requirements remain
+  0600 for secrets and 0700 for the data directory.
+
+`make check`, `make test-local` and the following affected-package race check
+passed again after these fixes; no live AWS calls were made:
+
+```sh
+go test -race ./internal/app ./internal/metadata/badger ./internal/config ./cmd/miles ./cmd/dsgctl
+```
+
 ## Scope and downstream handoff
 
 - `cmd/miles/s3.go` owns the HTTP composition. API consumers add real object
