@@ -375,6 +375,11 @@ func (e *warmExecutor) Execute(ctx context.Context, i int, _ engine.PlannedChunk
 	}
 	stored, hit, err := o.Cache.Get(ctx, b.key)
 	if err != nil {
+		// Cache detects immutable-byte corruption before VerifyPackEntry runs.
+		// Cancellation and ordinary cache I/O errors are not integrity failures.
+		if errors.Is(err, storage.ErrConflict) {
+			o.Metrics.integrity.Add(1)
+		}
 		return nil, err
 	}
 	if hit {

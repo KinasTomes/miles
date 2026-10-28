@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/KinasTomes/miles/internal/cache"
@@ -13,21 +16,22 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-func twoTierFixture(t *testing.T, w int64) (*warmFixture, *cache.Node, *cache.LRU) {
+func twoTierFixture(t *testing.T, w int64) (*warmFixture, *cache.Node, *cache.LRU, string) {
 	t.Helper()
 	f := newWarmFixture(t, w)
 	memory, _ := cache.NewLRU(cache.Limits{CapacityBytes: 1 << 20, MaxEntries: 16, MaxCopyBytes: 1 << 20})
-	disk, err := cache.NewDisk(t.TempDir(), cache.Limits{CapacityBytes: 1 << 20, MaxEntries: 16, MaxCopyBytes: 1 << 20})
+	root := t.TempDir()
+	disk, err := cache.NewDisk(root, cache.Limits{CapacityBytes: 1 << 20, MaxEntries: 16, MaxCopyBytes: 1 << 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	node, _ := cache.NewNode("test-node", memory, disk)
 	t.Cleanup(func() { _ = node.Close() })
 	f.reader.options.Cache = node
-	return f, node, memory
+	return f, node, memory, root
 }
 func TestTwoTierCacheDiskHitAndRevokedAuthorization(t *testing.T) {
-	f, node, memory := twoTierFixture(t, 0)
+	f, node, memory, _ := twoTierFixture(t, 0)
 	ctx := context.Background()
 	if _, out, err := f.read(ctx, f.request); err != nil || !bytes.Equal(out, f.body) {
 		t.Fatal(err)
@@ -50,7 +54,7 @@ func TestTwoTierCacheDiskHitAndRevokedAuthorization(t *testing.T) {
 func TestTwoTierRangeAmplificationBoundedByIntersectingChunks(t *testing.T) {
 	for _, ahead := range []int64{0, 4} {
 		t.Run(fmt.Sprint(ahead), func(t *testing.T) {
-			f, node, memory := twoTierFixture(t, ahead)
+			f, node, memory, _ := twoTierFixture(t, ahead)
 			ctx := context.Background()
 			var fetched int64
 			f.backend.beforeRange = func(_ context.Context, in *awss3.GetObjectInput) error {
@@ -86,6 +90,73 @@ func TestTwoTierRangeAmplificationBoundedByIntersectingChunks(t *testing.T) {
 			}
 			if _, _, err = f.read(ctx, q); err != nil || f.backend.count() != 2 {
 				t.Fatal("purge bypassed origin", err)
+			}
+		})
+	}
+}
+
+func TestDiskCacheCorruptionCountsReaderIntegrityBeforeEmission(t *testing.T) {
+	f, node, memory, root := twoTierFixture(t, 0)
+	ctx := context.Background()
+	q := f.request
+	q.Range = &storage.ByteRange{Length: 1}
+	if _, out, err := f.read(ctx, q); err != nil || !bytes.Equal(out, f.body[:1]) {
+		t.Fatal("fill", err)
+	}
+	if err := memory.Purge(ctx); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(root, "*.blob"))
+	if err != nil || len(files) != 1 {
+		t.Fatal("one disk entry required", files, err)
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil || len(data) == 0 {
+		t.Fatal(err)
+	}
+	data[0] ^= 0xff
+	if err = os.WriteFile(files[0], data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	before := f.reader.options.Metrics.Snapshot()
+	nodeBefore := node.Stats()
+	calls := f.backend.count()
+	_, out, err := f.read(ctx, q)
+	if !errors.Is(err, storage.ErrConflict) || len(out) != 0 {
+		t.Fatal("corruption emitted or swallowed", out, err)
+	}
+	after := f.reader.options.Metrics.Snapshot()
+	nodeAfter := node.Stats()
+	if after.IntegrityFailures != before.IntegrityFailures+1 || after.Aborted != before.Aborted+1 || after.EmittedBytes != before.EmittedBytes {
+		t.Fatalf("reader metrics: before=%+v after=%+v", before, after)
+	}
+	if nodeAfter.Errors != nodeBefore.Errors+1 || nodeAfter.Memory.Entries != 0 || nodeAfter.Disk.Entries != 0 || f.backend.count() != calls {
+		t.Fatal("generation eviction/fail-closed changed", nodeAfter)
+	}
+	// After the fail-closed read, the next request can refill from verified origin.
+	if _, out, err = f.read(ctx, q); err != nil || !bytes.Equal(out, f.body[:1]) || f.backend.count() != calls+1 {
+		t.Fatal("verified refill", err)
+	}
+}
+
+type getErrorCache struct {
+	storage.Cache
+	err error
+}
+
+func (c getErrorCache) Get(context.Context, storage.CacheKey) ([]byte, bool, error) {
+	return nil, false, c.err
+}
+func TestCacheGetNonIntegrityErrorsKeepClassification(t *testing.T) {
+	for _, failure := range []error{context.Canceled, context.DeadlineExceeded, io.ErrUnexpectedEOF, storage.ErrUnavailable} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			f := newWarmFixture(t, 0)
+			f.reader.options.Cache = getErrorCache{f.reader.options.Cache, failure}
+			before := f.reader.options.Metrics.Snapshot()
+			_, out, err := f.read(context.Background(), f.request)
+			after := f.reader.options.Metrics.Snapshot()
+			if !errors.Is(err, failure) || len(out) != 0 || after.IntegrityFailures != before.IntegrityFailures || after.Aborted != before.Aborted+1 {
+				t.Fatal("ordinary failure misclassified", err, after)
 			}
 		})
 	}

@@ -112,6 +112,12 @@ partial/stale samples. Strong refill barrier không được hứa bởi hook n�
   cache lookup. Existing test giữ admitted stream semantics sau revoke.
 - `TestTwoTierRangeAmplificationBoundedByIntersectingChunks`: w0/w4,
   Range1byte last chunk, exact SDK bytes/counters, disk hit0origin, purge refetch.
+- `TestDiskCacheCorruptionCountsReaderIntegrityBeforeEmission`: fill disk,
+  purge memory, flip a byte trong file `.blob` rồi đọc lại: ErrConflict,
+  IntegrityFailures+1, Aborted+1, Node.Errors+1, không emit corrupt bytes hoặc
+  fetch origin trong failed read; exact generation bị evict và request sau
+  refill từ verified origin. Cancellation/deadline/ordinary I/O errors có test
+  riêng, không tăng integrity counter.
 
 Windows Go1.27.2: cache/readpath/object/write tests chạy được. Local bootstrap
 baseline yêu cầu Unix0700 và directory Sync; không giảm yêu cầu bảo mật để làm
