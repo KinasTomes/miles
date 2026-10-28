@@ -100,6 +100,8 @@ type Metadata interface {
 // CommitEvent is the input the outbox producer turns into the authoritative
 // event. The producer is not part of W03: the shared R2 journal belongs to
 // W04-HAI-02. Until then only tests supply a builder.
+// Head contains the complete prepared descriptor with Revision still zero;
+// Revision is the resulting revision assigned by the publication transaction.
 type CommitEvent struct {
 	OpID     string
 	Object   storage.ObjectKey
@@ -121,6 +123,8 @@ type WriterRequest struct {
 	WallDeadline       time.Time
 }
 
+// AdmittedWriter carries fresh backend authority and the coordinator's verified
+// protection window for this request, not a process-wide reusable fence.
 type AdmittedWriter struct {
 	Fence          storage.WriterFence
 	ProtectedUntil time.Time
@@ -164,6 +168,9 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 	if ctx == nil || r.Body == nil || r.ContentLength < 0 || r.Key == "" || r.UserID == "" || r.CredentialID == "" ||
 		r.Bucket.Name == "" || r.Bucket.ID == "" || r.Bucket.OwnerID == "" || r.Bucket.Domain == "" {
 		return PutResult{}, storage.ErrInvalid
+	}
+	if err := ValidatePut(r.ContentLength, r.Metadata); err != nil {
+		return PutResult{}, err
 	}
 	object := storage.ObjectKey{Bucket: r.Bucket.Name, BucketID: r.Bucket.ID, Key: r.Key}
 	if object.Validate() != nil {

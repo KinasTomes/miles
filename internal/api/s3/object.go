@@ -51,8 +51,8 @@ func objectKey(r *Request) error {
 // decodedLength is the logical body size: aws-chunked declares it separately
 // from the encoded Content-Length (API v2 2.2.2).
 func decodedLength(r *http.Request) int64 {
-	if v := r.Header.Get("X-Amz-Decoded-Content-Length"); v != "" {
-		n, err := strconv.ParseInt(v, 10, 64)
+	if strings.HasPrefix(r.Header.Get("X-Amz-Content-Sha256"), "STREAMING-") {
+		n, err := strconv.ParseInt(r.Header.Get("X-Amz-Decoded-Content-Length"), 10, 64)
 		if err != nil || n < 0 {
 			return -1
 		}
@@ -65,10 +65,22 @@ func decodedLength(r *http.Request) int64 {
 // case map. A missing Content-Type stores the S3 default explicitly.
 func requestMetadata(r *http.Request) map[string]string {
 	metadata := map[string]string{"content-type": "binary/octet-stream"}
-	for _, name := range []string{"Content-Type", "Cache-Control", "Content-Disposition", "Content-Encoding", "Expires"} {
+	for _, name := range []string{"Content-Type", "Cache-Control", "Content-Disposition", "Expires"} {
 		if v := r.Header.Get(name); v != "" {
 			metadata[strings.ToLower(name)] = v
 		}
+	}
+	encodings := []string{}
+	for _, value := range r.Header.Values("Content-Encoding") {
+		for _, token := range strings.Split(value, ",") {
+			token = strings.TrimSpace(token)
+			if token != "" && !strings.EqualFold(token, "aws-chunked") {
+				encodings = append(encodings, token)
+			}
+		}
+	}
+	if len(encodings) > 0 {
+		metadata["content-encoding"] = strings.Join(encodings, ", ")
 	}
 	for name, values := range r.Header {
 		lower := strings.ToLower(name)
@@ -90,9 +102,13 @@ func (o *Objects) PutObject(w http.ResponseWriter, r *Request) error {
 	if length < 0 {
 		return &Error{Code: ErrInvalidRequest, Message: "Content-Length or x-amz-decoded-content-length is required.", Bucket: r.Bucket, Key: r.Key}
 	}
+	metadata := requestMetadata(r.HTTP)
+	if err := object.ValidatePut(length, metadata); err != nil {
+		return objectError(err, r.Bucket, r.Key)
+	}
 	result, err := o.Writer.PutObject(r.HTTP.Context(), object.PutRequest{
 		Bucket: r.Access.Bucket, Key: r.Key, Body: r.Body, ContentLength: length,
-		Metadata: requestMetadata(r.HTTP), UserID: r.Caller.UserID, CredentialID: r.Caller.AccessKeyID,
+		Metadata: metadata, UserID: r.Caller.UserID, CredentialID: r.Caller.AccessKeyID,
 	})
 	if err != nil {
 		return objectError(err, r.Bucket, r.Key)
@@ -277,6 +293,8 @@ func objectError(err error, bucket, key string) error {
 	}
 	code := ErrInternalError
 	switch {
+	case errors.Is(err, object.ErrObjectTooLarge), errors.Is(err, object.ErrMetadataTooLarge):
+		code = ErrEntityTooLarge
 	case errors.Is(err, object.ErrLengthMismatch):
 		code = ErrIncompleteBody
 	case errors.Is(err, storage.ErrNotFound):
