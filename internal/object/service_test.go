@@ -179,11 +179,9 @@ func newServiceFixture(t *testing.T) *serviceFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	fences := []storage.WriterFence{
-		{LeaseID: "writer-lease", ServiceIncarnation: f.Lease.Fence.ServiceIncarnation, Epoch: 1},
-		{LeaseID: "writer-lease-2", ServiceIncarnation: f.Lease.Fence.ServiceIncarnation, Epoch: 1},
-		{LeaseID: "writer-lease-3", ServiceIncarnation: f.Lease.Fence.ServiceIncarnation, Epoch: 1},
-		{LeaseID: "writer-lease-4", ServiceIncarnation: f.Lease.Fence.ServiceIncarnation, Epoch: 1},
+	fences := make([]storage.WriterFence, 10)
+	for i := range fences {
+		fences[i] = storage.WriterFence{LeaseID: fmt.Sprintf("writer-lease-%d", i+1), ServiceIncarnation: f.Lease.Fence.ServiceIncarnation, Epoch: 1}
 	}
 	leases := make([]storage.WriterLease, len(fences))
 	for i, fence := range fences {
@@ -395,5 +393,98 @@ func TestPutOverwriteAndChecksumMetadata(t *testing.T) {
 	decoded, err := base64.StdEncoding.DecodeString(second.ChecksumValue)
 	if err != nil || len(decoded) != 8 {
 		t.Fatalf("checksum value %q", second.ChecksumValue)
+	}
+}
+
+func (f *serviceFixture) list(t *testing.T, ctx context.Context, r storage.ListObjectsRequest) []string {
+	t.Helper()
+	r.PrincipalID, r.Bucket, r.BucketID = "owner", f.bucket.Name, f.bucket.ID
+	var out []string
+	for {
+		page, err := f.service.ListObjects(ctx, r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range page.Objects {
+			if e.LastModified.Unix() <= 0 || e.ETag == "" {
+				t.Fatalf("entry %+v has no commit time or ETag", e)
+			}
+			out = append(out, fmt.Sprintf("%s:%d", e.Key, e.Size))
+		}
+		out = append(out, page.CommonPrefixes...)
+		if page.Next == nil {
+			return out
+		}
+		r.Cursor = page.Next
+	}
+}
+
+// LIST sees the committed state after PUT, overwrite and DELETE: overwrite
+// replaces size and ETag, a tombstone hides the key and credits its quota once,
+// and a key recreated after its tombstone is listed again.
+func TestListAfterPutOverwriteAndDelete(t *testing.T) {
+	f := newServiceFixture(t)
+	ctx := context.Background()
+	for key, size := range map[string]int{"a": 10, "dir/b": 5, "dir/c": 7, "z": 3} {
+		f.put(t, ctx, key, bytes.Repeat([]byte("x"), size))
+	}
+	second := f.put(t, ctx, "a", []byte("four"))
+	del := func(key, user, credential string) error {
+		return f.service.DeleteObject(ctx, DeleteRequest{Bucket: f.bucket, Key: key, UserID: user, CredentialID: credential})
+	}
+	if err := del("dir/b", "owner", "owner-key"); err != nil {
+		t.Fatal(err)
+	}
+	tombstone, err := f.metadata.GetObject(ctx, storage.ObjectKey{Bucket: f.bucket.Name, BucketID: f.bucket.ID, Key: "dir/b"})
+	if err != nil || !tombstone.Deleted {
+		t.Fatalf("tombstone %+v %v", tombstone, err)
+	}
+	// Repeating the DELETE or deleting an absent key publishes nothing.
+	for _, key := range []string{"dir/b", "missing"} {
+		if err := del(key, "owner", "owner-key"); err != nil {
+			t.Fatalf("delete %s: %v", key, err)
+		}
+	}
+	again, _ := f.metadata.GetObject(ctx, tombstone.Object)
+	if again.Revision != tombstone.Revision {
+		t.Fatal("repeated DELETE published another tombstone")
+	}
+	if _, err := f.service.Stat(ctx, GetRequest{Bucket: f.bucket.Name, BucketID: f.bucket.ID, Key: "dir/b", CredentialID: "owner-key"}); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatal("deleted key still readable", err)
+	}
+	quota, _ := f.metadata.GetQuota(ctx, "owner")
+	if quota.Used != 4+7+3 || quota.Reserved != 0 || quota.Staged != 0 {
+		t.Fatalf("quota after delete: %+v", quota)
+	}
+
+	if got := f.list(t, ctx, storage.ListObjectsRequest{Delimiter: "/", MaxKeys: 1000}); fmt.Sprint(got) != "[a:4 z:3 dir/]" {
+		t.Fatalf("delimiter list %v", got)
+	}
+	if got := f.list(t, ctx, storage.ListObjectsRequest{MaxKeys: 1}); fmt.Sprint(got) != "[a:4 dir/c:7 z:3]" {
+		t.Fatalf("paged list %v", got)
+	}
+	page, err := f.service.ListObjects(ctx, storage.ListObjectsRequest{PrincipalID: "owner", Bucket: f.bucket.Name, BucketID: f.bucket.ID, Prefix: "a", MaxKeys: 1000})
+	if err != nil || len(page.Objects) != 1 || page.Objects[0].ETag != second.ETag {
+		t.Fatalf("overwrite not listed: %+v %v", page, err)
+	}
+
+	// The write grantee may delete but not list; system admin may do neither.
+	if err := del("z", "admin", "admin-key"); !errors.Is(err, storage.ErrAccessDenied) {
+		t.Fatal("admin deleted without a grant", err)
+	}
+	if err := del("z", "writer", "writer-key"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.service.ListObjects(ctx, storage.ListObjectsRequest{PrincipalID: "writer", Bucket: f.bucket.Name, BucketID: f.bucket.ID, MaxKeys: 1000}); !errors.Is(err, storage.ErrAccessDenied) {
+		t.Fatal("write-only grantee listed", err)
+	}
+
+	f.put(t, ctx, "dir/b", []byte("back"))
+	if got := f.list(t, ctx, storage.ListObjectsRequest{MaxKeys: 1000}); fmt.Sprint(got) != "[a:4 dir/b:4 dir/c:7]" {
+		t.Fatalf("list after recreate %v", got)
+	}
+	quota, _ = f.metadata.GetQuota(ctx, "owner")
+	if quota.Used != 4+4+7 {
+		t.Fatalf("quota after recreate: %+v", quota)
 	}
 }

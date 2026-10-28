@@ -30,11 +30,12 @@ type WriterAuthority interface {
 	Check(context.Context, s.WriterFence, Observe) error
 }
 type Options struct {
-	API         API
-	Tables      map[string]string
-	Now         func() time.Time
-	Authority   WriterAuthority
-	MaxAttempts int
+	API              API
+	Tables           map[string]string
+	Now              func() time.Time
+	Authority        WriterAuthority
+	MaxAttempts      int
+	RequireProducers bool
 }
 type Store struct {
 	api                                    API
@@ -42,6 +43,7 @@ type Store struct {
 	now                                    func() time.Time
 	authority                              WriterAuthority
 	maxAttempts                            int
+	requireProducers                       bool
 	beforePublish, afterPublish, reconcile func() error // package-private fault seams
 }
 
@@ -71,7 +73,12 @@ func New(options Options) (*Store, error) {
 	if options.MaxAttempts < 1 || options.MaxAttempts > 32 {
 		return nil, s.ErrInvalid
 	}
-	return &Store{api: options.API, tables: tables, now: options.Now, authority: options.Authority, maxAttempts: options.MaxAttempts}, nil
+	if options.RequireProducers {
+		if _, ok := options.Authority.(ProducerAuthority); !ok {
+			return nil, s.ErrInvalid
+		}
+	}
+	return &Store{api: options.API, tables: tables, now: options.Now, authority: options.Authority, maxAttempts: options.MaxAttempts, requireProducers: options.RequireProducers}, nil
 }
 
 type outcome struct {
@@ -139,6 +146,36 @@ func resolve(k string) (address, error) {
 		a.incarnation = arg(1)
 	case "reservations":
 		a.key = stringKey("QuotaReservations", "reservation_id", arg(0))
+	case "upload-record", "full-receipt":
+		a.key = stringKey("Uploads", "upload_id", arg(0))
+		a.scope = parts[0]
+	case "bucket-namespace":
+		a.key = stringKey("Buckets", "bucket", arg(0))
+		a.scope = "namespace"
+	case "credential-security":
+		a.key = stringKey("Credentials", "access_key_id", arg(0))
+		a.scope = "security"
+	case "admin-tokens":
+		a.key = stringKey("AdminTokens", "token_id", arg(0))
+	case "producer-outcome":
+		a.key, err = OperationKey(arg(0))
+		a.scope = "producer"
+	case "payload":
+		a.key = stringKey("SystemConfig", "config_id", "storage/payload/"+arg(0))
+		a.scope = "body"
+	case "part-head":
+		n, e := strconv.ParseUint(arg(1), 10, 32)
+		if e != nil || n == 0 || n > 10000 {
+			return a, s.ErrInvalid
+		}
+		a.key = stringKey("UploadParts", "upload_id", arg(0))
+		a.key.Attributes["part_number"] = number(n)
+	case "candidate":
+		a.key = stringKey("QuotaReservations", "reservation_id", "multipart/candidate/"+arg(0))
+		a.scope = "candidate"
+	case "publisher":
+		a.key = stringKey("Leases", "resource_id", "upload/"+arg(0))
+		a.key.Attributes["lease_id"] = text(arg(1))
 	case "events", "exports":
 		a.key = stringKey("Outbox", "event_id", arg(0))
 		if parts[0] == "exports" {
@@ -467,7 +504,7 @@ func put[T any](t *transaction, k string, v T) error {
 		return err
 	}
 	item := Item{}
-	if a.scope != "" {
+	if a.scope != "" || strings.HasPrefix(k, "uploads/") || strings.HasPrefix(k, "buckets/") || strings.HasPrefix(k, "credentials/") {
 		item = copyItem(row.after)
 		if item == nil {
 			item = Item{}

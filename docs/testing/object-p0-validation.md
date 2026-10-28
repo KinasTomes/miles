@@ -73,5 +73,6 @@ performed. CI must be checked against the updated PR head separately.
   `x-dsg-commit-time` and never echoes reserved `x-dsg-*` keys to clients.
 - The object service is not wired into the runtime; `cmd/miles` still serves
   only the operations of its own handler map.
-- Multipart, GET/HEAD `partNumber`, `GetObjectAttributes`, Delete, List,
-  copy and restore remain out of scope (W03-CHIEN-03 and W04 tasks).
+- Multipart, GET/HEAD `partNumber`, `GetObjectAttributes`, copy and restore
+  remain out of scope (W04 tasks). DeleteObject and ListObjectsV2 were added
+  by W03-CHIEN-03 (API v2 §4.2 "Hiện thực (W03-CHIEN-03)").

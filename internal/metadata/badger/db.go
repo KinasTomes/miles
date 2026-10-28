@@ -18,16 +18,18 @@ import (
 
 // Options intentionally does not expose unsafe in-memory or asynchronous writes.
 type Options struct {
-	Path string
-	Now  func() time.Time
+	Path             string
+	Now              func() time.Time
+	RequireProducers bool
 }
 type Store struct {
-	db            *db.DB
-	now           func() time.Time
-	writes        sync.Mutex
-	beforePublish func() error
-	afterPublish  func() error
-	reconcile     func() error
+	db               *db.DB
+	now              func() time.Time
+	writes           sync.Mutex
+	beforePublish    func() error
+	afterPublish     func() error
+	reconcile        func() error
+	requireProducers bool
 }
 type record struct {
 	Schema uint32
@@ -45,7 +47,7 @@ func Open(o Options) (*Store, error) {
 	if err != nil {
 		return nil, backend(err)
 	}
-	m := &Store{db: d, now: o.Now}
+	m := &Store{db: d, now: o.Now, requireProducers: o.RequireProducers}
 	err = m.update(context.Background(), func(t *db.Txn) error {
 		v, err := get[uint32](t, "schema")
 		if errors.Is(err, s.ErrNotFound) {

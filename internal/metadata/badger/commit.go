@@ -2,9 +2,8 @@ package badger
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
 
 	s "github.com/KinasTomes/miles/internal/storage"
 	db "github.com/dgraph-io/badger/v4"
@@ -34,6 +33,9 @@ func (m *Store) DeleteObject(ctx context.Context, r s.CommitRequest) (s.CommitRe
 func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, error) {
 	var result s.CommitResult
 	err := m.update(ctx, func(t *db.Txn) error {
+		if m.requireProducers && r.Producer == nil {
+			return s.ErrFenced
+		}
 		if err := r.Validate(); err != nil {
 			return err
 		}
@@ -42,6 +44,13 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		}
 		if err := m.fence(t, r.Writer); err != nil {
 			return err
+		}
+		closed, closeErr := optional[bool](t, key("multipart-op-closed", r.Head.OpID))
+		if closeErr != nil {
+			return closeErr
+		}
+		if closed {
+			return s.ErrFenced
 		}
 		a, err := m.authorize(t, r.CredentialID, r.Head.Object.Bucket)
 		if err != nil {
@@ -56,15 +65,10 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if a.Bucket.Domain != r.Head.Domain {
 			return s.ErrInvalid
 		}
-		input := r
-		input.Writer = s.WriterFence{}
-		input.Completion = nil
-		input.ReservationRevision = 0
-		b, err := json.Marshal(input)
+		digest, err := s.CommitInputDigest(r)
 		if err != nil {
 			return s.ErrInvalid
 		}
-		digest := sha256.Sum256(b)
 		done, err := get[outcome](t, key("outcomes", r.Head.OpID))
 		if err == nil {
 			if done.Digest != digest {
@@ -110,7 +114,7 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if reservation.Writer != r.Writer || !m.now().Before(reservation.Deadline) {
 			return s.ErrFenced
 		}
-		if reservation.StagedBytes != r.Head.Size {
+		if !operations.ValidStaging(multipartTx{m: m, t: t, ctx: ctx}, r, reservation) {
 			return s.ErrInvalid
 		}
 		q, err := get[s.LogicalQuota](t, key("quotas", a.Bucket.OwnerID))
@@ -173,21 +177,40 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 			return s.ErrInvalid
 		}
 		h.Revision = r.ExpectedRevision + 1
+		if err := operations.Finish(multipartTx{m: m, t: t, ctx: ctx}, r, h, m.now()); err != nil {
+			return err
+		}
 		q.Used = used + h.Size
 		q.Reserved -= reservation.Bytes
 		q.Staged -= reservation.StagedBytes
 		reservation.State = s.ReservationCommitted
 		reservation.Revision++
+		delta := int64(0)
+		if old.Revision == 0 || old.Deleted {
+			if !h.Deleted {
+				delta = 1
+			}
+		} else if h.Deleted {
+			delta = -1
+		}
+		if err := operations.Namespace(multipartTx{m: m, t: t, ctx: ctx}, h.Object.Bucket, delta, 0, m.requireProducers); err != nil {
+			return err
+		}
+		event, eventErr := operations.ObjectEvent(multipartTx{m: m, t: t, ctx: ctx}, r, h, old, q, reservation)
+		if eventErr != nil {
+			return eventErr
+		}
+
 		if err := put(t, key("quotas", q.OwnerID), q); err != nil {
 			return err
 		}
 		if err := put(t, headKey(h.Object), h); err != nil {
 			return err
 		}
-		if err := put(t, key("events", r.Event.ID), r.Event); err != nil {
+		if err := put(t, key("events", event.ID), event); err != nil {
 			return err
 		}
-		if err := put(t, key("event-ops", r.Event.OpID), r.Event.ID); err != nil {
+		if err := put(t, key("event-ops", event.OpID), event.ID); err != nil {
 			return err
 		}
 		if err := put(t, key("reservations", reservation.ID), reservation); err != nil {
