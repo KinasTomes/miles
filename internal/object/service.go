@@ -108,13 +108,27 @@ type EventBuilder interface {
 	ObjectCommit(context.Context, CommitEvent) (storage.OutboxEvent, error)
 }
 
+// WriterRequest binds admission to one logical PUT and its immutable deadline.
+// The trusted coordinator owns backend registration, UTC/protection proof and
+// later durable reconciliation; the object service never mints a fence.
+type WriterRequest struct {
+	Object             storage.ObjectKey
+	OpID, CredentialID string
+	Deadline           clock.Instant
+	WallDeadline       time.Time
+}
+
+type AdmittedWriter struct {
+	Fence          storage.WriterFence
+	ProtectedUntil time.Time
+}
+
 type Options struct {
 	Metadata       Metadata
 	Packs          storage.PackStore
 	Registry       *coordination.WriterRegistry
 	Clock          clock.Clock
-	Fence          storage.WriterFence
-	ProtectedUntil time.Time
+	AdmitWriter    func(context.Context, WriterRequest) (AdmittedWriter, error)
 	Chunking       engine.ChunkingParams
 	Compression    engine.CompressionPolicy
 	Events         EventBuilder
@@ -131,9 +145,9 @@ func New(o Options) (*Service, error) {
 	switch {
 	case o.Metadata == nil, o.Packs == nil, o.Registry == nil, o.Clock == nil, o.Events == nil, o.Reader == nil:
 		return nil, storage.ErrInvalid
-	case o.Fence.LeaseID == "" || o.Fence.ServiceIncarnation == "" || o.Fence.Epoch == 0:
+	case o.AdmitWriter == nil:
 		return nil, storage.ErrInvalid
-	case o.ProtectedUntil.IsZero(), o.BucketPolicy == nil, o.MaxOutstanding <= 0, o.RequestTimeout <= 0:
+	case o.BucketPolicy == nil, o.MaxOutstanding <= 0, o.RequestTimeout <= 0:
 		return nil, storage.ErrInvalid
 	case o.Chunking.Validate() != nil, o.Compression.Validate() != nil:
 		return nil, storage.ErrInvalid
@@ -172,9 +186,17 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 	if err != nil {
 		return PutResult{}, err
 	}
+	admitted, err := s.o.AdmitWriter(ctx, WriterRequest{Object: object, OpID: opID, CredentialID: r.CredentialID, Deadline: deadline, WallDeadline: wallDeadline})
+	if err != nil {
+		return PutResult{}, err
+	}
+	if admitted.Fence.LeaseID == "" || admitted.Fence.ServiceIncarnation == "" || admitted.Fence.Epoch == 0 || admitted.ProtectedUntil.Before(wallDeadline.Add(15*time.Minute)) {
+		return PutResult{}, storage.ErrFenced
+	}
+	fence := admitted.Fence
 	session, err := write.BeginWriteSession(ctx, write.SessionOptions{
-		Registry: s.o.Registry, Metadata: s.o.Metadata, Packs: s.o.Packs, Fence: s.o.Fence,
-		Deadline: deadline, Object: object, OpID: opID, CredentialID: r.CredentialID, ProtectedUntil: s.o.ProtectedUntil,
+		Registry: s.o.Registry, Metadata: s.o.Metadata, Packs: s.o.Packs, Fence: fence,
+		Deadline: deadline, Object: object, OpID: opID, CredentialID: r.CredentialID, ProtectedUntil: admitted.ProtectedUntil,
 	})
 	if err != nil {
 		return PutResult{}, fmt.Errorf("begin: %w", err)
@@ -191,33 +213,33 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		Version: storage.ModelVersion, OpID: opID, BaseRevision: baseRevision, BaseSize: baseSize,
 		Revision: 1, State: storage.ReservationActive, Deadline: wallDeadline, ID: reservationID,
 		OwnerID: r.Bucket.OwnerID, Object: object, Bytes: max(0, r.ContentLength-baseSize), StagedBytes: r.ContentLength,
-		Writer: s.o.Fence,
+		Writer: fence,
 	}
 	if err := session.Reserve(reserve); err != nil {
 		return PutResult{}, fmt.Errorf("reserve: %w", err)
 	}
 	manifestID, err := write.NewManifestID()
 	if err != nil {
-		s.release(ctx, reservationID, opID)
+		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, err
 	}
 	prepared, err := session.Prepare(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression}, r.Body, manifestID)
 	if err != nil {
-		s.release(ctx, reservationID, opID)
+		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, fmt.Errorf("prepare: %w", err)
 	}
 	if prepared.Size != r.ContentLength {
-		s.release(ctx, reservationID, opID)
+		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, ErrLengthMismatch
 	}
 	etag, err := putETag(r.Body)
 	if err != nil {
-		s.release(ctx, reservationID, opID)
+		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, err
 	}
 	algorithm, digest := r.Body.Checksum()
 	if algorithm == "" || len(digest) == 0 {
-		s.release(ctx, reservationID, opID)
+		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, storage.ErrInvalid
 	}
 	checksum := storage.Checksum{Algorithm: algorithm, Type: "FULL_OBJECT", Value: base64.StdEncoding.EncodeToString(digest)}
@@ -232,20 +254,25 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		ETag: etag, ETagKind: "put-md5", Checksum: checksum,
 		Metadata: metadata, OpID: opID,
 	}
+	head, err = prepared.BindHead(head)
+	if err != nil {
+		s.release(ctx, reservationID, opID, fence)
+		return PutResult{}, err
+	}
 	event, err := s.o.Events.ObjectCommit(ctx, CommitEvent{OpID: opID, Object: object, Revision: baseRevision + 1, Head: head})
 	if err != nil {
-		s.release(ctx, reservationID, opID)
+		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, err
 	}
 	commit := storage.CommitRequest{
 		ReservationRevision: 1, Head: head, ExpectedRevision: baseRevision,
-		UserID: r.UserID, CredentialID: r.CredentialID, ReservationID: reservationID, Writer: s.o.Fence, Event: event,
+		UserID: r.UserID, CredentialID: r.CredentialID, ReservationID: reservationID, Writer: fence, Event: event,
 	}
 	result, err := session.Commit(commit)
 	if err != nil {
 		err = fmt.Errorf("commit: %w", err)
 		if !unknownOutcome(err) {
-			s.release(ctx, reservationID, opID)
+			s.release(ctx, reservationID, opID, fence)
 			return PutResult{}, err
 		}
 		// Unknown outcome: reconcile before releasing the reservation. A
@@ -258,7 +285,7 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		if reconcileErr == nil && committed.Head.Revision > 0 {
 			return putResult(committed.Head), nil
 		} else if errors.Is(reconcileErr, storage.ErrNotFound) {
-			s.release(ctx, reservationID, opID)
+			s.release(ctx, reservationID, opID, fence)
 		}
 		return PutResult{}, err
 	}
@@ -375,7 +402,7 @@ func (s *Service) deadline(ctx context.Context) (clock.Instant, time.Time, error
 	reading := s.o.Clock.Now()
 	budget := s.o.RequestTimeout
 	if at, ok := ctx.Deadline(); ok {
-		budget = time.Until(at)
+		budget = min(budget, time.Until(at))
 		if budget <= 0 {
 			return clock.Instant{}, time.Time{}, context.DeadlineExceeded
 		}
@@ -387,11 +414,11 @@ func (s *Service) deadline(ctx context.Context) (clock.Instant, time.Time, error
 	return instant, reading.WallUTC.Add(budget), nil
 }
 
-func (s *Service) release(ctx context.Context, reservationID, opID string) {
+func (s *Service) release(ctx context.Context, reservationID, opID string, fence storage.WriterFence) {
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	_ = s.o.Metadata.ReleaseLogicalQuota(releaseCtx, storage.ReservationRelease{
-		ID: reservationID, OpID: opID, ExpectedRevision: 1, Writer: s.o.Fence,
+		ID: reservationID, OpID: opID, ExpectedRevision: 1, Writer: fence,
 	})
 }
 

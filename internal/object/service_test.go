@@ -163,26 +163,6 @@ type serviceFixture struct {
 	metadata *badger.Store
 	bucket   storage.Bucket
 	options  Options
-	fences   []storage.WriterFence
-	next     int
-}
-
-// fence returns a fresh backend writer fence per logical operation, like a
-// runtime lease owner that registers one session per request.
-func (f *serviceFixture) fence() storage.WriterFence {
-	fence := f.fences[f.next%len(f.fences)]
-	f.next++
-	return fence
-}
-
-func (f *serviceFixture) withFence(fence storage.WriterFence) *Service {
-	options := f.options
-	options.Fence = fence
-	service, err := New(options)
-	if err != nil {
-		panic(err)
-	}
-	return service
 }
 
 func newServiceFixture(t *testing.T) *serviceFixture {
@@ -261,9 +241,23 @@ func newServiceFixture(t *testing.T) *serviceFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var admissionMu sync.Mutex
+	nextFence := 0
 	options := Options{
-		Metadata: db, Packs: store, Registry: registry, Clock: c, Fence: fences[0],
-		ProtectedUntil: f.Now.Add(time.Hour),
+		Metadata: db, Packs: store, Registry: registry, Clock: c,
+		AdmitWriter: func(ctx context.Context, r WriterRequest) (AdmittedWriter, error) {
+			if err := ctx.Err(); err != nil {
+				return AdmittedWriter{}, err
+			}
+			admissionMu.Lock()
+			defer admissionMu.Unlock()
+			if nextFence == len(fences) {
+				return AdmittedWriter{}, storage.ErrUnavailable
+			}
+			fence := fences[nextFence]
+			nextFence++
+			return AdmittedWriter{Fence: fence, ProtectedUntil: r.WallDeadline.Add(15 * time.Minute)}, nil
+		},
 		Chunking:       engine.ChunkingParams{Min: 16 << 10, Avg: 16 << 10, Max: 16 << 10},
 		Compression:    engine.CompressionPolicy{Enabled: true, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)},
 		Events:         fixtureEvents{},
@@ -277,7 +271,7 @@ func newServiceFixture(t *testing.T) *serviceFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &serviceFixture{service: service, metadata: db, bucket: f.Bucket, options: options, fences: fences}
+	return &serviceFixture{service: service, metadata: db, bucket: f.Bucket, options: options}
 }
 
 func testBudget(n int64) readpath.Budget {
@@ -288,7 +282,7 @@ func testBudget(n int64) readpath.Budget {
 
 func (f *serviceFixture) put(t *testing.T, ctx context.Context, key string, data []byte) PutResult {
 	t.Helper()
-	service := f.withFence(f.fence())
+	service := f.service
 	out, err := service.PutObject(ctx, PutRequest{
 		Bucket: f.bucket, Key: key, Body: body(data), ContentLength: int64(len(data)),
 		Metadata: map[string]string{"content-type": "text/plain"}, UserID: "owner", CredentialID: "owner-key",
@@ -368,7 +362,7 @@ func TestFailedOverwriteKeepsOldObjectAndReleasesReservation(t *testing.T) {
 	f.put(t, ctx, "file", old)
 
 	broken := &failingBody{testBody: body([]byte("new object that never completes")), err: errors.New("payload failed")}
-	service := f.withFence(f.fence())
+	service := f.service
 	_, err := service.PutObject(ctx, PutRequest{
 		Bucket: f.bucket, Key: "file", Body: broken, ContentLength: 31,
 		Metadata: map[string]string{"content-type": "text/plain"}, UserID: "owner", CredentialID: "owner-key",
