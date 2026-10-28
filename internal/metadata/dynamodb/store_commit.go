@@ -3,6 +3,7 @@ package dynamodb
 import (
 	"context"
 	"errors"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
 
 	s "github.com/KinasTomes/miles/internal/storage"
 )
@@ -116,7 +117,7 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if reservation.Writer != r.Writer || !m.now().Before(reservation.Deadline) {
 			return s.ErrFenced
 		}
-		if reservation.StagedBytes != r.Head.Size {
+		if !operations.ValidStaging(multipartTx{t}, r, reservation) {
 			return s.ErrInvalid
 		}
 		q, err := get[s.LogicalQuota](t, key("quotas", a.Bucket.OwnerID))
@@ -198,6 +199,9 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 			return s.ErrInvalid
 		}
 		h.Revision = r.ExpectedRevision + 1
+		if err := operations.Finish(multipartTx{t}, r, h, m.now()); err != nil {
+			return err
+		}
 		q.Used = used + h.Size
 		q.Reserved -= reservation.Bytes
 		q.Staged -= reservation.StagedBytes

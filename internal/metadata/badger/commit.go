@@ -2,9 +2,8 @@ package badger
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"errors"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
 
 	s "github.com/KinasTomes/miles/internal/storage"
 	db "github.com/dgraph-io/badger/v4"
@@ -43,6 +42,13 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if err := m.fence(t, r.Writer); err != nil {
 			return err
 		}
+		closed, closeErr := optional[bool](t, key("multipart-op-closed", r.Head.OpID))
+		if closeErr != nil {
+			return closeErr
+		}
+		if closed {
+			return s.ErrFenced
+		}
 		a, err := m.authorize(t, r.CredentialID, r.Head.Object.Bucket)
 		if err != nil {
 			return err
@@ -56,15 +62,10 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if a.Bucket.Domain != r.Head.Domain {
 			return s.ErrInvalid
 		}
-		input := r
-		input.Writer = s.WriterFence{}
-		input.Completion = nil
-		input.ReservationRevision = 0
-		b, err := json.Marshal(input)
+		digest, err := s.CommitInputDigest(r)
 		if err != nil {
 			return s.ErrInvalid
 		}
-		digest := sha256.Sum256(b)
 		done, err := get[outcome](t, key("outcomes", r.Head.OpID))
 		if err == nil {
 			if done.Digest != digest {
@@ -110,7 +111,7 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if reservation.Writer != r.Writer || !m.now().Before(reservation.Deadline) {
 			return s.ErrFenced
 		}
-		if reservation.StagedBytes != r.Head.Size {
+		if !operations.ValidStaging(multipartTx{m, t}, r, reservation) {
 			return s.ErrInvalid
 		}
 		q, err := get[s.LogicalQuota](t, key("quotas", a.Bucket.OwnerID))
@@ -173,6 +174,9 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 			return s.ErrInvalid
 		}
 		h.Revision = r.ExpectedRevision + 1
+		if err := operations.Finish(multipartTx{m, t}, r, h, m.now()); err != nil {
+			return err
+		}
 		q.Used = used + h.Size
 		q.Reserved -= reservation.Bytes
 		q.Staged -= reservation.StagedBytes

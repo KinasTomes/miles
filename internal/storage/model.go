@@ -289,6 +289,7 @@ type CompletedReceipt struct {
 	ExpiresAt                                                               time.Time
 }
 type CommitRequest struct {
+	MultipartAttempt                    uint64 `json:",omitempty"`
 	ReservationRevision                 uint64
 	Head                                ObjectHead // Revision is assigned by the backend; must be zero on input.
 	ExpectedRevision                    uint64     // zero means absent, not a wildcard; tombstones have revisions.

@@ -139,6 +139,22 @@ func resolve(k string) (address, error) {
 		a.incarnation = arg(1)
 	case "reservations":
 		a.key = stringKey("QuotaReservations", "reservation_id", arg(0))
+	case "upload-record", "full-receipt":
+		a.key = stringKey("Uploads", "upload_id", arg(0))
+		a.scope = parts[0]
+	case "part-head":
+		n, e := strconv.ParseUint(arg(1), 10, 32)
+		if e != nil || n == 0 || n > 10000 {
+			return a, s.ErrInvalid
+		}
+		a.key = stringKey("UploadParts", "upload_id", arg(0))
+		a.key.Attributes["part_number"] = number(n)
+	case "candidate":
+		a.key = stringKey("QuotaReservations", "reservation_id", "multipart/candidate/"+arg(0))
+		a.scope = "candidate"
+	case "publisher":
+		a.key = stringKey("Leases", "resource_id", "upload/"+arg(0))
+		a.key.Attributes["lease_id"] = text(arg(1))
 	case "events", "exports":
 		a.key = stringKey("Outbox", "event_id", arg(0))
 		if parts[0] == "exports" {
@@ -467,7 +483,7 @@ func put[T any](t *transaction, k string, v T) error {
 		return err
 	}
 	item := Item{}
-	if a.scope != "" {
+	if a.scope != "" || strings.HasPrefix(k, "uploads/") {
 		item = copyItem(row.after)
 		if item == nil {
 			item = Item{}

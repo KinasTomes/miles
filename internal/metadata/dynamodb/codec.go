@@ -51,6 +51,15 @@ func marshalNative(v reflect.Value) (types.AttributeValue, error) {
 		return text(v.Interface().(time.Time).UTC().Format(time.RFC3339Nano)), nil
 	}
 	if v.Type() == reflect.TypeOf(s.ObjectHead{}) {
+		if reflect.DeepEqual(v.Interface(), s.ObjectHead{}) {
+			return &types.AttributeValueMemberM{Value: Item{"v": number(0)}}, nil
+		}
+		h := v.Interface().(s.ObjectHead)
+		if h.Revision == 0 {
+			h.Revision = 1
+			item, err := HeadItem(h)
+			return &types.AttributeValueMemberM{Value: Item{"prepared_head": &types.AttributeValueMemberM{Value: item}}}, err
+		}
 		item, err := HeadItem(v.Interface().(s.ObjectHead))
 		return &types.AttributeValueMemberM{Value: item}, err
 	}
@@ -123,6 +132,19 @@ func unmarshalNative(a types.AttributeValue, v reflect.Value) error {
 		m, ok := a.(*types.AttributeValueMemberM)
 		if !ok || m == nil {
 			return s.ErrUnavailable
+		}
+		if n, ok := m.Value["v"].(*types.AttributeValueMemberN); ok && n.Value == "0" && len(m.Value) == 1 {
+			v.Set(reflect.ValueOf(s.ObjectHead{}))
+			return nil
+		}
+		if nested, ok := m.Value["prepared_head"].(*types.AttributeValueMemberM); ok && len(m.Value) == 1 {
+			h, err := decodeHead(nested.Value)
+			if err != nil {
+				return err
+			}
+			h.Revision = 0
+			v.Set(reflect.ValueOf(h))
+			return nil
 		}
 		h, err := decodeHead(m.Value)
 		if err != nil {
