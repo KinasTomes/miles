@@ -148,3 +148,38 @@ PASS object 3.648s; S3 API 1.653s; app 6.386s.
 DynamoDB Local remained REQUIRED with a dummy-credential loopback fixture. The
 Windows API SDK probe encountered sandbox loopback socket denial; the same SDK
 suite passed inside Linux above. No planning files are included in the branch.
+
+## PR #42 CI lease-equality regression
+
+The initial dynamodb-contract run (40706055253 / job 122878358153) failed in
+readpath/TestWarmR1LeaseEqualityStopsNextChunk, not the native metadata adapter.
+The failure emitted 4,504 bytes rather than the expected first four bytes before
+fencing occurrence 2. The original test advanced Virtual by 30 seconds while its
+5-second heartbeat goroutine could run at intermediate virtual instants. A valid
+renewal therefore depended on host scheduling; the test's assumed unrenewed
+30-second expiry was not guaranteed.
+
+The test-only controlled clock shares the original Instant domain and explicitly
+holds/releases heartbeat Sleep. The next Sleep registration acknowledges a
+completed renewal. Both schedules are asserted: no renewal stops at t=30 after
+the first chunk; renewal at t=5 permits the second chunk at t=30 and stops at the
+renewed t=35 equality. Both still require ErrFenced, drained admission, released
+pins after work quiescence and no pending virtual timers. Production clock,
+heartbeat/lease logic, workflow and assertions are not weakened.
+
+Linux stress validation (Go 1.27.2):
+
+```text
+go vet ./internal/readpath
+go test -race ./internal/readpath -run TestWarmR1LeaseEqualityStopsNextChunk -count=50 -cpu=1,2,4 -timeout=5m
+PASS 24.227s (150 parent runs, 300 deterministic lease scenarios).
+```
+
+The exact failing CI command was then executed with MILES_DDB_LOCAL_REQUIRED=1
+and an isolated pinned DynamoDB Local fixture:
+
+```text
+go test -v -race -count=1 -timeout=10m ./internal/metadata/dynamodb ./internal/metadata/badger ./internal/storage/contracttest ./internal/readpath
+PASS native DynamoDB 26.941s; Badger 16.685s;
+shared contract 1.519s; readpath 8.662s.
+```
