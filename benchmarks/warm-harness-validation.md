@@ -1,8 +1,9 @@
 # Harness validation
 
-Task: W03-HUNG-02. Component implementation only; the complete direct-S3 versus
-single-node Miles Warm baseline is pending runtime composition, LIST/DELETE and
-authoritative event producer dependencies described in [the runbook](warm-harness.md).
+Task: W03-HUNG-02. Runtime composition, LIST/DELETE and authoritative event producers
+are now integrated after merged PR #41/#42. The complete direct-S3 versus
+single-node Miles Warm baseline still needs a dedicated real AWS run, as described
+in [the runbook](warm-harness.md). No further task is a code prerequisite.
 
 The HTTP fixture in `internal/benchmark/run_test.go` is a protocol test, not a
 fake performance baseline. It exercises the installed S3 SDK, signed requests,
@@ -16,6 +17,9 @@ Completed local gates:
 
 - `make check`: fmt, vet, all Go/Python tests, document names and binary builds.
 - `go test -race -count=3 ./internal/benchmark ./cmd/warmbench`.
+- Follow-up: race on app, Badger, object, readpath, coordination, config, Miles and harness.
+- `make test-local`: real binary + AWS CLI PUT/GET/HEAD/Range/LIST/DELETE; full-file
+  hash before/after process restart, backend failure readiness and clean shutdown.
 - `git diff --check`.
 
 ## Binary smoke run actually executed

@@ -92,3 +92,11 @@ was not rerun for these validation/error-classification-only changes.
 - No live AWS apply or paid resources were needed. Warm object upload/download,
   multipart, full P0 `cp/ls/rm`, networked DynamoDB metadata, and durable
   pack/outbox flushing are not claimed by these results.
+
+## Subsequent integration
+
+PR #40 wires the subsequently merged object/LIST/DELETE and producer components
+into local/benchmark mode. The preceding evidence describes the original runtime/CLI
+head; its bucket-only limitations are historical. Current process/hash/restart
+checks and remaining real AWS gate are recorded in
+[Warm harness validation](../../benchmarks/warm-harness-validation.md).

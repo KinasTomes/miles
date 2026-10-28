@@ -5,11 +5,24 @@ explicit direct S3 or Miles endpoint. It reuses dataset v1 and the installed Go
 S3 SDK. It does not provision infrastructure, start a gateway, or supply an
 event producer. All local executions use the small `smoke` profile.
 
-**Task acceptance is still pending:** on the implementation baseline, PR #39
-supplies object handlers/service, but `cmd/miles/s3.go` only wires bucket handlers.
-LIST/DELETE P0 is W03-CHIEN-03; authoritative producers and runtime adapters are
-also pending. A successful emulator run checks the harness, not Miles Warm.
-Do not mark the full task Done from this PR or substitute fixture events in runtime.
+**Task acceptance is still pending real AWS runs.** PR #41/#42 provide LIST/DELETE
+and authoritative producers. This branch wires them into the real Miles process
+using Badger, managed writer sessions, SDK packs, LRU and WarmReader. A paired
+emulator run now exercises Miles itself; it does not measure real S3 performance.
+No fixture event builder is used by the process.
+
+Run the local paired smoke with Docker, AWS CLI, Python and Go installed:
+
+```bash
+python3 -B scripts/warm_benchmark_smoke.py --out /private/test/new-paired-smoke
+```
+
+The parent must exist; output must not. This starts only pinned Moto, generates
+smoke input, builds Miles/warmbench, and runs each against direct Moto and the
+Miles HTTP endpoint at concurrency 1 and 4. Every concurrency pair gets a fresh
+Badger directory, cache, logical and physical bucket. Raw artifacts/configs remain
+private beside the output; process/container/network cleanup runs on failure too.
+The direct target is labelled `local-s3-smoke`, never `direct-s3`.
 
 ## Reproduce a run
 
@@ -51,6 +64,29 @@ Do not mark the full task Done from this PR or substitute fixture events in runt
    matched pair with e.g. `--concurrency 4`; do not call it single-stream throughput.
    Generate `backup30` or run performance workloads only on the dedicated test host.
    Real AWS execution requires separate authorization for its resources and charges.
+
+For real S3, start Miles using [benchmark startup config](../configs/benchmark.example.json).
+This explicit development mode uses a local Badger directory and loopback S3/health
+listeners, while physical packs go to S3 HTTPS with **only** the 0600 temporary
+session file (session_token required). It requires an explicit SSE-KMS key; prepare
+the same encryption/Region for direct S3. No environment/profile/IMDS credentials,
+proxy, redirect, TLS bypass or production runtime fallback. Provisioning, bucket/key
+permissions and the dedicated test host remain external approval/run prerequisites.
+
+The fixed W3 runtime uses default chunking 256 KiB/1 MiB/4 MiB and zstd level 3,
+minimum saving 10%; policy/cache revision 1, read-ahead up to 4. Resident LRU is
+64 MiB/1024 entries/4 MiB maximum copy. Local quota is initially 1 GiB and is never
+reset on restart. Explicit node/bucket/request read budgets and planning caps are
+in `internal/app/local_objects.go`; they are development settings, not production
+capacity or RSS guarantees. Admit-on-write cache population is not wired, despite
+the default policy permitting it; initial GET populates the cache.
+
+Badger keeps a generated history ID and native per-request writer fences; a new
+process incarnation fences old writers. It relies on the exclusive Badger lock,
+local monotonic gate and wall deadline, **not shared UTC/epoch authority**. Strict
+producers atomically retain payload/outbox with head/quota changes. No exporter,
+epoch sealing, checkpoint, tiering or physical deletion worker is enabled; record
+the retained async debt and storage/requests before any total-cost comparison.
 
 ## Workload and safety
 
