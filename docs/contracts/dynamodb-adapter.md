@@ -1,12 +1,21 @@
-# DynamoDB adapter preparation
+# DynamoDB adapter
 
 W03-HAI-03, **lead-approved W04 design baseline**, recorded in
 [PR #35 review and final acceptance gate](https://github.com/KinasTomes/miles/pull/35#issuecomment-6436239260).
-The design decisions below are settled; consumer sign-off, implementation and
-fault/authority proofs remain separate gates. Implemented here:
-`internal/metadata/dynamodb` supplies SDK key constructors and the narrow API
-seam. It does **not** implement MetadataStore, deploy tables, execute transaction
-recipes, or establish distributed R1/R2 publication authority.
+The design decisions below are settled; distributed authority proofs remain a
+separate gate. W04-HAI-01 implements the current `storage.MetadataStore`,
+`ManifestPageReader`, `PackLifecycleStore`, `PartPageStore` and
+`OutboxExportStore` using native SDK reads and conditional transactions.
+It does not deploy tables or establish distributed R1/R2 authority.
+See [implementation and validation](../testing/dynamodb-metadata-validation.md)
+for the tested boundary, reproduction commands and remaining integration gates.
+
+The recipes below describe the design target. The current shared canonical and
+bucket-create ports do not carry child mutation/event identities; their expanded
+R2 producer coverage, full Upload/Part orchestration and recovery registry belong
+to the subsequent producer/multipart work. Current object Commit/Delete and
+PutPolicy publish their existing outbox/outcome bundle atomically. Do not infer
+complete R2 coverage for every metadata mutation from this adapter's presence.
 
 Sources: [architecture §10](../dedup-storage-gateway-architecture.md),
 [shared port](shared-storage.md), [commit](chunking-and-commit.md),

@@ -551,7 +551,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 	t.Run("reservation release idempotent and bounded", func(t *testing.T) {
 		f := NewFixture()
 		h := newStore(t, f)
-		r := s.Reservation{Version: s.ModelVersion, OpID: "reserve-op", State: s.ReservationActive, Revision: 1, Deadline: f.Now.Add(30 * time.Minute), ID: "r", OwnerID: "owner", Object: f.Request("one", 0).Head.Object, Bytes: 4, StagedBytes: 4, Writer: f.Lease.Fence}
+		r := s.Reservation{Version: s.ModelVersion, OpID: fixtureOpID("reserve-op"), State: s.ReservationActive, Revision: 1, Deadline: f.Now.Add(30 * time.Minute), ID: "r", OwnerID: "owner", Object: f.Request("one", 0).Head.Object, Bytes: 4, StagedBytes: 4, Writer: f.Lease.Fence}
 		if err := h.Store.ReserveLogicalQuota(ctx, r); err != nil {
 			t.Fatal(err)
 		}
@@ -564,7 +564,7 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 		}
 		extra := r
 		extra.ID = "extra"
-		extra.OpID = "extra-op"
+		extra.OpID = fixtureOpID("extra-op")
 		extra.Bytes = 5
 		requireError(t, h.Store.ReserveLogicalQuota(ctx, extra), s.ErrQuotaExceeded)
 		for i := 0; i < 2; i++ {
