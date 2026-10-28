@@ -63,7 +63,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 			return aws.Credentials{AccessKeyID: "mileslocal", SecretAccessKey: "mileslocal"}, nil
 		}),
-		HTTPClient: &http.Client{Transport: transport, Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, RetryMaxAttempts: 1,
+		HTTPClient: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, RetryMaxAttempts: 1,
 	})
 	packs, err := packs3.New(client, c.PackBucket, "")
 	if err != nil {
@@ -76,6 +76,8 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		return d, err
 	}
 	probe := func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
 		if _, err := m.GetCredential(ctx, cred.AccessKeyID); err != nil {
 			return err
 		}
