@@ -27,7 +27,7 @@ func TestObjectMissingBucketAndKeyErrors(t *testing.T) {
 			t.Run(method+"/"+tc.name, func(t *testing.T) {
 				w := newBucketWorld(t)
 				reader := &fakeObjectReader{statErr: tc.err, getErr: tc.err}
-				w.router.Handlers = NewObjectHandlers(&fakeObjectWriter{err: tc.err}, reader)
+				w.router.Handlers = NewObjectHandlers(&fakeObjectWriter{err: tc.err}, reader, nil)
 				r := httptest.NewRequest(method, "/demo/k", nil)
 				sign(r, accessKey("owner"), "secret-owner")
 				rec := httptest.NewRecorder()

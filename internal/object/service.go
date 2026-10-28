@@ -89,11 +89,35 @@ type GetResult struct {
 
 type ReadyFunc func(GetResult) error
 
+// DeleteRequest names the key DeleteObject tombstones in the authorized bucket.
+type DeleteRequest struct {
+	Bucket       storage.Bucket // authorized snapshot from the router
+	Key          string
+	UserID       string
+	CredentialID string
+}
+
+// ListEntry is one committed object of a LIST page.
+type ListEntry struct {
+	Key, ETag    string
+	Size         int64
+	LastModified time.Time
+}
+
+// ListPage is one logical LIST page; Next is the internal scan state of the
+// following page, nil on the last one. The API layer seals it into its token.
+type ListPage struct {
+	Objects        []ListEntry
+	CommonPrefixes []string
+	Next           *storage.ObjectListCursor
+}
+
 // Metadata is the slice of the shared store the object service needs. It is a
 // projection of storage.MetadataStore, not a second store.
 type Metadata interface {
 	write.CoordinationStore
 	GetObject(context.Context, storage.ObjectKey) (storage.ObjectHead, error)
+	ListObjects(context.Context, storage.ListObjectsRequest) (storage.ObjectListPage, error)
 	ReleaseLogicalQuota(context.Context, storage.ReservationRelease) error
 }
 
@@ -188,28 +212,9 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 			baseSize = 0
 		}
 	}
-	deadline, wallDeadline, err := s.deadline(ctx)
+	session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID)
 	if err != nil {
 		return PutResult{}, err
-	}
-	opID, err := write.NewManifestID()
-	if err != nil {
-		return PutResult{}, err
-	}
-	admitted, err := s.o.AdmitWriter(ctx, WriterRequest{Object: object, OpID: opID, CredentialID: r.CredentialID, Deadline: deadline, WallDeadline: wallDeadline})
-	if err != nil {
-		return PutResult{}, err
-	}
-	if admitted.Fence.LeaseID == "" || admitted.Fence.ServiceIncarnation == "" || admitted.Fence.Epoch == 0 || admitted.ProtectedUntil.Before(wallDeadline.Add(15*time.Minute)) {
-		return PutResult{}, storage.ErrFenced
-	}
-	fence := admitted.Fence
-	session, err := write.BeginWriteSession(ctx, write.SessionOptions{
-		Registry: s.o.Registry, Metadata: s.o.Metadata, Packs: s.o.Packs, Fence: fence,
-		Deadline: deadline, Object: object, OpID: opID, CredentialID: r.CredentialID, ProtectedUntil: admitted.ProtectedUntil,
-	})
-	if err != nil {
-		return PutResult{}, fmt.Errorf("begin: %w", err)
 	}
 	open := true
 	defer func() {
@@ -278,34 +283,145 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		ReservationRevision: 1, Head: head, ExpectedRevision: baseRevision,
 		UserID: r.UserID, CredentialID: r.CredentialID, ReservationID: reservationID, Writer: fence, Event: event,
 	}
-	result, err := session.Commit(commit)
+	open = false
+	result, err := s.publish(ctx, session, commit)
 	if err != nil {
-		err = fmt.Errorf("commit: %w", err)
-		if !unknownOutcome(err) {
-			s.release(ctx, reservationID, opID, fence)
-			return PutResult{}, err
-		}
-		// Unknown outcome: reconcile before releasing the reservation. A
-		// missing outcome is not proof that the commit did not happen.
-		_ = session.Close()
-		open = false
-		reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		committed, reconcileErr := session.Reconcile(reconcileCtx)
-		cancel()
-		if reconcileErr == nil && committed.Head.Revision > 0 {
-			return putResult(committed.Head), nil
-		} else if errors.Is(reconcileErr, storage.ErrNotFound) {
-			s.release(ctx, reservationID, opID, fence)
-		}
 		return PutResult{}, err
 	}
-	if err := session.Close(); err != nil {
+	return putResult(result.Head), nil
+}
+
+// DeleteObject publishes a tombstone revision (API v2 4.2): one R2 commit
+// credits the old size to the bucket owner's quota and records the outbox
+// event. An absent key or an existing tombstone publishes nothing, so a
+// repeated DELETE never credits quota twice; HTTP answers 204 either way.
+func (s *Service) DeleteObject(ctx context.Context, r DeleteRequest) error {
+	if ctx == nil || r.Key == "" || r.UserID == "" || r.CredentialID == "" ||
+		r.Bucket.Name == "" || r.Bucket.ID == "" || r.Bucket.OwnerID == "" || r.Bucket.Domain == "" {
+		return storage.ErrInvalid
+	}
+	object := storage.ObjectKey{Bucket: r.Bucket.Name, BucketID: r.Bucket.ID, Key: r.Key}
+	if object.Validate() != nil {
+		return storage.ErrInvalid
+	}
+	base, err := s.o.Metadata.GetObject(ctx, object)
+	switch {
+	case errors.Is(err, storage.ErrBucketNotFound):
+		return err
+	case errors.Is(err, storage.ErrNotFound):
+		return nil
+	case err != nil:
+		return err
+	case base.Deleted:
+		return nil
+	}
+	session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID)
+	if err != nil {
+		return err
+	}
+	reservationID := "reservation-" + opID
+	reserve := storage.Reservation{
+		Version: storage.ModelVersion, OpID: opID, BaseRevision: base.Revision, BaseSize: base.Size,
+		Revision: 1, State: storage.ReservationActive, Deadline: wallDeadline, ID: reservationID,
+		OwnerID: r.Bucket.OwnerID, Object: object, Writer: fence,
+	}
+	if err := session.Reserve(reserve); err != nil {
+		_ = session.Close()
+		return fmt.Errorf("reserve: %w", err)
+	}
+	head := storage.ObjectHead{Version: storage.ModelVersion, Object: object, Domain: r.Bucket.Domain, OpID: opID, Deleted: true}
+	event, err := s.o.Events.ObjectCommit(ctx, CommitEvent{OpID: opID, Object: object, Revision: base.Revision + 1, Head: head})
+	if err != nil {
+		s.release(ctx, reservationID, opID, fence)
+		_ = session.Close()
+		return err
+	}
+	_, err = s.publish(ctx, session, storage.CommitRequest{
+		ReservationRevision: 1, Head: head, ExpectedRevision: base.Revision,
+		UserID: r.UserID, CredentialID: r.CredentialID, ReservationID: reservationID, Writer: fence, Event: event,
+	})
+	return err
+}
+
+// ListObjects returns one logical page of committed objects: the store skips
+// tombstones and groups CommonPrefixes; the request is a trusted internal
+// port whose principal comes from the router's authentication.
+func (s *Service) ListObjects(ctx context.Context, r storage.ListObjectsRequest) (ListPage, error) {
+	if ctx == nil {
+		return ListPage{}, storage.ErrInvalid
+	}
+	page, err := s.o.Metadata.ListObjects(ctx, r)
+	if err != nil {
+		return ListPage{}, err
+	}
+	out := ListPage{Objects: make([]ListEntry, len(page.Objects)), CommonPrefixes: page.CommonPrefixes, Next: page.Next}
+	for i, h := range page.Objects {
+		out.Objects[i] = ListEntry{Key: h.Object.Key, ETag: h.ETag, Size: h.Size, LastModified: lastModified(h)}
+	}
+	return out, nil
+}
+
+// begin admits one logical write of object and opens its managed session. The
+// caller must end the session through publish or Close.
+func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentialID string) (*write.WriteSession, string, storage.WriterFence, time.Time, error) {
+	deadline, wallDeadline, err := s.deadline(ctx)
+	if err != nil {
+		return nil, "", storage.WriterFence{}, time.Time{}, err
+	}
+	opID, err := write.NewManifestID()
+	if err != nil {
+		return nil, "", storage.WriterFence{}, time.Time{}, err
+	}
+	admitted, err := s.o.AdmitWriter(ctx, WriterRequest{Object: object, OpID: opID, CredentialID: credentialID, Deadline: deadline, WallDeadline: wallDeadline})
+	if err != nil {
+		return nil, "", storage.WriterFence{}, time.Time{}, err
+	}
+	if admitted.Fence.LeaseID == "" || admitted.Fence.ServiceIncarnation == "" || admitted.Fence.Epoch == 0 || admitted.ProtectedUntil.Before(wallDeadline.Add(15*time.Minute)) {
+		return nil, "", storage.WriterFence{}, time.Time{}, storage.ErrFenced
+	}
+	session, err := write.BeginWriteSession(ctx, write.SessionOptions{
+		Registry: s.o.Registry, Metadata: s.o.Metadata, Packs: s.o.Packs, Fence: admitted.Fence,
+		Deadline: deadline, Object: object, OpID: opID, CredentialID: credentialID, ProtectedUntil: admitted.ProtectedUntil,
+	})
+	if err != nil {
+		return nil, "", storage.WriterFence{}, time.Time{}, fmt.Errorf("begin: %w", err)
+	}
+	return session, opID, admitted.Fence, wallDeadline, nil
+}
+
+// publish commits a head or tombstone through session and always closes it.
+// A known failure releases the reservation; an unknown outcome is reconciled
+// first, because a missing outcome is not proof that the commit did not happen.
+func (s *Service) publish(ctx context.Context, session *write.WriteSession, commit storage.CommitRequest) (storage.CommitResult, error) {
+	var result storage.CommitResult
+	var err error
+	if commit.Head.Deleted {
+		result, err = session.Delete(commit)
+	} else {
+		result, err = session.Commit(commit)
+	}
+	if err == nil {
 		// The head is committed; a registry release failure must not turn a
 		// durable success into a client-visible error.
-		_ = err
+		_ = session.Close()
+		return result, nil
 	}
-	open = false
-	return putResult(result.Head), nil
+	err = fmt.Errorf("commit: %w", err)
+	if !unknownOutcome(err) {
+		s.release(ctx, commit.ReservationID, commit.Head.OpID, commit.Writer)
+		_ = session.Close()
+		return storage.CommitResult{}, err
+	}
+	_ = session.Close()
+	reconcileCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	committed, reconcileErr := session.Reconcile(reconcileCtx)
+	cancel()
+	if reconcileErr == nil && committed.Head.Revision > 0 {
+		return committed, nil
+	} else if errors.Is(reconcileErr, storage.ErrNotFound) {
+		s.release(ctx, commit.ReservationID, commit.Head.OpID, commit.Writer)
+	}
+	return storage.CommitResult{}, err
 }
 
 func putResult(head storage.ObjectHead) PutResult {
@@ -403,13 +519,18 @@ func info(h storage.ObjectHead) Info {
 		}
 		metadata[k] = v
 	}
-	modified := time.Unix(0, 0).UTC()
+	return Info{ETag: h.ETag, Size: h.Size, LastModified: lastModified(h), Metadata: metadata, Checksum: h.Checksum}
+}
+
+// lastModified is the commit wall time the head carries under commitTimeKey,
+// or the Unix epoch for a head without one: clients reject an empty timestamp.
+func lastModified(h storage.ObjectHead) time.Time {
 	if v := h.Metadata[commitTimeKey]; v != "" {
 		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
-			modified = t.UTC()
+			return t.UTC()
 		}
 	}
-	return Info{ETag: h.ETag, Size: h.Size, LastModified: modified, Metadata: metadata, Checksum: h.Checksum}
+	return time.Unix(0, 0).UTC()
 }
 
 func (s *Service) deadline(ctx context.Context) (clock.Instant, time.Time, error) {

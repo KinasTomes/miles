@@ -17,14 +17,20 @@ import (
 )
 
 type fakeObjectWriter struct {
-	got    object.PutRequest
-	result object.PutResult
-	err    error
+	got     object.PutRequest
+	deleted object.DeleteRequest
+	result  object.PutResult
+	err     error
 }
 
 func (f *fakeObjectWriter) PutObject(_ context.Context, r object.PutRequest) (object.PutResult, error) {
 	f.got = r
 	return f.result, f.err
+}
+
+func (f *fakeObjectWriter) DeleteObject(_ context.Context, r object.DeleteRequest) error {
+	f.deleted = r
+	return f.err
 }
 
 type fakeObjectReader struct {

@@ -469,6 +469,13 @@ Cùng quyền/read metadata như GET, không body, kể cả lỗi HEAD không b
 
 XML ListBucketResult có Name/Prefix/Delimiter nếu có, KeyCount/MaxKeys/IsTruncated, ContinuationToken/NextContinuationToken/StartAfter khi có, Contents (Key, LastModified, ETag, Size, StorageClass) và CommonPrefixes. Query consistent theo bucket/prefix, tiếp tục scan đủ trang logical sau khi bỏ tombstone. Không tính item nội bộ vào KeyCount, không bỏ key khi nhảy CommonPrefix. StorageClass logical báo STANDARD là **hạn chế ánh xạ DSG**, không phản ánh pack tier/khả năng đọc; dùng HEAD restore/API admin để biết layout.
 
+**Hiện thực (W03-CHIEN-03)**:
+
+- `object.Service.DeleteObject` đọc head hiện hành; key không có hoặc đã là tombstone thì không publish gì (204, không trừ quota lần hai). Còn lại: admit writer, reservation `Bytes = 0`, tombstone head + event `Objects/object_commit` commit qua `WriteSession.Delete` với `ExpectedRevision` của head cũ; outcome không rõ được reconcile trước khi release, giống PutObject. Handler đọc payload tới EOF trước transaction nên `x-amz-content-sha256`/checksum sai trả lỗi mà không tạo tombstone.
+- `object.Service.ListObjects` chuyển `storage.ListObjectsRequest` cho store (bỏ tombstone, gộp CommonPrefixes, kiểm read và bucket_id) và trả LastModified từ commit time của head. Handler kiểm `max-keys` (mặc định/cap 1000, 0 hợp lệ, âm/sai kiểu `InvalidArgument`), `encoding-type` chỉ nhận `url` (`url.QueryEscape` cho Key, Prefix, Delimiter, StartAfter, CommonPrefixes), `fetch-owner` kiểu bool.
+- `continuation-token` = `base64url(vị trí đã scan + hạn).base64url(HMAC-SHA256)`, MAC bind principal, tên bucket, bucket_id, prefix và delimiter của request; token sai định dạng, sửa đổi, hết hạn (1 giờ) hoặc dùng với tham số khác trả `InvalidArgument` trước khi tới store. Khóa MAC sinh ngẫu nhiên mỗi process: restart làm token cũ vô hiệu và chưa chia sẻ giữa node; profile cluster (W05) cần keyring chung.
+- Runtime `cmd/miles` vẫn chỉ lắp bucket handlers: lắp object service cần producer outbox (W04-HAI-02) và adapter Warm reader/gate. Bằng chứng AWS CLI của task chạy trên server smoke ghép Router với `object.Service` thật (Badger, pack store, Warm reader) và event fixture.
+
 #### Thao tác bucket
 
 | Operation | Hành vi |

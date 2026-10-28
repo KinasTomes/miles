@@ -120,6 +120,10 @@ type bucketSummary struct {
 	CreationDate bucketCreationDate
 }
 
+// isoTimeLayout is the ISO 8601 UTC timestamp S3 XML bodies carry
+// (CreationDate, LastModified).
+const isoTimeLayout = "2006-01-02T15:04:05.000Z"
+
 // bucketCreationDate formats CreationDate the way S3 clients parse it
 // (ISO 8601, UTC). A record without CreatedAt (seeded before the field was
 // set) reports the Unix epoch: clients reject an empty timestamp.
@@ -130,7 +134,7 @@ func (d bucketCreationDate) MarshalXML(e *xml.Encoder, start xml.StartElement) e
 	if t.IsZero() {
 		t = time.Unix(0, 0)
 	}
-	return e.EncodeElement(t.UTC().Format("2006-01-02T15:04:05.000Z"), start)
+	return e.EncodeElement(t.UTC().Format(isoTimeLayout), start)
 }
 
 // maxBucketPage is one store page of ListBuckets. The S3 operation has no
@@ -159,9 +163,14 @@ func (b *Buckets) ListBuckets(w http.ResponseWriter, r *Request) error {
 		}
 		after = page.NextAfter
 	}
-	body, err := xml.Marshal(out)
+	return writeXML(w, out)
+}
+
+// writeXML answers 200 with v as one XML document.
+func writeXML(w http.ResponseWriter, v any) error {
+	body, err := xml.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("s3: encode ListBuckets: %w", err)
+		return fmt.Errorf("s3: encode %T: %w", v, err)
 	}
 	body = append([]byte(xml.Header), body...)
 	h := w.Header()
@@ -169,7 +178,7 @@ func (b *Buckets) ListBuckets(w http.ResponseWriter, r *Request) error {
 	h.Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(http.StatusOK)
 	if _, err := w.Write(body); err != nil {
-		return fmt.Errorf("s3: write ListBuckets: %w", err)
+		return fmt.Errorf("s3: write %T: %w", v, err)
 	}
 	return nil
 }
