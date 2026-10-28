@@ -56,7 +56,26 @@ func TestDevelopmentHealthAddressErrorNamesMode(t *testing.T) {
 
 func TestRuntimeRejectsDevelopmentS3Listener(t *testing.T) {
 	_, err := LoadStartup(strings.NewReader(`{"mode":"runtime","s3_address":"127.0.0.1:8080"}`))
-	if err == nil || err.Error() != "s3_address requires mode dev or local" {
+	if err == nil || err.Error() != "s3_address requires mode dev, local or benchmark" {
 		t.Fatalf("runtime listener configuration must fail validation explicitly: %v", err)
+	}
+}
+
+func TestBenchmarkModeIsExplicitAndDoesNotRelaxLocalMode(t *testing.T) {
+	valid := `{"mode":"benchmark","s3_address":"127.0.0.1:0","local_data_path":"/private/test","pack_endpoint":"https://s3.ap-southeast-1.amazonaws.com","pack_bucket":"test","pack_credentials_file":"/private/creds.json","pack_kms_key_id":"alias/test"}`
+	if _, err := LoadStartup(strings.NewReader(valid)); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		strings.Replace(valid, `"benchmark"`, `"local"`, 1),
+		strings.Replace(valid, "https://", "http://", 1),
+		strings.Replace(valid, `"/private/creds.json"`, `""`, 1),
+		strings.Replace(valid, `"alias/test"`, `""`, 1),
+		strings.Replace(valid, "127.0.0.1:0", "0.0.0.0:8080", 1),
+		strings.Replace(valid, "s3.ap-southeast-1.amazonaws.com", "user:password@s3.ap-southeast-1.amazonaws.com", 1),
+	} {
+		if _, err := LoadStartup(strings.NewReader(bad)); err == nil {
+			t.Fatal("accepted unsafe benchmark startup")
+		}
 	}
 }

@@ -1,0 +1,13 @@
+{
+  "profile": "edge",
+  "mode": "benchmark",
+  "region": "ap-southeast-1",
+  "health_address": "127.0.0.1:9100",
+  "s3_address": "127.0.0.1:9200",
+  "shutdown_seconds": 1800,
+  "local_data_path": "/private/benchmark/miles",
+  "pack_endpoint": "https://s3.ap-southeast-1.amazonaws.com",
+  "pack_bucket": "replace-with-dedicated-test-pack-bucket",
+  "pack_credentials_file": "/private/benchmark/aws-session.json",
+  "pack_kms_key_id": "alias/replace-with-test-key"
+}

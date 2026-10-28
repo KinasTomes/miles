@@ -32,7 +32,13 @@ func (c devCredentials) Credential(ctx context.Context, id string) (api.Credenti
 
 func s3Handler(region string, d app.Dependencies, a *app.Admission) http.Handler {
 	clk := clock.NewReal()
-	rt := &api.Router{Region: region, Now: func() time.Time { return clk.Now().WallUTC }, Credentials: devCredentials{d}, Access: auth.NewSnapshots(d.Metadata, clk), Handlers: api.NewBucketHandlers(d.Metadata)}
+	handlers := api.NewBucketHandlers(d.Metadata)
+	if d.Objects != nil {
+		for op, handler := range api.NewObjectHandlers(d.Objects, d.Objects, d.Objects) {
+			handlers[op] = handler
+		}
+	}
+	rt := &api.Router{Region: region, Now: func() time.Time { return clk.Now().WallUTC }, Credentials: devCredentials{d}, Access: auth.NewSnapshots(d.Metadata, clk), Handlers: handlers}
 	return requestGate(a, RequestTimeout, rt)
 }
 

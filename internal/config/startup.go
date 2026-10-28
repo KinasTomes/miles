@@ -13,15 +13,17 @@ import (
 
 // Startup is process configuration, separate from revisioned global policy.
 type Startup struct {
-	Profile         string
-	Mode            string
-	HealthAddress   string
-	ShutdownSeconds int
-	S3Address       string
-	Region          string
-	LocalDataPath   string
-	PackEndpoint    string
-	PackBucket      string
+	Profile             string
+	Mode                string
+	HealthAddress       string
+	ShutdownSeconds     int
+	S3Address           string
+	Region              string
+	LocalDataPath       string
+	PackEndpoint        string
+	PackBucket          string
+	PackCredentialsFile string
+	PackKMSKeyID        string
 }
 
 func DefaultStartup() Startup {
@@ -72,6 +74,10 @@ func LoadStartup(r io.Reader) (Startup, error) {
 			target = &c.PackEndpoint
 		case "pack_bucket":
 			target = &c.PackBucket
+		case "pack_credentials_file":
+			target = &c.PackCredentialsFile
+		case "pack_kms_key_id":
+			target = &c.PackKMSKeyID
 		case "shutdown_seconds":
 			target = &c.ShutdownSeconds
 		default:
@@ -102,8 +108,8 @@ func (c Startup) Validate() error {
 	if c.Profile != "cloud" && c.Profile != "edge" {
 		return fmt.Errorf("profile must be cloud or edge")
 	}
-	if c.Mode != "dev" && c.Mode != "local" && c.Mode != "runtime" {
-		return fmt.Errorf("mode must be dev, local or runtime")
+	if c.Mode != "dev" && c.Mode != "local" && c.Mode != "benchmark" && c.Mode != "runtime" {
+		return fmt.Errorf("mode must be dev, local, benchmark or runtime")
 	}
 	address, err := netip.ParseAddrPort(c.HealthAddress)
 	if err != nil {
@@ -118,7 +124,7 @@ func (c Startup) Validate() error {
 	}
 	if c.S3Address != "" {
 		if c.Mode == "runtime" {
-			return fmt.Errorf("s3_address requires mode dev or local")
+			return fmt.Errorf("s3_address requires mode dev, local or benchmark")
 		}
 		a, err := netip.ParseAddrPort(c.S3Address)
 		if err != nil || !a.Addr().Unmap().IsLoopback() {
@@ -128,20 +134,24 @@ func (c Startup) Validate() error {
 	if c.Region == "" || strings.ContainsAny(c.Region, "/ \t\r\n") {
 		return fmt.Errorf("invalid region")
 	}
-	if c.Mode == "local" {
+	if c.Mode == "local" || c.Mode == "benchmark" {
 		if c.LocalDataPath == "" || c.PackBucket == "" {
-			return fmt.Errorf("local mode requires local_data_path and pack_bucket")
+			return fmt.Errorf("%s mode requires local_data_path and pack_bucket", c.Mode)
 		}
 		u, err := url.Parse(c.PackEndpoint)
-		if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || strings.Contains(c.PackEndpoint, "#") || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-			return fmt.Errorf("pack_endpoint must be HTTP loopback with explicit port")
+		if err != nil || u.User != nil || u.Host == "" || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || strings.Contains(c.PackEndpoint, "#") || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+			return fmt.Errorf("pack_endpoint must be an explicit origin without credentials, path or query")
 		}
-		a, err := netip.ParseAddrPort(u.Host)
-		if err != nil || !a.Addr().Unmap().IsLoopback() || a.Port() == 0 {
-			return fmt.Errorf("pack_endpoint must be HTTP loopback with explicit port")
+		if c.Mode == "local" {
+			a, err := netip.ParseAddrPort(u.Host)
+			if u.Scheme != "http" || err != nil || !a.Addr().Unmap().IsLoopback() || a.Port() == 0 || c.PackCredentialsFile != "" || c.PackKMSKeyID != "" {
+				return fmt.Errorf("local pack_endpoint must be HTTP loopback with explicit port and dummy credentials")
+			}
+		} else if u.Scheme != "https" || c.PackCredentialsFile == "" || c.PackKMSKeyID == "" {
+			return fmt.Errorf("benchmark mode requires HTTPS pack_endpoint, pack_credentials_file and pack_kms_key_id")
 		}
-	} else if c.LocalDataPath != "" || c.PackEndpoint != "" || c.PackBucket != "" {
-		return fmt.Errorf("local storage configuration requires mode local")
+	} else if c.LocalDataPath != "" || c.PackEndpoint != "" || c.PackBucket != "" || c.PackCredentialsFile != "" || c.PackKMSKeyID != "" {
+		return fmt.Errorf("storage configuration requires mode local or benchmark")
 	}
 	if c.ShutdownSeconds < 1 || c.ShutdownSeconds > 1800 {
 		return fmt.Errorf("shutdown_seconds must be 1..1800")

@@ -122,3 +122,26 @@ func TestLocalBootstrapReusesPreparedCredential(t *testing.T) {
 		t.Fatal("prepared credential was not provisioned")
 	}
 }
+
+func TestBenchmarkCredentialsRequirePrivateTemporarySession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	for _, data := range []string{`{}`, `{"access_key_id":"key","secret_access_key":"secret"}`} {
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := benchmarkCredential(path); err == nil {
+			t.Fatal("accepted incomplete or persistent credential")
+		}
+	}
+	if err := os.WriteFile(path, []byte(`{"access_key_id":"key","secret_access_key":"secret","session_token":"temporary"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := benchmarkCredential(path)
+	if err != nil || c.SessionToken != "temporary" {
+		t.Fatal("temporary session rejected", err)
+	}
+	os.Chmod(path, 0644)
+	if _, err := benchmarkCredential(path); err == nil {
+		t.Fatal("shared credential file accepted")
+	}
+}
