@@ -107,7 +107,7 @@ def main():
                         declared = dict(environment, metadata="badger" if name == "miles" else "none",
                                         gateway_commit=command(["git", "rev-parse", "HEAD"]).strip() if name == "miles" else "",
                                         policy_revision="1" if name == "miles" else "",
-                                        cache_state="fresh process/LRU before PUT; no admit-on-write; GET passes separate" if name == "miles" else "emulator internals uncontrolled",
+                                        cache_state="fresh memory/disk node before PUT; admit-on-write enabled; GET passes separate" if name == "miles" else "emulator internals uncontrolled",
                                         isolation="new bucket, new Badger/domain metadata and physical backend bucket per trial" if name == "miles" else "new direct bucket per trial")
                         config = dict(target=target, endpoint=origin, region="ap-southeast-1", bucket=bucket, credentials_file=str(credentials), environment=declared)
                         file = trial / (name + "-config.json")

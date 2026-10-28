@@ -5,7 +5,6 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/KinasTomes/miles/internal/cache"
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
@@ -41,7 +40,7 @@ func (m *localMetadata) CreateBucket(ctx context.Context, r storage.BucketCreate
 	return m.Store.CreateBucket(storage.WithMutation(ctx, c), r)
 }
 
-func localObjects(m *badger.Store, packs *packs3.Store, lru *cache.LRU) (*object.Service, *localMetadata, func(), error) {
+func localObjects(m *badger.Store, packs *packs3.Store, resident storage.Cache, cachePolicy config.CachePolicy) (*object.Service, *localMetadata, func(), error) {
 	authority, err := m.StartLocalRuntime(context.Background(), DevUser, 1<<30)
 	if err != nil {
 		return nil, nil, nil, err
@@ -80,7 +79,7 @@ func localObjects(m *badger.Store, packs *packs3.Store, lru *cache.LRU) (*object
 		return nil, nil, nil, err
 	}
 	reader, err := readpath.NewWarmReader(readpath.WarmOptions{
-		Metadata: m, Packs: packs, Cache: lru, Admission: admission, Gate: gate, Clock: clk, Global: global, Metrics: &readpath.WarmMetrics{},
+		Metadata: m, Packs: packs, Cache: resident, Admission: admission, Gate: gate, Clock: clk, Global: global, Metrics: &readpath.WarmMetrics{},
 		// net/http read/write, TLS record and SDK stream buffers; no custom buffering.
 		// Resident connection pools and runtime/RSS headroom are outside this budget.
 		TransportBytes: 128 << 10, MaxManifestPages: 1024, MaxManifestChunks: 65536,
@@ -93,7 +92,7 @@ func localObjects(m *badger.Store, packs *packs3.Store, lru *cache.LRU) (*object
 		return nil, nil, nil, storage.ErrInvalid
 	}
 	service, err := object.New(object.Options{
-		Metadata: m, Packs: coordination.ProtectPackStore(packs), Registry: registry, Clock: clk,
+		Metadata: m, Packs: coordination.ProtectPackStore(packs), Cache: resident, Registry: registry, Clock: clk,
 		AdmitWriter: func(ctx context.Context, r object.WriterRequest) (object.AdmittedWriter, error) {
 			c, err := authority.Admit(ctx, r.CredentialID, r.Object, r.OpID, r.WallDeadline)
 			if err != nil {
@@ -105,7 +104,7 @@ func localObjects(m *badger.Store, packs *packs3.Store, lru *cache.LRU) (*object
 		Compression: engine.CompressionPolicy{Enabled: policy.Compression.Enabled, Codec: policy.Compression.Codec, Level: int(policy.Compression.Level), MinSavingRatio: ratio},
 		Events:      object.MetadataEvents{}, Reader: reader,
 		BucketPolicy: func(id string) (config.BucketSnapshot, error) {
-			return validator.NewBucketSnapshot(id, 1, config.DefaultCachePolicy())
+			return validator.NewBucketSnapshot(id, 1, cachePolicy)
 		},
 		Budget: request, MaxOutstanding: 4, RequestTimeout: 30 * time.Minute,
 	})

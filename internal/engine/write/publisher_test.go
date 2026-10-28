@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"github.com/KinasTomes/miles/internal/cache"
 	"io"
 	"testing"
 	"time"
@@ -143,9 +145,15 @@ func TestDuplicateRaceKeepsWinnerAndLeavesLoserOrphan(t *testing.T) {
 	race := &insertRace{Metadata: metadata, winner: winner, writer: pub.Writer}
 	pub.Metadata = race
 	pub.Guard = testGuard{store: race, allow: true}
+	admitted := &admissionSpy{}
+	pub.WriteCache = admitted
+	pub.AdmitOnWrite = true
 	resolved, err := pub.Publish(ctx, ref, data, sidecar, entries, nil)
 	if err != nil || resolved[entries[0].Key].Location.Pack != winnerRef {
 		t.Fatalf("race did not retain winner: %+v %v", resolved, err)
+	}
+	if admitted.puts != 0 {
+		t.Fatal("dedup loser admitted under canonical key")
 	}
 	if _, err := physical.HeadPack(ctx, ref); err != nil {
 		t.Fatal("loser pack should remain as an orphan candidate:", err)
@@ -153,6 +161,70 @@ func TestDuplicateRaceKeepsWinnerAndLeavesLoserOrphan(t *testing.T) {
 	current, err := metadata.GetChunks(ctx, []storage.ChunkKey{entries[0].Key}, true)
 	if err != nil || current[entries[0].Key].Location.Pack != winnerRef {
 		t.Fatalf("loser became canonical: %+v %v", current, err)
+	}
+}
+
+type admissionSpy struct {
+	puts int
+	fail bool
+}
+
+func (s *admissionSpy) Get(context.Context, storage.CacheKey) ([]byte, bool, error) {
+	return nil, false, nil
+}
+func (s *admissionSpy) Evict(context.Context, storage.PackRef) error { return nil }
+func (s *admissionSpy) Put(context.Context, storage.CacheKey, []byte) error {
+	s.puts++
+	if s.fail {
+		return storage.ErrUnavailable
+	}
+	return nil
+}
+func TestPublisherWriteAdmissionExactBytesAndFailureIsolation(t *testing.T) {
+	ctx := context.Background()
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			pub, _, _ := publisherFixture(t, true)
+			lru, _ := cache.NewLRU(cache.Limits{CapacityBytes: 1 << 20, MaxEntries: 32, MaxCopyBytes: 1 << 20})
+			pub.WriteCache = lru
+			pub.AdmitOnWrite = enabled
+			ref, data, sidecar, entries := onePack(t)
+			rows, err := pub.Publish(ctx, ref, data, sidecar, entries, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				r := entry.Location(ref).Range
+				k := storage.CacheKey{Pack: ref, Range: r}
+				got, hit, err := lru.Get(ctx, k)
+				if err != nil || hit != enabled {
+					t.Fatal(hit, err)
+				}
+				if enabled && !bytes.Equal(got, data[r.Offset:r.Offset+r.Length]) {
+					t.Fatal("nonphysical bytes admitted")
+				}
+				if rows[entry.Key].Location.Pack != ref {
+					t.Fatal("canonical mismatch")
+				}
+			}
+		})
+	}
+	pub, _, _ := publisherFixture(t, true)
+	spy := &admissionSpy{fail: true}
+	pub.WriteCache = spy
+	pub.AdmitOnWrite = true
+	ref, data, sidecar, entries := onePack(t)
+	if _, err := pub.Publish(ctx, ref, data, sidecar, entries, nil); err != nil || spy.puts != len(entries) {
+		t.Fatal("cache failure changed durability", err)
+	}
+	pub, _, physical := publisherFixture(t, true)
+	spy = &admissionSpy{}
+	pub.WriteCache = spy
+	pub.AdmitOnWrite = true
+	pub.Packs = failingSidecar{physical}
+	ref, data, sidecar, entries = onePack(t)
+	if _, err := pub.Publish(ctx, ref, data, sidecar, entries, nil); err == nil || spy.puts != 0 {
+		t.Fatal("incomplete pack admitted", err)
 	}
 }
 

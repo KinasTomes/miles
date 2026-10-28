@@ -156,6 +156,7 @@ type AdmittedWriter struct {
 }
 
 type Options struct {
+	Cache          storage.Cache
 	Metadata       Metadata
 	Packs          storage.PackStore
 	Registry       *coordination.WriterRegistry
@@ -239,7 +240,15 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, err
 	}
-	prepared, err := session.Prepare(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression}, r.Body, manifestID)
+	cachePolicy, err := s.o.BucketPolicy(r.Bucket.ID)
+	if err != nil || cachePolicy.BucketID() != r.Bucket.ID || cachePolicy.Revision() == 0 {
+		s.release(ctx, reservationID, opID, fence)
+		if err != nil {
+			return PutResult{}, err
+		}
+		return PutResult{}, storage.ErrInvalid
+	}
+	prepared, err := session.Prepare(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression, WriteCache: s.o.Cache, AdmitOnWrite: cachePolicy.Cache().AdmitOnWrite}, r.Body, manifestID)
 	if err != nil {
 		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, fmt.Errorf("prepare: %w", err)

@@ -29,10 +29,12 @@ type Publisher interface {
 }
 
 type Pipeline struct {
-	Lookup      Lookup
-	Publisher   Publisher
-	Chunking    engine.ChunkingParams
-	Compression engine.CompressionPolicy
+	WriteCache   storage.Cache
+	AdmitOnWrite bool
+	Lookup       Lookup
+	Publisher    Publisher
+	Chunking     engine.ChunkingParams
+	Compression  engine.CompressionPolicy
 	// BatchBytes bounds retained raw data; zero selects 32 MiB. Every batch
 	// also has at most 100 distinct lookup keys for future DynamoDB adapters.
 	BatchBytes int

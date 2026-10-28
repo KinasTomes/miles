@@ -89,8 +89,29 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		transport.CloseIdleConnections()
 		return d, err
 	}
-	objects, metadata, stopObjects, err := localObjects(m, packs, lru)
+	var resident storage.Cache = lru
+	closeCache := func() error { return nil }
+	cachePolicy := config.DefaultCachePolicy()
+	if c.Mode == "benchmark" {
+		// Preserve the measured memory-only profile across local cache upgrades.
+		cachePolicy.AdmitOnWrite = false
+	} else {
+		disk, err := cache.NewDisk(filepath.Join(c.LocalDataPath, "cache"), cache.Limits{CapacityBytes: 1 << 30, MaxEntries: 16384, MaxCopyBytes: 4 << 20})
+		if err != nil {
+			transport.CloseIdleConnections()
+			return d, err
+		}
+		node, err := cache.NewNode("local", lru, disk)
+		if err != nil {
+			_ = disk.Close()
+			transport.CloseIdleConnections()
+			return d, err
+		}
+		resident, closeCache = node, node.Close
+	}
+	objects, metadata, stopObjects, err := localObjects(m, packs, resident, cachePolicy)
 	if err != nil {
+		_ = closeCache()
 		transport.CloseIdleConnections()
 		return d, err
 	}
@@ -105,7 +126,11 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		}
 		return ctx.Err()
 	}
-	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: lru, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Close: func() error { stopObjects(); transport.CloseIdleConnections(); return m.Close() }}, nil
+	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Close: func() error {
+		stopObjects()
+		transport.CloseIdleConnections()
+		return errors.Join(closeCache(), m.Close())
+	}}, nil
 }
 
 func benchmarkCredential(path string) (aws.Credentials, error) {

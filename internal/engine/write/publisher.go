@@ -29,6 +29,8 @@ type ReuseGuard interface {
 // StorePublisher is the durable pack/canonical adapter for Pipeline. The
 // caller supplies an already admitted writer fence and a protection deadline.
 type StorePublisher struct {
+	WriteCache     storage.Cache
+	AdmitOnWrite   bool
 	Metadata       CanonicalStore
 	Packs          storage.PackStore
 	Guard          ReuseGuard
@@ -98,6 +100,12 @@ func (p *StorePublisher) Publish(ctx context.Context, ref storage.PackRef, data,
 			return nil, err
 		}
 		out[entry.Key] = resolved
+		// Only admit complete stored bytes under their own finalized location.
+		// A dedup loser must never relabel its bytes as the canonical winner.
+		if p.AdmitOnWrite && p.WriteCache != nil && resolved.Location == row.Location {
+			r := row.Location.Range
+			_ = p.WriteCache.Put(ctx, storage.CacheKey{Pack: ref, Range: r}, data[r.Offset:r.Offset+r.Length])
+		}
 	}
 	return out, nil
 }
