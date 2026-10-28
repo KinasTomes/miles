@@ -12,7 +12,7 @@ curl -i http://127.0.0.1:9100/readyz
 curl http://127.0.0.1:9100/metrics
 ```
 
-`run-dev` chọn `configs/dev.json` một cách explicit. Shared MetadataStore/PackStore/Cache ports được nối với in-memory fixtures hiện có. Fixture probes kiểm metadata bucket, pack HEAD và cache sentinel; clock readiness là giả lập của dev, không phải UTC uncertainty proof. Metrics có label `mode="dev"`, startup log cũng ghi rõ volatile fixtures. Process này chỉ mở health port; Không cấu hình `s3_address` thì chỉ mở health listener; `mode=dev` vẫn không có durable storage hoặc distributed R1/R2.
+`run-dev` chọn `configs/dev.json` một cách explicit. Shared MetadataStore/PackStore/Cache ports được nối với in-memory fixtures hiện có. Fixture probes kiểm metadata bucket, pack HEAD và cache sentinel; clock readiness là giả lập của dev, không phải UTC uncertainty proof. Metrics có label `mode="dev"`, startup log cũng ghi rõ volatile fixtures. Không cấu hình `s3_address` thì process chỉ mở health listener; `mode=dev` vẫn không có durable storage hoặc distributed R1/R2.
 
 Dev provisioning (W03-CHIEN-01) mint đúng một cặp SigV4 test credential mỗi lần khởi động process: access key 20 ký tự [A-Z0-9] và secret base64 của 30 byte CSPRNG (format API v2 3.5), gắn user `dev` — chủ của bucket probe — không có cờ system admin. Cặp này nằm trong `Dependencies.DevCredentials` để S3 listener dùng cho client tương ứng; nó không nằm trong repo, không được ghi log và runtime mode không mint. Credential backend AWS vẫn tách khỏi bảng này như mục 2.2 đã ghi.
 
@@ -26,7 +26,7 @@ File JSON tối đa64KiB, chỉ nhận các fields dưới; unknown/duplicate/nu
 |---|---|---|
 | `profile` | `edge` | `cloud` hoặc `edge`, cùng core |
 | `mode` | `runtime` | `dev` volatile, `local` durable dev, `runtime` chưa nối Cloud; development chỉ bind loopback |
-| `s3_address` | không mở | Literal loopback IP:port; dev/local. Gắn CreateBucket/HeadBucket/ListBuckets; operation khác trả NotImplemented sau auth |
+| `s3_address` | không mở | Literal loopback IP:port; chỉ dev/local, runtime bị từ chối ngay khi validate. Gắn CreateBucket/HeadBucket/ListBuckets; operation khác trả NotImplemented sau auth |
 | `region` | `ap-southeast-1` | Region SigV4 của gateway và local pack client |
 | `local_data_path` | không có | Bắt buộc ở local; directory không symlink, permission 0700 |
 | `pack_endpoint` | không có | Chỉ local: HTTP literal loopback với port explicit, không userinfo/path/query |
@@ -60,7 +60,7 @@ Lần đầu local mode mở Badger (giữ process lock), tạo `credentials.jso
 
 S3 client dùng `access_key_id`/`secret_access_key` trong file riêng này, tách khỏi dummy credential của backend. Secret không được in vào startup log. Với mode dev volatile, credential chỉ nằm trong `Dependencies.DevCredentials`; dùng local mode khi cần client truy cập và restart bền vững.
 
-Readiness local probe đọc credential record từ Badger, HEAD bucket vật lý qua đúng SDK client và kiểm cache operation, mỗi lượt có context timeout riêng tối đa 1 giây, cache observation dưới 5 giây. Client truyền pack không có timeout 1 giây toàn cục; upload/download và đọc body giữ deadline của caller. Không PUT sentinel hoặc tự tạo lại backend bị mất. LRU dev có cap 64 MiB/1024 entry, mỗi copy tối đa 4 MiB; miss không làm node unready. Metrics local vẫn mang `mode="dev"`, log ghi `mode="local"` và simulated clock; đây không phải Clock uncertainty, S3 object integrity hoặc R1/R2 production proof. Runtime thiếu proof vẫn ready503.
+Readiness local probe đọc credential record từ Badger, HEAD bucket vật lý qua đúng SDK client, mỗi lượt có context timeout riêng tối đa 1 giây, cache observation dưới 5 giây. Client truyền pack không có timeout 1 giây toàn cục; upload/download và đọc body giữ deadline của caller. Không PUT sentinel hoặc tự tạo lại backend bị mất. LRU trong RAM được validate khi khởi tạo với cap 64 MiB/1024 entry, mỗi copy tối đa 4 MiB; không có backend riêng cần probe và miss không làm node unready. Metrics local vẫn mang `mode="dev"`, log ghi `mode="local"` và simulated clock; đây không phải Clock uncertainty, S3 object integrity hoặc R1/R2 production proof. Runtime thiếu proof vẫn ready503.
 
 Mỗi S3 request nhận hard context deadline 30 phút ngay tại admission; read/write socket deadline dùng cùng mốc, không refresh theo traffic/retry. Không dùng `readyz` để thay request gate. Drain chặn request mới bằng S3 XML ServiceUnavailable/503; request đã nhận giữ admission đến khi handler trả về, kể cả context đã hủy. `Dependencies.Packs` chỉ expose `coordination.ProtectPackStore`: DeletePack/ChangeStorageClass vẫn bị chặn như PR #37; raw SDK adapter không được trả ra consumer. S3 wiring nằm tại composition root `cmd/miles/s3.go`; API owner bổ sung handler tại đây, không để package app phụ thuộc ngược vào API.
 

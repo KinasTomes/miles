@@ -53,3 +53,10 @@ func TestDevelopmentHealthAddressErrorNamesMode(t *testing.T) {
 		}
 	}
 }
+
+func TestRuntimeRejectsDevelopmentS3Listener(t *testing.T) {
+	_, err := LoadStartup(strings.NewReader(`{"mode":"runtime","s3_address":"127.0.0.1:8080"}`))
+	if err == nil || err.Error() != "s3_address requires mode dev or local" {
+		t.Fatalf("runtime listener configuration must fail validation explicitly: %v", err)
+	}
+}

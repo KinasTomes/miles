@@ -117,6 +117,9 @@ func (c Startup) Validate() error {
 		return fmt.Errorf("%s mode must bind loopback", c.Mode)
 	}
 	if c.S3Address != "" {
+		if c.Mode == "runtime" {
+			return fmt.Errorf("s3_address requires mode dev or local")
+		}
 		a, err := netip.ParseAddrPort(c.S3Address)
 		if err != nil || !a.Addr().Unmap().IsLoopback() {
 			return fmt.Errorf("MVP s3_address must bind literal loopback")
