@@ -105,6 +105,16 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 		return result, err
 	}
 	defer view.Release()
+	work, err := view.BeginWork(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer work.Finish()
+	ctx, stopHeartbeat, err := view.KeepAlive(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer stopHeartbeat()
 	head, err := o.Metadata.GetObject(ctx, object)
 	if err != nil {
 		return result, err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/storage"
 	"testing"
 )
@@ -28,10 +29,13 @@ func TestExplicitDevAndRuntimeUnavailable(t *testing.T) {
 	if err := dev.Probe(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := dev.Packs.DeletePack(context.Background(), storage.PackRef{ID: "dev-probe", Generation: "1"}); err != nil {
-		t.Fatal(err)
+	if err := dev.Packs.DeletePack(context.Background(), storage.PackRef{ID: "dev-probe", Generation: "1"}); !errors.Is(err, coordination.ErrMaintenanceDisabled) {
+		t.Fatal("MVP must block destructive lifecycle", err)
 	}
-	if err := dev.Probe(context.Background()); err == nil {
-		t.Fatal("backend loss was hidden")
+	if err := dev.Packs.ChangeStorageClass(context.Background(), storage.PackRef{ID: "dev-probe", Generation: "1"}, storage.Glacier); !errors.Is(err, coordination.ErrMaintenanceDisabled) {
+		t.Fatal("MVP must block tiering", err)
+	}
+	if err := dev.Probe(context.Background()); err != nil {
+		t.Fatal("rejected maintenance changed origin", err)
 	}
 }
