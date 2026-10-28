@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -15,10 +17,15 @@ type Startup struct {
 	Mode            string
 	HealthAddress   string
 	ShutdownSeconds int
+	S3Address       string
+	Region          string
+	LocalDataPath   string
+	PackEndpoint    string
+	PackBucket      string
 }
 
 func DefaultStartup() Startup {
-	return Startup{Profile: "edge", Mode: "runtime", HealthAddress: "127.0.0.1:9100", ShutdownSeconds: 1800}
+	return Startup{Profile: "edge", Mode: "runtime", HealthAddress: "127.0.0.1:9100", ShutdownSeconds: 1800, Region: "ap-southeast-1"}
 }
 
 // LoadStartup rejects unknown/duplicate fields and multiple JSON values.
@@ -55,6 +62,16 @@ func LoadStartup(r io.Reader) (Startup, error) {
 			target = &c.Mode
 		case "health_address":
 			target = &c.HealthAddress
+		case "s3_address":
+			target = &c.S3Address
+		case "region":
+			target = &c.Region
+		case "local_data_path":
+			target = &c.LocalDataPath
+		case "pack_endpoint":
+			target = &c.PackEndpoint
+		case "pack_bucket":
+			target = &c.PackBucket
 		case "shutdown_seconds":
 			target = &c.ShutdownSeconds
 		default:
@@ -85,8 +102,8 @@ func (c Startup) Validate() error {
 	if c.Profile != "cloud" && c.Profile != "edge" {
 		return fmt.Errorf("profile must be cloud or edge")
 	}
-	if c.Mode != "dev" && c.Mode != "runtime" {
-		return fmt.Errorf("mode must be dev or runtime")
+	if c.Mode != "dev" && c.Mode != "local" && c.Mode != "runtime" {
+		return fmt.Errorf("mode must be dev, local or runtime")
 	}
 	address, err := netip.ParseAddrPort(c.HealthAddress)
 	if err != nil {
@@ -96,8 +113,35 @@ func (c Startup) Validate() error {
 	if !ip.IsLoopback() && !ip.IsPrivate() {
 		return fmt.Errorf("health_address must bind loopback/private, never wildcard/public")
 	}
-	if c.Mode == "dev" && !ip.IsLoopback() {
-		return fmt.Errorf("dev mode must bind loopback")
+	if c.Mode != "runtime" && !ip.IsLoopback() {
+		return fmt.Errorf("%s mode must bind loopback", c.Mode)
+	}
+	if c.S3Address != "" {
+		if c.Mode == "runtime" {
+			return fmt.Errorf("s3_address requires mode dev or local")
+		}
+		a, err := netip.ParseAddrPort(c.S3Address)
+		if err != nil || !a.Addr().Unmap().IsLoopback() {
+			return fmt.Errorf("MVP s3_address must bind literal loopback")
+		}
+	}
+	if c.Region == "" || strings.ContainsAny(c.Region, "/ \t\r\n") {
+		return fmt.Errorf("invalid region")
+	}
+	if c.Mode == "local" {
+		if c.LocalDataPath == "" || c.PackBucket == "" {
+			return fmt.Errorf("local mode requires local_data_path and pack_bucket")
+		}
+		u, err := url.Parse(c.PackEndpoint)
+		if err != nil || u.Scheme != "http" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.RawPath != "" || strings.Contains(c.PackEndpoint, "#") || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+			return fmt.Errorf("pack_endpoint must be HTTP loopback with explicit port")
+		}
+		a, err := netip.ParseAddrPort(u.Host)
+		if err != nil || !a.Addr().Unmap().IsLoopback() || a.Port() == 0 {
+			return fmt.Errorf("pack_endpoint must be HTTP loopback with explicit port")
+		}
+	} else if c.LocalDataPath != "" || c.PackEndpoint != "" || c.PackBucket != "" {
+		return fmt.Errorf("local storage configuration requires mode local")
 	}
 	if c.ShutdownSeconds < 1 || c.ShutdownSeconds > 1800 {
 		return fmt.Errorf("shutdown_seconds must be 1..1800")

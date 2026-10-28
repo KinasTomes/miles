@@ -24,3 +24,39 @@ func TestStartupBoundary(t *testing.T) {
 		t.Fatalf("unsafe defaults: %+v", c)
 	}
 }
+
+func TestLocalStorageAndS3Boundary(t *testing.T) {
+	valid := `{"mode":"local","s3_address":"127.0.0.1:0","local_data_path":"/tmp/miles-local","pack_endpoint":"http://127.0.0.1:12345","pack_bucket":"test"}`
+	if _, err := LoadStartup(strings.NewReader(valid)); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		strings.Replace(valid, "127.0.0.1:0", "0.0.0.0:8080", 1),
+		strings.Replace(valid, "http://127.0.0.1:12345", "https://s3.amazonaws.com", 1),
+		strings.Replace(valid, "http://127.0.0.1:12345", "http://localhost:12345", 1),
+		strings.Replace(valid, "http://127.0.0.1:12345", "http://user:secret@127.0.0.1:12345", 1),
+		strings.Replace(valid, "http://127.0.0.1:12345", "http://127.0.0.1:12345/?q=x", 1),
+		strings.Replace(valid, `"mode":"local"`, `"mode":"runtime"`, 1),
+	} {
+		if _, err := LoadStartup(strings.NewReader(bad)); err == nil {
+			t.Fatal("accepted unsafe local config")
+		}
+	}
+}
+
+func TestDevelopmentHealthAddressErrorNamesMode(t *testing.T) {
+	for _, mode := range []string{"dev", "local"} {
+		c := DefaultStartup()
+		c.Mode, c.HealthAddress = mode, "10.0.0.1:9100"
+		if err := c.Validate(); err == nil || err.Error() != mode+" mode must bind loopback" {
+			t.Fatalf("wrong mode in address error: %v", err)
+		}
+	}
+}
+
+func TestRuntimeRejectsDevelopmentS3Listener(t *testing.T) {
+	_, err := LoadStartup(strings.NewReader(`{"mode":"runtime","s3_address":"127.0.0.1:8080"}`))
+	if err == nil || err.Error() != "s3_address requires mode dev or local" {
+		t.Fatalf("runtime listener configuration must fail validation explicitly: %v", err)
+	}
+}

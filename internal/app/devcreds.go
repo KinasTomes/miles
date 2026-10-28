@@ -18,9 +18,9 @@ const DevUser = "dev"
 // source at startup, so no secret is ever baked into the repository; the pair
 // is bound to DevUser with no system-admin flag. Runtime mode mints nothing.
 type DevCredential struct {
-	AccessKeyID string
-	Secret      string
-	UserID      string
+	AccessKeyID string `json:"access_key_id"`
+	Secret      string `json:"secret_access_key"`
+	UserID      string `json:"user_id"`
 }
 
 const (

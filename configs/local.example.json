@@ -1,0 +1,11 @@
+{
+  "profile": "edge",
+  "mode": "local",
+  "health_address": "127.0.0.1:9100",
+  "s3_address": "127.0.0.1:8080",
+  "region": "ap-southeast-1",
+  "local_data_path": "data/local",
+  "pack_endpoint": "http://127.0.0.1:5000",
+  "pack_bucket": "miles-local-packs",
+  "shutdown_seconds": 1800
+}

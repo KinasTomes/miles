@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/config"
@@ -18,23 +19,28 @@ import (
 // Dependencies use the existing storage ports. Probe is supplied by their wiring,
 // including validated clock readiness; health handlers never invent clock proof.
 type Dependencies struct {
-	Metadata storage.MetadataStore
-	Packs    storage.PackStore
-	Cache    storage.Cache
-	Probe    func(context.Context) error
+	Metadata  storage.MetadataStore
+	Packs     storage.PackStore
+	Cache     storage.Cache
+	Probe     func(context.Context) error
+	Close     func() error
+	S3Handler func(*Admission) http.Handler
 	// DevCredentials are the SigV4 test credentials dev provisioning minted
-	// into the volatile fixture store (API v2 3.5 format, bound to DevUser,
-	// no admin rights). Dev only; runtime leaves it empty.
+	// into the selected development store (API v2 3.5 format, bound to DevUser,
+	// no admin rights). Dev/local only; runtime leaves it empty.
 	DevCredentials []DevCredential
 }
 
 var ErrRuntimeUnavailable = errors.New("runtime storage and validated clock adapters are not configured")
 
-// Bootstrap only creates volatile fixtures when dev is explicitly selected.
+// Bootstrap requires explicit dev/local mode for development identities/storage.
 // Runtime stays unready until the metadata/storage/clock owners wire real adapters.
 func Bootstrap(c config.Startup) (Dependencies, error) {
 	if err := c.Validate(); err != nil {
 		return Dependencies{}, err
+	}
+	if c.Mode == "local" {
+		return bootstrapLocal(c)
 	}
 	if c.Mode != "dev" {
 		return Dependencies{Probe: func(context.Context) error { return ErrRuntimeUnavailable }}, nil
