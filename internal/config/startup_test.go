@@ -24,3 +24,22 @@ func TestStartupBoundary(t *testing.T) {
 		t.Fatalf("unsafe defaults: %+v", c)
 	}
 }
+
+func TestLocalStorageAndS3Boundary(t *testing.T) {
+	valid := `{"mode":"local","s3_address":"127.0.0.1:0","local_data_path":"/tmp/miles-local","pack_endpoint":"http://127.0.0.1:12345","pack_bucket":"test"}`
+	if _, err := LoadStartup(strings.NewReader(valid)); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		strings.Replace(valid, "127.0.0.1:0", "0.0.0.0:8080", 1),
+		strings.Replace(valid, "http://127.0.0.1:12345", "https://s3.amazonaws.com", 1),
+		strings.Replace(valid, "http://127.0.0.1:12345", "http://localhost:12345", 1),
+		strings.Replace(valid, "http://127.0.0.1:12345", "http://user:secret@127.0.0.1:12345", 1),
+		strings.Replace(valid, "http://127.0.0.1:12345", "http://127.0.0.1:12345/?q=x", 1),
+		strings.Replace(valid, `"mode":"local"`, `"mode":"runtime"`, 1),
+	} {
+		if _, err := LoadStartup(strings.NewReader(bad)); err == nil {
+			t.Fatal("accepted unsafe local config")
+		}
+	}
+}

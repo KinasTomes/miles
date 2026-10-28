@@ -9,6 +9,7 @@ import (
 	"github.com/KinasTomes/miles/internal/buildinfo"
 	"github.com/KinasTomes/miles/internal/config"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -50,6 +51,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	d, err := app.Bootstrap(c)
 	if err != nil {
 		return err
+	}
+	if c.S3Address != "" {
+		d.S3Handler = func(a *app.Admission) http.Handler { return s3Handler(c.Region, d, a) }
 	}
 	return app.Run(ctx, c, d, stderr)
 }
