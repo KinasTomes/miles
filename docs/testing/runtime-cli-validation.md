@@ -12,7 +12,7 @@ Tools: Go 1.27.2, Python 3.12.3, AWS CLI 2.38.1, Docker Engine 29.9.1.
 | Task requirement | Implementation and validation |
 |---|---|
 | Bootstrap/config to dev backend | Explicit local mode wires persistent Badger, SDK S3 PackStore against literal loopback, and bounded LRU. A one-time non-admin dev identity is persisted to a private credential file. Unit and process tests reopen the same metadata and retain credential/bucket identity. No live AWS credential chain is loaded. The exposed PackStore retains PR #37's destructive lifecycle guard; local wiring tests reject delete/tiering without contacting S3. |
-| Real dependency health and controlled shutdown | Cached bounded probe reads Badger, HEADs the physical local bucket and checks cache. Process smoke removes the physical bucket: ready503, health200; it never auto-recreates the bucket. SIGTERM waits for admitted work, shuts both listeners, then closes Badger. Timeout reports incomplete and does not close storage under live work. |
+| Real dependency health and controlled shutdown | Cached bounded probe reads Badger, HEADs the physical local bucket. The in-memory LRU is validated at startup; readiness does not create synthetic cache entries. Process smoke removes the physical bucket: ready503, health200; it never auto-recreates the bucket. SIGTERM waits for admitted work, shuts both listeners, then closes Badger. Timeout reports incomplete and does not close storage under live work. |
 | Admin CLI transport | Read commands send bearer only to Admin paths. Tests check private regular token files, HTTPS/loopback boundary, no redirect, bounded JSON response, timeout, error redaction, auth failure, and unsupported exit behavior. The test Admin server checks the bearer; no production Admin route is claimed. |
 | Hard deadline and independent admission | S3 request context and socket read/write share one hard deadline. A stalled body read is interrupted. Cancellation keeps admission until handler quiescence. Draining rejects a signed request with S3 XML503. Dependency readiness is never an admission boolean: the process test still serves a metadata-only HEAD while the physical S3 bucket is absent. |
 | Integration with merged MVP modules | Real binary + AWS CLI exercise SigV4 CreateBucket/HeadBucket/ListBuckets on Badger. A backend credential is rejected and object GET returns NotImplemented. Existing whole-repo contract tests remain green. Object HTTP handlers remain W03-CHIEN-02/03. |
@@ -57,6 +57,23 @@ passed again after these fixes; no live AWS calls were made:
 ```sh
 go test -race ./internal/app ./internal/metadata/badger ./internal/config ./cmd/miles ./cmd/dsgctl
 ```
+
+## Final review adjustments
+
+Runtime configuration now rejects `s3_address` outside dev/local during
+validation, before opening listeners. Local probes check Badger/S3 with their
+own deadline; the redundant LRU miss check was removed. The fixture-mode cache
+sentinel is unchanged.
+
+The Admin transport distinguishes JSON404 with `error.code` from a router404:
+resource errors return `ErrNotFound`; bare router404, HTTP405 and HTTP501 return
+`ErrUnsupported`. Regression tests cover the resource/route distinction, no
+secret reflection and the existing 2 MiB bound on error bodies. This adds no
+resource lookup commands or Admin endpoints.
+
+Focused config/client/runtime/CLI tests, their race checks and `make check`
+passed after these adjustments. The existing Docker/Moto/AWS-CLI evidence above
+was not rerun for these validation/error-classification-only changes.
 
 ## Scope and downstream handoff
 

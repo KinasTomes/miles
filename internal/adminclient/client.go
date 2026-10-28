@@ -18,7 +18,10 @@ import (
 	"github.com/KinasTomes/miles/internal/secretfile"
 )
 
-var ErrUnsupported = errors.New("command is not supported by this gateway")
+var (
+	ErrUnsupported = errors.New("command is not supported by this gateway")
+	ErrNotFound    = errors.New("Admin resource not found (HTTP 404)")
+)
 
 const maxResponseBytes = 2 << 20
 
@@ -81,19 +84,31 @@ func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {
-	case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+	case http.StatusMethodNotAllowed, http.StatusNotImplemented:
 		return nil, ErrUnsupported
 	case http.StatusUnauthorized:
 		return nil, errors.New("Admin authentication failed (HTTP 401)")
 	case http.StatusForbidden:
 		return nil, errors.New("Admin access denied (HTTP 403)")
 	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
+	if response.StatusCode != http.StatusNotFound && (response.StatusCode < 200 || response.StatusCode >= 300) {
 		return nil, fmt.Errorf("Admin request failed (HTTP %d)", response.StatusCode)
 	}
 	b, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil || len(b) > maxResponseBytes {
 		return nil, errors.New("Admin response unreadable or exceeds 2 MiB")
+	}
+	if response.StatusCode == http.StatusNotFound {
+		var failure struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		// Admin resource errors have the API envelope; router 404s do not.
+		if json.Unmarshal(b, &failure) == nil && failure.Error.Code != "" {
+			return nil, ErrNotFound
+		}
+		return nil, ErrUnsupported
 	}
 	if !json.Valid(b) {
 		return nil, errors.New("Admin response is not JSON")

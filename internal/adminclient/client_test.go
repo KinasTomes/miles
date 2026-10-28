@@ -123,3 +123,36 @@ func TestEndpointPermissionsTimeoutAndBoundedResponse(t *testing.T) {
 		}
 	}
 }
+
+func TestResource404IsNotUnsupportedEndpoint(t *testing.T) {
+	path, token := tokenFile(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin/v1/packs/missing" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"pack_not_found","message":"` + token + `","request_id":"test"}}`))
+			return
+		}
+		if r.URL.Path == "/admin/v1/packs/oversized" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(strings.Repeat("x", maxResponseBytes+1)))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	client, err := New(server.URL, path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Get(context.Background(), "/admin/v1/packs/missing"); !errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnsupported) || strings.Contains(err.Error(), token) {
+		t.Fatal("resource 404 must remain a resource error without reflecting secrets", err)
+	}
+	if _, err := client.Get(context.Background(), "/admin/v1/missing-route"); !errors.Is(err, ErrUnsupported) {
+		t.Fatal("missing route must remain explicitly unsupported", err)
+	}
+	if _, err := client.Get(context.Background(), "/admin/v1/packs/oversized"); err == nil || errors.Is(err, ErrNotFound) || errors.Is(err, ErrUnsupported) {
+		t.Fatal("oversized 404 must fail the response bound before classification", err)
+	}
+}
