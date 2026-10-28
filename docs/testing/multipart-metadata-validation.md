@@ -124,3 +124,27 @@ PASS all selected packages; Badger 24.708s; native DynamoDB 143.606s.
 The final revocation/token-binding and takeover/renewal assertions also have a
 separate focused producer/multipart regression run on both real local adapters;
 the native tests do not skip when MILES_DDB_LOCAL_REQUIRED=1.
+
+## Integration with current main before push
+
+Integrated main `6bdef45` (LIST/DeleteObject, PR #41). The shared object begin
+helper now returns the admitted context to both PUT and DELETE; publish forwards
+that same producer binding into the final metadata transaction. The new
+TestPutDeleteRetainProducerAdmission exercises the production MetadataEvents
+builder and verifies two retained object producer outcomes and tombstone revision.
+
+Revalidated the integrated source in Linux on 2026-10-28:
+
+```text
+go vet ./... && go build ./...
+PASS
+go test ./... -count=1 -timeout=8m
+PASS all packages; Badger 15.012s; native DynamoDB 20.357s;
+object 3.870s; S3 API 0.125s; app 5.468s.
+go test -race ./internal/object ./internal/api/s3 ./internal/app -count=1 -timeout=5m
+PASS object 3.648s; S3 API 1.653s; app 6.386s.
+```
+
+DynamoDB Local remained REQUIRED with a dummy-credential loopback fixture. The
+Windows API SDK probe encountered sandbox loopback socket denial; the same SDK
+suite passed inside Linux above. No planning files are included in the branch.
