@@ -1,0 +1,163 @@
+package readpath
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/KinasTomes/miles/internal/cache"
+	"github.com/KinasTomes/miles/internal/storage"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+)
+
+func twoTierFixture(t *testing.T, w int64) (*warmFixture, *cache.Node, *cache.LRU, string) {
+	t.Helper()
+	f := newWarmFixture(t, w)
+	memory, _ := cache.NewLRU(cache.Limits{CapacityBytes: 1 << 20, MaxEntries: 16, MaxCopyBytes: 1 << 20})
+	root := t.TempDir()
+	disk, err := cache.NewDisk(root, cache.Limits{CapacityBytes: 1 << 20, MaxEntries: 16, MaxCopyBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _ := cache.NewNode("test-node", memory, disk)
+	t.Cleanup(func() { _ = node.Close() })
+	f.reader.options.Cache = node
+	return f, node, memory, root
+}
+func TestTwoTierCacheDiskHitAndRevokedAuthorization(t *testing.T) {
+	f, node, memory, _ := twoTierFixture(t, 0)
+	ctx := context.Background()
+	if _, out, err := f.read(ctx, f.request); err != nil || !bytes.Equal(out, f.body) {
+		t.Fatal(err)
+	}
+	if err := memory.Purge(ctx); err != nil {
+		t.Fatal(err)
+	}
+	calls := f.backend.count()
+	_, out, err := f.read(ctx, f.request)
+	if err != nil || !bytes.Equal(out, f.body) || f.backend.count() != calls || node.Stats().Hits == 0 {
+		t.Fatal("disk hit fetched origin", err)
+	}
+	mutateWarmRecord[storage.Credential](t, f, "credentials", []string{f.request.CredentialID}, func(c *storage.Credential) { c.Active = false; c.Revision++ })
+	before := node.Stats()
+	_, out, err = f.read(ctx, f.request)
+	if !errors.Is(err, storage.ErrAccessDenied) || len(out) != 0 || node.Stats().Lookups != before.Lookups || f.backend.count() != calls {
+		t.Fatal("revoked cache hit", err)
+	}
+}
+func TestTwoTierRangeAmplificationBoundedByIntersectingChunks(t *testing.T) {
+	for _, ahead := range []int64{0, 4} {
+		t.Run(fmt.Sprint(ahead), func(t *testing.T) {
+			f, node, memory, _ := twoTierFixture(t, ahead)
+			ctx := context.Background()
+			var fetched int64
+			f.backend.beforeRange = func(_ context.Context, in *awss3.GetObjectInput) error {
+				var lo, hi int64
+				if _, err := fmt.Sscanf(aws.ToString(in.Range), "bytes=%d-%d", &lo, &hi); err != nil {
+					return err
+				}
+				f.backend.mu.Lock()
+				fetched += hi - lo + 1
+				f.backend.mu.Unlock()
+				return nil
+			}
+			q := f.request
+			q.Range = &storage.ByteRange{Offset: int64(len(f.body) - 1), Length: 1}
+			_, out, err := f.read(ctx, q)
+			if err != nil || !bytes.Equal(out, f.body[len(f.body)-1:]) {
+				t.Fatal(err)
+			}
+			// One logical byte intersects only the last compressed chunk. Read-ahead
+			// must not fetch other chunks or the complete pack outside the plan.
+			want := int64(f.entries[len(f.entries)-1].StoredLen)
+			s := f.reader.options.Metrics.Snapshot()
+			if fetched != want || s.BackendBytes != uint64(want) || s.EmittedBytes != 1 || f.backend.count() != 1 {
+				t.Fatalf("amplification: fetched=%d counters=%+v want=%d", fetched, s, want)
+			}
+			_ = memory.Purge(ctx)
+			before := node.Stats()
+			if _, _, err = f.read(ctx, q); err != nil || f.backend.count() != 1 || node.Stats().Hits != before.Hits+1 {
+				t.Fatal("disk hit amplified", err)
+			}
+			if err = node.PurgeNode(ctx, "test-node"); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err = f.read(ctx, q); err != nil || f.backend.count() != 2 {
+				t.Fatal("purge bypassed origin", err)
+			}
+		})
+	}
+}
+
+func TestDiskCacheCorruptionCountsReaderIntegrityBeforeEmission(t *testing.T) {
+	f, node, memory, root := twoTierFixture(t, 0)
+	ctx := context.Background()
+	q := f.request
+	q.Range = &storage.ByteRange{Length: 1}
+	if _, out, err := f.read(ctx, q); err != nil || !bytes.Equal(out, f.body[:1]) {
+		t.Fatal("fill", err)
+	}
+	if err := memory.Purge(ctx); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(root, "*.blob"))
+	if err != nil || len(files) != 1 {
+		t.Fatal("one disk entry required", files, err)
+	}
+	data, err := os.ReadFile(files[0])
+	if err != nil || len(data) == 0 {
+		t.Fatal(err)
+	}
+	data[0] ^= 0xff
+	if err = os.WriteFile(files[0], data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	before := f.reader.options.Metrics.Snapshot()
+	nodeBefore := node.Stats()
+	calls := f.backend.count()
+	_, out, err := f.read(ctx, q)
+	if !errors.Is(err, storage.ErrConflict) || len(out) != 0 {
+		t.Fatal("corruption emitted or swallowed", out, err)
+	}
+	after := f.reader.options.Metrics.Snapshot()
+	nodeAfter := node.Stats()
+	if after.IntegrityFailures != before.IntegrityFailures+1 || after.Aborted != before.Aborted+1 || after.EmittedBytes != before.EmittedBytes {
+		t.Fatalf("reader metrics: before=%+v after=%+v", before, after)
+	}
+	if nodeAfter.Errors != nodeBefore.Errors+1 || nodeAfter.Memory.Entries != 0 || nodeAfter.Disk.Entries != 0 || f.backend.count() != calls {
+		t.Fatal("generation eviction/fail-closed changed", nodeAfter)
+	}
+	// After the fail-closed read, the next request can refill from verified origin.
+	if _, out, err = f.read(ctx, q); err != nil || !bytes.Equal(out, f.body[:1]) || f.backend.count() != calls+1 {
+		t.Fatal("verified refill", err)
+	}
+}
+
+type getErrorCache struct {
+	storage.Cache
+	err error
+}
+
+func (c getErrorCache) Get(context.Context, storage.CacheKey) ([]byte, bool, error) {
+	return nil, false, c.err
+}
+func TestCacheGetNonIntegrityErrorsKeepClassification(t *testing.T) {
+	for _, failure := range []error{context.Canceled, context.DeadlineExceeded, io.ErrUnexpectedEOF, storage.ErrUnavailable} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			f := newWarmFixture(t, 0)
+			f.reader.options.Cache = getErrorCache{f.reader.options.Cache, failure}
+			before := f.reader.options.Metrics.Snapshot()
+			_, out, err := f.read(context.Background(), f.request)
+			after := f.reader.options.Metrics.Snapshot()
+			if !errors.Is(err, failure) || len(out) != 0 || after.IntegrityFailures != before.IntegrityFailures || after.Aborted != before.Aborted+1 {
+				t.Fatal("ordinary failure misclassified", err, after)
+			}
+		})
+	}
+}

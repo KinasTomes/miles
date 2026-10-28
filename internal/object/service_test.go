@@ -166,6 +166,9 @@ type serviceFixture struct {
 }
 
 func newServiceFixture(t *testing.T) *serviceFixture {
+	return newServiceFixtureCache(t, nil)
+}
+func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixture {
 	t.Helper()
 	ctx := context.Background()
 	f := contracttest.NewFixture()
@@ -231,8 +234,12 @@ func newServiceFixture(t *testing.T) *serviceFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	readCache := storage.Cache(lru)
+	if writeCache != nil {
+		readCache = writeCache
+	}
 	reader, err := readpath.NewWarmReader(readpath.WarmOptions{
-		Metadata: db, Packs: store, Cache: lru, Admission: admission, Gate: gate, Clock: c,
+		Metadata: db, Packs: store, Cache: readCache, Admission: admission, Gate: gate, Clock: c,
 		Global: global, Metrics: &readpath.WarmMetrics{}, TransportBytes: 4096,
 		MaxManifestPages: 4, MaxManifestChunks: 20000,
 	})
@@ -242,6 +249,7 @@ func newServiceFixture(t *testing.T) *serviceFixture {
 	var admissionMu sync.Mutex
 	nextFence := 0
 	options := Options{
+		Cache:    writeCache,
 		Metadata: db, Packs: store, Registry: registry, Clock: c,
 		AdmitWriter: func(ctx context.Context, r WriterRequest) (AdmittedWriter, error) {
 			if err := ctx.Err(); err != nil {
