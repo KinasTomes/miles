@@ -66,6 +66,10 @@ func (a fixtureAuthority) Check(ctx context.Context, w s.WriterFence, observe Ob
 	}
 	return nil
 }
+func (a fixtureAuthority) CheckManifest(ctx context.Context, w s.WriterFence, _ string, observe Observe) error {
+	return a.Check(ctx, w, observe)
+}
+
 func writerKey(id string) Key {
 	k := stringKey("Leases", "resource_id", "writer")
 	k.Attributes["lease_id"] = text(id)

@@ -263,7 +263,7 @@ func runReservations(t *testing.T, newStore MetadataFactory) {
 		}
 		stale := ledger
 		stale.ID = "stale-base"
-		stale.OpID = "stale-op"
+		stale.OpID = fixtureOpID("stale-op")
 		stale.BaseRevision = 0
 		stale.BaseSize = 0
 		stale.Bytes = 4

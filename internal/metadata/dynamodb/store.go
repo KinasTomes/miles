@@ -2,6 +2,7 @@ package dynamodb
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -151,6 +152,9 @@ func resolve(k string) (address, error) {
 		if parts[0] == "receipts" {
 			a.scope = "receipt"
 		}
+	case "manifest-owner":
+		a.key, err = ManifestSealKey(1, arg(0))
+		a.scope = "preparation"
 	case "manifest-seals":
 		a.key, err = ManifestSealKey(1, arg(0))
 		a.scope = "publication"
@@ -366,16 +370,15 @@ func (t *transaction) commit() error {
 		}
 		input.TransactItems = append(input.TransactItems, action)
 	}
-	encoded, err := json.Marshal(input)
-	if err != nil {
+	token := make([]byte, 16)
+	if _, err := rand.Read(token); err != nil {
 		return err
 	}
-	digest := sha256.Sum256(encoded)
-	input.ClientRequestToken = aws.String(hex.EncodeToString(digest[:16]) + "0000")
+	input.ClientRequestToken = aws.String(hex.EncodeToString(token) + "0000")
 	if err := ValidateTransactionPlan(input, images, inventory); err != nil {
 		return err
 	}
-	_, err = t.store.api.TransactWriteItems(t.ctx, input)
+	_, err := t.store.api.TransactWriteItems(t.ctx, input)
 	return backend(err)
 }
 
@@ -497,7 +500,7 @@ func put[T any](t *transaction, k string, v T) error {
 		switch {
 		case strings.HasPrefix(a.key.Attributes["config_id"].(*types.AttributeValueMemberS).Value, "storage/op/"):
 			item["record_kind"] = text("storage_operation_v1")
-		case a.scope == "publication":
+		case a.scope == "publication" || a.scope == "preparation":
 			item["record_kind"] = text("manifest_owner_v1")
 		}
 	}
@@ -544,12 +547,18 @@ func (m *Store) authorize(t *transaction, credential, bucket string) (s.Authoriz
 	if err != nil {
 		return s.Authorization{}, err
 	}
+	if !c.Active || c.UserID == "" {
+		return s.Authorization{}, s.ErrAccessDenied
+	}
 	u, err := optional[s.User](t, key("users", c.UserID))
 	if err != nil {
 		return s.Authorization{}, err
 	}
 	if !c.Active || !u.Active {
 		return s.Authorization{}, s.ErrAccessDenied
+	}
+	if bucket == "" {
+		return s.Authorization{}, s.ErrBucketNotFound
 	}
 	b, err := get[s.Bucket](t, key("buckets", bucket))
 	if err != nil {

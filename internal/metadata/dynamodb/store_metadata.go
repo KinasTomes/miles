@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"strconv"
 
 	"github.com/KinasTomes/miles/internal/manifest"
@@ -273,6 +272,20 @@ func (m *Store) WriteManifestPages(ctx context.Context, pages []s.ManifestPage, 
 			if sealed {
 				return s.ErrConflict
 			}
+			ownerKey := key("manifest-owner", p.ManifestID)
+			owner, err := get[manifestOwner](t, ownerKey)
+			if errors.Is(err, s.ErrNotFound) {
+				owner = manifestOwner{State: "Building", Domain: p.Domain, Writer: w, Revision: 1}
+			} else if err != nil {
+				return err
+			}
+			if owner.State != "Building" || owner.Domain != p.Domain || owner.Writer != w {
+				return s.ErrConflict
+			}
+			owner.Revision++
+			if err := put(t, ownerKey, owner); err != nil {
+				return err
+			}
 			return t.setPage(k, b)
 		})
 		if err != nil {
@@ -365,55 +378,4 @@ func (m *Store) GetObject(ctx context.Context, k s.ObjectKey) (s.ObjectHead, err
 		return err
 	})
 	return v, err
-}
-func validateManifest(ctx context.Context, t *transaction, h *s.ObjectHead) error {
-	capacity, err := manifest.RefCapacity(h.ManifestID, h.Domain)
-	if err != nil {
-		return err
-	}
-	var offset int64
-	var number uint32
-	var chunks uint64
-	var index []uint64
-	previousRefs := capacity
-	err = walkPages(ctx, t, h.ManifestID, func(p s.ManifestPage) error {
-		if previousRefs != capacity {
-			return s.ErrInvalid
-		}
-		previousRefs = len(p.Chunks)
-		if p.Number != number || p.Domain != h.Domain {
-			return s.ErrInvalid
-		}
-		number++
-		index = append(index, uint64(offset))
-		for _, r := range p.Chunks {
-			chunks++
-			c, err := get[s.Chunk](t, chunkKey(r.Key))
-			if err != nil {
-				return err
-			}
-			if c.RawBytes != r.RawBytes || r.LogicalOffset != offset || offset > s.MaxObjectBytes-r.RawBytes {
-				return s.ErrInvalid
-			}
-			offset += r.RawBytes
-		}
-		return nil
-	})
-	if h.Size == 0 && errors.Is(err, s.ErrNotFound) {
-		if h.PageCount != 0 || h.ChunkCount != 0 || len(h.PageIndex) != 0 {
-			return s.ErrInvalid
-		}
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if offset != h.Size {
-		return s.ErrInvalid
-	}
-	if (h.PageCount != 0 || h.ChunkCount != 0 || len(h.PageIndex) != 0) && (h.PageCount != number || h.ChunkCount != chunks || !reflect.DeepEqual(h.PageIndex, index)) {
-		return s.ErrInvalid
-	}
-	h.PageCount, h.ChunkCount, h.PageIndex = number, chunks, index
-	return nil
 }
