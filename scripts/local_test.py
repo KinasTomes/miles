@@ -142,15 +142,21 @@ def response(url):
         return error.code, error.read().decode()
 
 
-def runtime_fixture(binary, profile, mode, directory, env):
+def runtime_fixture(binary, profile, mode, directory, env, local_storage=None):
     file = directory / f"{profile}-{mode}.json"
-    file.write_text(json.dumps({"profile": profile, "mode": mode, "health_address": "127.0.0.1:0", "shutdown_seconds": 2}))
+    config = {"profile": profile, "mode": mode, "health_address": "127.0.0.1:0", "shutdown_seconds": 2}
+    if local_storage:
+        config.update(local_storage, s3_address="127.0.0.1:0")
+    file.write_text(json.dumps(config))
+    credentials_path = directory / "durable-local" / "credentials.json"
+    old_credentials = credentials_path.read_bytes() if credentials_path.exists() else None
     log_path = directory / f"{profile}-{mode}.log"
     with log_path.open("w") as log:
         process = subprocess.Popen([str(binary), "-config", str(file)], cwd=ROOT, env=env,
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=log)
         try:
             address = None
+            s3_address = None
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 if process.poll() is not None:
@@ -161,7 +167,10 @@ def runtime_fixture(binary, profile, mode, directory, env):
                     record = json.loads(line)
                     if record.get("msg") == "health server listening":
                         address = record["address"]
-                if address:
+                    # Listener records deliberately contain no credentials.
+                    if record.get("msg") == "s3 server listening":
+                        s3_address = record["address"]
+                if address and (not local_storage or s3_address):
                     break
                 time.sleep(0.02)
             if not address:
@@ -169,19 +178,61 @@ def runtime_fixture(binary, profile, mode, directory, env):
             base = local_endpoint("http://" + address)
             if response(base + "/healthz")[0] != 200:
                 raise RuntimeError("process is not healthy")
-            expected = 200 if mode == "dev" else 503
+            expected = 200 if mode in ("dev", "local") else 503
             deadline = time.monotonic() + 5
             while response(base + "/readyz")[0] != expected:
                 if time.monotonic() >= deadline:
                     raise RuntimeError("runtime readiness did not match configured adapter mode")
                 time.sleep(0.02)
             status, metrics = response(base + "/metrics")
-            expected_metric = f'miles_ready{{mode="{mode}"}} {1 if mode == "dev" else 0}'
+            metric_mode = "dev" if mode == "local" else mode
+            expected_metric = f'miles_ready{{mode="{metric_mode}"}} {1 if mode in ("dev", "local") else 0}'
             if status != 200 or expected_metric not in metrics:
                 raise RuntimeError("missing Prometheus readiness observation")
+            if local_storage:
+                credentials = json.loads(credentials_path.read_text())
+                if credentials_path.stat().st_mode & 0o777 != 0o600:
+                    raise RuntimeError("local credentials have unsafe permissions")
+                if old_credentials and old_credentials != credentials_path.read_bytes():
+                    raise RuntimeError("restart rotated local credentials")
+                gateway_env = dict(env, AWS_ACCESS_KEY_ID=credentials["access_key_id"],
+                                   AWS_SECRET_ACCESS_KEY=credentials["secret_access_key"])
+                gateway = local_endpoint("http://" + s3_address)
+                bucket = "persistent-logical-bucket"
+                if not old_credentials:
+                    aws(gateway_env, gateway, "s3api", "create-bucket", "--bucket", bucket)
+                aws(gateway_env, gateway, "s3api", "head-bucket", "--bucket", bucket)
+                listed = json.loads(aws(gateway_env, gateway, "s3api", "list-buckets"))
+                if [b["Name"] for b in listed["Buckets"]] != [bucket]:
+                    raise RuntimeError("logical bucket did not survive restart")
+                aws(gateway_env, gateway, "s3api", "get-object", "--bucket", bucket,
+                    "--key", "not-supported", str(directory / "unsupported.bin"), expect_error="NotImplemented")
+                backend_identity = dict(env, AWS_ACCESS_KEY_ID="A" * 20)
+                aws(backend_identity, gateway, "s3api", "list-buckets", expect_error="InvalidAccessKeyId")
+                if not old_credentials:
+                    # Readiness is a routing observation, not a substitute for per-request admission.
+                    aws(env, local_storage["pack_endpoint"], "s3api", "delete-bucket",
+                        "--bucket", local_storage["pack_bucket"])
+                    try:
+                        deadline = time.monotonic() + 6
+                        while response(base + "/readyz")[0] != 503:
+                            if time.monotonic() >= deadline:
+                                raise RuntimeError("real backend failure did not fail readiness")
+                            time.sleep(0.02)
+                        if response(base + "/healthz")[0] != 200:
+                            raise RuntimeError("backend failure killed liveness")
+                        aws(gateway_env, gateway, "s3api", "head-bucket", "--bucket", bucket)
+                    finally:
+                        aws(env, local_storage["pack_endpoint"], "s3api", "create-bucket",
+                            "--bucket", local_storage["pack_bucket"], "--create-bucket-configuration",
+                            "LocationConstraint=ap-southeast-1")
+                if credentials["secret_access_key"] in log_path.read_text():
+                    raise RuntimeError("runtime logged a credential")
             process.send_signal(signal.SIGTERM)
             if process.wait(timeout=5) != 0 or '"msg":"shutdown complete"' not in log_path.read_text():
                 raise RuntimeError("SIGTERM did not shut down cleanly")
+        except Exception as error:
+            raise RuntimeError(str(error) + "\nGateway log:\n" + log_path.read_text()) from error
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -203,7 +254,7 @@ def main():
     if os.environ.get("DOCKER_HOST") or not host.startswith("unix://"):
         raise RuntimeError("local fixture runner requires a local Unix Docker context")
     suffix = uuid.uuid4().hex[:12]
-    compose = ["docker", "compose", "-f", "deploy/local/compose.yaml", "-p", "miles-w02-" + suffix]
+    compose = ["docker", "compose", "-f", "deploy/local/compose.yaml", "-p", "miles-local-" + suffix]
     with tempfile.TemporaryDirectory(prefix="miles-local-") as tmp:
         directory = Path(tmp)
         env = fixture_environment(directory)
@@ -219,6 +270,19 @@ def main():
             command(["go", "build", "-trimpath", "-o", str(binary), "./cmd/miles"], env, timeout=120)
             for profile, mode in (("edge", "dev"), ("cloud", "dev"), ("cloud", "runtime")):
                 runtime_fixture(binary, profile, mode, directory, env)
+            pack_bucket = "miles-runtime-" + suffix
+            aws(env, endpoints[1], "s3api", "create-bucket", "--bucket", pack_bucket,
+                "--create-bucket-configuration", "LocationConstraint=ap-southeast-1")
+            try:
+                local_storage = {"local_data_path": str(directory / "durable-local"),
+                                 "pack_endpoint": endpoints[1], "pack_bucket": pack_bucket}
+                for _ in range(2):
+                    runtime_fixture(binary, "edge", "local", directory, env, local_storage)
+            finally:
+                aws(env, endpoints[1], "s3api", "delete-bucket", "--bucket", pack_bucket)
+            cli = directory / "dsgctl"
+            command(["go", "build", "-o", str(cli), "./cmd/dsgctl"], env, timeout=120)
+            command([str(cli), "node", "drain"], env, expect_error="not supported")
         finally:
             command(compose + ["down", "--volumes", "--remove-orphans"], env, timeout=60)
     print("PASS local fixtures complete; temporary project, processes and files removed", flush=True)
