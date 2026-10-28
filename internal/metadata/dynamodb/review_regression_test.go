@@ -193,6 +193,7 @@ func TestLocalExpiryBlocksFirstPublication(t *testing.T) {
 func TestLocalCommittedOutcomeSurvivesRevocationAndExpiry(t *testing.T) {
 	ctx := context.Background()
 	f := contracttest.NewFixture()
+	f.Lease.ExpiresAt = f.Now.Add(2 * time.Hour)
 	m, _ := fixtureStore(t, f)
 	r := f.Request("committed-before-expiry", 0)
 	contracttest.Prepare(t, m, f, r, 4)
@@ -212,5 +213,14 @@ func TestLocalCommittedOutcomeSurvivesRevocationAndExpiry(t *testing.T) {
 	q, err := m.GetQuota(ctx, f.Quota.OwnerID)
 	if err != nil || q.Used != 4 || q.Reserved != 0 || q.Staged != 0 {
 		t.Fatal(q, err)
+	}
+	m.now = func() time.Time { return f.Now.Add(3 * time.Hour) }
+	m.authority = fixtureAuthority{m.now}
+	if _, err := m.CommitObject(ctx, r); !errors.Is(err, s.ErrFenced) {
+		t.Fatal("expired execution writer bypassed shared fence", err)
+	}
+	retained, err := m.GetCommitOutcome(ctx, r.Head.OpID)
+	if err != nil || retained.Head.OpID != r.Head.OpID || !retained.AlreadyCommitted {
+		t.Fatal("reconciliation lost result after writer expiry", retained, err)
 	}
 }

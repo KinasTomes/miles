@@ -169,6 +169,12 @@ func (m *Store) resumeCommit(ctx context.Context, r s.CommitRequest) (s.CommitRe
 		if done.Digest != digest {
 			return zero, true, s.ErrConflict
 		}
+		// Executing CommitObject still obeys the shared stale-writer contract.
+		// GetCommitOutcome/CloseCommitAttempt are the trusted reconciliation
+		// paths for a caller whose execution authority has already expired.
+		if err := m.fence(t, r.Writer); err != nil {
+			return zero, true, err
+		}
 		return s.CommitResult{Head: done.Head, AlreadyCommitted: true}, true, nil
 	}
 	if !errors.Is(outcomeErr, s.ErrNotFound) {

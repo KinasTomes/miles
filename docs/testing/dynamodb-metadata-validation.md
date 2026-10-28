@@ -53,7 +53,8 @@ Observed local results with Go 1.27.2 and pinned DynamoDB Local 3.3.0:
 - `go vet ./...` and `go build ./...`: PASS.
 - `python -B -m unittest discover -s scripts/tests -v`: PASS, six tests.
 - `python -B scripts/check_doc_names.py`, formatting and `git diff --check`: PASS.
-- CI race execution is configured but has not run for this unpushed branch.
+- These are initial local results. See the review correction below for the
+  integrated main baseline and additional fault/expiry coverage.
 
 ## Executed boundaries
 
@@ -111,3 +112,96 @@ authority/provider integration is a prerequisite for such wiring. Full multipart
 Upload/Part/freeze APIs, kinds 3/4, expanded child/control-entity R2 producer
 coverage, epoch closure/sealing/restore and real AWS fault/scale acceptance remain
 separate work. No real AWS resources or account credentials were used here.
+
+## PR 36 review correction
+
+Review findings: pending reconciliation after credential/grant revocation (P1)
+and reservation expiry before fresh/replayed publication (P2). The correction
+starts from `2b15aa7`, which already includes main PRs 37 and 38. Historical
+W03 acceptance files and their checksums were not changed.
+
+`review_regression_test.go` reproduced five failing assertions before the fix:
+credential cleanup, grant cleanup, expiry during verification, expired first
+publication through pending replay, and retained outcome after revoke/expiry.
+The baseline failures were captured locally before changing implementation.
+
+### Reconciliation and closure
+
+`CloseCommitAttempt(ctx, ReservationClaim)` is an explicit trusted adapter
+operation. It reads the reservation/op binding and original outcome. If already
+committed, it returns that original result without re-publication. Otherwise it
+requires a registered writer; a different writer must establish that the original
+authority is closed in the same service incarnation. Its observations and exact
+operation revision are CASed in one native transaction.
+
+Successful closure writes a terminal `Closed` state plus `closed_attempt`,
+removes pending bytes, and changes `record_revision`. Original registration and
+final transactions both depend on that operation row, so they cannot publish
+after closure wins. If final publication wins first, closure retries and reads
+the committed result instead. A closed logical operation cannot reopen; further
+execution requires a new logical operation under current permission.
+
+Revoked credential/grant rejection on pending replay now closes the operation
+under reconciliation authority before returning AccessDenied. An unconfirmed
+closure, failed authority check or unreadable outcome stays ErrUnavailable.
+Ordinary claim/release still refuses genuinely pending attempts. Cleanup runs
+only after confirmed closure and normal reservation ownership/revision checks.
+Committed outcomes remain available through GetCommitOutcome/CloseCommitAttempt
+after signing credential or execution lease expiry. CommitObject retries still
+enforce the shared stale-writer contract; with a valid writer they return the
+original result after reservation expiry or credential revocation. These internal
+metadata capabilities do not bypass public API auth.
+
+This method does not auto-clear `coordination.Writer` unknown state or release
+R1 pins. In particular, GetCommitOutcome returning ErrNotFound is still not a
+no-commit proof for WriteSession.Reconcile. Shared durable closed-outcome/R1
+provider integration remains separate; callers must retain protection when that
+consumer cannot yet consume an authoritative closure proof.
+
+### Dispatch expiry and SDK retry boundary
+
+The same remaining-authority guard runs after verification/serialization,
+before attempt registration, after registration and before pending replay sends.
+It checks current writer, authorization, bucket/domain, reservation binding,
+state/revision, reservation deadline and optional receipt expiry. Equality is
+expired. Already-committed outcomes are read before those execution checks.
+
+Every final SDK call overrides its Retryer with NopRetryer. Hidden SDK retries
+cannot dispatch behind the guard; an ambiguous call requires explicit exact
+replay after another guard. Native transaction conditions still check the
+original observed records. This is an adapter dispatch boundary, not a claim
+that DynamoDB offers a server-current-time transaction condition.
+
+### Additional acceptance cases
+
+- Credential and grant revocation permit cleanup without restoring permission.
+- Original committed outcome is retained after revoke and expiry, without a send.
+  An expired execution writer is still fenced on CommitObject; trusted outcome
+  reconciliation can read the result independently.
+- Closure/final publication races run in both orderings on native Local.
+- Replaying the saved original request after closure fails its native condition.
+- Unknown closure before commit retains quota; lost closure ACK needs a fresh
+  authoritative read; repeated cleanup never subtracts counters twice.
+- An unregistered replacement cannot close an attempt. A registered replacement
+  can close, claim and release after the original fence has changed.
+- Expiry during manifest verification, pending replay and registration blocks
+  first publication. Tests retain an independently valid writer lease.
+- An official-SDK HTTP fault test confirms one final send for a retryable 500;
+  the outcome stays unknown and cannot release quota.
+
+The previous grant-revoke/restore test is now a permission-preserving revision
+conflict test. Stronger independent revocation tests cover permanent revocation
+and cleanup instead of requiring reactivation to make progress.
+
+Correction-round local results:
+
+- Affected suite PASS without cache: DynamoDB Local 55.849s; Badger 22.142s;
+  shared contracttest 0.516s; engine 2.051s; engine/write 1.872s; coordination
+  0.382s; coordination/fake 0.380s; readpath 18.801s.
+- `go vet ./...`, `go build ./...`, six Python tests, document names, gofmt and
+  `git diff --check`: PASS.
+- The attempted Windows `go test ./...` also exposed POSIX 0600/0700 permission
+  and directory-sync failures in unchanged main-PR-38 CLI/adminclient/local app/
+  secretfile code. Those failures are not recorded as a full-suite PASS. The
+  correction uses Linux PR CI for full-suite/race validation; results belong to
+  the exact pushed head and PR check links.
