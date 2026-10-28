@@ -297,14 +297,14 @@ func objectError(err error, bucket, key string) error {
 		code = ErrEntityTooLarge
 	case errors.Is(err, object.ErrLengthMismatch):
 		code = ErrIncompleteBody
+	case errors.Is(err, storage.ErrBucketNotFound):
+		code = ErrNoSuchBucket
 	case errors.Is(err, storage.ErrNotFound):
 		code = ErrNoSuchKey
 	case errors.Is(err, storage.ErrAccessDenied):
 		code = ErrAccessDenied
 	case errors.Is(err, storage.ErrQuotaExceeded):
 		code = ErrQuotaExceeded
-	case errors.Is(err, storage.ErrBucketNotFound):
-		code = ErrNoSuchBucket
 	case errors.Is(err, storage.ErrConflict):
 		code = ErrOperationAborted
 	case errors.Is(err, storage.ErrUnavailable), errors.Is(err, storage.ErrFenced):
