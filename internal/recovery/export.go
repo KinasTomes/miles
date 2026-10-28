@@ -54,7 +54,7 @@ type Descriptor struct {
 }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
-func ref(b []byte) Reference { return Reference{len(b), digest(b)} }
+func ref(b []byte) Reference { return Reference{Length: len(b), SHA256: digest(b)} }
 func isHex(v string, n int) bool {
 	if len(v) != n {
 		return false

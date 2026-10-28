@@ -239,3 +239,22 @@ func (s *WriteSession) Reconcile(ctx context.Context) (storage.CommitResult, err
 	}
 	return out, nil
 }
+
+// ReconcileMultipart runs only after execution quiescence. The trusted recovery
+// adapter closes the exact old completion attempt before local pins may release.
+// Committed outcomes use Reconcile; an Unknown never clears protection here.
+func (s *WriteSession) ReconcileMultipart(ctx context.Context, store storage.MultipartRecovery, r storage.MultipartRequest, attempt uint64) (storage.MultipartRecoveryResult, error) {
+	if s == nil || s.writeSession == nil || ctx == nil {
+		return storage.MultipartRecoveryResult{}, storage.ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.closed {
+		return storage.MultipartRecoveryResult{}, coordination.ErrWorkPending
+	}
+	out, err := s.writer.ReconcileMultipart(ctx, store, r, attempt)
+	if err != nil {
+		return storage.MultipartRecoveryResult{Disposition: storage.RecoveryUnknown}, err
+	}
+	return out, s.writer.Release()
+}

@@ -106,6 +106,15 @@ func RunProducers(t *testing.T, factory MultipartFactory) {
 			if out.Event.Action != "entity_delete" || out.Event.Revision != 2 {
 				t.Fatal(out)
 			}
+			if r.Entity == "Credentials" || r.Entity == "AdminTokens" {
+				resurrect := r
+				resurrect.Deleted = false
+				resurrect.ExpectedRevision = 2
+				resurrect.Context = makeContext(fmt.Sprint("resurrect-", i))
+				if _, err := p.MutateControl(ctx, resurrect); !errors.Is(err, s.ErrInvalid) {
+					t.Fatal("revoked identity resurrected", r.Entity, err)
+				}
+			}
 			if err := (recovery.Exporter{Metadata: h.Metadata.(s.OutboxExportStore), Payloads: p, Objects: sink}).Export(ctx, out.Event.ID); err != nil {
 				t.Fatal(err)
 			}

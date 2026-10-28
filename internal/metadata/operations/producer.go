@@ -358,6 +358,9 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 			if _, err := get[s.User](t, "users", v.UserID); err != nil {
 				return err
 			}
+			if r.ExpectedRevision > 0 && !old.Active && v.Active {
+				return s.ErrInvalid
+			}
 			if r.Security.Version == 0 && r.ExpectedRevision > 0 {
 				security, e := get[s.CredentialSecurity](t, "credential-security", r.ID)
 				if e == nil {
@@ -410,6 +413,9 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 			}
 			if r.Deleted {
 				v.Active = false
+			}
+			if r.ExpectedRevision > 0 && (!old.Active && v.Active || v.UserID != old.UserID || v.Scope != old.Scope || !bytes.Equal(v.Hash, old.Hash) || !v.ExpiresAt.Equal(old.ExpiresAt)) {
+				return s.ErrInvalid
 			}
 			value = v
 			if err := write("admin-tokens", v, r.ID); err != nil {

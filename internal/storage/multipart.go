@@ -30,6 +30,8 @@ type MultipartUpload struct {
 	Publishers                           uint32
 	Input, Snapshot                      StreamDescriptor
 	Prepared                             ObjectHead
+	ClosedFence                          uint64
+	ClosedWriter                         WriterFence
 }
 type UploadPart struct {
 	Version    uint32
@@ -119,4 +121,32 @@ type MultipartStore interface {
 type PublisherProtection interface {
 	ListPublishers(context.Context, string, string, int) (PublisherPage, error)
 	RetainPublisherPacks(context.Context, MultipartRequest, string, []PackRef) error
+}
+
+// RecoveryDisposition is evidence returned by a committed metadata transaction.
+// Unknown (including a lost acknowledgement) never authorizes releasing roots.
+type RecoveryDisposition string
+
+const (
+	RecoveryUnknown   RecoveryDisposition = "Unknown"
+	RecoveryCommitted RecoveryDisposition = "Committed"
+	RecoveryClosed    RecoveryDisposition = "ProvenClosedNoCommit"
+)
+
+type MultipartRecoveryResult struct {
+	Disposition RecoveryDisposition
+	Upload      MultipartUpload
+	Receipt     CompletionReceipt
+	Publisher   PartPublisher
+}
+
+// MultipartRecovery requires the current trusted upload authority, independent
+// of the original signing credential. Closing serializes with late publication;
+// lease expiry, missing outcomes and caller-supplied booleans are never proof.
+// ResolveCompletion leaves Aborting until publishers are durably reconciled.
+// Roots must remain retained for Active/Completing/Aborting uploads, including
+// terminal publishers whose manifests may still be selected by Complete.
+type MultipartRecovery interface {
+	ResolveCompletion(context.Context, MultipartRequest) (MultipartRecoveryResult, error)
+	ResolvePartPublisher(context.Context, MultipartRequest, string) (MultipartRecoveryResult, error)
 }

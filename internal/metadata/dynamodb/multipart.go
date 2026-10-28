@@ -53,3 +53,12 @@ func (m *Store) ListPublishers(c context.Context, id, a string, n int) (s.Publis
 func (m *Store) RetainPublisherPacks(c context.Context, r s.MultipartRequest, id string, p []s.PackRef) error {
 	return m.multipartOps().Retain(c, r, id, p)
 }
+
+var _ s.MultipartRecovery = (*Store)(nil)
+
+func (m *Store) ResolveCompletion(c context.Context, r s.MultipartRequest) (s.MultipartRecoveryResult, error) {
+	return m.multipartOps().ResolveCompletion(c, r)
+}
+func (m *Store) ResolvePartPublisher(c context.Context, r s.MultipartRequest, id string) (s.MultipartRecoveryResult, error) {
+	return m.multipartOps().ResolvePublisher(c, r, id)
+}

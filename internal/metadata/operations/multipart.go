@@ -235,7 +235,10 @@ func (m Multipart) Register(ctx context.Context, r s.MultipartRequest, p s.PartP
 			candidate.State = "Open"
 			candidate.Writer = r.Writer
 			candidate.Packs = nil
-			if !reflect.DeepEqual(old, candidate) {
+			identity := old
+			identity.Packs = nil
+			identity.State = "Open"
+			if !reflect.DeepEqual(identity, candidate) {
 				return s.ErrConflict
 			}
 			result = old
@@ -374,6 +377,9 @@ func (m Multipart) Publish(ctx context.Context, r s.PartPublishRequest) (s.Uploa
 	return result, err
 }
 func (m Multipart) Cancel(ctx context.Context, r s.MultipartRequest, id string) error {
+	return m.cancel(ctx, r, id, false)
+}
+func (m Multipart) cancel(ctx context.Context, r s.MultipartRequest, id string, recovery bool) error {
 	return m.Update(ctx, func(t Tx) error {
 		u, err := get[s.MultipartUpload](t, "upload-record", r.UploadID)
 		if err != nil {
@@ -394,7 +400,7 @@ func (m Multipart) Cancel(ctx context.Context, r s.MultipartRequest, id string) 
 		}
 		// Native CAS on both Upload and candidate fences a late publish. No absent
 		// outcome/lease-expiry inference is used to remove provisional accounting.
-		if p.Writer != r.Writer && u.Writer != r.Writer {
+		if !recovery && p.Writer != r.Writer && u.Writer != r.Writer {
 			return s.ErrFenced
 		}
 		if u.Publishers == 0 || u.ProvisionalBytes < p.Bytes {

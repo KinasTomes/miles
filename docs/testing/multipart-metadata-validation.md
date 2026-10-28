@@ -74,3 +74,53 @@ Strict admission is opt-in for compatibility. Production integration must supply
 trusted writer/producer/multipart authority; enabling the option is not a claim
 that a distributed R1/R2 coordinator has been implemented. Heartbeat Nodes are
 operational telemetry and remain outside authoritative recovery producer coverage.
+
+## Checklist 3: retained roots, typed closure and consumer handoff
+
+Publisher membership/packs persist independently of execution deadlines. Public
+Abort cannot interrupt Completing; unfinished Active publishers first enter an
+Aborting admission barrier without releasing quota. Shared tests exercise Abort
+versus Publish concurrently, the owner limit of 16 uploads, retained-pack register
+retry, cancelled-context Unknown, exact lease+grace equality, expired Completing,
+per-candidate cancellation and final cleanup/retry without double accounting.
+
+The trusted MultipartRecovery port returns Committed, ProvenClosedNoCommit or
+Unknown. Native close markers and upload/fence state change share the original
+publication CAS. Fault tests inject errors before send and after successful native
+commit; neither error returns closure proof, and retry observes original state.
+Native producer faults likewise prove business row/outbox/outcome all-or-none and
+stable original revision/event after acknowledgement loss. Credential/token
+revocation is terminal, and existing token identity/hash/scope/expiry cannot be
+reassigned by an update.
+
+Writer/WriteSession consume exact closure proof through the trusted port only
+after Close and quiescence. Wrong object/op/upload/old writer/fence or Unknown
+cannot release pins. Proof clears only the matching final commit uncertainty;
+other unknown work still blocks release. Published/cancelled membership remains
+available to root scanners until upload termination and remaining R1/R2 roots.
+
+The implemented call sequence, physical records, payload schema, root lifetimes,
+strict-mode authority requirements and API/recovery ownership are documented in
+[the handoff contract](../contracts/multipart-metadata-handoff.md).
+
+Validation uses local Docker/DynamoDB only, dummy fixture credentials and isolated
+table prefixes. No real AWS/distributed acceptance is claimed. A full Linux Go
+suite passed, including native DynamoDB and POSIX permission tests. Vet identified
+four unkeyed literals after package extraction; those were converted to keyed
+literals before the final vet/build/race validation. Python tooling (6 tests),
+document names, formatting and diff whitespace checks passed.
+
+Final Linux commands and observed results (Go 1.27.2, required DynamoDB Local):
+
+```text
+go test ./... -count=1 -timeout=8m
+PASS all packages; Badger 16.676s; native DynamoDB 109.839s.
+go vet ./... && go build ./...
+PASS after keyed-literal fixes.
+go test -race ./internal/metadata/... ./internal/engine/write/... ./internal/multipart/... ./internal/coordination/... ./internal/readpath/... ./internal/recovery/... -count=1 -timeout=10m
+PASS all selected packages; Badger 24.708s; native DynamoDB 143.606s.
+```
+
+The final revocation/token-binding and takeover/renewal assertions also have a
+separate focused producer/multipart regression run on both real local adapters;
+the native tests do not skip when MILES_DDB_LOCAL_REQUIRED=1.

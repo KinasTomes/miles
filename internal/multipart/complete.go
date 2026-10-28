@@ -141,7 +141,7 @@ func Normalize(u Upload, h http.Header, doc *CompleteXML) (Input, *s3.Error) {
 		if len(etag) >= 2 && etag[0] == '"' && etag[len(etag)-1] == '"' {
 			etag = etag[1 : len(etag)-1]
 		}
-		in.Parts = append(in.Parts, Part{nums[i], strings.ToLower(etag), sums[i]})
+		in.Parts = append(in.Parts, Part{PartNumber: nums[i], ETag: strings.ToLower(etag), Checksum: sums[i]})
 	}
 	return in, nil
 }

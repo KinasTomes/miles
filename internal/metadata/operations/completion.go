@@ -162,6 +162,11 @@ func (m Multipart) Lease(ctx context.Context, r s.MultipartRequest, takeover boo
 		if u.State != "Completing" || u.CompletionOp != r.OpID || check(u, r) != nil {
 			return s.ErrConflict
 		}
+		if !takeover {
+			if err = m.auth(t, r, u, true); err != nil {
+				return err
+			}
+		}
 		if takeover {
 			if m.Now().Before(u.LeaseUntil.Add(5 * time.Second)) {
 				return s.ErrConflict
@@ -230,6 +235,28 @@ func (m Multipart) Terminal(ctx context.Context, r s.MultipartRequest, reopen bo
 		if err = check(u, r); err != nil {
 			return err
 		}
+		// Public Abort cannot interrupt Complete. Recovery has a distinct trusted
+		// port which closes the pending attempt before changing this state.
+		if !reopen && u.State == "Completing" || reopen && u.State != "Completing" {
+			return s.ErrConflict
+		}
+		if !reopen && u.State == "Active" && !m.Now().Before(u.ExpiresAt) {
+			return s.ErrNotFound
+		}
+		if !reopen && u.State == "Active" && u.Publishers != 0 {
+			if err = m.auth(t, r, u, false); err != nil {
+				return err
+			}
+			u.State = "Aborting"
+			if err = advance(&u); err != nil {
+				return err
+			}
+			if err = saveCompletion(t, u); err != nil {
+				return err
+			}
+			result = u
+			return nil
+		}
 		if u.Publishers != 0 {
 			return s.ErrConflict
 		}
@@ -263,23 +290,7 @@ func (m Multipart) Terminal(ctx context.Context, r s.MultipartRequest, reopen bo
 			ledger.Deadline = u.ExpiresAt
 			ledger.Revision++
 		} else {
-			q, err := get[s.LogicalQuota](t, "quotas", u.Owner)
-			if err != nil {
-				return err
-			}
-			if q.Reserved < ledger.Bytes || q.Staged < ledger.StagedBytes || q.ActiveUploads < 1 {
-				return s.ErrUnavailable
-			}
-			q.Reserved -= ledger.Bytes
-			q.Staged -= ledger.StagedBytes
-			q.ActiveUploads--
-			if err := Namespace(t, u.Object.Bucket, 0, -1, false); err != nil {
-				return err
-			}
-			ledger.State = s.ReservationReleased
-			ledger.Revision++
-			u.State = "Aborted"
-			if err = put(t, "quotas", q, q.OwnerID); err != nil {
+			if err = releaseUpload(t, &u, &ledger); err != nil {
 				return err
 			}
 		}
@@ -296,6 +307,26 @@ func (m Multipart) Terminal(ctx context.Context, r s.MultipartRequest, reopen bo
 		return nil
 	})
 	return result, err
+}
+
+func releaseUpload(t Tx, u *s.MultipartUpload, ledger *s.Reservation) error {
+	q, err := get[s.LogicalQuota](t, "quotas", u.Owner)
+	if err != nil {
+		return err
+	}
+	if ledger.State != s.ReservationActive || q.Reserved < ledger.Bytes || q.Staged < ledger.StagedBytes || q.ActiveUploads < 1 || u.Publishers != 0 || u.ProvisionalBytes != 0 {
+		return s.ErrUnavailable
+	}
+	q.Reserved -= ledger.Bytes
+	q.Staged -= ledger.StagedBytes
+	q.ActiveUploads--
+	if err := Namespace(t, u.Object.Bucket, 0, -1, false); err != nil {
+		return err
+	}
+	ledger.State = s.ReservationReleased
+	ledger.Revision++
+	u.State = "Aborted"
+	return put(t, "quotas", q, q.OwnerID)
 }
 
 // Finish is called INSIDE the existing atomic object/receipt transaction. Legacy

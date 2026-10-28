@@ -23,6 +23,8 @@ type MultipartHarness struct {
 type MultipartFactory func(*testing.T, Fixture) MultipartHarness
 
 func RunMultipart(t *testing.T, factory MultipartFactory) {
+	RunMultipartRecovery(t, factory)
+	RunMultipartRaces(t, factory)
 	for _, reopen := range []bool{false, true} {
 		name := "complete-subset-and-receipt"
 		if reopen {
