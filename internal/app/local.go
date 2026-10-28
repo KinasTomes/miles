@@ -13,6 +13,7 @@ import (
 
 	"github.com/KinasTomes/miles/internal/cache"
 	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/secretfile"
 	"github.com/KinasTomes/miles/internal/storage"
@@ -84,7 +85,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		_, _, err := lru.Get(ctx, storage.CacheKey{Pack: storage.PackRef{ID: "local-probe", Generation: "1"}, Range: storage.ByteRange{Offset: 0, Length: 1}})
 		return err
 	}
-	return Dependencies{Metadata: m, Packs: packs, Cache: lru, Probe: probe, DevCredentials: []DevCredential{cred}, Close: func() error { transport.CloseIdleConnections(); return m.Close() }}, nil
+	return Dependencies{Metadata: m, Packs: coordination.ProtectPackStore(packs), Cache: lru, Probe: probe, DevCredentials: []DevCredential{cred}, Close: func() error { transport.CloseIdleConnections(); return m.Close() }}, nil
 }
 
 func localCredential(path string) (DevCredential, error) {

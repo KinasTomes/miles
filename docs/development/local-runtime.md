@@ -62,7 +62,7 @@ S3 client dùng `access_key_id`/`secret_access_key` trong file riêng này, tác
 
 Readiness local probe đọc credential record từ Badger, HEAD bucket vật lý qua đúng SDK client và kiểm cache operation, mỗi lượt tối đa 1 giây, cache observation dưới 5 giây. Không PUT sentinel hoặc tự tạo lại backend bị mất. LRU dev có cap 64 MiB/1024 entry, mỗi copy tối đa 4 MiB; miss không làm node unready. Metrics local vẫn mang `mode="dev"`, log ghi `mode="local"` và simulated clock; đây không phải Clock uncertainty, S3 object integrity hoặc R1/R2 production proof. Runtime thiếu proof vẫn ready503.
 
-Mỗi S3 request nhận hard context deadline 30 phút ngay tại admission; read/write socket deadline dùng cùng mốc, không refresh theo traffic/retry. Không dùng `readyz` để thay request gate. Drain chặn request mới bằng S3 XML ServiceUnavailable/503; request đã nhận giữ admission đến khi handler trả về, kể cả context đã hủy. S3 wiring nằm tại composition root `cmd/miles/s3.go`; API owner bổ sung handler tại đây, không để package app phụ thuộc ngược vào API.
+Mỗi S3 request nhận hard context deadline 30 phút ngay tại admission; read/write socket deadline dùng cùng mốc, không refresh theo traffic/retry. Không dùng `readyz` để thay request gate. Drain chặn request mới bằng S3 XML ServiceUnavailable/503; request đã nhận giữ admission đến khi handler trả về, kể cả context đã hủy. `Dependencies.Packs` chỉ expose `coordination.ProtectPackStore`: DeletePack/ChangeStorageClass vẫn bị chặn như PR #37; raw SDK adapter không được trả ra consumer. S3 wiring nằm tại composition root `cmd/miles/s3.go`; API owner bổ sung handler tại đây, không để package app phụ thuộc ngược vào API.
 
 ## Nền CLI Admin
 

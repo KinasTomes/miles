@@ -3,15 +3,15 @@
 Task: W03-HUNG-03 — CLI nền, health thật và tích hợp MVP.
 
 Validated on Linux arm64, 28/10/2026, from main
-`aa219407850dd6178e3e8906e10599daf2a4e1c3` (includes PRs #32–35).
-Runtime implementation: `b532e04`; CLI transport: `a1663bd`.
+`2da8a40bfcedb521c691f39dbbcd6b27f03f2648` (includes PRs #32–35 and R1 integration #37).
+Runtime implementation: `fbf6389`; CLI transport: `d473163`.
 Tools: Go 1.27.2, Python 3.12.3, AWS CLI 2.38.1, Docker Engine 29.9.1.
 
 ## Checklist and proof
 
 | Task requirement | Implementation and validation |
 |---|---|
-| Bootstrap/config to dev backend | Explicit local mode wires persistent Badger, SDK S3 PackStore against literal loopback, and bounded LRU. A one-time non-admin dev identity is persisted to a private credential file. Unit and process tests reopen the same metadata and retain credential/bucket identity. No live AWS credential chain is loaded. |
+| Bootstrap/config to dev backend | Explicit local mode wires persistent Badger, SDK S3 PackStore against literal loopback, and bounded LRU. A one-time non-admin dev identity is persisted to a private credential file. Unit and process tests reopen the same metadata and retain credential/bucket identity. No live AWS credential chain is loaded. The exposed PackStore retains PR #37's destructive lifecycle guard; local wiring tests reject delete/tiering without contacting S3. |
 | Real dependency health and controlled shutdown | Cached bounded probe reads Badger, HEADs the physical local bucket and checks cache. Process smoke removes the physical bucket: ready503, health200; it never auto-recreates the bucket. SIGTERM waits for admitted work, shuts both listeners, then closes Badger. Timeout reports incomplete and does not close storage under live work. |
 | Admin CLI transport | Read commands send bearer only to Admin paths. Tests check private regular token files, HTTPS/loopback boundary, no redirect, bounded JSON response, timeout, error redaction, auth failure, and unsupported exit behavior. The test Admin server checks the bearer; no production Admin route is claimed. |
 | Hard deadline and independent admission | S3 request context and socket read/write share one hard deadline. A stalled body read is interrupted. Cancellation keeps admission until handler quiescence. Draining rejects a signed request with S3 XML503. Dependency readiness is never an admission boolean: the process test still serves a metadata-only HEAD while the physical S3 bucket is absent. |
@@ -21,7 +21,7 @@ Tools: Go 1.27.2, Python 3.12.3, AWS CLI 2.38.1, Docker Engine 29.9.1.
 
 ```sh
 make check
-go test -race ./internal/app ./internal/config ./internal/observability ./internal/adminclient ./internal/secretfile ./cmd/miles ./cmd/dsgctl
+go test -race ./internal/app ./internal/config ./internal/observability ./internal/adminclient ./internal/secretfile ./cmd/miles ./cmd/dsgctl ./internal/coordination/... ./internal/engine/write/... ./internal/readpath
 make test-local
 ```
 

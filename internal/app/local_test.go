@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -30,6 +32,13 @@ func TestLocalPersistenceAndBackendProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	cred := first.DevCredentials[0]
+	ref := storage.PackRef{ID: "local-probe", Generation: "1"}
+	if err := first.Packs.DeletePack(context.Background(), ref); !errors.Is(err, coordination.ErrMaintenanceDisabled) {
+		t.Fatal("local wiring exposed destructive delete", err)
+	}
+	if err := first.Packs.ChangeStorageClass(context.Background(), ref, storage.Glacier); !errors.Is(err, coordination.ErrMaintenanceDisabled) {
+		t.Fatal("local wiring exposed destructive tiering", err)
+	}
 	if err := first.Probe(context.Background()); err != nil {
 		t.Fatal(err)
 	}
