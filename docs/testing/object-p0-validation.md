@@ -13,13 +13,15 @@ stateful side: quota reservation, the managed write session
 The Router map in `cmd/miles/s3.go` (#38, merged) still wires health and bucket
 operations only. Wiring the object handlers additionally needs the shared
 outbox producer/journal (W04-HAI-02) and concrete Warm reader/gate adapters
-that `app.Dependencies` does not expose yet.
+that `app.Dependencies` does not expose yet. The runtime must also supply the
+coordinator-backed per-request `Options.AdmitWriter`; test fixture fences are
+not a production admission provider.
 
 ## Checks that ran
 
 ```sh
-go test ./internal/api/s3 ./internal/object
 make check
+go test -race -count=1 ./internal/object ./internal/api/s3 ./internal/readpath ./internal/coordination/... ./internal/engine/write/...
 ```
 
 - Handler tests pin full object, open/closed/suffix/clamped Range, ignored
@@ -34,6 +36,27 @@ make check
   bytes and ETag; Last-Modified and checksum survive; empty objects work;
   overwrite is visible; a body that fails before commit leaves the old object
   and releases the quota reservation.
+
+## Review corrections
+
+| Finding | Behavior after correction | Regression evidence |
+|---|---|---|
+| Writer lifetime | One Service serves successive/concurrent PUTs; each call obtains a fresh admitted writer bound to object/op/credential/deadline. Protection must cover the request deadline plus 15 minutes. Service does not mint backend authority. A longer parent context cannot extend RequestTimeout. | `TestServiceServesSuccessiveWrites`, `TestServiceServesConcurrentWrites`, `TestServiceRejectsInsufficientWriterProtection`, `TestServiceDeadlineCannotExtendConfiguredBudget` |
+| Range consistency | HTTP Range and If-Match are evaluated by SelectRange against the head already bound by the Warm read view, before page planning/payload I/O. No separate GET Stat determines size. Normalized Range and SelectRange are mutually exclusive. | `TestRangeSelectsBoundHeadDuringOverwrite` (growth/shrink, suffix/open/clamped), `TestIfMatchUsesBoundHeadBeforeEmission`, `TestSelectRangeUsesCommittedHeadAfterOverwrite`, `TestWarmSelectRangeRunsUnderBoundReadView`, `TestWarmSelectRangeErrorStopsBeforePayload` |
+| Transport encoding | Stored and returned Content-Encoding excludes aws-chunked, case-insensitively; other encodings and their order are retained across multiple header values. | `TestObjectMetadataRemovesTransportEncoding` |
+| Producer handoff | prepared.BindHead fills page count, chunk count and page index before EventBuilder receives the candidate. Candidate Head.Revision remains zero; CommitEvent.Revision supplies the resulting publication revision. | `TestEventReceivesPreparedManifestDescriptor` compares the event descriptor/index with the committed head |
+| PUT limits | Decoded length follows the same STREAMING-* mode as the payload decoder; a plain PUT cannot bypass limits with x-amz-decoded-content-length. Shared ValidatePut rejects a declared single PUT above 5 GiB or user metadata above 2 KiB before writer admission/reservation. HTTP maps these failures to EntityTooLarge. User metadata counts UTF-8 bytes of full x-amz-meta-* header names and their stored values; system/internal metadata is excluded. No multi-gigabyte body is generated for boundary tests. | `TestPutLimits`, `TestServiceRejectsPutLimitsBeforeAdmission`, `TestObjectPutLimitsBeforeWriter` (exact limits, UTF-8 values, multiple keys, no quota changes) |
+
+These limits retain API v2 §2.5 and the architecture §19.1 single-PUT cap.
+The metadata byte-count convention follows the REST header keys described in
+[AWS metadata editing](https://docs.aws.amazon.com/AmazonS3/latest/userguide/add-object-metadata.html).
+The stored/returned descriptor and selector tests run locally; they are not
+proof of a journal exporter, shared root binding or distributed coordinator.
+
+Validation after these corrections: make check and the race command above PASS
+on Linux. This includes all Go tests/build/vet, formatting, six Python checks
+and document-name validation. No AWS or process-level object endpoint run was
+performed. CI must be checked against the updated PR head separately.
 
 ## Limits
 
