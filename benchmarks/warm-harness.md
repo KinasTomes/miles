@@ -5,11 +5,12 @@ explicit direct S3 or Miles endpoint. It reuses dataset v1 and the installed Go
 S3 SDK. It does not provision infrastructure, start a gateway, or supply an
 event producer. All local executions use the small `smoke` profile.
 
-**Task acceptance is still pending real AWS runs.** PR #41/#42 provide LIST/DELETE
-and authoritative producers. This branch wires them into the real Miles process
-using Badger, managed writer sessions, SDK packs, LRU and WarmReader. A paired
-emulator run now exercises Miles itself; it does not measure real S3 performance.
-No fixture event builder is used by the process.
+The [real AWS preliminary run](warm-aws-results.md) completed: six matched pairs,
+7596 samples and 4320 full-file GET hashes, with zero failures and verified
+teardown. PR #41/#42 supply LIST/DELETE and authoritative producers; this branch
+wires Badger, managed writers, SDK packs, cache and WarmReader into Miles itself.
+The paired emulator run below is a separate protocol check. No fixture event
+builder is used by the process.
 
 Run the local paired smoke with Docker, AWS CLI, Python and Go installed:
 
@@ -73,13 +74,15 @@ the same encryption/Region for direct S3. No environment/profile/IMDS credential
 proxy, redirect, TLS bypass or production runtime fallback. Provisioning, bucket/key
 permissions and the dedicated test host remain external approval/run prerequisites.
 
-The fixed W3 runtime uses default chunking 256 KiB/1 MiB/4 MiB and zstd level 3,
+The fixed benchmark runtime uses default chunking 256 KiB/1 MiB/4 MiB and zstd level 3,
 minimum saving 10%; policy/cache revision 1, read-ahead up to 4. Resident LRU is
 64 MiB/1024 entries/4 MiB maximum copy. Local quota is initially 1 GiB and is never
 reset on restart. Explicit node/bucket/request read budgets and planning caps are
 in `internal/app/local_objects.go`; they are development settings, not production
-capacity or RSS guarantees. Admit-on-write cache population is not wired, despite
-the default policy permitting it; initial GET populates the cache.
+capacity or RSS guarantees. Benchmark mode explicitly disables admit-on-write;
+initial GET populates its memory cache. Normal local mode now uses the merged
+memory/disk node (disk 1 GiB/16384 entries) with default admit-on-write enabled.
+The historical AWS and local artifacts retain the exact profile/source measured.
 
 Badger keeps a generated history ID and native per-request writer fences; a new
 process incarnation fences old writers. It relies on the exclusive Badger lock,

@@ -1,0 +1,27 @@
+{
+  "verified_at": "2026-10-28T18:15:22.459049+00:00",
+  "terraform_resources_remaining": 0,
+  "test_instances_terminated": 1,
+  "test_volumes_remaining": 0,
+  "tagged_network_resources_remaining": 0,
+  "test_buckets_absent": 2,
+  "node_role_and_profile_absent": true,
+  "iam": {
+    "revoked_at": "2026-10-28T18:15:51.977634+00:00",
+    "temporary_inline_grants_removed": 2,
+    "temporary_boundary_deleted": true,
+    "original_managed_policies_unchanged": 10,
+    "original_inline_policies_restored": true,
+    "original_trust_and_boundary_unchanged": true
+  },
+  "root_cli_logged_out": true,
+  "bootstrap_state_outside_plan": true,
+  "terraform_resources_deleted": 20,
+  "cost_window": {
+    "launch": "2026-10-28T17:41:22+00:00",
+    "cleanup_finished": "2026-10-28T18:12:13.559011+00:00",
+    "upper_hours": "0.5143219475",
+    "compute_ebs_ipv4_estimate_usd": "0.06548868403023630136986301368",
+    "not_final_bill": true
+  }
+}

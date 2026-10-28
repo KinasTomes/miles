@@ -2,8 +2,9 @@
 
 Task: W03-HUNG-02. Runtime composition, LIST/DELETE and authoritative event producers
 are now integrated after merged PR #41/#42. The complete direct-S3 versus
-single-node Miles Warm baseline still needs a dedicated real AWS run, as described
-in [the runbook](warm-harness.md). No further task is a code prerequisite.
+single-node Miles Warm baseline has completed its dedicated real AWS run:
+[results, raw artifacts and cleanup](warm-aws-results.md). No further task is
+a code prerequisite for this preliminary Badger/Warm acceptance.
 
 The HTTP fixture in `internal/benchmark/run_test.go` is a protocol test, not a
 fake performance baseline. It exercises the installed S3 SDK, signed requests,
@@ -91,11 +92,29 @@ explicit HTTPS, temporary-session file and KMS key for benchmark mode. Full proc
 CLI checks verify PUT/GET/HEAD/Range/LIST/DELETE and bytes across restart; they also
 exercise lost backend readiness, invalid backend identity and graceful shutdown.
 
-The dedicated [real AWS run and cleanup plan](warm-aws-run-plan.md) is prepared
-for approval; code integration no longer waits for another task. Real AWS evidence,
-backup30 and the paired preliminary Badger/Warm performance measurements are still
-pending approval/execution. Keep the task open until those artifacts exist.
+### Real S3 and Miles Warm on dedicated EC2
 
-No AWS resources were created or resumed. No direct AWS or Miles Warm performance
-numbers, R1/R2 proof, backup30 run, cost saving or target throughput is claimed.
-The task must remain open until the missing real paired-run artifacts exist.
+Clean source `590b1c6` completed backup30 on real S3 with SSE-KMS and native
+Badger producers. Concurrency 1/4 × three trials × two targets: 12 passed runs,
+7596 samples, 4320 fully verified GETs, zero failures. All raw hashes were
+independently checked after export. Graceful shutdown and retained pack/index/
+Badger observations are in the [results](warm-aws-results.md); exact raw samples,
+tool versions, binary hashes, dataset and executed orchestration are preserved.
+
+The approved test resources/data were deleted after export. Independent inventory
+verified EC2 terminated, EBS/buckets/network/runtime IAM absent, temporary grants
+revoked and root CLI logged out. Flex CPU variability, same-host clients,
+different transport paths, fixed trial order and retained async work are explicit
+limits. This closes the W3 measurement gap without claiming final R1/R2,
+Cloud/Edge, physical GC, target throughput or savings.
+
+The subsequent #43 merge preserves the measured memory-only/no-admit-on-write
+benchmark profile and integrates the memory/disk cache node for local mode.
+The historical smoke artifacts above describe their original commits, not the
+new disk-cache profile; current smoke declarations were updated accordingly.
+After that merge, `make check`, race on app/cache/readpath/object/write,
+`make test-local`, and the paired direct-Moto/Miles C1/C4 smoke all passed.
+Each paired smoke run again verified 36 complete GET hashes with zero failures.
+The startup regression checks the bounded local disk tier, its shutdown/restart
+ownership, and the absence of any disk cache in benchmark mode.
+Review/merge still precedes marking the task Done.
