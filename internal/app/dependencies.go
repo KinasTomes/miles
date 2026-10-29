@@ -12,6 +12,7 @@ import (
 
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
+	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/fake"
 )
@@ -22,6 +23,7 @@ type Dependencies struct {
 	Metadata  storage.MetadataStore
 	Packs     storage.PackStore
 	Cache     storage.Cache
+	Objects   *object.Service // real Warm service in local/benchmark mode; absent in fixture/runtime modes
 	Probe     func(context.Context) error
 	Close     func() error
 	S3Handler func(*Admission) http.Handler
@@ -33,13 +35,13 @@ type Dependencies struct {
 
 var ErrRuntimeUnavailable = errors.New("runtime storage and validated clock adapters are not configured")
 
-// Bootstrap requires explicit dev/local mode for development identities/storage.
+// Bootstrap requires explicit dev/local/benchmark mode for development identities/storage.
 // Runtime stays unready until the metadata/storage/clock owners wire real adapters.
 func Bootstrap(c config.Startup) (Dependencies, error) {
 	if err := c.Validate(); err != nil {
 		return Dependencies{}, err
 	}
-	if c.Mode == "local" {
+	if c.Mode == "local" || c.Mode == "benchmark" {
 		return bootstrapLocal(c)
 	}
 	if c.Mode != "dev" {

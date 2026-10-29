@@ -1,0 +1,50 @@
+[
+  {
+    "path": "c1-t1/direct-result.json",
+    "sha256": "14eb0f5211497ce97d007c6e0aeaa7b806677eff9e048067c570a8e63ad81f93"
+  },
+  {
+    "path": "c1-t1/miles-result.json",
+    "sha256": "82a0ba30d09f566a82dc9085100ca90048dd52bf7a5ca72e5992a2c2aa9fd0e0"
+  },
+  {
+    "path": "c1-t2/direct-result.json",
+    "sha256": "0ecca3f979c5684486467f779f763cb615ecb94605318d864db16b8667262985"
+  },
+  {
+    "path": "c1-t2/miles-result.json",
+    "sha256": "d5ae7c3086e53ce6bde29db3bf5d7f0d8e2aac74016d3683c50d7f9091c58efe"
+  },
+  {
+    "path": "c1-t3/direct-result.json",
+    "sha256": "c4e8d003b983ba7a81d8a9e526ae955e458e30391425634f0daf9141e29e6b6c"
+  },
+  {
+    "path": "c1-t3/miles-result.json",
+    "sha256": "a2d86bfd1eaa96e7cc03fa95d14ad084b4defa9bb96a8f58044bab348b9768ce"
+  },
+  {
+    "path": "c4-t1/direct-result.json",
+    "sha256": "f3ba8eb023ef42984df4afadf4b5aa26d5ccc65a08174b13750b5826304402f5"
+  },
+  {
+    "path": "c4-t1/miles-result.json",
+    "sha256": "d134c8b8cb2a1f296b74ef48ced6ee2554f5c77ebe98139cd0d3a3141af43340"
+  },
+  {
+    "path": "c4-t2/direct-result.json",
+    "sha256": "55daab33d8e3e2b88ea1c922fcd48ede475ece124c37dce2d5977863e12272ca"
+  },
+  {
+    "path": "c4-t2/miles-result.json",
+    "sha256": "b7c751e8ee2162452e37c2cb40407210fb86c8cb033840360312348a9d8967a7"
+  },
+  {
+    "path": "c4-t3/direct-result.json",
+    "sha256": "97ed5bc880df37d497dea7747d029832a88364d2d6bd582ed4d4151e48d8e5be"
+  },
+  {
+    "path": "c4-t3/miles-result.json",
+    "sha256": "50fa7072b6f23a166b0bf18a09f4ffe7523d56576eb37e8c7a743a6ddf9337a2"
+  }
+]

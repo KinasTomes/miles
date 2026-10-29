@@ -22,7 +22,8 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// Local mode is an explicit single-node development installation, never an AWS profile.
+// Local/benchmark modes are single-node development installations. Local uses
+// dummy loopback credentials; benchmark requires explicit temporary AWS credentials.
 func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 	if err = os.MkdirAll(c.LocalDataPath, 0700); err != nil {
 		return d, err
@@ -31,7 +32,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 	if err != nil || !info.IsDir() || info.Mode().Perm() != 0700 {
 		return d, errors.New("local_data_path must be a non-symlink directory with permission 0700")
 	}
-	m, err := badger.Open(badger.Options{Path: filepath.Join(c.LocalDataPath, "metadata")})
+	m, err := badger.Open(badger.Options{Path: filepath.Join(c.LocalDataPath, "metadata"), RequireProducers: true})
 	if err != nil {
 		return d, err
 	}
@@ -60,16 +61,25 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 	if err != nil || stored.UserID != DevUser || stored.SystemAdmin {
 		return d, errors.New("local credential does not match installation; refusing to reseed metadata")
 	}
-	// No default credential chain, environment credentials, IMDS, proxy or AWS endpoint.
+	// No default credential chain, environment credentials, IMDS, proxy or redirects.
+	// Benchmark mode is separate opt-in HTTPS access with explicit temporary credentials.
+	backendCred := aws.Credentials{AccessKeyID: "mileslocal", SecretAccessKey: "mileslocal"}
+	if c.Mode == "benchmark" {
+		backendCred, err = benchmarkCredential(c.PackCredentialsFile)
+		if err != nil {
+			return d, err
+		}
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
+	transport.DisableCompression = true
 	client := awss3.New(awss3.Options{Region: c.Region, BaseEndpoint: aws.String(c.PackEndpoint), UsePathStyle: true,
 		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
-			return aws.Credentials{AccessKeyID: "mileslocal", SecretAccessKey: "mileslocal"}, nil
+			return backendCred, nil
 		}),
 		HTTPClient: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, RetryMaxAttempts: 1,
 	})
-	packs, err := packs3.New(client, c.PackBucket, "")
+	packs, err := packs3.New(client, c.PackBucket, c.PackKMSKeyID)
 	if err != nil {
 		transport.CloseIdleConnections()
 		return d, err
@@ -79,14 +89,29 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		transport.CloseIdleConnections()
 		return d, err
 	}
-	disk, err := cache.NewDisk(filepath.Join(c.LocalDataPath, "cache"), cache.Limits{CapacityBytes: 1 << 30, MaxEntries: 16384, MaxCopyBytes: 4 << 20})
-	if err != nil {
-		transport.CloseIdleConnections()
-		return d, err
+	var resident storage.Cache = lru
+	closeCache := func() error { return nil }
+	cachePolicy := config.DefaultCachePolicy()
+	if c.Mode == "benchmark" {
+		// Preserve the measured memory-only profile across local cache upgrades.
+		cachePolicy.AdmitOnWrite = false
+	} else {
+		disk, err := cache.NewDisk(filepath.Join(c.LocalDataPath, "cache"), cache.Limits{CapacityBytes: 1 << 30, MaxEntries: 16384, MaxCopyBytes: 4 << 20})
+		if err != nil {
+			transport.CloseIdleConnections()
+			return d, err
+		}
+		node, err := cache.NewNode("local", lru, disk)
+		if err != nil {
+			_ = disk.Close()
+			transport.CloseIdleConnections()
+			return d, err
+		}
+		resident, closeCache = node, node.Close
 	}
-	node, err := cache.NewNode("local", lru, disk)
+	objects, metadata, stopObjects, err := localObjects(m, packs, resident, cachePolicy)
 	if err != nil {
-		_ = disk.Close()
+		_ = closeCache()
 		transport.CloseIdleConnections()
 		return d, err
 	}
@@ -101,7 +126,27 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		}
 		return ctx.Err()
 	}
-	return Dependencies{Metadata: m, Packs: coordination.ProtectPackStore(packs), Cache: node, Probe: probe, DevCredentials: []DevCredential{cred}, Close: func() error { transport.CloseIdleConnections(); return errors.Join(node.Close(), m.Close()) }}, nil
+	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Close: func() error {
+		stopObjects()
+		transport.CloseIdleConnections()
+		return errors.Join(closeCache(), m.Close())
+	}}, nil
+}
+
+func benchmarkCredential(path string) (aws.Credentials, error) {
+	b, err := secretfile.Read(path, 16<<10)
+	if err != nil {
+		return aws.Credentials{}, err
+	}
+	var c struct {
+		AccessKey string `json:"access_key_id"`
+		Secret    string `json:"secret_access_key"`
+		Token     string `json:"session_token"`
+	}
+	if json.Unmarshal(b, &c) != nil || c.AccessKey == "" || c.Secret == "" || c.Token == "" {
+		return aws.Credentials{}, errors.New("benchmark requires explicit temporary credentials with session_token")
+	}
+	return aws.Credentials{AccessKeyID: c.AccessKey, SecretAccessKey: c.Secret, SessionToken: c.Token}, nil
 }
 
 func localCredential(path string, allowCreate bool) (DevCredential, error) {

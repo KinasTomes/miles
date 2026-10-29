@@ -122,8 +122,8 @@ type Metadata interface {
 }
 
 // CommitEvent is the input the outbox producer turns into the authoritative
-// event. The producer is not part of W03: the shared R2 journal belongs to
-// W04-HAI-02. Until then only tests supply a builder.
+// event. MetadataEvents uses the W04-HAI-02 producer; only isolated service tests
+// may substitute an envelope fixture.
 // Head contains the complete prepared descriptor with Revision still zero;
 // Revision is the resulting revision assigned by the publication transaction.
 type CommitEvent struct {

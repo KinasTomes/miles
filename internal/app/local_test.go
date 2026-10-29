@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/KinasTomes/miles/internal/cache"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/storage"
@@ -120,5 +121,72 @@ func TestLocalBootstrapReusesPreparedCredential(t *testing.T) {
 	stored, err := d.Metadata.GetCredential(context.Background(), prepared.AccessKeyID)
 	if err != nil || !stored.Active || stored.UserID != prepared.UserID {
 		t.Fatal("prepared credential was not provisioned")
+	}
+}
+
+func TestBenchmarkCredentialsRequirePrivateTemporarySession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	for _, data := range []string{`{}`, `{"access_key_id":"key","secret_access_key":"secret"}`} {
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := benchmarkCredential(path); err == nil {
+			t.Fatal("accepted incomplete or persistent credential")
+		}
+	}
+	if err := os.WriteFile(path, []byte(`{"access_key_id":"key","secret_access_key":"secret","session_token":"temporary"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := benchmarkCredential(path)
+	if err != nil || c.SessionToken != "temporary" {
+		t.Fatal("temporary session rejected", err)
+	}
+	os.Chmod(path, 0644)
+	if _, err := benchmarkCredential(path); err == nil {
+		t.Fatal("shared credential file accepted")
+	}
+}
+
+func TestLocalCacheUpgradePreservesBenchmarkProfile(t *testing.T) {
+	for _, mode := range []string{"local", "benchmark"} {
+		t.Run(mode, func(t *testing.T) {
+			c := config.DefaultStartup()
+			c.Mode, c.LocalDataPath, c.PackBucket = mode, filepath.Join(t.TempDir(), "runtime"), "packs"
+			c.PackEndpoint = "http://127.0.0.1:1"
+			if mode == "benchmark" {
+				c.PackEndpoint, c.PackKMSKeyID = "https://benchmark.invalid", "alias/aws/s3"
+				c.PackCredentialsFile = filepath.Join(t.TempDir(), "session.json")
+				if err := os.WriteFile(c.PackCredentialsFile, []byte(`{"access_key_id":"test","secret_access_key":"test","session_token":"test"}`), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d, err := Bootstrap(c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Close()
+			if mode == "local" {
+				node, ok := d.Cache.(*cache.Node)
+				if !ok || node.Stats().Disk.CapacityBytes != 1<<30 {
+					t.Fatal("local runtime lost its bounded disk cache")
+				}
+			} else {
+				if _, ok := d.Cache.(*cache.LRU); !ok {
+					t.Fatal("benchmark must retain the measured memory-only profile")
+				}
+				if _, err := os.Stat(filepath.Join(c.LocalDataPath, "cache")); !os.IsNotExist(err) {
+					t.Fatal("benchmark unexpectedly created a disk cache", err)
+				}
+			}
+			if err := d.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// Closing the composed runtime must release the node's disk ownership.
+			restarted, err := Bootstrap(c)
+			if err != nil {
+				t.Fatal("cache ownership leaked across shutdown", err)
+			}
+			defer restarted.Close()
+		})
 	}
 }

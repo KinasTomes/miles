@@ -5,6 +5,7 @@ Uses the AWS CLI with dummy credentials and explicit loopback endpoints only.
 Does not implement production adapters or claim AWS/R1/R2 acceptance.
 """
 import json
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -206,7 +207,7 @@ def runtime_fixture(binary, profile, mode, directory, env, local_storage=None):
                 if [b["Name"] for b in listed["Buckets"]] != [bucket]:
                     raise RuntimeError("logical bucket did not survive restart")
                 aws(gateway_env, gateway, "s3api", "get-object", "--bucket", bucket,
-                    "--key", "not-supported", str(directory / "unsupported.bin"), expect_error="NotImplemented")
+                    "--key", "missing", str(directory / "missing.bin"), expect_error="NoSuchKey")
                 backend_identity = dict(env, AWS_ACCESS_KEY_ID="A" * 20)
                 aws(backend_identity, gateway, "s3api", "list-buckets", expect_error="InvalidAccessKeyId")
                 if not old_credentials:
@@ -226,6 +227,33 @@ def runtime_fixture(binary, profile, mode, directory, env, local_storage=None):
                         aws(env, local_storage["pack_endpoint"], "s3api", "create-bucket",
                             "--bucket", local_storage["pack_bucket"], "--create-bucket-configuration",
                             "LocationConstraint=ap-southeast-1")
+                payload = directory / "gateway-object.bin"
+                payload.write_bytes(b"warm object persistence\n" * 4096)
+                key = "persisted/object.bin"
+                if not old_credentials:
+                    aws(gateway_env, gateway, "s3api", "put-object", "--bucket", bucket,
+                        "--key", key, "--body", str(payload))
+                downloaded = directory / "gateway-download.bin"
+                aws(gateway_env, gateway, "s3api", "get-object", "--bucket", bucket,
+                    "--key", key, str(downloaded))
+                if hashlib.sha256(downloaded.read_bytes()).digest() != hashlib.sha256(payload.read_bytes()).digest():
+                    raise RuntimeError("object GET hash changed across restart")
+                ranged = directory / "gateway-range.bin"
+                aws(gateway_env, gateway, "s3api", "get-object", "--bucket", bucket,
+                    "--key", key, "--range", "bytes=7-99", str(ranged))
+                if ranged.read_bytes() != payload.read_bytes()[7:100]:
+                    raise RuntimeError("Range bytes do not match logical body")
+                head = json.loads(aws(gateway_env, gateway, "s3api", "head-object", "--bucket", bucket, "--key", key))
+                if head["ContentLength"] != payload.stat().st_size:
+                    raise RuntimeError("HEAD did not preserve logical length")
+                page = json.loads(aws(gateway_env, gateway, "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", "persisted/"))
+                if [o["Key"] for o in page.get("Contents", [])] != [key]:
+                    raise RuntimeError("LIST did not preserve committed object")
+                if old_credentials:
+                    aws(gateway_env, gateway, "s3api", "delete-object", "--bucket", bucket, "--key", key)
+                    page = json.loads(aws(gateway_env, gateway, "s3api", "list-objects-v2", "--bucket", bucket, "--prefix", "persisted/"))
+                    if page.get("Contents"):
+                        raise RuntimeError("DELETE did not hide the object")
                 if credentials["secret_access_key"] in log_path.read_text():
                     raise RuntimeError("runtime logged a credential")
             process.send_signal(signal.SIGTERM)
@@ -273,13 +301,12 @@ def main():
             pack_bucket = "miles-runtime-" + suffix
             aws(env, endpoints[1], "s3api", "create-bucket", "--bucket", pack_bucket,
                 "--create-bucket-configuration", "LocationConstraint=ap-southeast-1")
-            try:
-                local_storage = {"local_data_path": str(directory / "durable-local"),
-                                 "pack_endpoint": endpoints[1], "pack_bucket": pack_bucket}
-                for _ in range(2):
-                    runtime_fixture(binary, "edge", "local", directory, env, local_storage)
-            finally:
-                aws(env, endpoints[1], "s3api", "delete-bucket", "--bucket", pack_bucket)
+            local_storage = {"local_data_path": str(directory / "durable-local"),
+                             "pack_endpoint": endpoints[1], "pack_bucket": pack_bucket}
+            for _ in range(2):
+                runtime_fixture(binary, "edge", "local", directory, env, local_storage)
+            # Logical DELETE retains packs. The enclosing finally removes this
+            # disposable Moto container, never purges application recovery roots.
             cli = directory / "dsgctl"
             command(["go", "build", "-o", str(cli), "./cmd/dsgctl"], env, timeout=120)
             command([str(cli), "node", "drain"], env, expect_error="not supported")

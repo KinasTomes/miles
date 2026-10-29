@@ -1,0 +1,647 @@
+{
+  "schema_version": 1,
+  "status": "passed",
+  "kind": "preliminary-real-s3-badger-warm",
+  "source_commit": "590b1c6c604446b13d843a49fc211a43d95ab44d",
+  "source_clean": true,
+  "started_at": "2026-10-28T18:02:34.057771407Z",
+  "finished_at": "2026-10-28T18:11:09.747977111Z",
+  "runs": 12,
+  "pairs": 6,
+  "samples": 7596,
+  "verified_full_file_gets": 4320,
+  "failed_samples": 0,
+  "manifest_sha256": "04014dd767e799d9f70081536d01c988fa6a02c0b7653c34db11a48c9abc1556",
+  "dataset_profile": "backup30",
+  "dataset_seed": "miles-w02-v1",
+  "dataset_files": 90,
+  "dataset_bytes": 754994670,
+  "binary_sha256": {
+    "miles": "76d3dd1081593a3f162ccbad38ffd52e0100734cdc8ef003ab8efadcea578456",
+    "warmbench": "ead7b9930d3a29b5373532c261f20383df5b148d7e8edfeb6828cbfe43a43eb4",
+    "datasetgen": "2158cb74df7d5486327b8a6fac0c8f5ef97859b94d5848c633259f256198b81f"
+  },
+  "host": {
+    "instance_type": "m7i-flex.large",
+    "region": "ap-southeast-1",
+    "cpu": "Intel(R) Xeon(R) Platinum 8488C",
+    "memory": "MemTotal:        7970440 kB",
+    "kernel": "6.1.189-236.399.amzn2023.x86_64",
+    "aws_cli": "aws-cli/2.38.0 Python/3.9.25 Linux/6.1.189-236.399.amzn2023.x86_64 source/x86_64.amzn.2023"
+  },
+  "aggregation": "P95 is nearest-rank over pooled raw samples across three trials. Throughput is sum successful logical bytes / sum phase wall time, not average p95 or request-time sum.",
+  "aggregate_phases": [
+    {
+      "concurrency": 1,
+      "target": "direct",
+      "phase": "preflight-list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 48194998,
+      "sum_elapsed_ns": 133365758,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 1,
+      "target": "direct",
+      "phase": "put",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 129273902,
+      "sum_elapsed_ns": 29126423196,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 77763891.39024305
+    },
+    {
+      "concurrency": 1,
+      "target": "direct",
+      "phase": "head",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 20650340,
+      "sum_elapsed_ns": 4592248788,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 1,
+      "target": "direct",
+      "phase": "verify-get",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 138112409,
+      "sum_elapsed_ns": 28389681281,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 79781945.68587343
+    },
+    {
+      "concurrency": 1,
+      "target": "direct",
+      "phase": "list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 43573195,
+      "sum_elapsed_ns": 123978192,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 1,
+      "target": "direct",
+      "phase": "repeat-get-1",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 148362748,
+      "sum_elapsed_ns": 30476665357,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 74318629.79326147
+    },
+    {
+      "concurrency": 1,
+      "target": "direct",
+      "phase": "repeat-get-2",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 129776239,
+      "sum_elapsed_ns": 27575238124,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 82138330.04142511
+    },
+    {
+      "concurrency": 1,
+      "target": "direct",
+      "phase": "repeat-get-3",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 121484993,
+      "sum_elapsed_ns": 25711348231,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 88092774.81875198
+    },
+    {
+      "concurrency": 1,
+      "target": "direct",
+      "phase": "delete",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 26796671,
+      "sum_elapsed_ns": 5924786799,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 1,
+      "target": "direct",
+      "phase": "after-delete-list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 13828975,
+      "sum_elapsed_ns": 39839455,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 1,
+      "target": "miles",
+      "phase": "preflight-list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 973963,
+      "sum_elapsed_ns": 2788294,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 1,
+      "target": "miles",
+      "phase": "put",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 378991646,
+      "sum_elapsed_ns": 65117836982,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 34782850.82820075
+    },
+    {
+      "concurrency": 1,
+      "target": "miles",
+      "phase": "head",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 345239,
+      "sum_elapsed_ns": 81365090,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 1,
+      "target": "miles",
+      "phase": "verify-get",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 273563829,
+      "sum_elapsed_ns": 39161302616,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 57837300.05637257
+    },
+    {
+      "concurrency": 1,
+      "target": "miles",
+      "phase": "list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 3402537,
+      "sum_elapsed_ns": 8292758,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 1,
+      "target": "miles",
+      "phase": "repeat-get-1",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 226279264,
+      "sum_elapsed_ns": 35867247159,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 63149089.75197607
+    },
+    {
+      "concurrency": 1,
+      "target": "miles",
+      "phase": "repeat-get-2",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 234124635,
+      "sum_elapsed_ns": 34871604827,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 64952101.32245744
+    },
+    {
+      "concurrency": 1,
+      "target": "miles",
+      "phase": "repeat-get-3",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 232150273,
+      "sum_elapsed_ns": 35659139247,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 63517629.92121446
+    },
+    {
+      "concurrency": 1,
+      "target": "miles",
+      "phase": "delete",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 8307085,
+      "sum_elapsed_ns": 1928396282,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 1,
+      "target": "miles",
+      "phase": "after-delete-list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 1040235,
+      "sum_elapsed_ns": 3062149,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 4,
+      "target": "direct",
+      "phase": "preflight-list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 58145797,
+      "sum_elapsed_ns": 134994509,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 4,
+      "target": "direct",
+      "phase": "put",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 175983293,
+      "sum_elapsed_ns": 8959366454,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 252806269.46437436
+    },
+    {
+      "concurrency": 4,
+      "target": "direct",
+      "phase": "head",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 21212237,
+      "sum_elapsed_ns": 1125363819,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 4,
+      "target": "direct",
+      "phase": "verify-get",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 93053162,
+      "sum_elapsed_ns": 5960568754,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 379994611.8363322
+    },
+    {
+      "concurrency": 4,
+      "target": "direct",
+      "phase": "list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 25502312,
+      "sum_elapsed_ns": 71388096,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 4,
+      "target": "direct",
+      "phase": "repeat-get-1",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 95949190,
+      "sum_elapsed_ns": 5983291082,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 378551532.7532581
+    },
+    {
+      "concurrency": 4,
+      "target": "direct",
+      "phase": "repeat-get-2",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 92480568,
+      "sum_elapsed_ns": 6012086211,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 376738444.9437663
+    },
+    {
+      "concurrency": 4,
+      "target": "direct",
+      "phase": "repeat-get-3",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 92037930,
+      "sum_elapsed_ns": 5971557397,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 379295359.5552621
+    },
+    {
+      "concurrency": 4,
+      "target": "direct",
+      "phase": "delete",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 37214860,
+      "sum_elapsed_ns": 1593354057,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 4,
+      "target": "direct",
+      "phase": "after-delete-list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 15407240,
+      "sum_elapsed_ns": 44844071,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 4,
+      "target": "miles",
+      "phase": "preflight-list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 962058,
+      "sum_elapsed_ns": 2768679,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 4,
+      "target": "miles",
+      "phase": "put",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 1007835481,
+      "sum_elapsed_ns": 43101368281,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 52550164.88649278
+    },
+    {
+      "concurrency": 4,
+      "target": "miles",
+      "phase": "head",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 1363463,
+      "sum_elapsed_ns": 38434513,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 4,
+      "target": "miles",
+      "phase": "verify-get",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 251352883,
+      "sum_elapsed_ns": 9667129683,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 234297468.25296623
+    },
+    {
+      "concurrency": 4,
+      "target": "miles",
+      "phase": "list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 3448866,
+      "sum_elapsed_ns": 8884991,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 4,
+      "target": "miles",
+      "phase": "repeat-get-1",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 237782926,
+      "sum_elapsed_ns": 9292927631,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 243732018.57768777
+    },
+    {
+      "concurrency": 4,
+      "target": "miles",
+      "phase": "repeat-get-2",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 232366792,
+      "sum_elapsed_ns": 9163569081,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 247172688.9358297
+    },
+    {
+      "concurrency": 4,
+      "target": "miles",
+      "phase": "repeat-get-3",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 235322036,
+      "sum_elapsed_ns": 9261837228,
+      "sum_successful_logical_bytes": 2264984010,
+      "successful_logical_bytes_per_second": 244550185.26481926
+    },
+    {
+      "concurrency": 4,
+      "target": "miles",
+      "phase": "delete",
+      "trials": 3,
+      "samples": 270,
+      "failed": 0,
+      "pooled_p95_ns": 44843711,
+      "sum_elapsed_ns": 1907068986,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    },
+    {
+      "concurrency": 4,
+      "target": "miles",
+      "phase": "after-delete-list",
+      "trials": 3,
+      "samples": 3,
+      "failed": 0,
+      "pooled_p95_ns": 1067787,
+      "sum_elapsed_ns": 3145644,
+      "sum_successful_logical_bytes": 0,
+      "successful_logical_bytes_per_second": 0.0
+    }
+  ],
+  "retained_installations": [
+    {
+      "trial": "c1-t1",
+      "start_pack_objects": 0,
+      "end_pack_objects": 122,
+      "end_pack_bytes": 260116123,
+      "retained_categories": {
+        "packs-index": {
+          "objects": 61,
+          "bytes": 22997
+        },
+        "packs": {
+          "objects": 61,
+          "bytes": 260093126
+        }
+      },
+      "badger_file_bytes": 4153721,
+      "badger_allocated_bytes": 3137536,
+      "gateway_shutdown_complete": true,
+      "debt": "Producer payload/outbox retained locally. No exporter/seal/checkpoint; payload/outbox bytes not separately counted."
+    },
+    {
+      "trial": "c1-t2",
+      "start_pack_objects": 0,
+      "end_pack_objects": 122,
+      "end_pack_bytes": 260116123,
+      "retained_categories": {
+        "packs-index": {
+          "objects": 61,
+          "bytes": 22997
+        },
+        "packs": {
+          "objects": 61,
+          "bytes": 260093126
+        }
+      },
+      "badger_file_bytes": 4134878,
+      "badger_allocated_bytes": 3117056,
+      "gateway_shutdown_complete": true,
+      "debt": "Producer payload/outbox retained locally. No exporter/seal/checkpoint; payload/outbox bytes not separately counted."
+    },
+    {
+      "trial": "c1-t3",
+      "start_pack_objects": 0,
+      "end_pack_objects": 122,
+      "end_pack_bytes": 260116123,
+      "retained_categories": {
+        "packs-index": {
+          "objects": 61,
+          "bytes": 22997
+        },
+        "packs": {
+          "objects": 61,
+          "bytes": 260093126
+        }
+      },
+      "badger_file_bytes": 4126075,
+      "badger_allocated_bytes": 3108864,
+      "gateway_shutdown_complete": true,
+      "debt": "Producer payload/outbox retained locally. No exporter/seal/checkpoint; payload/outbox bytes not separately counted."
+    },
+    {
+      "trial": "c4-t1",
+      "start_pack_objects": 0,
+      "end_pack_objects": 122,
+      "end_pack_bytes": 260116769,
+      "retained_categories": {
+        "packs-index": {
+          "objects": 61,
+          "bytes": 23058
+        },
+        "packs": {
+          "objects": 61,
+          "bytes": 260093711
+        }
+      },
+      "badger_file_bytes": 4150298,
+      "badger_allocated_bytes": 3133440,
+      "gateway_shutdown_complete": true,
+      "debt": "Producer payload/outbox retained locally. No exporter/seal/checkpoint; payload/outbox bytes not separately counted."
+    },
+    {
+      "trial": "c4-t2",
+      "start_pack_objects": 0,
+      "end_pack_objects": 122,
+      "end_pack_bytes": 260116769,
+      "retained_categories": {
+        "packs-index": {
+          "objects": 61,
+          "bytes": 23058
+        },
+        "packs": {
+          "objects": 61,
+          "bytes": 260093711
+        }
+      },
+      "badger_file_bytes": 4127479,
+      "badger_allocated_bytes": 3108864,
+      "gateway_shutdown_complete": true,
+      "debt": "Producer payload/outbox retained locally. No exporter/seal/checkpoint; payload/outbox bytes not separately counted."
+    },
+    {
+      "trial": "c4-t3",
+      "start_pack_objects": 0,
+      "end_pack_objects": 122,
+      "end_pack_bytes": 260116769,
+      "retained_categories": {
+        "packs-index": {
+          "objects": 61,
+          "bytes": 23058
+        },
+        "packs": {
+          "objects": 61,
+          "bytes": 260093711
+        }
+      },
+      "badger_file_bytes": 4133511,
+      "badger_allocated_bytes": 3117056,
+      "gateway_shutdown_complete": true,
+      "debt": "Producer payload/outbox retained locally. No exporter/seal/checkpoint; payload/outbox bytes not separately counted."
+    }
+  ],
+  "limitations": [
+    "Client and Miles share this one EC2. Direct client uses HTTPS; Miles client uses loopback HTTP and backend HTTPS.",
+    "Real-clock local admission only; no distributed R1/R2 or UTC uncertainty proof.",
+    "m7i-flex CPU baseline is 40%, with opportunistic burst; record observed CPU and do not apply fixed-performance targets.",
+    "Outbox/payload retained in Badger, exporter/seal/checkpoint absent. Logical bytes are not billed/backend wire bytes.",
+    "No final performance target or savings claim; S3 internal cache is uncontrolled.",
+    "Direct runs first in every pair; order is not randomized. No CPU utilization/throttling time series was collected.",
+    "Direct benchmark prefixes are fresh; tools and evidence share that bucket outside the run prefix. Physical pack bucket is verified empty before each new Miles installation.",
+    "Physical retained pack/index and allocated Badger sizes are end snapshots; these are not high-water marks, backend wire bytes, billing or achieved savings."
+  ]
+}

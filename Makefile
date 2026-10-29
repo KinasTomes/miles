@@ -10,6 +10,7 @@ build:
 	mkdir -p bin
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/miles ./cmd/miles
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/dsgctl ./cmd/dsgctl
+	$(GO) build -trimpath -o bin/warmbench ./cmd/warmbench
 
 fmt:
 	$(GOFMT) -w cmd internal configs/pricing

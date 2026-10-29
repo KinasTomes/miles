@@ -33,12 +33,14 @@ File JSON tối đa64KiB, chỉ nhận các fields dưới; unknown/duplicate/nu
 | Field | Default | Điều kiện |
 |---|---|---|
 | `profile` | `edge` | `cloud` hoặc `edge`, cùng core |
-| `mode` | `runtime` | `dev` volatile, `local` durable dev, `runtime` chưa nối Cloud; development chỉ bind loopback |
-| `s3_address` | không mở | Literal loopback IP:port; chỉ dev/local, runtime bị từ chối ngay khi validate. Gắn CreateBucket/HeadBucket/ListBuckets; operation khác trả NotImplemented sau auth |
+| `mode` | `runtime` | `dev` volatile, `local` durable dev/Moto, `benchmark` Badger + S3 HTTPS thật, `runtime` chưa nối Cloud; development chỉ bind loopback |
+| `s3_address` | không mở | Literal loopback IP:port; dev/local/benchmark, runtime bị từ chối khi validate. Local/benchmark gắn bucket và object P0; dev fixture chỉ gắn bucket |
 | `region` | `ap-southeast-1` | Region SigV4 của gateway và local pack client |
-| `local_data_path` | không có | Bắt buộc ở local; directory không symlink, permission 0700 |
-| `pack_endpoint` | không có | Chỉ local: HTTP literal loopback với port explicit, không userinfo/path/query |
-| `pack_bucket` | không có | Bucket vật lý đã tạo sẵn trên S3 local; khác các bucket logical của gateway |
+| `local_data_path` | không có | Bắt buộc ở local/benchmark; directory không symlink, permission 0700 |
+| `pack_endpoint` | không có | Local: HTTP literal loopback với port explicit; benchmark: HTTPS origin. Không userinfo/path/query |
+| `pack_bucket` | không có | Bucket vật lý đã tạo sẵn; khác các bucket logical của gateway |
+| `pack_credentials_file` | không có | Chỉ benchmark: file 0600, regular/non-symlink, credential tạm có session_token; không default AWS provider |
+| `pack_kms_key_id` | không có | Chỉ benchmark: explicit SSE-KMS key, cùng giả định encryption với direct baseline |
 | `health_address` | `127.0.0.1:9100` | Literal loopback/private IPv4/IPv6; reject wildcard/public/DNS names. Port0 dùng cho disposable tests, địa chỉ thật được log |
 | `shutdown_seconds` |1800|1..1800; hết hạn trả lỗi incomplete, không claim flush xong |
 
@@ -72,6 +74,10 @@ Readiness local probe đọc credential record từ Badger, HEAD bucket vật l�
 
 Mỗi S3 request nhận hard context deadline 30 phút ngay tại admission; read/write socket deadline dùng cùng mốc, không refresh theo traffic/retry. Không dùng `readyz` để thay request gate. Drain chặn request mới bằng S3 XML ServiceUnavailable/503; request đã nhận giữ admission đến khi handler trả về, kể cả context đã hủy. `Dependencies.Packs` chỉ expose `coordination.ProtectPackStore`: DeletePack/ChangeStorageClass vẫn bị chặn như PR #37; raw SDK adapter không được trả ra consumer. S3 wiring nằm tại composition root `cmd/miles/s3.go`; API owner bổ sung handler tại đây, không để package app phụ thuộc ngược vào API.
 
+Local/benchmark hiện nối PUT/GET/HEAD/Range/LIST/DELETE qua object service thật, managed writer, SDK packs và WarmReader. Badger mở RequireProducers=true; producer ghi immutable payload/outbox trong cùng transaction. Mỗi mutation có fence riêng, history được lưu bền vững, incarnation mới chặn writer cũ. Quota dev khởi tạo 1 GiB một lần, không reset usage khi restart. Upgrade installation cũ chỉ tự thêm accounting/namespace khi không có record object/upload; store đã có dữ liệu mà thiếu baseline phải dừng, không coi là rỗng. Read-ahead/budgets và validated policy cố định nằm trong `internal/app/local_objects.go`; local mode dùng memory/disk cache node và default admit-on-write từ #43. Benchmark mode giữ memory LRU 64 MiB, không disk và tắt admit-on-write để giữ profile đã đo. Chưa có Admin policy updates hoặc exporter/epoch sealing/physical GC.
+
+`configs/benchmark.example.json` là cấu hình chạy S3 HTTPS có chủ đích; local mode vẫn từ chối AWS endpoint và credential thật. Benchmark mode là single-node development, không mở production runtime hoặc cấp distributed UTC/R1/R2 proof. Provisioning, phí và cleanup dữ liệu test cần duyệt riêng. Xem [benchmark runbook](../../benchmarks/warm-harness.md).
+
 ## Nền CLI Admin
 
 ```sh
@@ -104,7 +110,7 @@ Một lượt tạo Compose project UUID riêng, pinned multi-architecture image
 1. DynamoDB Local: tạo fixture table riêng; transaction head/event all-or-none, conditional conflict không đổi head/không leak event; consistent lookup và cleanup.
 2. Moto test S3: bucket riêng, conditional-create không overwrite, HEAD length, Range/If-Match, precondition failure và cleanup.
 3. Build/run binary thật: Edge/dev và Cloud/dev ready200; Cloud/runtime thiếu adapters ready503 nhưng health200; metrics đúng mode; SIGTERM exit0 và log shutdown complete.
-4. Edge/local: Badger + SDK S3 local + LRU + S3 listener thật. AWS CLI ký bằng dev credential để CreateBucket/HEAD/List; restart giữ credential/bucket, backend mất → ready503/health200, metadata request vẫn dùng gate riêng. Unsupported object operation và credential backend không được giả success. CLI command chưa hỗ trợ exit nonzero.
+4. Edge/local: Badger + SDK S3 local + LRU + S3 listener thật. AWS CLI ký CreateBucket, PUT/GET/HEAD/Range/LIST/DELETE; GET đối chiếu hash và đọc lại sau restart. Restart giữ credential/bucket/object, backend mất → ready503/health200, metadata request vẫn dùng gate riêng. Missing object trả NoSuchKey, credential backend bị từ chối. CLI command chưa hỗ trợ exit nonzero.
 5. `finally` teardown đúng Compose project, dừng process và xóa temporary files; không dùng persistent volumes hoặc mount host credentials.
 
 Runner loại AWS environment/profile/session/role configuration được kế thừa, chỉ dùng dummy credentials và explicitly validated `http://127.0.0.1:<port>` endpoints. Credential/config files trỏ temp/devnull, metadata credential lookup tắt. Không cho endpoint AWS/public/private-remote, không dùng shared developer table/bucket. DynamoDB telemetry tắt. Không chạy fixture runner lên production hoặc thay endpoint để trỏ AWS thật.

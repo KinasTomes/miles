@@ -295,6 +295,9 @@ func chunkKey(k s.ChunkKey) string { return key("chunks", k.Domain, k.Hash) }
 func packKey(k s.PackRef) string   { return key("packs", k.ID, k.Generation) }
 func headKey(k s.ObjectKey) string { return key("heads", k.Bucket, k.BucketID, k.Key) }
 func (m *Store) fence(t *db.Txn, w s.WriterFence) error {
+	if err := m.localFence(t, w); err != nil {
+		return err
+	}
 	v, err := optional[s.WriterLease](t, key("writers", w.LeaseID))
 	if err != nil {
 		return err
