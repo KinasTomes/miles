@@ -17,6 +17,9 @@ func Run(ctx context.Context, c config.Startup, d Dependencies, output io.Writer
 	if err := c.Validate(); err != nil {
 		return closeDependencies(d, err)
 	}
+	if err := d.Operations.validate(); err != nil {
+		return closeDependencies(d, err)
+	}
 	if ctx.Err() != nil {
 		return closeDependencies(d, nil)
 	}
@@ -38,6 +41,13 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	defer ln.Close()
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	h := observability.NewHealth(d.Probe, admission.Draining, c.Mode != "runtime")
+	var operationalReady func() bool
+	var operationMetrics *observability.Operations
+	if d.Operations != nil {
+		operationalReady = d.Operations.Registry.Healthy
+		operationMetrics = d.Operations.Metrics
+	}
+	h.AttachOperations(operationMetrics, func() int64 { n, _ := admission.Status(); return n }, operationalReady)
 	health := &http.Server{Handler: h.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 150 * time.Second, MaxHeaderBytes: 16 << 10}
 	servers := []*http.Server{health}
 	listeners := []net.Listener{ln}
@@ -57,6 +67,11 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	defer cancel()
 	probeDone := make(chan struct{})
 	go func() { defer close(probeDone); h.Run(probeCtx) }()
+	var operationsDone chan error
+	if d.Operations != nil {
+		operationsDone = make(chan error, 1)
+		go func() { operationsDone <- d.Operations.run(probeCtx, h, admission) }()
+	}
 	done := make(chan error, len(servers))
 	for i, s := range servers {
 		listener := listeners[i]
@@ -72,7 +87,15 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	}
 	var serveErr error
 	exited := 0
+	operationsExited := false
 	select {
+	case err := <-operationsDone:
+		operationsExited = true
+		if ctx.Err() == nil {
+			serveErr = errors.Join(errors.New("operational workers stopped"), err)
+		} else {
+			serveErr = err
+		}
 	case serveErr = <-done:
 		if errors.Is(serveErr, http.ErrServerClosed) {
 			serveErr = nil
@@ -84,6 +107,12 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	cancel()
 	shutdown, stop := context.WithTimeout(context.Background(), c.ShutdownTimeout())
 	defer stop()
+	var drainErr error
+	if d.Operations != nil {
+		call, done := context.WithTimeout(shutdown, 5*time.Second)
+		_, drainErr = d.Operations.Registry.RequestDrain(call, d.Operations.Registry.Identity.ID, admission)
+		done()
+	}
 	workErr := admission.Wait(shutdown)
 	var httpErr error
 	for _, s := range servers {
@@ -106,7 +135,15 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	case <-shutdown.Done():
 		probeErr = shutdown.Err()
 	}
-	if err := errors.Join(workErr, httpErr, probeErr); err != nil {
+	if operationsDone != nil && !operationsExited {
+		select {
+		case err := <-operationsDone:
+			probeErr = errors.Join(probeErr, err)
+		case <-shutdown.Done():
+			probeErr = errors.Join(probeErr, shutdown.Err())
+		}
+	}
+	if err := errors.Join(workErr, httpErr, probeErr, drainErr); err != nil {
 		// Do not close storage underneath work that has not reached quiescence.
 		logger.Error("incomplete shutdown", "error", err.Error())
 		return errors.Join(serveErr, fmt.Errorf("incomplete shutdown: %w", err))

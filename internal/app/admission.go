@@ -39,6 +39,11 @@ func (a *Admission) Acquire() (release func(), ok bool) {
 }
 func (a *Admission) Drain()         { a.mu.Lock(); a.draining = true; a.mu.Unlock() }
 func (a *Admission) Draining() bool { a.mu.Lock(); defer a.mu.Unlock(); return a.draining }
+func (a *Admission) Status() (int64, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return int64(a.active), a.draining
+}
 func (a *Admission) Wait(ctx context.Context) error {
 	a.mu.Lock()
 	if !a.draining {

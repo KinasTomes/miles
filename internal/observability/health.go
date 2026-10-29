@@ -12,15 +12,18 @@ const maxProbeAge = 5 * time.Second
 // Health caches dependency/clock observations; HTTP requests never run probes.
 // Draining is an independent process gate, not a replacement for R1 admission.
 type Health struct {
-	started     time.Time
-	development bool
-	failures    uint64
-	mu          sync.RWMutex
-	checkedAt   time.Time
-	usable      bool
-	probe       func(context.Context) error
-	draining    func() bool
-	now         func() time.Time
+	started          time.Time
+	development      bool
+	failures         uint64
+	mu               sync.RWMutex
+	checkedAt        time.Time
+	usable           bool
+	probe            func(context.Context) error
+	draining         func() bool
+	now              func() time.Time
+	operations       *Operations
+	active           func() int64
+	operationalReady func() bool
 }
 
 func NewHealth(probe func(context.Context) error, draining func() bool, development bool) *Health {
@@ -28,6 +31,12 @@ func NewHealth(probe func(context.Context) error, draining func() bool, developm
 }
 func (h *Health) Ready() bool {
 	if h.draining != nil && h.draining() {
+		return false
+	}
+	h.mu.RLock()
+	operationalReady := h.operationalReady
+	h.mu.RUnlock()
+	if operationalReady != nil && !operationalReady() {
 		return false
 	}
 	h.mu.RLock()
@@ -47,6 +56,16 @@ func (h *Health) refresh(ctx context.Context) {
 		h.failures++
 	}
 	h.mu.Unlock()
+}
+
+// AttachOperations is startup wiring. Callbacks read cached/process-local state,
+// never metadata or CloudWatch. Runtime's existing dependency guard stays intact.
+func (h *Health) AttachOperations(o *Operations, active func() int64, ready func() bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.operations = o
+	h.active = active
+	h.operationalReady = ready
 }
 
 // Run performs bounded probes outside request handlers. Probe must honor ctx.
