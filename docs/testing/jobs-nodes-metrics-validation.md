@@ -20,7 +20,7 @@ Targeted tests with `-race -count=1` cover jobs, both metadata backends, runtime
 observability, adminclient and dsgctl. Native tests use an explicitly selected
 DynamoDB Local loopback endpoint and per-test tables with scoped cleanup.
 
-Shared backend contract has eight cases on **each** backend:
+Shared backend contract has ten cases on **each** backend:
 
 1. Peer reads the same job; policy changes do not change its pinned revision;
    missing history fails before claim instead of selecting current.
@@ -34,6 +34,10 @@ Shared backend contract has eight cases on **each** backend:
    draining nodes cannot begin another step.
 8. Bounded continuation pages preserve items; public Job.View omits worker capability
    and internal params/checkpoint fields.
+9. Checkpoint without a persisted pending step fails for running/cancelling jobs,
+   preserving the entire record; an empty/wrong ID also cannot settle a pending step.
+10. Takeover without a retained safe checkpoint fails for running/cancelling jobs,
+    preserving ownership/progress/state. Same-owner claim stays a no-op.
 
 Additional native DynamoDB test pauses at transaction dispatch, closes the old
 lease through another adapter, then submits the old claim. Its conditional write
@@ -57,6 +61,15 @@ Pinned CloudWatch SDK **v1.75.0** uses the existing AWS core/Smithy versions.
 CLI tests cover methods/paths/bodies for run/show/cancel/drain, list limits/cursors,
 private bearer file, invalid IDs/params/flags and unsupported routes. Existing
 transport tests retain TLS/loopback, redirect, response cap and error redaction checks.
+Missing/invalid job types print the supported types before attempting transport.
+
+Review regressions9/10 failed on `e95cc1b` against **both** Badger and native
+DynamoDB Local before the state-machine fix. The valid resume fixture now persists
+`begin_step` before its checkpoint; exact-step resume under a new fence still passes.
+The full finite metric inventory (all job types/states plus health/active-request
+series, with nonzero counters) exports in one batch. This is a CI guard against
+inventory growth exceeding the batch bound; no runtime warning threshold is needed
+for the current fixed67-series inventory.
 
 ## Reproduce
 

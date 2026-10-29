@@ -139,6 +139,31 @@ func TestCloudWatchNativeSDKLoopbackBatch(t *testing.T) {
 		t.Fatal(calls)
 	}
 }
+
+func TestCloudWatchFullMetricInventoryFitsOneBatch(t *testing.T) {
+	h := NewHealth(func(context.Context) error { return errors.New("dependency unavailable") }, nil, false)
+	o := new(Operations)
+	h.AttachOperations(o, func() int64 { return 2 }, nil)
+	h.refresh(context.Background()) // Give the dependency-failure counter a nonzero delta too.
+	for _, kind := range jobs.Types() {
+		for _, state := range jobs.States() {
+			o.JobUpdate(kind, state)
+		}
+	}
+	api := new(captureCloudWatch)
+	export, e := NewCloudWatch(api, "cloud")
+	if e != nil {
+		t.Fatal(e)
+	}
+	samples := h.Snapshot()
+	if e = export.Flush(context.Background(), time.Now(), samples); e != nil {
+		t.Fatalf("full metric inventory (%d series) cannot be exported: %v", len(samples), e)
+	}
+	if len(api.calls) != 1 || len(api.calls[0].MetricData) != len(samples) {
+		t.Fatal("full inventory was dropped or split")
+	}
+}
+
 func TestOperationsCardinalityAndNoBackendFromScrape(t *testing.T) {
 	probes := 0
 	h := NewHealth(func(context.Context) error { probes++; return nil }, nil, true)

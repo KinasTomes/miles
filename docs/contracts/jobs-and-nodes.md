@@ -39,14 +39,17 @@ lease-use/UTC proof and shared closure protocol. Badger's local fixture fence
 and the test fake lease are not distributed authority.
 
 1. `claim`: queued → running. Same-job takeover needs a new, higher fence in the
-   same service incarnation and a retained safe checkpoint. Cross-incarnation or
+   same service incarnation and a retained safe checkpoint JSON object; absent or
+   `null` checkpoints fail with `ErrReconciliation`, even before the first step.
+   An identical current-owner claim remains a no-op. Cross-incarnation or
    pending/unsettled work does not automatically resume.
 2. `begin_step`: persist a stable pending step ID **before** dispatch. R1/R2 intent,
    producer registration, pins and mutation reconciliation are still mandatory
    in the concrete executor; this marker cannot substitute for them.
-3. `checkpoint`: require that exact pending step ID, store progress/checkpoint and
-   clear the marker only after the trusted worker has settled/quiesced the work.
-   A cancelling job becomes cancelled here. `finish` rejects a pending marker.
+3. `checkpoint`: require a nonempty, exact persisted pending step ID, store
+   progress/checkpoint and clear the marker only after the trusted worker has
+   settled/quiesced the work. A cancelling job becomes cancelled here. `finish`
+   rejects a pending marker.
 4. `cancel`: queued → cancelled, running → cancelling. It never rolls back
    published chunks/packs or rewrites a terminal job. Client receipt202 is not
    proof of cancellation completion.
@@ -122,7 +125,8 @@ CLI transport supports `job ls/show/run/cancel`, `node ls/drain`. Lists accept
 `--limit`/`--cursor`; `job run <type>` accepts `--dry-run`, `--params-file` and optional
 `--policy-revision` (omitted captures current). Global endpoint/token/timeout flags
 precede the command. Token stays in a private0600 file, JSON request cap16KiB,
-params cap8KiB, no redirects/proxy, bounded/redacted responses. Unsupported server
+params cap8KiB, no redirects/proxy, bounded/redacted responses. Missing/invalid
+job types print the supported enum values without sending a request. Unsupported server
 routes and auth/transport errors exit nonzero, including mutations.
 
 ## Metrics / CloudWatch
@@ -134,7 +138,9 @@ object/user IDs. Scrapes perform no metadata or CloudWatch I/O.
 
 CloudWatch uses namespace `Miles/DSG`, profile=`cloud|edge`, one batch each60s,
 standard60s resolution and at most128 validated series. The current inventory
-is at most67 finite series, below the native1000-metric/1MiB limits. Counter deltas
+is at most67 finite series, below the native1000-metric/1MiB limits.
+The full-inventory export test must pass when adding names or enum values; it
+checks that every supported series fits one batch without drops. Counter deltas
 use Sum; gauges use Average/Maximum as observations, not a cluster total. Failed
 ACKs retain the unacknowledged delta; ambiguous acceptance can duplicate it. SDK
 hidden retries are disabled for export. This best-effort telemetry is not billing
