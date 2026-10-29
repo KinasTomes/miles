@@ -14,13 +14,16 @@ non-AWS hay R1/R2. Dependencies W03-HUNG-01 và W03-HUNG-03 đã merge (PR #30/#
 
 Các kiểm tra đã chạy tại worktree task:
 
-- `make check`: format/vet, toàn bộ Go tests, 18 Python tests, document-name check,
+- `make check`: format/vet, toàn bộ Go/Python tests, document-name check,
   build Miles/dsgctl/warmbench — pass. Proxy test opt-in được chạy riêng bên dưới,
   không coi skip mặc định của `go test ./...` là bằng chứng Nginx.
 - Terraform **1.15.2**, AWS provider **6.21.0**: init backend-disabled/readonly lock,
   validate, fmt và **31 mock cases** — pass. Có giữ datastore qua pause/resume,
   từ chối release không pin/compute dùng chung/single-AZ NAT, gateway không có
   S3Delete, KMS CreateGrant chỉ custom SLR và AWS resource.
+- Controller/release: **13/13** Python deployment tests, gồm real file-lock contention:
+  controller thứ hai ghi `controller-lock-held` rồi thoát; không đọc IMDS, gọi AWS,
+  dừng gateway hay ghi drain state.
 - `python3 -B -m unittest discover -s infra/terraform/cloud/scripts/tests -v`:
   **12/12** offline guard tests pass.
 - `MILES_EDGE_PROXY_TEST=1 go test -v -count=1 ./deploy/edge`: pass, real Nginx/TLS,
@@ -52,9 +55,10 @@ archive18.211.859bytes, hash/version ghi trong
 [summary](evidence/cloud-edge-deployment/summary.json) và
 [manifest](evidence/cloud-edge-deployment/manifest.json).
 [TLS/race log](evidence/cloud-edge-deployment/tls-proxy.log) ghi response65s pass;
-[checksums](evidence/cloud-edge-deployment/sha256sums.txt) được CI kiểm tra. Các
-file được đóng gói không đổi ở các commit tiếp theo; Terraform được kiểm riêng
-trên head mới, gồm ASG delete timeout45m lớn hơn controller budget35m.
+[checksums](evidence/cloud-edge-deployment/sha256sums.txt) được CI kiểm tra. Bằng chứng
+này thuộc source22374bb; review follow-up thêm log controller lock contention.
+CI `deployment-contracts` build/test lại release trên head mới. Terraform được kiểm
+riêng, gồm ASG delete timeout45m lớn hơn controller budget35m.
 
 ## Handoff trước live W5
 

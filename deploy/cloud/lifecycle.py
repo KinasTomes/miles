@@ -172,7 +172,11 @@ class Lifecycle:
             raise IncompleteDrain("lifecycle state directory must be private and owned by the controller")
         fd = os.open(STATE / "owner.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                event("controller-lock-held", completion="withheld")
+                raise
             while True:
                 try:
                     # IMDS exposes the TARGET steady state, not Terminating:Wait.

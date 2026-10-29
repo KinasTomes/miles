@@ -217,6 +217,16 @@ class DrainTests(unittest.TestCase):
             self.controller.run()
         drain.assert_called_once()
 
+    def test_second_controller_logs_lock_contention_without_side_effects(self):
+        with (lifecycle.STATE / "owner.lock").open("w") as owner:
+            lifecycle.fcntl.flock(owner, lifecycle.fcntl.LOCK_EX | lifecycle.fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):
+                self.controller.run()
+        lifecycle.event.assert_called_once_with("controller-lock-held", completion="withheld")
+        self.controller.metadata.assert_not_called()
+        self.assertEqual(self.actions, [])
+        self.assertFalse((lifecycle.STATE / "state.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
