@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/KinasTomes/miles/internal/api/admin"
+	"github.com/KinasTomes/miles/internal/jobs"
 )
 
 func TestOperationalCommandsUseBearerMethodAndWireSchema(t *testing.T) {
@@ -83,6 +84,21 @@ func TestOperationalInvalidArgumentsNeverReachTransport(t *testing.T) {
 		e := run(context.Background(), args, &out, &bytes.Buffer{})
 		if e == nil || e.Error() == "--token-file is required" || out.Len() != 0 {
 			t.Fatal(args, e)
+		}
+	}
+}
+
+func TestJobRunTypeErrorListsSupportedTypes(t *testing.T) {
+	for _, args := range [][]string{{"job", "run"}, {"job", "run", "unknown"}} {
+		var out bytes.Buffer
+		e := run(context.Background(), args, &out, &bytes.Buffer{})
+		if e == nil || !strings.Contains(e.Error(), "supported types:") || out.Len() != 0 {
+			t.Fatalf("args %v: error %v, output %q", args, e, out.String())
+		}
+		for _, kind := range jobs.Types() {
+			if !strings.Contains(e.Error(), string(kind)) {
+				t.Fatalf("missing supported type %q: %v", kind, e)
+			}
 		}
 	}
 }

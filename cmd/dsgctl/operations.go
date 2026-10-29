@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -43,7 +44,7 @@ func operationCommand(args []string) (method, path string, body []byte, err erro
 	}
 	if args[0] == "job" && args[1] == "run" {
 		if len(args) < 3 || !jobs.Type(args[2]).Valid() {
-			return "", "", nil, invalid
+			return "", "", nil, fmt.Errorf("invalid job type; supported types: %v", jobs.Types())
 		}
 		f := flag.NewFlagSet("job run", flag.ContinueOnError)
 		f.SetOutput(io.Discard)
