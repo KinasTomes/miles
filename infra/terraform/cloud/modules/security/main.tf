@@ -5,7 +5,7 @@ resource "aws_kms_key" "runtime" {
   lifecycle { prevent_destroy = true }
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
+    Statement = concat([{
       Sid       = "EnableAccountIAMPolicies"
       Effect    = "Allow"
       Principal = { AWS = "arn:aws:iam::${var.account_id}:root" }
@@ -18,7 +18,12 @@ resource "aws_kms_key" "runtime" {
       Action    = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"]
       Resource  = "*"
       Condition = { ArnEquals = { "kms:EncryptionContext:aws:logs:arn" = "arn:aws:logs:${var.region}:${var.account_id}:log-group:/${var.name}/runtime" } }
-    }]
+      }], [for statement in [
+      { Sid = "AutoScalingEncryptedVolumes", Effect = "Allow", Principal = { AWS = var.autoscaling_role_arn },
+      Action = ["kms:Encrypt", "kms:Decrypt", "kms:ReEncrypt*", "kms:GenerateDataKey*", "kms:DescribeKey"], Resource = "*" },
+      { Sid = "AutoScalingEBSGrants", Effect = "Allow", Principal = { AWS = var.autoscaling_role_arn },
+      Action = ["kms:CreateGrant"], Resource = "*", Condition = { Bool = { "kms:GrantIsForAWSResource" = "true" } } }
+    ] : statement if var.autoscaling_role_arn != null])
   })
 }
 resource "aws_kms_alias" "runtime" {

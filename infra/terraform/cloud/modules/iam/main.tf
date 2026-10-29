@@ -42,6 +42,11 @@ resource "aws_iam_role_policy" "runtime" {
       { Sid = "Logs", Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"], Resource = "${var.log_group_arn}:*" },
       { Sid = "Metrics", Effect = "Allow", Action = ["cloudwatch:PutMetricData"], Resource = "*", Condition = { StringEquals = { "cloudwatch:namespace" = "Miles/DSG" } } }
       ], [for statement in [
+        { Sid = "ReadPinnedRelease", Effect = "Allow", Action = ["s3:GetObjectVersion"], Resource = "arn:aws:s3:::${var.data_bucket_name}/releases/${coalesce(var.release_sha256, "unconfigured")}/*" },
+        { Sid = "DrainOwnFleetTargets", Effect = "Allow", Action = ["elasticloadbalancing:DeregisterTargets"], Resource = "arn:aws:elasticloadbalancing:${var.region}:${var.account_id}:targetgroup/${var.name}-s3/*" },
+        { Sid = "ObserveFleetDrain", Effect = "Allow", Action = ["elasticloadbalancing:DescribeTargetHealth"], Resource = "*", Condition = { StringEquals = { "aws:RequestedRegion" = var.region } } },
+        { Sid = "OwnFleetLifecycle", Effect = "Allow", Action = ["autoscaling:RecordLifecycleActionHeartbeat", "autoscaling:CompleteLifecycleAction"], Resource = "arn:aws:autoscaling:${var.region}:${var.account_id}:autoScalingGroup:*:autoScalingGroupName/${var.name}-gateway" }
+        ] : statement if var.fleet_enabled && each.key == "gateway"], [for statement in [
         { Sid = "CleanupData", Effect = "Allow", Action = ["s3:DeleteObject"], Resource = [for p in local.writable_prefixes : "arn:aws:s3:::${var.data_bucket_name}/${p}*"] },
         { Sid = "DrainTargets", Effect = "Allow", Action = ["elasticloadbalancing:DeregisterTargets"], Resource = "arn:aws:elasticloadbalancing:${var.region}:${var.account_id}:targetgroup/${var.name}-s3/*" },
         { Sid = "ASGLifecycle", Effect = "Allow", Action = ["autoscaling:RecordLifecycleActionHeartbeat", "autoscaling:CompleteLifecycleAction"], Resource = "arn:aws:autoscaling:${var.region}:${var.account_id}:autoScalingGroup:*:autoScalingGroupName/${var.name}-*" }
