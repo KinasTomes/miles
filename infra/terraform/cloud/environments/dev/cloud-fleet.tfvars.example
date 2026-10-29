@@ -1,0 +1,17 @@
+# Preparation only. Copy outside Git, replace every fixture, review IAM/cost/runtime
+# integration, and create a real saved plan before any apply. Never apply this file.
+account_id                       = "123456789012"
+runtime_permissions_boundary_arn = "arn:aws:iam::123456789012:policy/miles/bootstrap/MilesDevRuntimeBoundary"
+paused                           = true
+enable_compute                   = false
+enable_asg                       = true
+enable_alb                       = true
+egress_mode                      = "interface"
+availability_zones               = ["ap-southeast-1a", "ap-southeast-1b"]
+ami_id                           = "ami-0123456789abcdef0" # Reviewed AL2023 Amazon ARM64 image.
+fleet_instance_type              = "t4g.small"              # Example only; size/cost review required.
+release_architecture             = "arm64"
+release_sha256                   = "REPLACE_WITH_ARCHIVE_SHA256"
+release_version_id               = "REPLACE_WITH_S3_VERSION_ID"
+certificate_arn                  = "arn:aws:acm:ap-southeast-1:123456789012:certificate/REPLACE_WITH_ISSUED_CERTIFICATE"
+client_cidrs                     = ["192.0.2.1/32"] # Example only; real client allowlist required.
