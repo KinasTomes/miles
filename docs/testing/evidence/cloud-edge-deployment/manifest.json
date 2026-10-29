@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "source_commit": "22374bb6dc591c4eef0a0a56ee2322fda2bafb71",
+  "go_version": "go version go1.27.2 linux/arm64",
+  "os": "linux",
+  "arch": "arm64",
+  "files": {
+    "bin/dsgctl": "8137499f31c59182e5d9b5dbccc3a80449643320fd1cf16d3b2ff5f3d5b964c8",
+    "bin/miles": "04b3b598066604a847e8e498a0c7a016b3b7f3a8572f59ec4e914c53e6c95518",
+    "configs/cloud.example.json": "fb7bcab04a9b7f9d88b7cd34fd8ed5b37c9a4c3ffafbc210796d2dbbb91180fa",
+    "configs/edge.example.json": "cac1d7f2019615b60a0a4e7367adc4acde5ff021428a02d2d4ce531a37f42cb5",
+    "deploy/cloud/aws-config.example": "a77c516b59ed6503c5c405d64ffcc17ef63c47e165336db54b6ff543a2fd2042",
+    "deploy/cloud/lifecycle.py": "30704a140147a2c8307b5aa3d1ab31e1867cb38e55610651dea945eeba88b55e",
+    "deploy/cloud/runtime.env.example": "a7cd1ec17ee39b8bab30b519d395a8c132f5505759d6e1dcbda1b5721c025853",
+    "deploy/edge/aws-config.example": "73bd10afe19d9a563203b5361cf99c7627c6ee61f45f8264ff0bc30acbcb9a43",
+    "deploy/edge/nginx.conf": "5648afa8415c099ae040123a9d47b240882a0940d52b649c226541461fa23f0d",
+    "deploy/edge/runtime.env.example": "5b0cd7c230cb9465234a9982f2668b5354a97217b94c6ae67b4f4db86ded688d",
+    "deploy/install.py": "9f68496e5243211a27c7c1011302db4db3a6364afb18eaac62ca47fe3a73ad57",
+    "deploy/systemd/miles-lifecycle.service": "8f15f953131855a252189636491bca18dc9dc709ce9525764cfb8df0ebe180b3",
+    "deploy/systemd/miles.service": "6950dd6ad015d8773d9d8e76ac331be28d2e4da62421feb74130b5854e3215ce"
+  }
+}

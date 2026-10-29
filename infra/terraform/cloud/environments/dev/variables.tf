@@ -74,13 +74,60 @@ variable "ami_id" {
   default = null
   validation {
     condition     = var.ami_id == null ? true : can(regex("^ami-[0-9a-f]{17}$", var.ami_id))
-    error_message = "Use a pinned Amazon Linux 2023 ARM64 AMI ID in Singapore."
+    error_message = "Use a pinned AMI in Singapore; single-node dev requires AL2023 ARM64, fleet architecture must match its release."
   }
 }
 variable "nat_per_az" {
   type        = bool
   default     = false
   description = "Dev NAT mode uses one NAT; true gives one per AZ at higher cost."
+}
+variable "enable_asg" {
+  type        = bool
+  default     = false
+  description = "Cloud two-AZ fleet instead of retained single-node compute; prepare only until runtime integration and costs are reviewed."
+  validation {
+    condition = !var.enable_asg || (
+      !var.enable_compute && var.enable_alb && var.runtime_permissions_boundary_arn != null &&
+      var.ami_id != null && var.fleet_instance_type != null &&
+      can(regex("^[a-f0-9]{64}$", var.release_sha256)) && var.release_version_id != null &&
+      (var.egress_mode == "interface" || (var.egress_mode == "nat" && var.nat_per_az))
+    )
+    error_message = "Fleet needs ALB/TLS, reviewed boundary/AMI/type/versioned release and two-AZ API egress; it cannot share single-node dev compute."
+  }
+}
+variable "fleet_instance_type" {
+  type        = string
+  default     = null
+  description = "Explicit cost/capacity-reviewed EC2 type; no workload sizing is inferred."
+  validation {
+    condition     = var.fleet_instance_type == null ? true : can(regex("^[a-z0-9-]+\\.[a-z0-9]+$", var.fleet_instance_type))
+    error_message = "Supply a reviewed EC2 instance type."
+  }
+}
+variable "release_architecture" {
+  type    = string
+  default = "arm64"
+  validation {
+    condition     = contains(["arm64", "amd64"], var.release_architecture)
+    error_message = "Release must be Linux arm64 or amd64 and match the AMI/instance."
+  }
+}
+variable "release_sha256" {
+  type    = string
+  default = null
+  validation {
+    condition     = var.release_sha256 == null ? true : can(regex("^[a-f0-9]{64}$", var.release_sha256))
+    error_message = "Supply the exact release archive SHA-256."
+  }
+}
+variable "release_version_id" {
+  type    = string
+  default = null
+  validation {
+    condition     = var.release_version_id == null ? true : length(var.release_version_id) > 0 && length(var.release_version_id) <= 1024 && var.release_version_id != "null" && trimspace(var.release_version_id) == var.release_version_id
+    error_message = "Use a non-null immutable S3 version ID, not an unversioned object."
+  }
 }
 variable "enable_alb" {
   type    = bool

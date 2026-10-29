@@ -80,6 +80,34 @@ chứng minh mọi API apply đã được cấp đủ quyền.
 
 ## Phiên làm việc thường ngày
 
+### Cloud fleet W4 — chỉ chuẩn bị, chưa gắn quyền
+
+Boundary draft thêm `GetObjectVersion` cho `data/releases/*` và
+`DescribeTargetHealth` (API không hỗ trợ resource ARN, giới hạn RequestedRegion).
+Gateway identity chỉ bật quyền release/drain khi `enable_asg=true`, prefix release
+SHA đã pin, đúng ASG/TG. KMS key policy thêm đúng custom ASG service-linked role,
+không mở quyền cho mọi role/instance. Không cập nhật IAM live bằng lượt này.
+
+Autopilot 0.3.0 đã chạy trên **offline synthetic** empty-state fleet plan (AMI lookup
+thay literal fixture, provider không gọi AWS). Kết quả là baseline, không phải
+policy được phép gắn: có wildcard PassRole/tagging và quyền warm pool không dùng;
+không chứng minh read/update/delete/refresh đã đầy đủ. AWS CLI trong lifecycle agent
+không phải SDK input được Autopilot phân tích; quyền runtime đối chiếu programmatic
+Service Authorization Reference.
+
+Trước W5: dùng `plan-local.py --mode interface --var-file "$FLEET_VARS"` cùng
+`--policy-plan-json` như quy trình trên, rồi chạy `uvx iam-policy-autopilot@0.3.0
+generate-policies "$PRIVATE_DIR/fleet-plan.json" --region ap-southeast-1 --account
+"$AWS_ACCOUNT_ID" --resource-cutoff 100 --pretty`. Review delta ALB/ASG/LT và
+custom SLR từ plan thật; scope PassRole chỉ gateway và custom SLR tới đúng service,
+ASG chỉ `miles-dev-gateway`, LT theo owner tags, SLR đúng suffix `miles-dev`.
+Loại API không dùng; bổ sung provider read/update/refresh/pause qua plan tương ứng,
+validate/simulate positive/negative rồi admin mới gắn quyền. Không tự tăng quota hay
+gắn policy mới để vượt quota. Existing deploy role chưa có quyền fleet/ALB; không
+đổi policy cũ trước khi review diff và budget cho lần chạy thật.
+
+### Đăng nhập và identity gate
+
 1. Đăng nhập console bằng operator và MFA, rồi Switch Role với đường dẫn đầy đủ
    `miles/bootstrap/miles-dev-deploy`.
 2. Đăng nhập CLI bằng `aws login --remote --profile miles-dev --region ap-southeast-1`,

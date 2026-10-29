@@ -1,0 +1,52 @@
+#!/bin/bash
+set -euo pipefail
+install -d -m 0700 /var/lib/miles-bootstrap
+cat > /var/lib/miles-bootstrap/config.json <<'MILES_BOOTSTRAP_JSON'
+${bootstrap_json}
+MILES_BOOTSTRAP_JSON
+python3 - <<'MILES_BOOTSTRAP_PY'
+import hashlib, json, os, pathlib, subprocess, tarfile
+from urllib.request import build_opener, ProxyHandler, Request
+p = pathlib.Path('/var/lib/miles-bootstrap')
+c = json.loads((p / 'config.json').read_text())
+h = build_opener(ProxyHandler({}))
+token = h.open(Request('http://169.254.169.254/latest/api/token', method='PUT',
+    headers={'X-aws-ec2-metadata-token-ttl-seconds': '60'}), timeout=5).read().decode()
+headers = {'X-aws-ec2-metadata-token': token}
+identity = json.loads(h.open(Request('http://169.254.169.254/latest/dynamic/instance-identity/document',
+    headers=headers), timeout=5).read())
+assert identity['accountId'] == c['account_id'] and identity['region'] == c['region']
+address = h.open(Request('http://169.254.169.254/latest/meta-data/local-ipv4',
+    headers=headers), timeout=5).read().decode()
+archive = p / 'release.tar.gz'
+env = {k:v for k,v in os.environ.items() if not k.startswith('AWS_')}
+env.update(AWS_CONFIG_FILE='/dev/null', AWS_SHARED_CREDENTIALS_FILE='/dev/null', AWS_PAGER='')
+subprocess.run(['aws', 's3api', 'get-object', '--region', c['region'], '--bucket', c['bucket'],
+    '--key', c['release_key'], '--version-id', c['release_version'],
+    '--expected-bucket-owner', c['account_id'], str(archive)], env=env, check=True,
+    stdout=subprocess.DEVNULL, timeout=300)
+assert hashlib.sha256(archive.read_bytes()).hexdigest() == c['release_sha256'], 'release checksum mismatch'
+bundle = p / 'verified-release'
+bundle.mkdir(mode=0o700)
+with tarfile.open(archive, 'r:gz') as t:
+    members = t.getmembers()
+    assert len(members) <= 100 and sum(m.size for m in members) <= 100 * 1024 * 1024
+    for m in members:
+        name = pathlib.PurePosixPath(m.name)
+        assert m.isfile() and not name.is_absolute() and '..' not in name.parts
+        target = bundle / m.name
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with target.open('xb') as f:
+            f.write(t.extractfile(m).read())
+if subprocess.run(['id', '-u', 'miles'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+    subprocess.run(['useradd', '--system', '--user-group', '--home-dir', '/var/lib/miles',
+        '--shell', '/sbin/nologin', 'miles'], check=True)
+subprocess.run(['install', '-d', '-m', '0700', '-o', 'miles', '-g', 'miles', '/var/lib/miles'], check=True)
+subprocess.run(['install', '-d', '-m', '0700', '/var/lib/miles-lifecycle'], check=True)
+subprocess.run(['python3', str(bundle / 'deploy/install.py'), '--bundle', str(bundle),
+    '--profile', 'cloud', '--address', address], check=True)
+(pathlib.Path('/etc/miles') / 'lifecycle.json').write_text(json.dumps({
+    key:c[key] for key in ['account_id','region','asg_name','hook_name','target_group_arn']}))
+subprocess.run(['systemctl', 'daemon-reload'], check=True)
+subprocess.run(['systemctl', 'enable', '--now', 'miles.service', 'miles-lifecycle.service'], check=True)
+MILES_BOOTSTRAP_PY
