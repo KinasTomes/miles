@@ -11,3 +11,11 @@ variable "permissions_boundary_arn" {
   type    = string
   default = null
 }
+variable "fleet_enabled" {
+  type    = bool
+  default = false
+}
+variable "release_sha256" {
+  type    = string
+  default = null
+}

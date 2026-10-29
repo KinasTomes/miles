@@ -1,0 +1,3 @@
+[profile miles-runtime]
+region = ap-southeast-1
+credential_process = /usr/local/bin/aws_signing_helper credential-process --certificate /etc/miles/rolesanywhere/certificate.pem --private-key /etc/miles/rolesanywhere/private-key.pem --trust-anchor-arn arn:aws:rolesanywhere:ap-southeast-1:123456789012:trust-anchor/REPLACE --profile-arn arn:aws:rolesanywhere:ap-southeast-1:123456789012:profile/REPLACE --role-arn arn:aws:iam::123456789012:role/REPLACE

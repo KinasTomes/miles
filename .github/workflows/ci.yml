@@ -13,6 +13,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  deployment-contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Shared release, runtime guards and native TLS/SigV4 proxy (no AWS)
+        run: python3 -B scripts/deployment_smoke.py --out "$RUNNER_TEMP/deployment-smoke"
+
   dynamodb-contract:
     runs-on: ubuntu-24.04
     steps:
@@ -47,6 +58,7 @@ jobs:
             benchmarks/evidence/harness-smoke \
             benchmarks/evidence/warm-runtime-smoke \
             benchmarks/evidence/warm-aws \
+            docs/testing/evidence/cloud-edge-deployment \
             docs/testing/evidence/s3-warm-final-20261027 \
             docs/testing/evidence/w03-hai-03-s3-live-20261027; do
             echo "Verifying ${evidence}"

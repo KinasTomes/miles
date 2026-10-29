@@ -13,10 +13,10 @@ build:
 	$(GO) build -trimpath -o bin/warmbench ./cmd/warmbench
 
 fmt:
-	$(GOFMT) -w cmd internal configs/pricing
+	$(GOFMT) -w cmd internal configs/pricing deploy/edge
 
 check-fmt:
-	@test -z "$$($(GOFMT) -l cmd internal configs/pricing)" || { echo "Chạy make fmt trước khi commit."; exit 1; }
+	@test -z "$$($(GOFMT) -l cmd internal configs/pricing deploy/edge)" || { echo "Chạy make fmt trước khi commit."; exit 1; }
 
 vet:
 	$(GO) vet ./...

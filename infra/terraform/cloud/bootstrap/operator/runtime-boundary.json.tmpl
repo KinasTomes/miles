@@ -193,6 +193,31 @@
           "aws:RequestedRegion": "ap-southeast-1"
         }
       }
+    },
+    {
+      "Sid": "ReadVersionedRelease",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObjectVersion"
+      ],
+      "Resource": [
+        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/releases/*"
+      ]
+    },
+    {
+      "Sid": "ObserveTargetDrain",
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:DescribeTargetHealth"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-1"
+        }
+      }
     }
   ]
 }

@@ -1,0 +1,14 @@
+=== RUN   TestEdgeTLSProxyPreservesSignedRequests
+=== RUN   TestEdgeTLSProxyPreservesSignedRequests//proxy-bucket/a//b/../c+%2F%252F.txt
+=== RUN   TestEdgeTLSProxyPreservesSignedRequests//proxy-bucket/%E1%BB%A9ng%20d%E1%BB%A5ng/%25+//key
+=== RUN   TestEdgeTLSProxyPreservesSignedRequests//proxy-bucket?list-type=2&prefix=a%2Fb+z&max-keys=7&continuation-token=a%2Bb%2520
+=== RUN   TestEdgeTLSProxyPreservesSignedRequests//proxy-bucket/signed-body
+=== RUN   TestEdgeTLSProxyPreservesSignedRequests//proxy-bucket/slow-response
+--- PASS: TestEdgeTLSProxyPreservesSignedRequests (67.84s)
+    --- PASS: TestEdgeTLSProxyPreservesSignedRequests//proxy-bucket/a//b/../c+%2F%252F.txt (0.01s)
+    --- PASS: TestEdgeTLSProxyPreservesSignedRequests//proxy-bucket/%E1%BB%A9ng%20d%E1%BB%A5ng/%25+//key (0.00s)
+    --- PASS: TestEdgeTLSProxyPreservesSignedRequests//proxy-bucket?list-type=2&prefix=a%2Fb+z&max-keys=7&continuation-token=a%2Bb%2520 (0.00s)
+    --- PASS: TestEdgeTLSProxyPreservesSignedRequests//proxy-bucket/signed-body (0.00s)
+    --- PASS: TestEdgeTLSProxyPreservesSignedRequests//proxy-bucket/slow-response (65.06s)
+PASS
+ok  	github.com/KinasTomes/miles/deploy/edge	68.867s
