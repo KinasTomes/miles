@@ -1,10 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +16,63 @@ import (
 	opstest "github.com/KinasTomes/miles/internal/jobs/contracttest"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/observability"
+	"github.com/KinasTomes/miles/internal/storage"
 )
+
+type failDrainWrite struct{ jobs.Store }
+
+func (s failDrainWrite) PutNode(ctx context.Context, revision uint64, n jobs.Node) (jobs.Node, error) {
+	if n.Draining {
+		return jobs.Node{}, storage.ErrUnavailable
+	}
+	return s.Store.PutNode(ctx, revision, n)
+}
+func TestOperationalDrainWriteFailureStillClosesQuiescentDependencies(t *testing.T) {
+	store, e := badger.Open(badger.Options{Path: t.TempDir()})
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer store.Close()
+	registry := &jobs.Registry{Store: failDrainWrite{Store: store}, Clock: clock.NewReal(), Identity: opstest.Node("drain-node")}
+	cfg := config.DefaultStartup()
+	cfg.Mode = "dev"
+	cfg.ShutdownSeconds = 2
+	d, e := Bootstrap(cfg)
+	if e != nil {
+		t.Fatal(e)
+	}
+	d.Operations = &Operational{Registry: registry}
+	closed := false
+	d.Close = func() error { closed = true; return nil }
+	listener, e := net.Listen("tcp", "127.0.0.1:0")
+	if e != nil {
+		t.Fatal(e)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	var log bytes.Buffer
+	go func() { done <- serve(ctx, listener, cfg, d, new(Admission), &log) }()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, e := store.GetNode(context.Background(), "drain-node"); e == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("node did not register")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	select {
+	case e := <-done:
+		if e == nil || !strings.Contains(e.Error(), "incomplete shutdown") || !closed || strings.Contains(log.String(), `"msg":"shutdown complete"`) {
+			t.Fatal("drain write failure skipped storage close or faked completion", e, closed, log.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("shutdown did not finish")
+	}
+}
 
 func TestOperationalRuntimePublishesHeartbeatAndShutdownDrain(t *testing.T) {
 	for _, mode := range []string{"dev", "runtime"} {

@@ -45,6 +45,8 @@ Node/runtime cases cover local admission closing before a failed metadata write,
 remote marker versus actual gate closure, active-request preservation, monotonic
 heartbeat staleness including a wall jump, persisted shutdown drain, and normal
 parent cancellation/deadline. Production dependency readiness is still503.
+Regression: a failed drain-marker write still closes quiescent storage dependencies,
+returns incomplete and never emits the shutdown-complete proof.
 
 Metrics cases prove scrapes do not probe/call AWS, labels cannot include IDs,
 CloudWatch sends one bounded batch, counters export deltas, failed export retains
@@ -73,7 +75,8 @@ CI's existing DynamoDB job now includes the operational contract automatically;
 the runtime race gate includes `internal/jobs/...`. No AWS credentials/budget are
 needed. Private local logs are under `/home/ubuntu/.local/state/miles/jobs-nodes-metrics`.
 The full targeted race run with required DynamoDB Local passed all seven packages
-on source `8e5bdbe`; the following commit adds this validation note only.
+on source `8e5bdbe`. Review follow-up adds the shutdown cleanup regression above;
+its focused runtime/race tests and CI are run on the updated head.
 
 ## Downstream / remaining live integration
 

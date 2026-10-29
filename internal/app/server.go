@@ -130,6 +130,7 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 		}
 	}
 	var probeErr error
+	var operationsErr error
 	select {
 	case <-probeDone:
 	case <-shutdown.Done():
@@ -138,17 +139,25 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	if operationsDone != nil && !operationsExited {
 		select {
 		case err := <-operationsDone:
-			probeErr = errors.Join(probeErr, err)
+			operationsErr = err
 		case <-shutdown.Done():
 			probeErr = errors.Join(probeErr, shutdown.Err())
 		}
 	}
-	if err := errors.Join(workErr, httpErr, probeErr, drainErr); err != nil {
+	if err := errors.Join(workErr, httpErr, probeErr); err != nil {
 		// Do not close storage underneath work that has not reached quiescence.
 		logger.Error("incomplete shutdown", "error", err.Error())
-		return errors.Join(serveErr, fmt.Errorf("incomplete shutdown: %w", err))
+		return errors.Join(serveErr, drainErr, operationsErr, fmt.Errorf("incomplete shutdown: %w", err))
 	}
-	if err := closeDependencies(d, serveErr); err != nil {
+	// A failed operational marker is not evidence of active storage users.
+	// Once all workers quiesce, still flush/close storage and retain the error.
+	closedErr := closeDependencies(d, errors.Join(serveErr, operationsErr))
+	if drainErr != nil {
+		err := errors.Join(closedErr, drainErr)
+		logger.Error("incomplete shutdown", "error", err.Error())
+		return fmt.Errorf("incomplete shutdown: %w", err)
+	}
+	if err := closedErr; err != nil {
 		return err
 	}
 	logger.Info("shutdown complete")
