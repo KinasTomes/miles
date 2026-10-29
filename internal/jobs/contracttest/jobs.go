@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -158,6 +159,11 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		h, _, c := setup(t)
 		j, e := h.Store.ChangeJob(ctx, c)
 		must(t, e)
+		c.Kind = "begin_step"
+		c.StepID = "step-a"
+		c.ExpectedRevision = j.Revision
+		j, e = h.Store.ChangeJob(ctx, c)
+		must(t, e)
 		c.Kind = "checkpoint"
 		c.ExpectedRevision = j.Revision
 		c.Checkpoint = json.RawMessage(`{"cursor":"safe-a"}`)
@@ -188,6 +194,61 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 			t.Fatal(j)
 		}
 	})
+	t.Run("checkpoint_requires_persisted_pending_step", func(t *testing.T) {
+		for _, state := range []jobs.State{jobs.Running, jobs.Cancelling} {
+			t.Run(string(state), func(t *testing.T) {
+				h, _, c := setup(t)
+				j, e := h.Store.ChangeJob(ctx, c)
+				must(t, e)
+				if state == jobs.Cancelling {
+					j, e = h.Peer.ChangeJob(ctx, jobs.Change{JobID: j.ID, ExpectedRevision: j.Revision, Kind: "cancel"})
+					must(t, e)
+				}
+				before, e := h.Peer.GetJob(ctx, j.ID)
+				must(t, e)
+				c.Kind, c.ExpectedRevision = "checkpoint", j.Revision
+				c.Checkpoint = json.RawMessage(`{"cursor":"unconfirmed"}`)
+				c.Progress = map[string]uint64{"packs_scanned": 1}
+				_, e = h.Store.ChangeJob(ctx, c)
+				want(t, e, s.ErrConflict)
+				after, e := h.Peer.GetJob(ctx, j.ID)
+				must(t, e)
+				if !reflect.DeepEqual(before, after) {
+					t.Fatal("checkpoint without a pending step changed the job")
+				}
+			})
+		}
+	})
+	t.Run("takeover_requires_retained_safe_checkpoint", func(t *testing.T) {
+		for _, state := range []jobs.State{jobs.Running, jobs.Cancelling} {
+			t.Run(string(state), func(t *testing.T) {
+				h, _, c := setup(t)
+				j, e := h.Store.ChangeJob(ctx, c)
+				must(t, e)
+				if state == jobs.Cancelling {
+					j, e = h.Peer.ChangeJob(ctx, jobs.Change{JobID: j.ID, ExpectedRevision: j.Revision, Kind: "cancel"})
+					must(t, e)
+				}
+				c.ExpectedRevision = j.Revision
+				again, e := h.Store.ChangeJob(ctx, c)
+				must(t, e)
+				if again.Revision != j.Revision {
+					t.Fatal("same-owner claim rewrote the job")
+				}
+				before, e := h.Peer.GetJob(ctx, j.ID)
+				must(t, e)
+				c.NodeID, c.NodeIncarnation, c.Fence.Epoch = "node-b", "boot-node-b", 2
+				h.SetLease(s.WriterLease{Fence: c.Fence, ExpiresAt: Now.Add(time.Minute)})
+				_, e = h.Peer.ChangeJob(ctx, c)
+				want(t, e, jobs.ErrReconciliation)
+				after, e := h.Peer.GetJob(ctx, j.ID)
+				must(t, e)
+				if !reflect.DeepEqual(before, after) {
+					t.Fatal("takeover without a safe checkpoint changed the job")
+				}
+			})
+		}
+	})
 	t.Run("unsettled_work_and_expired_lease_never_fake_success", func(t *testing.T) {
 		h, _, c := setup(t)
 		j, e := h.Store.ChangeJob(ctx, c)
@@ -200,9 +261,11 @@ func Run(t *testing.T, factory func(*testing.T) Harness) {
 		c.ExpectedRevision = j.Revision
 		c.Kind = "checkpoint"
 		c.Checkpoint = json.RawMessage(`{}`)
-		c.StepID = "wrong-op"
-		_, e = h.Store.ChangeJob(ctx, c)
-		want(t, e, s.ErrConflict)
+		for _, step := range []string{"", "wrong-op"} {
+			c.StepID = step
+			_, e = h.Store.ChangeJob(ctx, c)
+			want(t, e, s.ErrConflict)
+		}
 		c.Fence.Epoch = 2
 		h.SetLease(s.WriterLease{Fence: c.Fence, ExpiresAt: Now.Add(time.Minute)})
 		c.Kind = "claim"

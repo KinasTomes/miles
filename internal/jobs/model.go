@@ -212,6 +212,9 @@ func Apply(old Job, c Change, now time.Time) (Job, error) {
 			if c.Fence.ServiceIncarnation != j.Worker.ServiceIncarnation || c.Fence.Epoch <= j.Worker.Epoch {
 				return Job{}, storage.ErrFenced
 			}
+			if !document(j.Checkpoint, 8192, false) {
+				return Job{}, ErrReconciliation
+			}
 		}
 		j.Worker, j.WorkerNodeID, j.WorkerNodeIncarnation = c.Fence, c.NodeID, c.NodeIncarnation
 		if j.State == Queued {
@@ -233,7 +236,7 @@ func Apply(old Job, c Change, now time.Time) (Job, error) {
 		case "checkpoint":
 			// The worker calls only AFTER its R1/R2 side effects are settled and
 			// quiescent. Clearing this marker is not itself a physical flush proof.
-			if c.StepID != j.PendingStep {
+			if j.PendingStep == "" || c.StepID != j.PendingStep {
 				return Job{}, storage.ErrConflict
 			}
 			if !document(c.Checkpoint, 8192, false) {
