@@ -106,6 +106,9 @@ resource "aws_autoscaling_group" "gateway" {
   default_instance_warmup   = 300
   force_delete              = false
   wait_for_capacity_timeout = "15m"
+  timeouts {
+    delete = "45m" # Provider default 10m is shorter than the 35m drain/controller budget.
+  }
   launch_template {
     id      = aws_launch_template.gateway[0].id
     version = tostring(aws_launch_template.gateway[0].latest_version)

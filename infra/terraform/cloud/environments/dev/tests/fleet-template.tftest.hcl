@@ -32,4 +32,8 @@ run "private_immutable_launch" {
     condition     = aws_autoscaling_group.gateway[0].health_check_type == "ELB" && !aws_autoscaling_group.gateway[0].force_delete && one(aws_autoscaling_group.gateway[0].initial_lifecycle_hook).heartbeat_timeout == 300 && length(base64decode(aws_launch_template.gateway[0].user_data)) < 16384 && strcontains(base64decode(aws_launch_template.gateway[0].user_data), "--version-id") && strcontains(base64decode(aws_launch_template.gateway[0].user_data), "release checksum mismatch")
     error_message = "Bootstrap must pin and verify the release; normal ASG deletion must retain its drain hook."
   }
+  assert {
+    condition     = aws_autoscaling_group.gateway[0].timeouts.delete == "45m"
+    error_message = "Terraform must wait longer than the controller's 35-minute drain budget when pausing."
+  }
 }

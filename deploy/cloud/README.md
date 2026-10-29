@@ -73,9 +73,11 @@ process fixture/mock control plane là bằng chứng flush dữ liệu thật.
 runtime IAM để hook vẫn có quyền trong lúc xóa fleet. Đợi lifecycle/replacement kết
 thúc, kiểm active jobs/R2 theo W5 rồi review pause plan. Giữ `enable_asg=true` và
 release pin qua pause/resume. Không dùng `force_delete`/kill để thay graceful drain;
-retained storage/key vẫn có phí. Full destroy cần data review riêng.
+Terraform ASG delete timeout45m đủ chờ budget controller35m (provider default10m
+ngắn hơn drain). Retained storage/key vẫn có phí. Full destroy cần data review riêng.
 
 Nguồn: [IMDS target state](https://docs.aws.amazon.com/autoscaling/ec2/userguide/retrieving-target-lifecycle-state-through-imds.html),
 [lifecycle hooks](https://docs.aws.amazon.com/autoscaling/ec2/userguide/lifecycle-hooks.html),
 [KMS cho ASG EBS](https://docs.aws.amazon.com/autoscaling/ec2/userguide/key-policy-requirements-EBS-encryption.html),
-[ALB Host/idle](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/edit-load-balancer-attributes.html).
+[ALB Host/idle](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/edit-load-balancer-attributes.html),
+[provider 6.21.0 timeout defaults](https://github.com/hashicorp/terraform-provider-aws/blob/v6.21.0/internal/service/autoscaling/group.go).

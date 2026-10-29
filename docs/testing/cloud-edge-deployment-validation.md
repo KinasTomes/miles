@@ -53,7 +53,8 @@ archive18.211.859bytes, hash/version ghi trong
 [manifest](evidence/cloud-edge-deployment/manifest.json).
 [TLS/race log](evidence/cloud-edge-deployment/tls-proxy.log) ghi response65s pass;
 [checksums](evidence/cloud-edge-deployment/sha256sums.txt) được CI kiểm tra. Các
-commit sau source này chỉ bổ sung evidence/tài liệu và bước kiểm checksum CI.
+file được đóng gói không đổi ở các commit tiếp theo; Terraform được kiểm riêng
+trên head mới, gồm ASG delete timeout45m lớn hơn controller budget35m.
 
 ## Handoff trước live W5
 
