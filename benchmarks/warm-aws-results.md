@@ -99,3 +99,26 @@ W04-HUNG-03 may consume these raw logical samples and declared environment,
 but must keep measured values, operator declarations and modelled costs
 separate. Final DynamoDB, distributed UTC/R1/R2, exporter/GC, Cloud/Edge and
 cost/target acceptance remain integration/benchmark work in their own tasks.
+
+## Follow-up after W4
+
+Owner: Hưng. Trigger: W4 integration is complete. Status: planned; not rerun.
+Accept W03-HUNG-02 for its harness, verified baseline and preliminary report;
+keep PUT profiling/optimization as separate follow-up work. The measured PUT
+throughput ratios are **44.7% at C1** and **20.8% at C4**. The proposed
+[BEN-03 single-stream target of at least 50%](../docs/acceptance/definition-of-done.md#5-mục-tiêu-benchmark-đề-xuất--chưa-có-số-đo)
+has not been achieved by this preliminary run; its threshold is unchanged.
+
+- After W4, pin the merged source, actual metadata backend, enabled workers and
+  cache/admit-on-write policy. Measure the new cache profile explicitly; retain
+  the W3 memory-only results as a historical baseline.
+- Repeat the matched direct-S3/Miles backup30 workload with the same seed,
+  manifest, encryption, C1/C4 and at least three independent trials per setting.
+  Record host/client placement and CPU usage; verify every full-file GET hash.
+- Profile chunking/hash, compression/verification, synchronous metadata and the
+  sequential S3 PUT/HEAD/sidecar calls to identify the dominant cost before
+  optimizing. Keep profiling runs separate from unprofiled throughput results.
+- Report actual/target/delta for C1 and scaling at C4, plus p95, logical bytes,
+  failures and any remaining limits. Use that evidence for optimization before
+  the W5–6 pilot review. A new AWS run needs its own cost/cleanup plan; this note
+  does not execute or provision another run.
