@@ -11,7 +11,7 @@ production adapter or production runtime/simulator integration.
 | Global admission | GetPolicy(0) returns authoritative current R | No write | Context pins exact validated R; no per-chunk current refresh |
 | Global job/resume | GetPolicy(R), R>0 | No write | Missing/error/mismatch/incomplete document fails; no current/default fallback |
 | Global update | Proposal based on R | Candidate revision0, expected R, caller credential/fence/event | Backend CAS; no automatic retry/rebase. No-op still checks CAS |
-| Bucket | Independent bucket ID/revision B | No shared bucket cache-policy persistence/history port exists | Persistence BLOCKED; BindBucket only validates consumer handoff identity/revision |
+| Bucket | Bucket ID/revision B độc lập | `storage.BucketPolicyStore` trên Badger/DynamoDB; CAS/history/outbox cùng transaction | `LoadBucket` đọc đúng history; `CreateBucketPolicy` bootstrap explicit; `CommitBucket` validate trước publication |
 | Read/write/protection | One immutable global snapshot R | Evaluators never persist | Empty policy input explicitly binds context; nonempty mismatched revision/content fails |
 
 Sources: [Clock §3–7](../../../docs/contracts/clock-and-policy.md),
@@ -30,11 +30,10 @@ and the underlying policy package do not. They retain no store reference. All
 APIs are trusted INTERNAL calls: authorization must precede resource/revision
 disclosure. Helpers do not implement HTTP/Admin authentication.
 
-Context.Global is obtained through the supplied MetadataStore and strict config
-decoder. It is not a cryptographic provenance token. Never use its revision as
-R1 execution authority or R2 recovery epoch. BindBucket accepts a consumer-supplied
-snapshot only; it cannot establish an authoritative bucket-policy read. Global
-and bucket revisions need not be numerically equal and cannot replace each other.
+Context.Global được đọc qua MetadataStore và strict decoder; không phải token
+provenance mật mã hoặc R1/R2 authority. `LoadBucket` lấy snapshot từ optional port
+trên cùng backend rồi gọi `BindBucket`. Gọi `BindBucket` riêng vẫn chỉ kiểm tra
+handoff, không chứng minh persistence. Global/bucket revisions độc lập.
 
 Existing app dependencies wire startup/health and dev fixtures, not admitted
 read/write/protection consumers. No actual simulator execution entrypoint was
@@ -72,9 +71,9 @@ decisions or proof of actual authority.
 - Shared fake accepts incomplete JSON-object policy envelopes; LoadGlobal rejects
   those historical records via strict decoding. Malformed non-object JSON is
   tested directly at the existing decoder boundary, not injected via a new port.
-- Bucket creation/read checks are LOCAL constructor/decode checks only. Durable
-  bucket creation/read/CAS/history evidence is blocked until the shared owner
-  supplies reviewed capability. No substitute fake/store is introduced.
+- W04-PHONG-02 bổ sung bucket policy persistence trên native Badger/DynamoDB
+  transactions, tái sử dụng producer/payload/outbox. Không có store thứ hai.
+  API extension và namespace cần consumer Hải/Chiến/Hưng review, chưa Frozen.
 - Pinned R remains stable after current advances. All three evaluation methods
   report R, reject contradictory supplied pins, and do not mutate policy current
   or history. Real/Virtual adapters use the same evaluators and equivalent UTC
@@ -91,6 +90,8 @@ backend precision/lattice compatibility and protection acceptance; monotonic
 protection persistence; durable retention-root preservation; unknown-outcome
 reconciliation; actual runtime/simulator integration and distributed correctness
 remain unproven by these fake/integration tests.
+
+Evidence W04, phạm vi mới và handoff: [policy persistence và eligibility](../../../docs/testing/policy-eligibility-validation.md).
 
 Do not drop roots because protection time passed. Do not restore worker authority
 from a historical policy snapshot. Do not treat RestoreRequired as proof that a

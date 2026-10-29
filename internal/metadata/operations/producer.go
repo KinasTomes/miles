@@ -574,7 +574,7 @@ func NoOp(t Tx, ctx context.Context, entity, identity string, input, value any) 
 	if err != nil {
 		return err
 	}
-	out := s.MutationResult{Version: 1, NoOp: true, Scope: scopeKey(entity, identity), InputSHA256: digestBytes(body), Value: encoded}
+	out := s.MutationResult{Version: 1, NoOp: true, Scope: scopeKey(entity, identity), InputSHA256: digestBytes(body), Value: encoded, HistoryID: c.HistoryID, LogicalOpID: c.LogicalOpID, Epoch: c.Epoch}
 	return put(t, "producer-outcome", out, c.MutationID)
 }
 

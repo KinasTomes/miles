@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/pack"
+	"github.com/KinasTomes/miles/internal/policy"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -41,11 +42,32 @@ type StorePublisher struct {
 var _ Publisher = (*StorePublisher)(nil)
 
 func (p *StorePublisher) Reuse(ctx context.Context, row storage.Chunk) (bool, error) {
-	if p == nil || p.Metadata == nil || p.Guard == nil {
+	if p == nil || p.Metadata == nil || p.Guard == nil || p.ProtectedUntil.IsZero() {
 		return false, storage.ErrInvalid
 	}
 	if err := row.Validate(); err != nil {
 		return false, err
+	}
+	infos, err := p.Metadata.GetPacks(ctx, []storage.PackRef{row.Location.Pack})
+	if err != nil {
+		return false, err
+	}
+	info, ok := infos[row.Location.Pack]
+	if !ok {
+		return false, storage.ErrNotFound
+	}
+	if info.Ref != row.Location.Pack || row.Location.Range.Validate(info.Size) != nil {
+		return false, storage.ErrInvalid
+	}
+	reusable, err := policy.WriteReuseCandidate(info.State, info.Class)
+	if err != nil || !reusable {
+		return false, err
+	}
+	// A session pin alone ends at publication/quiescence. Until a reviewed
+	// atomic max-protection port exists, insufficient durable protection means
+	// revive from the client body, not pretend the old generation was extended.
+	if info.ProtectedUntil.IsZero() || info.ProtectedUntil.Before(p.ProtectedUntil) {
+		return false, nil
 	}
 	return p.Guard.Pin(ctx, row)
 }

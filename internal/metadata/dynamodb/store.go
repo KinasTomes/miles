@@ -215,6 +215,18 @@ func resolve(k string) (address, error) {
 	case "policy-current":
 		a.key, err = PolicyKey(0)
 		a.scope = "revision"
+	case "bucket-cache-current", "bucket-cache-history":
+		if arg(0) == "" || parts[0] == "bucket-cache-history" && arg(1) == "" {
+			return a, s.ErrInvalid
+		}
+		id := "bucket-cache/" + hex.EncodeToString([]byte(arg(0))) + "/current"
+		if parts[0] == "bucket-cache-history" {
+			id = "bucket-cache/" + hex.EncodeToString([]byte(arg(0))) + "/history/" + arg(1)
+		}
+		a.key = stringKey("SystemConfig", "config_id", id)
+		if parts[0] == "bucket-cache-current" {
+			a.scope = "revision"
+		}
 	case "policies":
 		n, e := strconv.ParseUint(parts[1], 16, 64)
 		if e != nil {
