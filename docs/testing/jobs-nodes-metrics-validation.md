@@ -13,6 +13,9 @@ job contract kiểm thử bằng fake lease; job không chỉ tồn tại trong 
 ## Verification
 
 `make check` passed: format, vet, all Go/Python tests, document names and binaries.
+`make test-local` also passed: existing DynamoDB/Moto contracts, Cloud/Edge process
+health, local Warm persistence/restart and the updated CLI argument check. The
+fixtures removed their own processes/containers/data after the run.
 Targeted tests with `-race -count=1` cover jobs, both metadata backends, runtime,
 observability, adminclient and dsgctl. Native tests use an explicitly selected
 DynamoDB Local loopback endpoint and per-test tables with scoped cleanup.
@@ -69,6 +72,8 @@ docker compose -f deploy/local/compose.yaml -p miles-jobs-contract down --volume
 CI's existing DynamoDB job now includes the operational contract automatically;
 the runtime race gate includes `internal/jobs/...`. No AWS credentials/budget are
 needed. Private local logs are under `/home/ubuntu/.local/state/miles/jobs-nodes-metrics`.
+The full targeted race run with required DynamoDB Local passed all seven packages
+on source `8e5bdbe`; the following commit adds this validation note only.
 
 ## Downstream / remaining live integration
 
