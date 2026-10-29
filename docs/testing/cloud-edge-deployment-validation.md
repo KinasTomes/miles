@@ -44,6 +44,17 @@ qua proxy bằng test Go có race detector. Không cần AWS credentials. Native
 fixture đổi health sang loopback/port động và shutdown2s, **không** sửa deployment
 config1800s hay bật production readiness.
 
+Native smoke đã pass trên **Linux arm64**, Go **1.27.2**, Python **3.12.3**, source
+[`22374bb`](https://github.com/KinasTomes/miles/commit/22374bb6dc591c4eef0a0a56ee2322fda2bafb71).
+Hai profile cùng Miles SHA-256
+`04b3b598066604a847e8e498a0c7a016b3b7f3a8572f59ec4e914c53e6c95518`;
+archive18.211.859bytes, hash/version ghi trong
+[summary](evidence/cloud-edge-deployment/summary.json) và
+[manifest](evidence/cloud-edge-deployment/manifest.json).
+[TLS/race log](evidence/cloud-edge-deployment/tls-proxy.log) ghi response65s pass;
+[checksums](evidence/cloud-edge-deployment/sha256sums.txt) được CI kiểm tra. Các
+commit sau source này chỉ bổ sung evidence/tài liệu và bước kiểm checksum CI.
+
 ## Handoff trước live W5
 
 | Phần cần nối/kiểm thật | Task nhận |

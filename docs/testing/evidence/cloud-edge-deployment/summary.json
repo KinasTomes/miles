@@ -1,0 +1,16 @@
+{
+  "source_commit": "22374bb6dc591c4eef0a0a56ee2322fda2bafb71",
+  "arch": "arm64",
+  "sha256": "8b00c5241f220f32ea758ed62b08fd19f68f608318275b27c70ceb8c1f6564fd",
+  "bytes": 18211859,
+  "same_binary": true,
+  "profiles": [
+    "cloud",
+    "edge"
+  ],
+  "health_status": 200,
+  "ready_status": 503,
+  "tls_proxy_slow_response_seconds": 65,
+  "aws_operations": 0,
+  "scope": "packaging/process/proxy contracts; not live deployment or R1/R2"
+}
