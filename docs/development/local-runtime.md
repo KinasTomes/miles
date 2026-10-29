@@ -86,7 +86,17 @@ Local/benchmark hiện nối PUT/GET/HEAD/Range/LIST/DELETE qua object service t
 
 Token file là raw bearer format API §6.4, permission đúng 0600, regular file không symlink; có thể có một newline cuối. CLI không nhận raw token argument, không dùng SigV4 và chỉ gửi bearer đến `/admin/v1/`. Plain HTTP chỉ cho literal loopback/tunnel; endpoint remote bắt buộc HTTPS với certificate verification. Không follow redirect hoặc environment proxy; response tối đa 2 MiB, timeout bao phủ cả đọc response. Error không in response body hay transport URL/token; reflected bearer trong JSON success được redact.
 
-Read commands nối transport: `stats`, `policy get`, `user ls`, `pack ls`, `job ls`, `node ls`. Đặt global flags trước command. Gateway chưa có Admin routes/listener hoặc token bootstrap; read commands cần endpoint Admin đã hiện thực để chạy thành công. Response405/501 hoặc 404 router không có Admin error envelope báo unsupported. Response404 có JSON `error.code` của Admin trả `adminclient.ErrNotFound`, không bị coi là thiếu hỗ trợ; response lỗi vẫn bị giới hạn 2 MiB và không in message/token từ server. Mọi lỗi đều exit nonzero; lệnh mutation/offline còn thiếu cũng exit nonzero. Transport tests dùng HTTP server có kiểm bearer, không tuyên bố endpoint Admin đã có. W04-CHIEN-01 cung cấp identity/token/grants/policy routes và commands; W04-HUNG-02 cung cấp jobs/nodes/cache.
+Transport hỗ trợ `stats`, `policy get`, `user ls`, `pack ls`; `job ls/show/run/cancel` và
+`node ls/drain`. Đặt global flags trước command; job/node list nhận `--limit` và
+`--cursor`, job run nhận `--dry-run`, `--params-file`, `--policy-revision`.
+Xem [Jobs/Nodes contract](../contracts/jobs-and-nodes.md) và [validation](../testing/jobs-nodes-metrics-validation.md).
+
+Gateway hiện chưa compose Admin routes/listener hoặc token bootstrap. Các lệnh cần
+Admin endpoint thật có authentication/authorization; transport test không chứng minh
+route production đã chạy. Response405/501 hoặc router404 không có Admin error envelope
+báo unsupported; JSON404 có `error.code` trả `adminclient.ErrNotFound`. Error vẫn
+bounded/redacted, exit nonzero, không giả success. W04-CHIEN-01 cung cấp identity/token/
+grants/policy routes; W05-HUNG-01/02 nối shared jobs/nodes với runtime và executors thật.
 
 ## Test không cần container
 

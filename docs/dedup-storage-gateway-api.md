@@ -1044,7 +1044,7 @@ Kiểu: `string`, `bool`, `int` (JSON integer 0..2^53−1); thời gian RFC 3339
 | rebuild-index [--dry-run] | Offline với S3/DDB/KMS; không qua gateway khi metadata mất |
 | sim run --trace ... --policies A,B,C,D | Offline, package policy/Clock/pricing chung |
 
-dsgctl phân biệt bearer Admin API và SigV4 key để debug S3; không chuyển bearer thành header Authorization S3. Token/log không in secret. CLI nền đã nối bearer transport cho các read commands `stats`, `policy get`, `user ls`, `pack ls`, `job ls`, `node ls`; Admin routes/listener và các command còn lại chưa hiện thực thì báo lỗi/unsupported, không giả success. Schema endpoint vẫn theo hợp đồng R4. Token file đọc cục bộ permission 0600; không nhận raw bearer làm argument in history.
+dsgctl phân biệt bearer Admin API và SigV4 key để debug S3; không chuyển bearer thành header Authorization S3. Token/log không in secret. CLI nền đã nối bearer transport cho `stats`, `policy get`, `user ls`, `pack ls`, `job ls/show/run/cancel`, `node ls/drain`; Admin routes/listener và các command còn lại chưa hiện thực thì báo lỗi/unsupported, không giả success. Schema endpoint vẫn theo hợp đồng R4. Token file đọc cục bộ permission 0600; không nhận raw bearer làm argument in history. [Jobs/Nodes backend và handoff](contracts/jobs-and-nodes.md).
 
 ---
 
