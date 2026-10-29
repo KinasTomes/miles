@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -22,6 +23,37 @@ import (
 // RunPolicyPersistence uses the actual adapter transactions, never a CAS
 // reimplementation. DynamoDB factories must run against explicit DDB Local.
 func RunPolicyPersistence(t *testing.T, factory shared.MetadataFactory) {
+	runProtectionJournal(t, factory)
+	t.Run("global-rejects-bucket-event-without-publication", func(t *testing.T) {
+		f := shared.NewFixture()
+		h := factory(t, f)
+		ctx := context.Background()
+		doc, e := json.Marshal(config.DefaultGlobalPolicy())
+		if e != nil {
+			t.Fatal(e)
+		}
+		op := strings.Repeat("2", 32)
+		history := strings.Repeat("1", 32)
+		id, e := s.EventID(history, op, "SystemConfig", "entity_put")
+		if e != nil {
+			t.Fatal(e)
+		}
+		event := &s.OutboxEvent{Version: 1, ID: id, HistoryID: history, OpID: op, Entity: "SystemConfig", EntityID: s.BucketPolicyEntityID(f.Bucket.ID), Action: "entity_put", Revision: 1, PayloadPointer: "test-payload", PayloadSHA256: strings.Repeat("a", 64)}
+		if err := event.Validate(); err != nil {
+			t.Fatal("bucket event should be valid for its own operation", err)
+		}
+		if _, err := h.Store.PutPolicy(ctx, s.PolicyUpdate{Candidate: s.PolicySnapshot{Version: 1, Document: doc}, CredentialID: "admin-key", Writer: f.Lease.Fence, Event: event}); !errors.Is(err, s.ErrInvalid) {
+			t.Fatalf("global policy accepted bucket event: %v", err)
+		}
+		for _, revision := range []uint64{0, 1} {
+			if p, err := h.Store.GetPolicy(ctx, revision); !errors.Is(err, s.ErrNotFound) {
+				t.Fatal("rejected identity published current/history", p, err)
+			}
+		}
+		if _, err := h.Store.GetOutbox(ctx, event.ID); !errors.Is(err, s.ErrNotFound) {
+			t.Fatal("rejected identity published event", err)
+		}
+	})
 	t.Run("global-bucket-revisions-cas-history-producer", func(t *testing.T) {
 		f := shared.NewFixture()
 		h := factory(t, f)

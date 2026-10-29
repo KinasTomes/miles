@@ -141,6 +141,9 @@ func resolve(k string) (address, error) {
 		a.key, err = ChunkKey(s.ChunkKey{Domain: arg(0), Hash: arg(1)})
 	case "packs":
 		a.key, err = PackKey(s.PackRef{ID: arg(0), Generation: arg(1)})
+	case "pack-protection":
+		a.key, err = PackKey(s.PackRef{ID: arg(0), Generation: arg(1)})
+		a.scope = "protection_revision"
 	case "heads":
 		a.key, err = ObjectKey(s.ObjectKey{Bucket: arg(0), BucketID: arg(1), Key: arg(2)})
 		a.incarnation = arg(1)
@@ -516,7 +519,7 @@ func put[T any](t *transaction, k string, v T) error {
 		return err
 	}
 	item := Item{}
-	if a.scope != "" || strings.HasPrefix(k, "uploads/") || strings.HasPrefix(k, "buckets/") || strings.HasPrefix(k, "credentials/") {
+	if a.scope != "" || strings.HasPrefix(k, "uploads/") || strings.HasPrefix(k, "buckets/") || strings.HasPrefix(k, "credentials/") || strings.HasPrefix(k, "packs/") {
 		item = copyItem(row.after)
 		if item == nil {
 			item = Item{}

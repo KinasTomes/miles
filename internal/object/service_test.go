@@ -161,6 +161,7 @@ func (fixtureEvents) ObjectCommit(_ context.Context, e CommitEvent) (storage.Out
 type serviceFixture struct {
 	service  *Service
 	metadata *badger.Store
+	physical *memS3
 	bucket   storage.Bucket
 	options  Options
 }
@@ -277,7 +278,7 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &serviceFixture{service: service, metadata: db, bucket: f.Bucket, options: options}
+	return &serviceFixture{service: service, metadata: db, physical: physical, bucket: f.Bucket, options: options}
 }
 
 func testBudget(n int64) readpath.Budget {

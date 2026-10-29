@@ -91,6 +91,9 @@ func (m *Store) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySnapsh
 		if err := activeUser(t, c.UserID); err != nil {
 			return err
 		}
+		if r.Event != nil && r.Event.EntityID != "global-policy" {
+			return s.ErrInvalid
+		}
 
 		if err := m.producerGate(multipartTx{m: m, t: t, ctx: ctx}, ctx, r.Writer); err != nil {
 			return err

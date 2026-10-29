@@ -111,7 +111,7 @@ func TestWritePublisherIRCanAttemptExactReuseWithoutRestore(t *testing.T) {
 	}
 }
 
-func TestWritePublisherRequiresDurableProtectionBeforeReuse(t *testing.T) {
+func TestWritePublisherExtendsDurableProtectionBeforeReuse(t *testing.T) {
 	for _, delta := range []time.Duration{-1, 0, 1} {
 		t.Run(delta.String(), func(t *testing.T) {
 			pub, metadata, _ := publisherFixture(t, true)
@@ -128,15 +128,19 @@ func TestWritePublisherRequiresDurableProtectionBeforeReuse(t *testing.T) {
 			guard := &observedReuse{}
 			pub.Guard = guard
 			reuse, e := pub.Reuse(ctx, rows[entries[0].Key])
-			if e != nil || reuse != (delta >= 0) {
+			if e != nil || !reuse {
 				t.Fatal(reuse, e)
 			}
-			if delta < 0 && guard.calls != 0 {
-				t.Fatal("insufficient protection reached pin")
+			if guard.calls != 1 {
+				t.Fatal("missing generation pin")
 			}
 			infos, _ = metadata.GetPacks(ctx, []storage.PackRef{ref})
-			if !infos[ref].ProtectedUntil.Equal(p.ProtectedUntil) {
-				t.Fatal("invented protection persistence")
+			want := p.ProtectedUntil
+			if delta < 0 {
+				want = pub.ProtectedUntil
+			}
+			if !infos[ref].ProtectedUntil.Equal(want) {
+				t.Fatal("atomic max protection", infos[ref].ProtectedUntil, want)
 			}
 		})
 	}

@@ -96,11 +96,11 @@ hoặc pin token. Unknown không Eligible; evaluator không mint authority.
 - Không tier trước ProtectedUntil/MinRetentionUntil. IA thiếu retention thì defer.
   Eligible không cấp quyền xóa hoặc tự thiết lập Cold retention; executor W06 phải
   ghi retention 90 ngày theo class/nguồn và revalidate R1/CAS khi thực sự chuyển.
-- New pack luôn Warm STANDARD với protection caller cung cấp. Reuse chỉ được
-  attempt nếu durable protection đã phủ `StorePublisher.ProtectedUntil`; thiếu
-  port atomic extension thì revive từ body, không ghi timestamp giả. Đây là
-  fallback bảo thủ, có write amplification; tối ưu atomic max do lifecycle/R1
-  downstream review. Không giảm protection đã tồn tại.
+- New pack luôn Warm STANDARD với protection caller cung cấp. Reuse giữ exact
+  generation pin rồi gọi `ExtendPackProtection` để persist `max(old, required)`
+  trong transaction có writer fence, exact canonical location và state revision
+  conditions. Không revive Warm chỉ vì request mới có deadline muộn hơn. Lỗi hoặc
+  unknown outcome dừng reuse, không xóa pin/protection để suy đoán rollback.
 
 ## Test evidence và giới hạn
 
@@ -116,7 +116,7 @@ identity/domain giữ nguyên, generation/location revision đổi, old pack kh�
 retire/xóa. PUT/UploadPart ở đây dùng chung body preparation; không tuyên bố đã
 triển khai toàn bộ endpoint UploadPart hoặc CopyObject.
 
-### Validation đã chạy
+### Validation bản ban đầu trước review
 
 | Kiểm tra | Kết quả |
 | --- | --- |
@@ -147,11 +147,87 @@ Admin HTTP/CLI wiring hoặc full simulator integration trong thay đổi này. 
 ## Review/handoff
 
 - Hải: optional port, SystemConfig namespace, transaction/outbox projection và
-  durable protection extension sau này. DDB vẫn dùng injected WriterAuthority /
+  atomic protection extension. DDB vẫn dùng injected WriterAuthority /
   ProducerAuthority hiện có; fixture authority không chứng minh distributed R1.
 - Chiến: authorize trước load, strict merge, expected bucket ID/revision,
   WithMutation và producer admission; map errors theo Admin contract đã có.
-- Hưng: cùng evaluator cho model; review safety-facts adapter và fallback revival
-  khi chưa thể persist extension. Chưa freeze API trước consumer review.
+- Hưng: cùng evaluator cho model; review safety-facts adapter và atomic protection
+  extension. Chưa freeze API trước consumer review.
 - W05-PHONG-02/W06-PHONG-01: pack discovery/statistics, lifecycle scheduling,
   atomic Transitioning gate, actual restore/transition/retention và reconciliation.
+
+## PR #45 — xử lý review P1/P2
+
+Baseline review fix: `3b71efb3a0deaaafd7d455a3cd83acae89b70bec` (đã chứa
+merge main của PR; không viết lại lịch sử).
+
+### P1 — giữ Warm dedup giữa hai PUT có thời gian tiến lên
+
+Reproducer trước fix: `TestRepeatedPUTAdvancingTimeReusesWarmAndExtendsProtection`
+FAIL vì PUT thứ hai sau1s tạo pack mới và đổi location revision. Sau fix kiểm
+cùng PackRef/location revision, không upload pack/sidecar mới, GET đúng body và
+durable `protected_until` phủ hard deadline mới +15m.
+
+`PackProtectionStore` là capability bổ sung của backend hiện có; write consumer
+yêu cầu capability này. `CoordinatedMetadata` giữ local writer dispatch/lifecycle;
+native backend condition-check writer và producer authority cùng exact chunk,
+PackRef, location revision, state/class và state revision trong transaction.
+Không bỏ safety check hoặc fallback sang timestamp suy đoán. Max-no-op vẫn ghi
+record giống hệt để DDB kiểm conditions tại commit; không chỉ đọc rồi trả success.
+
+Protection tăng không đổi lifecycle `StateRevision`: test
+`TestProtectionExtensionDoesNotInvalidateAdmittedGET` dùng channel barrier và
+W=0/K=1 để GET đang emit đồng thời với PUT reuse. Bản tăng lifecycle revision
+đã làm test FAIL; bản dùng revision riêng phải PASS, không nới reader validation.
+
+Native adapters giữ protection revision riêng: Badger record
+`pack-protection/<hex pack_id>/<hex generation>`; DynamoDB attribute
+`protection_revision` trong chính item Packs (các updates gộp thành một Put).
+Không thêm field bắt buộc vào shared PackInfo/không đổi chunk identity. PackInfo
+rewrites phải giữ attribute này; suite kiểm extension→access stats→extension vẫn
+cấp revision2, không reset về1.
+
+R2 child mutation ID gắn logical operation và normalized exact input digest;
+event `PackProtection/entity_put` giữ typed projection version1 gồm Ref và
+ProtectedUntil, revision độc lập. Bundle kèm Packs projection cũ không thay schema
+hoặc lifecycle revision. Counter, max timestamp, payload/outcome/outbox commit
+nguyên tử; lost ACK giữ retained outcome, không tự retry/rebase. Shared fake chỉ
+mô phỏng max/binding, không phải bằng chứng producer persistence/distributed R1.
+Native suite kiểm payload và exporter thật; recovery consumers phải áp protection
+fact trước khi cho phép maintenance, không phục hồi old worker authority.
+
+### P2 — global policy không nhận bucket-scoped event
+
+Badger/DynamoDB global `PutPolicy` kiểm riêng `EntityID == "global-policy"`;
+reference fake đồng bộ cùng ràng buộc. Validator chung vẫn nhận bucket policy
+identity cho đúng bucket operation. Regression không dùng MutationContext, xác
+nhận valid bucket event bị global operation reject và không có current/history/
+outbox publication. Reproducer Badger trước fix FAIL vì operation trả success.
+
+### Test bổ sung
+
+- Shared contract: atomic max, no reduction, concurrent extensions, stale writer/
+  incarnation/state/location/range/generation, unsafe states và invalid target.
+- Native DDB interleaving: thay state/location sau reads, ngay trước transaction;
+  kể cả max-no-op phải Conflict, không commit với binding stale.
+- Native Badger/DDB: fail-before rollback cả timestamp/outcome/outbox, lost ACK
+  giữ committed evidence; cùng mutation retry không cấp protection revision mới.
+- Giữ các tests archive/Restored body revival và IR reuse đã có. Chưa tuyên bố
+  live AWS, distributed closure proof hoặc API Frozen.
+
+### Validation review fixes
+
+Trên Linux Go1.27.2, source mount read-only và native DynamoDB Local bắt buộc:
+
+| Kiểm tra | Kết quả |
+| --- | --- |
+| `go test -count=20 ./internal/object ./internal/engine/write` | PASS |
+| `go test -count=1 ./...` | PASS |
+| `go vet ./...` | PASS |
+| `go test -race -count=1 ./internal/object ./internal/engine/write ./internal/metadata/... ./internal/storage/... ./internal/recovery/...` | PASS |
+| gofmt, Markdown local links, whitespace gồm file mới, `git diff --check` | PASS |
+
+Project fixture review: `miles-pr45-review`, container Go có `--rm`, DDB Local
+được dọn sau kiểm thử. Kết quả trên là local validation của fixes; không lấy CI
+ở PR head cũ làm bằng chứng CI cho code chưa push. Chưa commit/push hoặc resolve
+review threads trong lượt sửa này.

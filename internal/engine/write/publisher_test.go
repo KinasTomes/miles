@@ -140,7 +140,7 @@ func TestDuplicateRaceKeepsWinnerAndLeavesLoserOrphan(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A reusable winner must cover the admitted writer's durable protection.
-	metadata.SetPack(storage.PackInfo{Version: 1, Ref: winnerRef, State: "Warm", Class: storage.Standard, Size: int64(len(data)), ProtectedUntil: pub.ProtectedUntil})
+	metadata.SetPack(storage.PackInfo{Version: 1, Ref: winnerRef, State: "Warm", Class: storage.Standard, StateRevision: 1, Size: int64(len(data)), ProtectedUntil: pub.ProtectedUntil})
 	winner := storage.Chunk{Version: 1, Key: entries[0].Key, RawBytes: int64(entries[0].RawLength),
 		Location: storage.ChunkLocation{Pack: winnerRef, Range: storage.ByteRange{Offset: 0, Length: int64(entries[0].StoredLen)}, Codec: "raw", CRC32C: entries[0].CRC32C}, LocationRevision: 1}
 	race := &insertRace{Metadata: metadata, winner: winner, writer: pub.Writer}

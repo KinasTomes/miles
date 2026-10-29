@@ -245,6 +245,9 @@ func (m *Metadata) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySna
 	if !ok || !c.Active || !u.Active || !c.SystemAdmin {
 		return s.PolicySnapshot{}, s.ErrAccessDenied
 	}
+	if r.Event != nil && r.Event.EntityID != "global-policy" {
+		return s.PolicySnapshot{}, s.ErrInvalid
+	}
 	if m.currentPolicy != r.ExpectedRevision {
 		return s.PolicySnapshot{}, s.ErrConflict
 	}

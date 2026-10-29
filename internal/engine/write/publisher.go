@@ -15,6 +15,7 @@ import (
 type CanonicalStore interface {
 	Lookup
 	storage.PackLifecycleStore
+	storage.PackProtectionStore
 	GetPacks(context.Context, []storage.PackRef) (map[storage.PackRef]storage.PackInfo, error)
 	PutChunkIfAbsent(context.Context, storage.Chunk, storage.WriterFence) (storage.Chunk, bool, error)
 	CompareAndSwapChunkLocation(context.Context, storage.ChunkKey, uint64, storage.ChunkLocation, storage.WriterFence) (storage.Chunk, error)
@@ -63,13 +64,22 @@ func (p *StorePublisher) Reuse(ctx context.Context, row storage.Chunk) (bool, er
 	if err != nil || !reusable {
 		return false, err
 	}
-	// A session pin alone ends at publication/quiescence. Until a reviewed
-	// atomic max-protection port exists, insufficient durable protection means
-	// revive from the client body, not pretend the old generation was extended.
-	if info.ProtectedUntil.IsZero() || info.ProtectedUntil.Before(p.ProtectedUntil) {
-		return false, nil
+	pinned, err := p.Guard.Pin(ctx, row)
+	if err != nil || !pinned {
+		return false, err
 	}
-	return p.Guard.Pin(ctx, row)
+	// Retain the exact generation pin while the backend atomically validates
+	// location/state/fence and persists max(existing, required). Unknown outcome
+	// aborts reuse; never remove the check or silently relabel a new generation.
+	protected, err := p.Metadata.ExtendPackProtection(ctx, storage.PackProtectionUpdate{Chunk: row, ExpectedStateRevision: info.StateRevision, RequiredUntil: p.ProtectedUntil, Writer: p.Writer})
+	if err != nil {
+		return false, err
+	}
+	canReuse, err := policy.WriteReuseCandidate(protected.State, protected.Class)
+	if err != nil || !canReuse || protected.Ref != info.Ref || protected.ProtectedUntil.Before(p.ProtectedUntil) {
+		return false, storage.ErrUnavailable
+	}
+	return true, nil
 }
 
 func (p *StorePublisher) Publish(ctx context.Context, ref storage.PackRef, data, sidecar []byte, entries []pack.Entry, prior map[storage.ChunkKey]storage.Chunk) (map[storage.ChunkKey]storage.Chunk, error) {
