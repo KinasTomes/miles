@@ -1,0 +1,4 @@
+[profile miles-runtime]
+region = ap-southeast-1
+# The Cloud instance profile supplies rotating credentials through IMDSv2.
+# No source_profile, static access keys or local developer login.

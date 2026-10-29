@@ -1,0 +1,26 @@
+[Unit]
+Description=Miles storage gateway (shared Cloud/Edge binary)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=miles
+Group=miles
+EnvironmentFile=/etc/miles/runtime.env
+UnsetEnvironment=AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN AWS_CONTAINER_CREDENTIALS_FULL_URI AWS_CONTAINER_CREDENTIALS_RELATIVE_URI
+ExecStart=/opt/miles/current/bin/miles -config /etc/miles/startup.json
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=1850
+SendSIGKILL=no
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/miles
+
+[Install]
+WantedBy=multi-user.target

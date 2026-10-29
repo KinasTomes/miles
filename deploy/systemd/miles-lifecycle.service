@@ -1,0 +1,21 @@
+[Unit]
+Description=Miles ASG termination drain and lifecycle heartbeat
+Wants=network-online.target miles.service
+After=network-online.target miles.service
+
+[Service]
+Type=exec
+EnvironmentFile=/etc/miles/runtime.env
+UnsetEnvironment=AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+ExecStart=/usr/bin/python3 /opt/miles/current/deploy/cloud/lifecycle.py --config /etc/miles/lifecycle.json
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/miles-lifecycle
+
+[Install]
+WantedBy=multi-user.target
