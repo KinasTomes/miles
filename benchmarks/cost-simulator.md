@@ -75,7 +75,9 @@ This is policy decision parity, not a production UTC/R1/R2 proof or lifecycle jo
 `internal/cost` owns shared supplied-observation definitions and exact pricing.
 The parser and `storage_rules` remain owned by `internal/pricing`. Input rate
 units must match the catalog, quantities aggregate per rate across the trace,
-and then split across progressive tiers. Aggregation starts at zero for this
+and then split across progressive tiers. Quantities allow64 digits per component;
+rational accumulators cap numerator/denominator at4096 bits, rejecting adversarial
+coprime-denominator growth. Aggregation starts at zero for this
 trace; it is not account-wide AWS tier aggregation. DDB gross normalization is
 preserved; already billed read/write units are never multiplied by a transaction
 factor again. No prices are refreshed or added by this task.

@@ -47,6 +47,10 @@ type Report struct {
 
 var quantityPattern = regexp.MustCompile(`^[0-9]{1,64}(\.[0-9]{1,64}|/[1-9][0-9]{0,63})?$`)
 
+func boundedAmount(r *big.Rat) bool {
+	return r.Num().BitLen() <= 4096 && r.Denom().BitLen() <= 4096
+}
+
 func quantity(s string) (*big.Rat, error) {
 	if !quantityPattern.MatchString(s) {
 		return nil, errors.New("quantity must be a bounded nonnegative decimal or rational string")
@@ -97,6 +101,9 @@ func Evaluate(catalog *pricing.Catalog, usage []Usage) (Report, error) {
 			sums[u.RateID] = new(big.Rat)
 		}
 		sums[u.RateID].Add(sums[u.RateID], q)
+		if !boundedAmount(sums[u.RateID]) {
+			return Report{}, errors.New("usage precision budget exceeded")
+		}
 	}
 	ids := make([]string, 0, len(sums))
 	for id := range sums {
@@ -128,8 +135,14 @@ func Evaluate(catalog *pricing.Catalog, usage []Usage) (Report, error) {
 			price, _ := new(big.Rat).SetString(tier.USD)
 			part := new(big.Rat).Sub(end, begin)
 			amount.Add(amount, part.Mul(part, price))
+			if !boundedAmount(amount) {
+				return Report{}, errors.New("price precision budget exceeded")
+			}
 		}
 		total.Add(total, amount)
+		if !boundedAmount(total) {
+			return Report{}, errors.New("subtotal precision budget exceeded")
+		}
 		out.Lines = append(out.Lines, Line{u, r.SourceID, amount.RatString()})
 	}
 	out.Subtotal = total.RatString()

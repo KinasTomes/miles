@@ -2,6 +2,7 @@ package cost
 
 import (
 	"math"
+	"math/big"
 	"os"
 	"testing"
 	"time"
@@ -54,6 +55,21 @@ func TestStorageIntegratesByteTimeWithExplicitUnits(t *testing.T) {
 	}
 	if _, err = StorageUsage(storage.Standard, 1, time.Second, 0, time.Hour); err == nil {
 		t.Fatal("missing units accepted")
+	}
+}
+
+func TestRationalAggregationHasPrecisionBudget(t *testing.T) {
+	// Individually small but coprime denominators otherwise grow without bound.
+	n := new(big.Int).Lsh(big.NewInt(1), 60)
+	usage := []Usage{}
+	for len(usage) < 80 {
+		n.Add(n, big.NewInt(1))
+		if n.ProbablyPrime(8) {
+			usage = append(usage, Usage{"s3.put_standard", "Requests", "1/" + n.String()})
+		}
+	}
+	if _, err := Evaluate(catalog(t), usage); err == nil {
+		t.Fatal("unbounded rational aggregate accepted")
 	}
 }
 
