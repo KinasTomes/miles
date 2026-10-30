@@ -170,6 +170,8 @@ type Options struct {
 	Budget         readpath.Budget
 	MaxOutstanding int
 	RequestTimeout time.Duration
+	// Uploads serves the multipart operations; nil leaves them unavailable.
+	Uploads Uploads
 }
 
 type Service struct{ o Options }
@@ -371,41 +373,62 @@ func (s *Service) ListObjects(ctx context.Context, r storage.ListObjectsRequest)
 	return out, nil
 }
 
-// begin admits one logical write of object and opens its managed session. The
-// caller must end the session through publish or Close.
-func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentialID string) (context.Context, *write.WriteSession, string, storage.WriterFence, time.Time, error) {
+// admission is fresh writer authority for one logical write: its op ID,
+// backend fence and the deadlines it was admitted for.
+type admission struct {
+	opID           string
+	fence          storage.WriterFence
+	protectedUntil time.Time
+	deadline       clock.Instant
+	wallDeadline   time.Time
+}
+
+// admit obtains writer authority for one logical write of object and carries
+// its producer context in the returned context. Every backend transaction of
+// the write checks that authority again.
+func (s *Service) admit(ctx context.Context, object storage.ObjectKey, credentialID string) (context.Context, admission, error) {
 	deadline, wallDeadline, err := s.deadline(ctx)
 	if err != nil {
-		return ctx, nil, "", storage.WriterFence{}, time.Time{}, err
+		return ctx, admission{}, err
 	}
 	opID, err := write.NewManifestID()
 	if err != nil {
-		return ctx, nil, "", storage.WriterFence{}, time.Time{}, err
+		return ctx, admission{}, err
 	}
 	admitted, err := s.o.AdmitWriter(ctx, WriterRequest{Object: object, OpID: opID, CredentialID: credentialID, Deadline: deadline, WallDeadline: wallDeadline})
 	if err != nil {
-		return ctx, nil, "", storage.WriterFence{}, time.Time{}, err
+		return ctx, admission{}, err
 	}
 	if admitted.Fence.LeaseID == "" || admitted.Fence.ServiceIncarnation == "" || admitted.Fence.Epoch == 0 || admitted.ProtectedUntil.Before(wallDeadline.Add(15*time.Minute)) {
-		return ctx, nil, "", storage.WriterFence{}, time.Time{}, storage.ErrFenced
+		return ctx, admission{}, storage.ErrFenced
 	}
-	// Carry trusted admission through both the managed session and all PUT/DELETE
+	// Carry trusted admission through both the managed session and all
 	// event/commit calls. The backend binds it again in the final transaction.
 	if admitted.Producer != nil {
 		c := *admitted.Producer
 		if c.Validate() != nil || c.Object != object || c.Writer != admitted.Fence || c.MutationID != opID || c.LogicalOpID != opID {
-			return ctx, nil, "", storage.WriterFence{}, time.Time{}, storage.ErrFenced
+			return ctx, admission{}, storage.ErrFenced
 		}
 		ctx = storage.WithMutation(ctx, c)
 	}
+	return ctx, admission{opID: opID, fence: admitted.Fence, protectedUntil: admitted.ProtectedUntil, deadline: deadline, wallDeadline: wallDeadline}, nil
+}
+
+// begin admits one logical write of object and opens its managed session. The
+// caller must end the session through publish or Close.
+func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentialID string) (context.Context, *write.WriteSession, string, storage.WriterFence, time.Time, error) {
+	ctx, a, err := s.admit(ctx, object, credentialID)
+	if err != nil {
+		return ctx, nil, "", storage.WriterFence{}, time.Time{}, err
+	}
 	session, err := write.BeginWriteSession(ctx, write.SessionOptions{
-		Registry: s.o.Registry, Metadata: s.o.Metadata, Packs: s.o.Packs, Fence: admitted.Fence,
-		Deadline: deadline, Object: object, OpID: opID, CredentialID: credentialID, ProtectedUntil: admitted.ProtectedUntil,
+		Registry: s.o.Registry, Metadata: s.o.Metadata, Packs: s.o.Packs, Fence: a.fence,
+		Deadline: a.deadline, Object: object, OpID: a.opID, CredentialID: credentialID, ProtectedUntil: a.protectedUntil,
 	})
 	if err != nil {
 		return ctx, nil, "", storage.WriterFence{}, time.Time{}, fmt.Errorf("begin: %w", err)
 	}
-	return ctx, session, opID, admitted.Fence, wallDeadline, nil
+	return ctx, session, a.opID, a.fence, a.wallDeadline, nil
 }
 
 // publish commits a head or tombstone through session and always closes it.

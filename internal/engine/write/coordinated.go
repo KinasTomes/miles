@@ -123,6 +123,23 @@ func (m *CoordinatedMetadata) WriteManifestPages(ctx context.Context, p []storag
 	}
 	return m.writer.Do(ctx, "manifest", func(f storage.WriterFence) error { return m.store.WriteManifestPages(ctx, p, f) })
 }
+
+// partPages stages kind-2 part pages through the same registration checks as
+// object pages; it is PageStore over storage.PartPageStore.
+type partPages struct {
+	m     *CoordinatedMetadata
+	store storage.PartPageStore
+}
+
+func (p partPages) WriteManifestPages(ctx context.Context, pages []storage.ManifestPage, f storage.WriterFence) error {
+	if err := p.m.checkFence(f); err != nil {
+		return err
+	}
+	return p.m.writer.Do(ctx, "part-manifest", func(f storage.WriterFence) error { return p.store.WritePartPages(ctx, pages, f) })
+}
+func (p partPages) GetManifestPage(ctx context.Context, id string, n uint32) (storage.ManifestPage, error) {
+	return p.store.GetPartPage(ctx, id, n)
+}
 func (m *CoordinatedMetadata) ReserveLogicalQuota(ctx context.Context, r storage.Reservation) error {
 	if err := m.checkFence(r.Writer); err != nil {
 		return err

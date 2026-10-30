@@ -183,7 +183,7 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	fences := make([]storage.WriterFence, 10)
+	fences := make([]storage.WriterFence, 64)
 	for i := range fences {
 		fences[i] = storage.WriterFence{LeaseID: fmt.Sprintf("writer-lease-%d", i+1), ServiceIncarnation: f.Lease.Fence.ServiceIncarnation, Epoch: 1}
 	}
@@ -273,6 +273,7 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 		Budget:         testBudget(64 << 20),
 		MaxOutstanding: 3,
 		RequestTimeout: 30 * time.Second,
+		Uploads:        db,
 	}
 	service, err := New(options)
 	if err != nil {
