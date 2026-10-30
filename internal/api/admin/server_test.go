@@ -249,18 +249,14 @@ func (w *world) grant(user string) storage.Grant {
 // through the server for every principal: allow is a 2xx answer.
 func TestAdminAuthorizationFixture(t *testing.T) {
 	w := newWorld(t, badger.Bootstrap{})
-	// Served by W04-HAI-03; until then the server does not know them.
-	pending := []string{"GET /admin/v1/objects/layout?bucket=demo&key=k", "GET /admin/v1/buckets/demo/stats"}
-	seen := 0
+	w.opts.Statistics = &fixtureStatistics{}
+	var err error
+	w.h, err = NewServer(w.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, row := range w.f.Admin {
-		method, target, _ := strings.Cut(row.Endpoint, " ")
-		if slices.Contains(pending, row.Endpoint) {
-			seen++
-			if rec := w.do(method, target, w.root, ""); rec.Code != http.StatusNotFound || rec.Header().Get("Content-Type") == "application/json" {
-				t.Errorf("%s: pending route answered %d %s", row.Endpoint, rec.Code, rec.Body)
-			}
-			continue
-		}
+		method, _, _ := strings.Cut(row.Endpoint, " ")
 		for name := range w.f.Principals {
 			if _, ok := row.Expect[name]; !ok {
 				t.Errorf("%s: no cell for %s", row.Endpoint, name)
@@ -278,9 +274,7 @@ func TestAdminAuthorizationFixture(t *testing.T) {
 			}
 		}
 	}
-	if seen != len(pending) {
-		t.Errorf("pending rows %v not all in the fixture", pending)
-	}
+
 }
 
 // prepare returns the target and body of a fixture row that succeeds for
@@ -356,7 +350,7 @@ func TestErrorOrder(t *testing.T) {
 	w.expect(w.do("DELETE", "/admin/v1/admin-tokens/not-hex", w.root, ""), http.StatusBadRequest, "invalid_request")
 
 	// Unknown routes are a plain 404, a wrong method 405.
-	if rec := w.do("GET", "/admin/v1/stats", w.root, ""); rec.Code != http.StatusNotFound || rec.Header().Get("Content-Type") == "application/json" {
+	if rec := w.do("GET", "/admin/v1/unknown", w.root, ""); rec.Code != http.StatusNotFound || rec.Header().Get("Content-Type") == "application/json" {
 		t.Errorf("unknown route: %d %s", rec.Code, rec.Body)
 	}
 	if rec := w.do("DELETE", "/admin/v1/users", w.root, ""); rec.Code != http.StatusMethodNotAllowed {
