@@ -37,6 +37,20 @@ The smoke cleaned its Docker projects/tables/processes; no credentials/configs
 are published. Required CI `benchmark-contracts` runs this combined path; `check`
 checks the published evidence hashes. CI status belongs to the actual PR head.
 
+## W4 Warm HTTP / DynamoDB follow-up
+
+Clean source **af40e4a2497e58ab5ec6608734dcc67de024105e** also passed the combined
+smoke with actual HTTP handlers/object service/strict producers/pack engine/Warm
+reader over DynamoDB Local/Moto. C1/C4 each has a paired direct-Moto run; all four
+new runs verify36 full-file GET hashes. The new native HTTP fixture also passed
+with `-race -count=1`. Its initial503 was an incomplete fixture bootstrap: direct
+bucket seeding omitted the strict producer namespace ledger. Creating the bucket
+through the actual metadata producer API fixes the setup with all guards retained.
+
+[New raw results, summary and checksums](../../benchmarks/evidence/warm-dynamodb-local/README.md).
+The updated combined smoke has eight Warm HTTP runs across the two explicitly
+declared cache/backend profiles; it infers no cross-profile speedup or MVP result.
+
 ## Remaining integration
 
 W04-CHIEN-01 Admin APIs and W04-CHIEN-02 multipart APIs remain **Todo** in the

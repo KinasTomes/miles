@@ -59,6 +59,7 @@ jobs:
             benchmarks/evidence/warm-runtime-smoke \
             benchmarks/evidence/warm-aws \
             benchmarks/evidence/cost-simulator-prototype \
+            benchmarks/evidence/warm-dynamodb-local \
             docs/testing/evidence/cloud-edge-deployment \
             docs/testing/evidence/s3-warm-final-20261027 \
             docs/testing/evidence/w03-hai-03-s3-live-20261027; do
