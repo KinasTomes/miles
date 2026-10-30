@@ -17,8 +17,13 @@ const maxBody = 16 << 10
 
 var idPattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
 
-// readBody reads at most maxBody bytes of the request body.
+// readBody reads at most maxBody bytes of the request body. Every body route
+// takes its input from the body only, so any query parameter is a schema
+// error (400) here, before the handler can admit or mutate anything.
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	if _, err := query(r); err != nil {
+		return nil, err
+	}
 	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
 		var tooBig *http.MaxBytesError

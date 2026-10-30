@@ -57,17 +57,34 @@ func (s *server) quota(c *call, id string) (storage.LogicalQuota, error) {
 	return q, err
 }
 
-// user reads user id with its quota; 404 user_not_found when missing.
+// user reads user id with its quota; 404 user_not_found when missing. The
+// two records are separate reads, but the limit only changes in a Users
+// mutation that also bumps the user revision: re-reading the user after the
+// quota and requiring the same revision makes the pair one coherent
+// snapshot, so callers can decide a no-op on it.
 func (s *server) user(c *call, id string) (storage.User, storage.LogicalQuota, error) {
-	u, err := s.Store.GetUser(c.r.Context(), id)
-	if errors.Is(err, storage.ErrNotFound) {
-		return u, storage.LogicalQuota{}, errUserNotFound
+	for range 3 {
+		u, err := s.Store.GetUser(c.r.Context(), id)
+		if errors.Is(err, storage.ErrNotFound) {
+			return u, storage.LogicalQuota{}, errUserNotFound
+		}
+		if err != nil {
+			return u, storage.LogicalQuota{}, err
+		}
+		q, err := s.quota(c, id)
+		if err != nil {
+			return u, q, err
+		}
+		again, err := s.Store.GetUser(c.r.Context(), id)
+		if err != nil {
+			return u, q, err
+		}
+		if again.Revision == u.Revision {
+			return u, q, nil
+		}
 	}
-	if err != nil {
-		return u, storage.LogicalQuota{}, err
-	}
-	q, err := s.quota(c, id)
-	return u, q, err
+	// ponytail: bounded retry under a burst of concurrent PATCHes; the caller retries.
+	return storage.User{}, storage.LogicalQuota{}, storage.ErrUnavailable
 }
 
 func pathID(c *call, name string) (string, error) {
@@ -221,7 +238,12 @@ func (s *server) patchUser(c *call) error {
 		q.Limit = int64(limit)
 	}
 	var out storage.User
-	if err := s.mutate(c, storage.ControlMutation{Entity: "Users", ID: id, ExpectedRevision: rev, User: next, SetQuota: setQuota, QuotaLimit: q.Limit}, &out); err != nil {
+	err = s.mutate(c, storage.ControlMutation{Entity: "Users", ID: id, ExpectedRevision: rev, User: next, SetQuota: setQuota, QuotaLimit: q.Limit}, &out)
+	if errors.Is(err, storage.ErrQuotaExceeded) {
+		// Checked against the ledger in the write transaction; nothing changed.
+		return invalid("logical_limit is below the bytes the user already uses plus reserves")
+	}
+	if err != nil {
 		return err
 	}
 	return c.ok(out.Revision, newUserJSON(out, q.Limit))

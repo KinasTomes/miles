@@ -246,6 +246,11 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 				}
 				if q.Limit != r.QuotaLimit {
 					forceChange = true
+					// Keep the ledger invariant every reservation (even DELETE's
+					// zero-byte one) checks: Used <= Limit, Reserved <= Limit-Used.
+					if q.Used > r.QuotaLimit || q.Reserved > r.QuotaLimit-q.Used {
+						return s.ErrQuotaExceeded
+					}
 				}
 				q.Limit = r.QuotaLimit
 				if err := write("quotas", q, r.ID); err != nil {

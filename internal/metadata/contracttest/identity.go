@@ -245,4 +245,48 @@ func RunIdentity(t *testing.T, factory MultipartFactory) {
 			t.Fatal("owner token bucket policy", v, err)
 		}
 	})
+	// A limit below Used+Reserved would make every later reservation, even the
+	// zero-byte one of DELETE, fail; the transaction must refuse it whole.
+	t.Run("quota-limit-keeps-ledger-valid", func(t *testing.T) {
+		ctx := context.Background()
+		f := NewFixture()
+		f.Quota.Used, f.Quota.Reserved = 6, 2 // populated ledger plus an active reservation
+		h := factory(t, f)
+		h.SetStrict(true)
+		p := h.Metadata.(s.ProducerStore)
+		set := func(label string, revision uint64, limit int64) (s.MutationContext, error) {
+			op := fixtureOpID("quota-" + label)
+			c := s.MutationContext{HistoryID: fixtureHistoryID, LogicalOpID: op, MutationID: op, Writer: f.Lease.Fence}
+			_, err := p.MutateControl(ctx, s.ControlMutation{Context: c, CredentialID: "admin-key", Entity: "Users", ID: "owner", ExpectedRevision: revision,
+				User: s.User{ID: "owner", Active: true, DefaultDomain: "default"}, SetQuota: true, QuotaLimit: limit})
+			return c, err
+		}
+		for _, tc := range []struct {
+			label string
+			limit int64
+		}{{"below-reserved", 7}, {"below-used", 5}, {"zero", 0}} {
+			c, err := set(tc.label, 1, tc.limit)
+			if !errors.Is(err, s.ErrQuotaExceeded) {
+				t.Fatal(tc.label, err)
+			}
+			if _, err := p.GetMutation(ctx, c.MutationID); !errors.Is(err, s.ErrNotFound) {
+				t.Fatal("refused limit left an outcome/event", tc.label, err)
+			}
+		}
+		if q, err := h.Metadata.GetQuota(ctx, "owner"); err != nil || q.Limit != 8 || q.Used != 6 || q.Reserved != 2 {
+			t.Fatal("refused limit changed the ledger", q, err)
+		}
+		if u, err := h.Metadata.(s.IdentityStore).GetUser(ctx, "owner"); err != nil || u.Revision != 1 {
+			t.Fatal("refused limit changed the user", u, err)
+		}
+		if _, err := set("raise", 1, 9); err != nil {
+			t.Fatal("raise", err)
+		}
+		if _, err := set("exact", 2, 8); err != nil {
+			t.Fatal("limit equal to used+reserved", err)
+		}
+		if q, err := h.Metadata.GetQuota(ctx, "owner"); err != nil || q.Limit != 8 || q.Used != 6 || q.Reserved != 2 {
+			t.Fatal("accepted limit", q, err)
+		}
+	})
 }

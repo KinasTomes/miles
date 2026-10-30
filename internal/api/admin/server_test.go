@@ -96,8 +96,14 @@ func newWorld(t *testing.T, extra badger.Bootstrap) *world {
 			seed.Grants = append(seed.Grants, storage.Grant{BucketID: b.BucketID, UserID: p.UserID, Read: p.Read, Write: p.Write, Revision: 1})
 		}
 	}
+	seeded := map[string]bool{}
+	for _, q := range extra.Quotas {
+		seeded[q.OwnerID] = true
+	}
 	for _, u := range seed.Users {
-		seed.Quotas = append(seed.Quotas, storage.LogicalQuota{OwnerID: u.ID, Limit: 1 << 40})
+		if !seeded[u.ID] {
+			seed.Quotas = append(seed.Quotas, storage.LogicalQuota{OwnerID: u.ID, Limit: 1 << 40})
+		}
 	}
 	if err := w.store.Bootstrap(ctx, seed); err != nil {
 		t.Fatal(err)
@@ -725,4 +731,114 @@ func TestRevokeAtMaxRevision(t *testing.T) {
 			w.must(rec, http.StatusNoContent)
 		}
 	}
+}
+
+// TestBodyRoutesRejectQuery: every route that takes a body has no query
+// parameter (API §6.5.1 step 4), so any is 400 before admission or write.
+func TestBodyRoutesRejectQuery(t *testing.T) {
+	w := newWorld(t, badger.Bootstrap{})
+	ctx := context.Background()
+	tokens := func() int {
+		p, err := w.store.ListAdminTokens(ctx, storage.IdentityListRequest{Limit: 1000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(p.Items)
+	}
+	before := tokens()
+	for _, q := range []string{"?unexpected=1", "?expected_revision=1", "?a=1&a=2"} {
+		for _, tc := range []struct{ method, path, body string }{
+			{"POST", "/admin/v1/users", `{"user_id":"query-user"}`},
+			{"PATCH", "/admin/v1/users/user-writer", `{"status":"disabled","expected_revision":1}`},
+			{"POST", "/admin/v1/credentials", `{"user_id":"user-stranger"}`},
+			{"POST", "/admin/v1/admin-tokens", `{"user_id":"user-stranger"}`},
+			{"PUT", "/admin/v1/buckets/demo/grants/user-stranger", `{"read":true,"expected_revision":0,"expected_bucket_id":"` + demoID + `"}`},
+			{"PUT", "/admin/v1/policy", `{"expected_revision":1,"compression":{"enabled":false}}`},
+			{"PUT", "/admin/v1/buckets/demo/policy", `{"cache":{"readahead_chunks":8},"expected_revision":1,"expected_bucket_id":"` + demoID + `"}`},
+		} {
+			w.expect(w.do(tc.method, tc.path+q, w.root, tc.body), http.StatusBadRequest, "invalid_request")
+		}
+	}
+	if _, err := w.store.GetUser(ctx, "query-user"); err != storage.ErrNotFound {
+		t.Fatal("POST users wrote", err)
+	}
+	if u, err := w.store.GetUser(ctx, "user-writer"); err != nil || !u.Active || u.Revision != 1 {
+		t.Fatal("PATCH user wrote", u, err)
+	}
+	if p, err := w.store.ListCredentials(ctx, storage.IdentityListRequest{UserID: "user-stranger", Limit: 10}); err != nil || len(p.Items) != 0 {
+		t.Fatal("POST credentials wrote", p, err)
+	}
+	if tokens() != before {
+		t.Fatal("POST admin-tokens wrote")
+	}
+	if g := w.grant("user-stranger"); g.Revision != 0 {
+		t.Fatal("PUT grant wrote", g)
+	}
+	if p, err := w.store.GetPolicy(ctx, 0); err != nil || p.Revision != 1 {
+		t.Fatal("PUT policy wrote", p.Revision, err)
+	}
+	if _, err := w.store.GetBucketPolicy(ctx, "demo", demoID, 0); err != storage.ErrNotFound {
+		t.Fatal("PUT bucket policy wrote", err)
+	}
+}
+
+// quotaHookStore runs hook once, between the user and quota reads of a request.
+type quotaHookStore struct {
+	*badger.Store
+	hook func()
+}
+
+func (m *quotaHookStore) GetQuota(ctx context.Context, id string) (storage.LogicalQuota, error) {
+	if h := m.hook; h != nil {
+		m.hook = nil
+		h()
+	}
+	return m.Store.GetQuota(ctx, id)
+}
+
+// TestPatchUserNoOpNeedsCoherentRevision: a PATCH changed by a concurrent
+// commit between its user and quota reads is stale, never a no-op at the
+// old revision.
+func TestPatchUserNoOpNeedsCoherentRevision(t *testing.T) {
+	w := newWorld(t, badger.Bootstrap{})
+	direct := w.h
+	store := &quotaHookStore{Store: w.store}
+	o := w.opts
+	o.Store = store
+	h, err := NewServer(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"logical_limit":1024,"expected_revision":1}`
+	store.hook = func() {
+		w.h = direct
+		w.must(w.do("PATCH", "/admin/v1/users/user-writer", w.root, body), http.StatusOK)
+		w.h = h
+	}
+	w.h = h
+	w.expect(w.do("PATCH", "/admin/v1/users/user-writer", w.root, body), http.StatusConflict, "revision_conflict")
+	if u, err := w.store.GetUser(context.Background(), "user-writer"); err != nil || u.Revision != 2 {
+		t.Fatal(u, err)
+	}
+}
+
+// TestPatchUserLimitKeepsLedgerValid: a limit below used+reserved would
+// block every later reservation (DELETE included), so it is refused whole.
+func TestPatchUserLimitKeepsLedgerValid(t *testing.T) {
+	w := newWorld(t, badger.Bootstrap{
+		Users:  []storage.User{{ID: "user-full", Active: true, Revision: 1, DefaultDomain: "default"}},
+		Quotas: []storage.LogicalQuota{{OwnerID: "user-full", Limit: 8, Used: 6, Reserved: 2}},
+	})
+	ctx := context.Background()
+	for _, limit := range []int{0, 5, 7} {
+		w.expect(w.do("PATCH", "/admin/v1/users/user-full", w.root, fmt.Sprintf(`{"logical_limit":%d,"expected_revision":1}`, limit)), http.StatusBadRequest, "invalid_request")
+	}
+	if u, err := w.store.GetUser(ctx, "user-full"); err != nil || u.Revision != 1 {
+		t.Fatal("refused limit changed the user", u, err)
+	}
+	if q, err := w.store.GetQuota(ctx, "user-full"); err != nil || q.Limit != 8 || q.Used != 6 || q.Reserved != 2 {
+		t.Fatal("refused limit changed the ledger", q, err)
+	}
+	w.must(w.do("PATCH", "/admin/v1/users/user-full", w.root, `{"logical_limit":9,"expected_revision":1}`), http.StatusOK)
+	w.must(w.do("PATCH", "/admin/v1/users/user-full", w.root, `{"logical_limit":8,"expected_revision":2}`), http.StatusOK)
 }
