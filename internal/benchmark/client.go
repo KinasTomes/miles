@@ -60,8 +60,8 @@ func newClient(c Config, concurrency int) (*awss3.Client, func(), error) {
 		c.Environment.Encryption == "" || c.Environment.CacheState == "" || c.Environment.Isolation == "" || c.Environment.AsyncWork == "" {
 		return nil, nil, errors.New("region, bucket, credentials_file and declared environment fields are required")
 	}
-	if c.Target == "miles-warm" && (c.Environment.Metadata != "badger" || c.Environment.GatewayCommit == "" || c.Environment.PolicyRevision == "") {
-		return nil, nil, errors.New("Miles W3 requires Badger, gateway_commit and policy_revision")
+	if c.Target == "miles-warm" && ((c.Environment.Metadata != "badger" && c.Environment.Metadata != "dynamodb" && c.Environment.Metadata != "dynamodb-local") || c.Environment.GatewayCommit == "" || c.Environment.PolicyRevision == "") {
+		return nil, nil, errors.New("Miles requires declared Badger/DynamoDB backend, gateway_commit and policy_revision")
 	}
 	u, err := url.Parse(c.Endpoint)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {

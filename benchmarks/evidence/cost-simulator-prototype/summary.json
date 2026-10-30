@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "kind": "cost-simulator-local-integration-prototype",
+  "source_revision": "b795d831bb47d280a39275c98011e8a865145d9f",
+  "dirty_source": false,
+  "host": "Linux aarch64",
+  "costsim_sha256": "22845fad6e707d5f37773116797beb122c4a03b6c3f662e13275248a5783d938",
+  "mvp_threshold_applied": false,
+  "artifacts_sha256": {
+    "cloud-boundary.json": "5e1d2661e1a7f2604195e312dc78746de1a98028b87d33d8fabc3e04fa8f0f3b",
+    "edge-revival.json": "c02ed5e7d68ef9d3471bcce22a54b12a3aa4e4a2993aa2660f29120d8a9b0840",
+    "dynamodb-metadata.json": "18a263bd3224f23381a91075a5b9b78c356bd0c3ea766fed3116843ca777aecc",
+    "native-integration.log": "f363be1297857c752457bda9134e667f73f70d5f5c76e1f50b2957e6a2b4dcef",
+    "consumer-contracts.log": "c61d23da183d3216ab0efd7ecabb49715f2fa2c25e7a25aa85a3c63893ae69c1",
+    "warm-smoke.log": "cb2565a3db6c4d5eb5ea04a160c9fd0e83253177e86de438890c15ae79fd4dd5"
+  },
+  "warm_runs": [
+    {
+      "target": "local-s3-smoke",
+      "concurrency": 1,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "1aa19ad7f588df3f7e2a505d9eb0ef65c54cf36966fe05f59b070b7237af84c2"
+    },
+    {
+      "target": "miles-warm",
+      "concurrency": 1,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "d3446c2983fe4b6340dd300e44132ac72493c6828599983fd173f0b4f63ac74a"
+    },
+    {
+      "target": "local-s3-smoke",
+      "concurrency": 4,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "46e750d1de0a89a1d23af890b3dbf3c698f3e687864d3c691c31999e011739ee"
+    },
+    {
+      "target": "miles-warm",
+      "concurrency": 4,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "0f184411a1c9f243aabd7aabc354c54c954c06e706918611deb5094e3206f418"
+    }
+  ],
+  "metadata_backends": {
+    "warm_http": "badger",
+    "adapter_probe": "dynamodb-local"
+  },
+  "integration": "Shared policy, Admin primitives/CLI, multipart and producer ports; not a production Admin/multipart HTTP composition",
+  "limitations": [
+    "Synthetic traces are model inputs, not observed AWS usage or a complete cost total",
+    "DynamoDB Local probe is not Warm HTTP/DynamoDB throughput, production R1/R2 or billed AWS capacity",
+    "Full DynamoDB runtime, distributed executors and live cost/performance acceptance remain W5/W6"
+  ]
+}

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "kind": "cost-simulator-local-integration-prototype",
+  "source_revision": "af40e4a2497e58ab5ec6608734dcc67de024105e",
+  "dirty_source": false,
+  "host": "Linux aarch64",
+  "costsim_sha256": "627819c4859a48747543ada9290bb8b925e170f11c9ce41041cad44a09f06a83",
+  "mvp_threshold_applied": false,
+  "artifacts_sha256": {
+    "cloud-boundary.json": "4bc67c0528b18fba270c313373b096e15af5911714ca029013438fcf19334aa3",
+    "edge-revival.json": "c068bfeca91c43ee47ff00a226858eab67488c588227c29c24014a490bf2f0b4",
+    "dynamodb-metadata.json": "b7af35dd7efc674162cfe52d38f76ad8200140698197e89517f4a199ca19f4c0",
+    "native-integration.log": "3f253398bf7cee517c27686bef3c910c7e34f9fad674bd17f2c8a9dc4b972b70",
+    "consumer-contracts.log": "f6e6be2781fe32874e5e932c1a8a19ffc96e369512358030518206115d9a24cd",
+    "warm-smoke.log": "159b486b46fef546e3f647dfc3e8b08ee3cbf958d14eaad134e1e76a056624f6"
+  },
+  "warm_runs": [
+    {
+      "target": "local-s3-smoke",
+      "concurrency": 1,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "2b600cacb0f599da11e34ecb0ab5a4ca4277fb67b87da33e1c0bb09f680d3ba8"
+    },
+    {
+      "target": "miles-warm",
+      "concurrency": 1,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "73177055455600d65884da21de27b127fa63ca042b6ddaedab43b2e5ec88a2da"
+    },
+    {
+      "target": "local-s3-smoke",
+      "concurrency": 4,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "d70efaddc202b9c3cdc773a21a31bd63278931dd4b371b4b4815da024baeeee4"
+    },
+    {
+      "target": "miles-warm",
+      "concurrency": 4,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "3d8b0819af7495c1c088750c366b2eb2fb3bee0b48e39fe64ab97a34049e3908"
+    }
+  ],
+  "dynamodb_warm_runs": [
+    {
+      "path": "dynamodb-warm/concurrency-1/direct/result.json",
+      "target": "local-s3-smoke",
+      "metadata_backend": "none",
+      "concurrency": 1,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "087a54dd0d38b0aa8d96b293af0bc092f4505c13371e51a315c64a9e4ca17502"
+    },
+    {
+      "path": "dynamodb-warm/concurrency-1/miles/result.json",
+      "target": "miles-warm",
+      "metadata_backend": "dynamodb-local",
+      "concurrency": 1,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "bbd403bedef2b478961a1ee9d2d1335bc4d3412bcd844471cb022abcebd49dd9"
+    },
+    {
+      "path": "dynamodb-warm/concurrency-4/direct/result.json",
+      "target": "local-s3-smoke",
+      "metadata_backend": "none",
+      "concurrency": 4,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "190296261307bf30b00be6d8f11d65a95e254039e3ce748905bb4cc8a054e2dc"
+    },
+    {
+      "path": "dynamodb-warm/concurrency-4/miles/result.json",
+      "target": "miles-warm",
+      "metadata_backend": "dynamodb-local",
+      "concurrency": 4,
+      "samples": 66,
+      "verified_gets": 36,
+      "artifact_sha256": "d2b5bdcbd0a6c3b527161005c892e1a09403f53cdda99c441e5480eb7037cbfa"
+    }
+  ],
+  "metadata_backends": {
+    "warm_http": "badger",
+    "dynamodb_warm_http": "dynamodb-local",
+    "adapter_probe": "dynamodb-local"
+  },
+  "integration": "Shared policy, Admin primitives/CLI, multipart and producer ports; not a production Admin/multipart HTTP composition",
+  "limitations": [
+    "Synthetic traces are model inputs, not observed AWS usage or a complete cost total",
+    "Warm HTTP uses the real handlers/service/engine with test-only authority and emulators; not production R1/R2 or billed AWS capacity",
+    "Multi-node Cloud/Edge deployment and final live cost/performance acceptance are downstream consumers, not W4 prerequisites"
+  ]
+}

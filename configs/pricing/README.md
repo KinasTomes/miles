@@ -49,7 +49,9 @@ Hiện validator có mapping Region đã kiểm chứng cho **ap-southeast-1** v
 
 Cost/simulator consumers dùng chung `pricing.Parse(data, requiredRates...)` từ `internal/pricing`: trả `*Catalog` với structs `Rate`, `Tier`, `Source`, `StorageRule` hoặc lỗi; không trả catalog dùng dở khi validation fail. Decimal được giữ dạng string và so sánh bằng `math/big.Rat`, không qua `float64`. `--file` chọn catalog khác; `--require-rate` lặp được. CLI exit0 khi valid/help,1 khi lỗi file/contract/required rate,2 khi sai cú pháp. Binary embed schema nên dùng được ngoài repo với catalog path rõ ràng.
 
-Cost/simulator consumers dùng cùng contract này. Mỗi workload liệt kê required IDs và từ chối tính **complete total** khi thiếu giá/đơn vị/route, không silently skip; partial subtotal chỉ được báo với danh sách unpriced đi kèm. Parse decimal bằng exact decimal/rational. Không có phép tính tiền trong tooling hiện tại.
+Cost/simulator consumers dùng cùng contract này. Mỗi workload liệt kê required IDs và từ chối tính **complete total** khi thiếu giá/đơn vị/route, không silently skip; partial subtotal chỉ được báo với danh sách unpriced đi kèm. Parse decimal bằng exact decimal/rational.
+
+Prototype W04-HUNG-03 dùng `internal/cost` và `cmd/costsim` để tính subtotal của usage được cung cấp: cộng theo rate trước khi tách tiers, kiểm unit, giữ provenance và danh sách unpriced; không trừ lại Free Tier. Kết quả exact là string decimal/rational; `complete_total_usd=null` vì chưa chứng minh đủ coverage. [Trace contract, lệnh chạy và giới hạn](../../benchmarks/cost-simulator.md).
 
 Reproduce quotes (read-only; đọc ngày thực trước refresh):
 
