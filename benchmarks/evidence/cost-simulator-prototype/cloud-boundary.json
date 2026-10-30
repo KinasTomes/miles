@@ -1,0 +1,173 @@
+{
+  "schema_version": 1,
+  "mvp_threshold_applied": false,
+  "kind": "simulated-accounting-prototype",
+  "trace_name": "cloud-tiering-boundary",
+  "trace_kind": "synthetic",
+  "declared_metadata_backend": "dynamodb",
+  "profile": "cloud",
+  "topology": "Modelled Cloud gateway with an Internet client; not a DynamoDB runtime measurement",
+  "start": "2026-01-01T00:00:00Z",
+  "end": "2026-01-31T00:00:00Z",
+  "bytes_per_gb": 1073741824,
+  "storage_month_seconds": 2592000,
+  "policy_revision": 1,
+  "policy_sha256": "1ab24d3d410079ded1f2cddec074b959cf0cdac59618d993957156fad5ef49bc",
+  "final_snapshot": {
+    "bytes_logical": 3221225472,
+    "bytes_unique_raw": 1073741824,
+    "bytes_unique_stored": 536870912,
+    "bytes_physical": 1073741824
+  },
+  "final_ratios": {
+    "dedup_ratio": 3,
+    "compression_ratio": 2,
+    "total_reduction": 3
+  },
+  "write_counters": {
+    "chunk_occurrences": 3,
+    "dup_occurrences": 2,
+    "revived_distinct_chunks": 0,
+    "revived_bytes_stored": 0
+  },
+  "traffic_bytes": {
+    "client_to_gateway": 3221225472,
+    "gateway_to_client": 3221225472,
+    "gateway_to_s3_upload": 1073741824,
+    "inter_node": 0,
+    "metadata_control_plane": 4096,
+    "s3_to_gateway_download": 0
+  },
+  "tiering_decisions": [
+    {
+      "event": 1,
+      "at": "2026-01-30T23:59:59.999999999Z",
+      "Verdict": "denied",
+      "Reason": "pack-too-young",
+      "PolicyRevision": 1,
+      "Actions": null,
+      "Destination": ""
+    },
+    {
+      "event": 2,
+      "at": "2026-01-31T00:00:00Z",
+      "Verdict": "eligible",
+      "Reason": "ready",
+      "PolicyRevision": 1,
+      "Actions": null,
+      "Destination": "GLACIER_IR"
+    }
+  ],
+  "cost": {
+    "region": "ap-southeast-1",
+    "as_of": "2026-10-19",
+    "currency": "USD",
+    "basis": "gross_model_before_tax_credits_free_tier",
+    "sources": {
+      "api": {
+        "url": "https://docs.aws.amazon.com/aws-cost-management/latest/APIReference/API_pricing_GetProducts.html",
+        "retrieved_at": "2026-10-19",
+        "kind": "aws_price_api"
+      },
+      "cloudwatch": {
+        "url": "https://aws.amazon.com/cloudwatch/pricing/",
+        "retrieved_at": "2026-10-19",
+        "kind": "official_page"
+      },
+      "ddb": {
+        "url": "https://aws.amazon.com/dynamodb/pricing/",
+        "retrieved_at": "2026-10-19",
+        "kind": "official_page"
+      },
+      "ebs": {
+        "url": "https://aws.amazon.com/ebs/pricing/",
+        "retrieved_at": "2026-10-19",
+        "kind": "official_page"
+      },
+      "ec2": {
+        "url": "https://aws.amazon.com/ec2/pricing/on-demand/",
+        "retrieved_at": "2026-10-19",
+        "kind": "official_page"
+      },
+      "elb": {
+        "url": "https://aws.amazon.com/elasticloadbalancing/pricing/",
+        "retrieved_at": "2026-10-19",
+        "kind": "official_page"
+      },
+      "kms": {
+        "url": "https://aws.amazon.com/kms/pricing/",
+        "retrieved_at": "2026-10-19",
+        "kind": "official_page"
+      },
+      "s3": {
+        "url": "https://aws.amazon.com/s3/pricing/",
+        "retrieved_at": "2026-10-19",
+        "kind": "official_page"
+      },
+      "secrets": {
+        "url": "https://aws.amazon.com/secrets-manager/pricing/",
+        "retrieved_at": "2026-10-19",
+        "kind": "official_page"
+      },
+      "ssm": {
+        "url": "https://aws.amazon.com/systems-manager/pricing/",
+        "retrieved_at": "2026-10-19",
+        "kind": "official_page"
+      },
+      "vpc": {
+        "url": "https://aws.amazon.com/vpc/pricing/",
+        "retrieved_at": "2026-10-19",
+        "kind": "official_page"
+      }
+    },
+    "scope": "provided_usage_only",
+    "lines": [
+      {
+        "rate_id": "ddb.write",
+        "unit": "WriteRequestUnits",
+        "quantity": "8",
+        "source_id": "api",
+        "usd_exact": "71/12500000"
+      },
+      {
+        "rate_id": "s3.put_standard",
+        "unit": "Requests",
+        "quantity": "3",
+        "source_id": "api",
+        "usd_exact": "3/200000"
+      },
+      {
+        "rate_id": "s3.storage.standard",
+        "unit": "GB-Mo",
+        "quantity": "1",
+        "source_id": "api",
+        "usd_exact": "1/40"
+      }
+    ],
+    "unpriced": [
+      {
+        "rate_id": "transfer.internet_egress",
+        "unit": "GB",
+        "quantity": "3",
+        "reason": "missing_verified_price"
+      }
+    ],
+    "priced_subtotal_usd_exact": "625517/25000000",
+    "complete_total_usd": null
+  },
+  "omissions": [
+    "Full EC2/EBS/ALB/KMS/CloudWatch infrastructure and account-wide tier aggregation",
+    "Minimum duration/size, archive metadata, restore and retries not exercised",
+    "Storage month and GB divisor are explicit modelling assumptions"
+  ],
+  "limitations": [
+    "Modelled supplied observations, not AWS measurements, a bill, execution permission or final MVP acceptance.",
+    "Storage byte-time requires supplied billable inventory; minimum duration/size, archive metadata and temporary restored storage must be supplied or listed as omissions.",
+    "Pricing tiers aggregate this trace's supplied usage from zero, not account-wide billing usage or credits/Free Tier.",
+    "Tiering decisions use the shared evaluator and explicitly assumed evidence; physical transitions, four-policy comparisons and full cost coverage belong to W6."
+  ],
+  "trace_sha256": "8bef7381658405fc52c4a530725160b6fb6c72786ce5ea2af769f8a592eedaf5",
+  "pricing_sha256": "cef34a400c02824dcfb9ecbb59d7bd2265a2faabf6336172e8b76c510288d077",
+  "tool": "costsim dev (go1.27.2)",
+  "source_revision": "b795d831bb47d280a39275c98011e8a865145d9f"
+}

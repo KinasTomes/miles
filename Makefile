@@ -11,6 +11,7 @@ build:
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/miles ./cmd/miles
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o bin/dsgctl ./cmd/dsgctl
 	$(GO) build -trimpath -o bin/warmbench ./cmd/warmbench
+	$(GO) build -trimpath -o bin/costsim ./cmd/costsim
 
 fmt:
 	$(GOFMT) -w cmd internal configs/pricing deploy/edge

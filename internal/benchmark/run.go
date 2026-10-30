@@ -59,6 +59,7 @@ type Phase struct {
 
 type Result struct {
 	SchemaVersion       int                    `json:"schema_version"`
+	MVPThresholdApplied bool                   `json:"mvp_threshold_applied"`
 	Status              string                 `json:"status"`
 	Error               string                 `json:"error,omitempty"`
 	Target              string                 `json:"target"`
