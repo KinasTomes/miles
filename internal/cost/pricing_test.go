@@ -44,6 +44,12 @@ func TestExactPricingAggregatesBeforeTiersAndKeepsMissingPrices(t *testing.T) {
 	}
 }
 
+func TestEvaluateRejectsUsageAboveNamedLimit(t *testing.T) {
+	if _, err := Evaluate(catalog(t), make([]Usage, MaxUsageLines+1)); err == nil {
+		t.Fatal("usage beyond MaxUsageLines was accepted")
+	}
+}
+
 func TestStorageIntegratesByteTimeWithExplicitUnits(t *testing.T) {
 	u, err := StorageUsage(storage.Standard, 1<<30, 15*24*time.Hour, 1<<30, 30*24*time.Hour)
 	if err != nil || u.Quantity != "1/2" {

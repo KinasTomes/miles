@@ -95,6 +95,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	file, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return fail(errors.New("output file already exists; refusing to overwrite"))
+		}
 		return fail(errors.New("out must be a new file with an existing parent"))
 	}
 	_, writeErr := file.Write(append(data, '\n'))

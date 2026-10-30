@@ -64,12 +64,15 @@ func quantity(s string) (*big.Rat, error) {
 	return r, nil
 }
 
+// MaxUsageLines bounds the number of pricing usage entries in one evaluation.
+const MaxUsageLines = 100000
+
 // Evaluate validates the shared catalog again, aggregates usage before applying
 // progressive tiers, and preserves unpriced lines. W4 reports only a subtotal:
 // supplied observations cannot prove complete infrastructure/network coverage.
 func Evaluate(catalog *pricing.Catalog, usage []Usage) (Report, error) {
 	var out Report
-	if catalog == nil || len(usage) > 100000 {
+	if catalog == nil || len(usage) > MaxUsageLines {
 		return out, errors.New("invalid catalog or usage count")
 	}
 	raw, err := json.Marshal(catalog)

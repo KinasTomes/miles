@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -28,8 +29,15 @@ func TestCLIProducesPrivateReproducibleArtifactWithoutOverwriting(t *testing.T) 
 	if err != nil || info.Mode().Perm() != 0600 {
 		t.Fatal("artifact is not private", err)
 	}
-	if run(context.Background(), args, &stdout, &stderr) != 1 {
-		t.Fatal("existing artifact overwritten")
+	stderr.Reset()
+	if exit := run(context.Background(), args, &stdout, &stderr); exit != 1 || !strings.Contains(stderr.String(), "output file already exists; refusing to overwrite") {
+		t.Fatalf("existing artifact collision not reported correctly: exit=%d, stderr=%q", exit, stderr.String())
+	}
+	missingParentArgs := append([]string(nil), args...)
+	missingParentArgs[len(missingParentArgs)-1] = filepath.Join(t.TempDir(), "nonexistent", "result.json")
+	stderr.Reset()
+	if exit := run(context.Background(), missingParentArgs, &stdout, &stderr); exit != 1 || !strings.Contains(stderr.String(), "out must be a new file with an existing parent") || strings.Contains(stderr.String(), "already exists") {
+		t.Fatalf("missing output parent not reported correctly: exit=%d, stderr=%q", exit, stderr.String())
 	}
 	again, _ := os.ReadFile(out)
 	if !bytes.Equal(b, again) {
