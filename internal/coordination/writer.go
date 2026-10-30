@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/storage"
@@ -21,11 +22,11 @@ type Hooks struct {
 	Before, After func(context.Context, string, storage.WriterFence) error
 }
 
-// WriterRegistry is a single-process integration skeleton, NOT a lease store.
-// Register consumes an already-authorized backend fence; it cannot install it
-// into metadata or mint distributed authority. Backend predicates remain intact.
-// Its mutex serializes local effects against closure, including synchronous I/O.
-// A stuck adapter therefore blocks closure: never reclaim on a timeout.
+// WriterRegistry owns local CPU/I/O lifetime and unknown-result tracking. With a
+// shared gate, BeginOperation also acquires a durable owner-bound lease and Do
+// registers the action before dispatch. Metadata still owns publication LPs.
+// Its mutex serializes local effects against local closure. Other workers close
+// shared authority via metadata CAS; expiry/timeout never proves quiescence.
 type WriterRegistry struct {
 	mu      sync.Mutex
 	gate    *WarmGate
@@ -48,6 +49,8 @@ type writerState struct {
 	operationID            string
 	object                 storage.ObjectKey
 	work                   int
+	shared                 bool
+	sharedDeadline         time.Time
 }
 
 // WriterWork retains admission/pins during CPU/body work BETWEEN storage calls.
@@ -70,6 +73,21 @@ func (w *Writer) BeginOperation(ctx context.Context, object storage.ObjectKey, o
 	}
 	if err := w.checkLocked(ctx); err != nil {
 		return nil, err
+	}
+	if g := w.owner.gate; g.shared != nil {
+		wall := w.state.sharedDeadline
+		if wall.IsZero() {
+			var err error
+			wall, err = g.sharedDeadline(ctx, w.state.deadline)
+			if err != nil {
+				return nil, err
+			}
+			w.state.sharedDeadline = wall
+		}
+		if _, err := g.shared.AcquireR1(ctx, storage.R1Acquire{Fence: w.Fence(), Owner: g.owner, Kind: "writer", OpID: opID, Object: object, Deadline: wall}); err != nil {
+			return nil, err
+		}
+		w.state.shared = true
 	}
 	w.state.operationID, w.state.object = opID, object
 	w.state.work++
@@ -177,6 +195,11 @@ func (w *Writer) checkLocked(ctx context.Context) error {
 	if r.closed || invalid || s.closed || s.released || s.lost {
 		return storage.ErrFenced
 	}
+	if r.gate.shared != nil && s.shared {
+		if _, err := r.gate.shared.CheckR1(ctx, s.fence); err != nil {
+			return err
+		}
+	}
 	for _, end := range []clock.Instant{s.deadline, s.lease} {
 		cmp, err := r.gate.clock.Now().Instant.Compare(end)
 		if err != nil {
@@ -210,6 +233,11 @@ func (w *Writer) Heartbeat(ctx context.Context) error {
 	if err := w.checkLocked(ctx); err != nil {
 		return err
 	}
+	if w.owner.gate.shared != nil && w.state.shared {
+		if _, err := w.owner.gate.shared.RenewR1(ctx, w.Fence()); err != nil {
+			return err
+		}
+	}
 	w.state.lease = next
 	return nil
 }
@@ -242,13 +270,38 @@ func (w *Writer) Do(ctx context.Context, operation string, effect func(storage.W
 		r.mu.Unlock()
 		return ErrReconcilePending
 	}
+	if r.gate.shared != nil {
+		if !w.state.shared {
+			r.mu.Unlock()
+			return storage.ErrFenced
+		}
+		if err := r.gate.shared.BeginR1Action(ctx, w.Fence(), operation); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+	}
 	err := w.effectLocked(operation, effect)
 	if err != nil {
+		if r.gate.shared != nil && (errors.Is(err, storage.ErrFenced) || errors.Is(err, storage.ErrInvalid) || errors.Is(err, storage.ErrConflict) || errors.Is(err, storage.ErrAccessDenied)) {
+			settle, stop := cleanupContext()
+			defer stop()
+			if e := r.gate.shared.SettleR1Action(settle, w.Fence(), operation); e != nil {
+				return errors.Join(err, e)
+			}
+		}
 		return err
 	}
 	ackErr := w.acknowledge(ctx, operation)
 	if ackErr != nil {
 		return errors.Join(storage.ErrUnavailable, ackErr)
+	}
+	if r.gate.shared != nil {
+		if err := r.gate.shared.SettleR1Action(ctx, w.Fence(), operation); err != nil {
+			r.mu.Lock()
+			w.state.unknown[operation] = true
+			r.mu.Unlock()
+			return err
+		}
 	}
 	return nil
 }
@@ -317,6 +370,11 @@ func (w *Writer) Pin(ctx context.Context, ref storage.PackRef) error {
 	if g.retired[ref] {
 		return storage.ErrConflict
 	}
+	if g.shared != nil {
+		if err := g.shared.PinR1(ctx, w.Fence(), []storage.PackRef{ref}); err != nil {
+			return err
+		}
+	}
 	if !w.state.pins[ref] {
 		w.state.pins[ref] = true
 		g.pins[ref]++
@@ -351,6 +409,11 @@ func (w *Writer) ReconcileCommit(ctx context.Context, store OutcomeReader, op st
 		return storage.CommitResult{}, ErrWorkPending
 	}
 	delete(w.state.unknown, "commit/"+op)
+	if w.owner.gate.shared != nil {
+		if err := w.owner.gate.shared.SettleR1Action(ctx, w.Fence(), "commit/"+op); err != nil {
+			return storage.CommitResult{}, err
+		}
+	}
 	return result, nil
 }
 func (w *Writer) CloseFence() {
@@ -360,6 +423,11 @@ func (w *Writer) CloseFence() {
 	w.owner.mu.Lock()
 	defer w.owner.mu.Unlock()
 	w.state.closed = true
+	if w.owner.gate.shared != nil && w.state.shared {
+		ctx, cancel := cleanupContext()
+		defer cancel()
+		_ = w.owner.gate.shared.CloseR1(ctx, w.Fence())
+	}
 }
 
 // Release waits for synchronous callbacks by sharing their lock. Unknown
@@ -381,6 +449,16 @@ func (w *Writer) Release() error {
 	}
 	if len(s.unknown) != 0 {
 		return ErrReconcilePending
+	}
+	if r.gate.shared != nil && s.shared {
+		ctx, cancel := cleanupContext()
+		defer cancel()
+		if err := r.gate.shared.CloseR1(ctx, w.Fence()); err != nil {
+			return err
+		}
+		if err := r.gate.shared.ReleaseR1(ctx, w.Fence()); err != nil {
+			return err
+		}
 	}
 	g := r.gate
 	g.mu.Lock()

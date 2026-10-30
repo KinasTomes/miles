@@ -109,7 +109,27 @@ func (t *transaction) dispatchOperation(input *ddb.TransactWriteItemsInput, imag
 	if _, err := t.store.dispatchDeadline(t.ctx, *t.dispatchRequest); err != nil {
 		return err
 	}
-	if _, err := t.store.api.TransactWriteItems(t.ctx, registration); err != nil {
+	if err := t.revalidateR1(); err != nil {
+		return err
+	}
+	if len(t.r1Fences) > 0 {
+		keys := []Key{r1GateKey()}
+		for f := range t.r1Fences {
+			keys = append(keys, r1LeaseKey(f.LeaseID))
+		}
+		for _, k := range keys {
+			observed := t.rows[identity(k)]
+			if observed == nil || observed.before == nil {
+				return s.ErrFenced
+			}
+			rv := observed.before["record_revision"]
+			if rv == nil {
+				return s.ErrUnavailable
+			}
+			registration.TransactItems = append(registration.TransactItems, types.TransactWriteItem{ConditionCheck: &types.ConditionCheck{TableName: aws.String(t.store.tables[k.Table]), Key: k.Attributes, ConditionExpression: aws.String("#rv = :old"), ExpressionAttributeNames: map[string]string{"#rv": "record_revision"}, ExpressionAttributeValues: Item{":old": rv}}})
+		}
+	}
+	if _, err := t.store.api.TransactWriteItems(t.ctx, registration, func(o *ddb.Options) { o.Retryer = aws.NopRetryer{} }); err != nil {
 		return backend(err)
 	}
 	return t.store.publishAttempt(t.ctx, *t.dispatchRequest, input, a.key, pending)

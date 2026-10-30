@@ -124,6 +124,9 @@ func (s *WriteSession) Prepare(pipeline Pipeline, body io.Reader, manifestID str
 	if s.prepared != nil {
 		return PreparedObject{}, storage.ErrConflict
 	}
+	if err := s.writer.BindRoot(s.ctx, s.object, manifestID); err != nil {
+		return PreparedObject{}, err
+	}
 	pipeline.Lookup = s.metadata
 	pipeline.Publisher = &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil, WriteCache: pipeline.WriteCache, AdmitOnWrite: pipeline.AdmitOnWrite}
 	p, err := PrepareObject(s.ctx, pipeline, s.metadata, s.writer.Fence(), body, s.auth.Bucket.Domain, manifestID)

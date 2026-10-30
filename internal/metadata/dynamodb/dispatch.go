@@ -79,6 +79,14 @@ func (m *Store) publishAttempt(ctx context.Context, r s.CommitRequest, input *dd
 	}
 	// SDK retries would create hidden sends after the dispatch guard/deadline.
 	// Unknown sends are reconciled explicitly using the persisted exact request.
+	if a, ok := m.authority.(*SharedAuthority); ok {
+		// Fresh conservative dispatch check after all slow metadata work. Native
+		// input still condition-checks the observed gate/lease closure revisions.
+		t := m.transaction(ctx)
+		if err := a.Check(ctx, r.Writer, r1Observe(t)); err != nil {
+			return err
+		}
+	}
 	_, err = m.api.TransactWriteItems(ctx, input, func(o *ddb.Options) { o.Retryer = aws.NopRetryer{} })
 	if isKnownCancellation(err) {
 		if clearErr := m.retireAttempt(ctx, k, pending); clearErr != nil {
