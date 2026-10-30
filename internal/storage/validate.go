@@ -92,10 +92,10 @@ func (e OutboxEvent) Validate() error {
 		}
 		return e.Object.Validate()
 	case "SystemConfig":
-		if e.EntityID == "global-policy" && e.Object == (ObjectKey{}) {
+		if validPolicyEntityID(e.EntityID) && e.Object == (ObjectKey{}) {
 			return nil
 		}
-	case "Chunks":
+	case "Chunks", "PackProtection":
 		if e.EntityID != "" && e.Object == (ObjectKey{}) {
 			return nil
 		}

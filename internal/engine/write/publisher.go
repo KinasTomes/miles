@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/pack"
+	"github.com/KinasTomes/miles/internal/policy"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
 type CanonicalStore interface {
 	Lookup
 	storage.PackLifecycleStore
+	storage.PackProtectionStore
 	GetPacks(context.Context, []storage.PackRef) (map[storage.PackRef]storage.PackInfo, error)
 	PutChunkIfAbsent(context.Context, storage.Chunk, storage.WriterFence) (storage.Chunk, bool, error)
 	CompareAndSwapChunkLocation(context.Context, storage.ChunkKey, uint64, storage.ChunkLocation, storage.WriterFence) (storage.Chunk, error)
@@ -41,13 +43,43 @@ type StorePublisher struct {
 var _ Publisher = (*StorePublisher)(nil)
 
 func (p *StorePublisher) Reuse(ctx context.Context, row storage.Chunk) (bool, error) {
-	if p == nil || p.Metadata == nil || p.Guard == nil {
+	if p == nil || p.Metadata == nil || p.Guard == nil || p.ProtectedUntil.IsZero() {
 		return false, storage.ErrInvalid
 	}
 	if err := row.Validate(); err != nil {
 		return false, err
 	}
-	return p.Guard.Pin(ctx, row)
+	infos, err := p.Metadata.GetPacks(ctx, []storage.PackRef{row.Location.Pack})
+	if err != nil {
+		return false, err
+	}
+	info, ok := infos[row.Location.Pack]
+	if !ok {
+		return false, storage.ErrNotFound
+	}
+	if info.Ref != row.Location.Pack || row.Location.Range.Validate(info.Size) != nil {
+		return false, storage.ErrInvalid
+	}
+	reusable, err := policy.WriteReuseCandidate(info.State, info.Class)
+	if err != nil || !reusable {
+		return false, err
+	}
+	pinned, err := p.Guard.Pin(ctx, row)
+	if err != nil || !pinned {
+		return false, err
+	}
+	// Retain the exact generation pin while the backend atomically validates
+	// location/state/fence and persists max(existing, required). Unknown outcome
+	// aborts reuse; never remove the check or silently relabel a new generation.
+	protected, err := p.Metadata.ExtendPackProtection(ctx, storage.PackProtectionUpdate{Chunk: row, ExpectedStateRevision: info.StateRevision, RequiredUntil: p.ProtectedUntil, Writer: p.Writer})
+	if err != nil {
+		return false, err
+	}
+	canReuse, err := policy.WriteReuseCandidate(protected.State, protected.Class)
+	if err != nil || !canReuse || protected.Ref != info.Ref || protected.ProtectedUntil.Before(p.ProtectedUntil) {
+		return false, storage.ErrUnavailable
+	}
+	return true, nil
 }
 
 func (p *StorePublisher) Publish(ctx context.Context, ref storage.PackRef, data, sidecar []byte, entries []pack.Entry, prior map[storage.ChunkKey]storage.Chunk) (map[storage.ChunkKey]storage.Chunk, error) {

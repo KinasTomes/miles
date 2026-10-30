@@ -511,14 +511,7 @@ func Journal(t Tx, ctx context.Context, required bool, writer s.WriterFence, ent
 		if p.StateRevision == 0 {
 			return s.MutationResult{}, s.ErrUnavailable
 		}
-		packEffect, err := Projection("Packs", p.Ref.ID+"/"+p.Ref.Generation, p.StateRevision, struct {
-			Version  uint32
-			Ref      s.PackRef
-			Size     int64
-			Class    s.StorageClass
-			State    string
-			Revision uint64
-		}{1, p.Ref, p.Size, p.Class, p.State, p.StateRevision}, false)
+		packEffect, err := Projection("Packs", p.Ref.ID+"/"+p.Ref.Generation, p.StateRevision, PackStateProjection(p), false)
 		if err != nil {
 			return s.MutationResult{}, err
 		}
@@ -574,7 +567,7 @@ func NoOp(t Tx, ctx context.Context, entity, identity string, input, value any) 
 	if err != nil {
 		return err
 	}
-	out := s.MutationResult{Version: 1, NoOp: true, Scope: scopeKey(entity, identity), InputSHA256: digestBytes(body), Value: encoded}
+	out := s.MutationResult{Version: 1, NoOp: true, Scope: scopeKey(entity, identity), InputSHA256: digestBytes(body), Value: encoded, HistoryID: c.HistoryID, LogicalOpID: c.LogicalOpID, Epoch: c.Epoch}
 	return put(t, "producer-outcome", out, c.MutationID)
 }
 

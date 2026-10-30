@@ -49,12 +49,12 @@ func EvaluateWrite(in WriteInput) (Decision, error) {
 	for _, ref := range refs {
 		p := unique[ref]
 		kind := ReviveFromBody
-		switch p.State {
-		case "Warm":
-			if p.Class != storage.Standard && p.Class != storage.StandardIA {
-				d.Reason = InvalidEvidence
-				return d, ErrEvidence
-			}
+		reusable, err := WriteReuseCandidate(p.State, p.Class)
+		if err != nil {
+			d.Reason = InvalidEvidence
+			return d, err
+		}
+		if reusable {
 			if in.ReusePins == Unknown {
 				d.Reason = MissingEvidence
 				return d, nil
@@ -62,28 +62,6 @@ func EvaluateWrite(in WriteInput) (Decision, error) {
 			if in.ReusePins == Valid {
 				kind = Reuse
 			}
-		case "Cold":
-			if p.Class == storage.GlacierIR {
-				if in.ReusePins == Unknown {
-					d.Reason = MissingEvidence
-					return d, nil
-				}
-				if in.ReusePins == Valid {
-					kind = Reuse
-				}
-			} else if p.Class != storage.Glacier {
-				d.Reason = InvalidEvidence
-				return d, ErrEvidence
-			}
-		case "Restored", "Restoring":
-			if p.Class != storage.Glacier {
-				d.Reason = InvalidEvidence
-				return d, ErrEvidence
-			}
-		case "Uploading", "Transitioning", "Compacting", "Retiring", "Retired", "Deleting", "Deleted":
-		default:
-			d.Reason = InvalidEvidence
-			return d, ErrEvidence
 		}
 		actions = append(actions, Action{Pack: p.Ref, StateRevision: p.StateRevision, Kind: kind})
 	}
@@ -98,6 +76,33 @@ func EvaluateWrite(in WriteInput) (Decision, error) {
 	d.Reason = Ready
 	d.Actions = actions
 	return d, nil
+}
+
+// WriteReuseCandidate is the shared state/class classification used by the
+// evaluator and write engine. True only permits attempting an exact-generation
+// reuse pin; it grants no authority and validates no identity/revision. Every
+// Restored archive chunk is revived from client body even with a long expiry.
+func WriteReuseCandidate(state string, class storage.StorageClass) (bool, error) {
+	switch state {
+	case "Warm":
+		if class == storage.Standard || class == storage.StandardIA {
+			return true, nil
+		}
+	case "Cold":
+		if class == storage.GlacierIR {
+			return true, nil
+		}
+		if class == storage.Glacier {
+			return false, nil
+		}
+	case "Restored", "Restoring":
+		if class == storage.Glacier {
+			return false, nil
+		}
+	case "Uploading", "Transitioning", "Compacting", "Retiring", "Retired", "Deleting", "Deleted":
+		return false, nil
+	}
+	return false, ErrEvidence
 }
 
 // Compare all observations without Go time.Time == (location/monotonic payload

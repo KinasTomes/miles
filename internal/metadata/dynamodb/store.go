@@ -141,6 +141,9 @@ func resolve(k string) (address, error) {
 		a.key, err = ChunkKey(s.ChunkKey{Domain: arg(0), Hash: arg(1)})
 	case "packs":
 		a.key, err = PackKey(s.PackRef{ID: arg(0), Generation: arg(1)})
+	case "pack-protection":
+		a.key, err = PackKey(s.PackRef{ID: arg(0), Generation: arg(1)})
+		a.scope = "protection_revision"
 	case "heads":
 		a.key, err = ObjectKey(s.ObjectKey{Bucket: arg(0), BucketID: arg(1), Key: arg(2)})
 		a.incarnation = arg(1)
@@ -215,6 +218,18 @@ func resolve(k string) (address, error) {
 	case "policy-current":
 		a.key, err = PolicyKey(0)
 		a.scope = "revision"
+	case "bucket-cache-current", "bucket-cache-history":
+		if arg(0) == "" || parts[0] == "bucket-cache-history" && arg(1) == "" {
+			return a, s.ErrInvalid
+		}
+		id := "bucket-cache/" + hex.EncodeToString([]byte(arg(0))) + "/current"
+		if parts[0] == "bucket-cache-history" {
+			id = "bucket-cache/" + hex.EncodeToString([]byte(arg(0))) + "/history/" + arg(1)
+		}
+		a.key = stringKey("SystemConfig", "config_id", id)
+		if parts[0] == "bucket-cache-current" {
+			a.scope = "revision"
+		}
 	case "policies":
 		n, e := strconv.ParseUint(parts[1], 16, 64)
 		if e != nil {
@@ -504,7 +519,7 @@ func put[T any](t *transaction, k string, v T) error {
 		return err
 	}
 	item := Item{}
-	if a.scope != "" || strings.HasPrefix(k, "uploads/") || strings.HasPrefix(k, "buckets/") || strings.HasPrefix(k, "credentials/") {
+	if a.scope != "" || strings.HasPrefix(k, "uploads/") || strings.HasPrefix(k, "buckets/") || strings.HasPrefix(k, "credentials/") || strings.HasPrefix(k, "packs/") {
 		item = copyItem(row.after)
 		if item == nil {
 			item = Item{}

@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/KinasTomes/miles/internal/coordination"
+	"github.com/KinasTomes/miles/internal/policy"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -85,6 +86,17 @@ func (m *CoordinatedMetadata) MarkPackWarm(ctx context.Context, p storage.PackRe
 	err = m.writer.Do(ctx, "warm/"+p.ID+"/"+p.Generation, func(f storage.WriterFence) error { out, err = m.store.MarkPackWarm(ctx, p, r, f); return err })
 	return
 }
+func (m *CoordinatedMetadata) ExtendPackProtection(ctx context.Context, r storage.PackProtectionUpdate) (out storage.PackInfo, err error) {
+	if err = m.checkFence(r.Writer); err != nil {
+		return
+	}
+	err = m.writer.Do(ctx, "protect/"+r.Chunk.Location.Pack.ID+"/"+r.Chunk.Location.Pack.Generation, func(f storage.WriterFence) error {
+		r.Writer = f
+		out, err = m.store.ExtendPackProtection(ctx, r)
+		return err
+	})
+	return
+}
 func (m *CoordinatedMetadata) PutChunkIfAbsent(ctx context.Context, c storage.Chunk, f storage.WriterFence) (out storage.Chunk, inserted bool, err error) {
 	if err = m.checkFence(f); err != nil {
 		return
@@ -139,7 +151,7 @@ func (m *CoordinatedMetadata) DeleteObject(ctx context.Context, r storage.Commit
 	return
 }
 
-// Pin implements ReuseGuard for Warm only. Protection attaches to the exact
+// Pin implements ReuseGuard for Warm/IR candidates. Protection attaches to the exact
 // generation and is retained by Writer. Re-reading checks location revision;
 // this is a local no-maintenance handoff, not a distributed pin/CAS transaction.
 func (m *CoordinatedMetadata) Pin(ctx context.Context, row storage.Chunk) (bool, error) {
@@ -161,8 +173,9 @@ func (m *CoordinatedMetadata) Pin(ctx context.Context, row storage.Chunk) (bool,
 	if !ok {
 		return false, storage.ErrNotFound
 	}
-	if info.State != "Warm" || (info.Class != storage.Standard && info.Class != storage.StandardIA) {
-		return false, nil
+	reusable, err := policy.WriteReuseCandidate(info.State, info.Class)
+	if err != nil || !reusable {
+		return false, err
 	}
 	if info.Ref != row.Location.Pack || row.Location.Range.Validate(info.Size) != nil {
 		return false, storage.ErrInvalid
