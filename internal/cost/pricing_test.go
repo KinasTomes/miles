@@ -33,7 +33,7 @@ func TestExactPricingAggregatesBeforeTiersAndKeepsMissingPrices(t *testing.T) {
 	if r.Subtotal != "32012/25" || len(r.Lines) != 2 || len(r.Unpriced) != 2 || r.CompleteTotalUSD != nil || r.AsOf != c.AsOf || r.Sources["api"].URL != c.Sources["api"].URL {
 		t.Fatalf("wrong subtotal/provenance/coverage: %+v", r)
 	}
-	for _, u := range []Usage{{"s3.put_standard", "1000 Requests", "1"}, {"s3.put_standard", "Requests", "-1"}, {"s3.put_standard", "Requests", "1e3"}, {"s3.put_standard", "Requests", "1/0"}} {
+	for _, u := range []Usage{{"s3.put_standard", "1000 Requests", "1"}, {"s3.put_standard", "Requests", "-1"}, {"s3.put_standard", "Requests", "1e3"}, {"s3.put_standard", "Requests", "1/0"}, {"s3.put_standard", "Requests", "010/1"}} {
 		if _, err := Evaluate(c, []Usage{u}); err == nil {
 			t.Fatal("invalid usage priced", u)
 		}

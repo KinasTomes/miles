@@ -45,7 +45,9 @@ type Report struct {
 	CompleteTotalUSD *string                   `json:"complete_total_usd"`
 }
 
-var quantityPattern = regexp.MustCompile(`^[0-9]{1,64}(\.[0-9]{1,64}|/[1-9][0-9]{0,63})?$`)
+// Rat.SetString treats leading-zero fraction numerators as octal. Only accept
+// canonical base-10 components so quantities cannot silently change their value.
+var quantityPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,63})(\.[0-9]{1,64}|/[1-9][0-9]{0,63})?$`)
 
 func boundedAmount(r *big.Rat) bool {
 	return r.Num().BitLen() <= 4096 && r.Denom().BitLen() <= 4096
