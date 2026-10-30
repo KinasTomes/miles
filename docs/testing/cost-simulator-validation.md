@@ -20,7 +20,7 @@ and policy selection alone does not mutate storage class/usage. Byte-time includ
 the final interval. Revival counters add no extra price or unique identities;
 ratios and route counters retain their distinct units.
 
-The clean-source local integration run passed on
+The initial clean-source local integration run passed on
 **b795d831bb47d280a39275c98011e8a865145d9f** using pinned DynamoDB Local/Moto:
 
 | Proof | Result / scope |
@@ -44,10 +44,14 @@ live backlog on2026-10-30. Those HTTP PRs cannot yet be merged/exercised here;
 the third task checklist is only satisfied at the existing port level. Keep the
 task under implementation/review until the full HTTP integration is accepted.
 
-The production DynamoDB/R1/R2 runtime is not composed; W05-HUNG-01 supplies it.
-The Warm harness now accepts explicit `dynamodb`/`dynamodb-local` declarations
-for an actual endpoint but does not manufacture a production server, authority
-provider, measured billing units or a final DynamoDB throughput result.
+W5 is not a dependency of W04-HUNG-03. W4 can measure preliminary Warm/DynamoDB
+HTTP through the actual handlers/service/strict producers/engine/Warm reader in
+a single-process local fixture. Its authority remains test-only; production
+startup is unchanged. The new paired C1/C4 runs verify whole-file hashes against
+DynamoDB Local/Moto and direct Moto with a declared memory-only cache profile.
+W05-HUNG-01 consumes W4 outputs to deploy Cloud multi-node/Edge, rather than
+providing a prerequisite for this local W4 measurement. No AWS billed capacity,
+production distributed authority or final MVP gate is inferred from the fixture.
 
 W06-HUNG-01 owns four-policy comparisons, additional traces, retention/minimum
 charges, full route/infrastructure coverage, matched direct-S3 cost comparisons

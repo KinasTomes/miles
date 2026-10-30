@@ -111,14 +111,24 @@ The required CI job `benchmark-contracts` runs this path without AWS credentials
   config consumers and multipart CRC contracts run together; this is integration
   of ports, not missing production HTTP handlers.
 - The original Warm runner still verifies whole-file SHA256 on C1/C4 for real
-  Miles/Badger plus direct Moto. Result schema v1 adds
+  Miles/Badger plus direct Moto. A second paired C1/C4 run exercises the actual
+  S3 HTTP handlers, object service, strict producers, pack engine and Warm reader
+  backed by DynamoDB Local and Moto. Its per-request lease authority is confined
+  to the single-process test fixture, not substituted into production startup.
+  Bucket creation uses the real strict producer path, including namespace counters.
+  It uses memory-only64MiB cache with admit-on-write disabled, declared separately
+  from the existing Badger smoke's memory/disk profile; no cross-profile speedup
+  is inferred. Result schema v1 adds
   `mvp_threshold_applied=false`; old artifacts keep their original schema/data.
-  The harness also accepts declared DynamoDB backends for an actually composed
-  endpoint; it does not start or provision one.
+  The harness accepts declared DynamoDB backends; the smoke composes the isolated
+  single-process test endpoint and provisions only local emulators/test tables.
 
-Full Warm HTTP on DynamoDB needs W05-HUNG-01 runtime composition and real R1/R2;
-full Admin/multipart HTTP waits on W04-CHIEN-01/02 (still Todo in the live backlog
-on2026-10-30), rather than being claimed by these port tests. W06-HUNG-01 adds
+W04-HUNG-03 does not depend on W5. Its preliminary Warm HTTP/DynamoDB measurement
+uses the local fixture above; W05-HUNG-01 consumes W4 outputs for multi-node Cloud
+and physical Edge deployment. Production distributed authority/deployment proof
+does not gate the W4 prototype. Full Admin/multipart HTTP still waits on
+W04-CHIEN-01/02 (Todo in the live backlog on2026-10-30), rather than being claimed
+by these port tests. W06-HUNG-01 adds
 the four policy comparison models, more traces and complete matched cost coverage.
 No live AWS apply/publish, final performance target, user billing or resource
 permission changes are part of this task.

@@ -161,5 +161,7 @@ See [validation](warm-harness-validation.md) for checks actually executed.
 
 W04-HUNG-03 adds explicit `mvp_threshold_applied=false` to new artifacts and
 [native metadata timing/integration smoke](cost-simulator.md). The harness can
-target an actually composed DynamoDB endpoint; current local/full-file Warm
-smoke remains Badger. A backend declaration is not proof of production wiring.
+target the single-process DynamoDB Local/Moto test endpoint alongside the existing
+Badger smoke. Both use the same Warm workload runner and verify whole-file hashes;
+their declared cache profiles remain separate. This preliminary W4 measurement
+does not depend on W5 multi-node Cloud/Edge deployment or prove production wiring.
