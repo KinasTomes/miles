@@ -120,6 +120,6 @@ jobs:
         run: |
           go test ./internal/pricing ./cmd/pricingcheck
           go run ./cmd/pricingcheck
-          go test -race -count=1 ./internal/benchmark ./cmd/warmbench
-      - name: Paired real gateway and direct emulator smoke (no AWS)
-        run: python3 -B scripts/warm_benchmark_smoke.py --out "$RUNNER_TEMP/warmbench-local"
+          go test -race -count=1 ./internal/benchmark ./cmd/warmbench ./internal/cost ./internal/simulator ./cmd/costsim
+      - name: Cost simulator, native metadata integration and paired Warm smoke (no AWS)
+        run: python3 -B scripts/cost_simulator_smoke.py --out "$RUNNER_TEMP/costsim-local"

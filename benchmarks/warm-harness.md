@@ -49,7 +49,7 @@ The direct target is labelled `local-s3-smoke`, never `direct-s3`.
    0600. Endpoint must be an origin: HTTPS, or literal loopback HTTP for local
    development. No default AWS credential chain, proxies, redirects or TLS bypass.
    `direct-s3` requires HTTPS; label emulator runs `local-s3-smoke`.
-   `miles-warm` requires declared metadata `badger`, gateway commit and policy
+   `miles-warm` requires declared metadata `badger`, `dynamodb` or `dynamodb-local`, gateway commit and policy
    revision. Environment fields are operator declarations; confirm them against
    the installation and retain the private config. Optional `kms_key_id` requests
    SSE-KMS; it does not configure the Miles physical backend.
@@ -158,3 +158,8 @@ Do not combine unmatched manifests, toolchains, checksum settings, Regions,
 encryption, node configurations, isolation or concurrency into a claimed baseline.
 
 See [validation](warm-harness-validation.md) for checks actually executed.
+
+W04-HUNG-03 adds explicit `mvp_threshold_applied=false` to new artifacts and
+[native metadata timing/integration smoke](cost-simulator.md). The harness can
+target an actually composed DynamoDB endpoint; current local/full-file Warm
+smoke remains Badger. A backend declaration is not proof of production wiring.
