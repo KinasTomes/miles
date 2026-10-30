@@ -45,9 +45,10 @@ func ChildMutation(m MutationContext, entity, identity, action string) MutationC
 
 type AdminToken struct {
 	ID, UserID, Scope string
-	Hash              []byte
+	Hash              []byte // SHA-256 of the 43 ASCII secret characters
 	Active            bool
 	Revision          uint64
+	IssuedAt          time.Time
 	ExpiresAt         time.Time
 }
 type CredentialSecurity struct {

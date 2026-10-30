@@ -148,16 +148,16 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 		if err := t.Admit(r.Context); err != nil {
 			return err
 		}
-		var actorID string
+		if (r.AdminTokenID == "") == (r.CredentialID == "") {
+			return s.ErrInvalid
+		}
+		actorID, admin := "", true
 		if r.AdminTokenID != "" {
-			token, err := get[s.AdminToken](t, "admin-tokens", r.AdminTokenID)
+			token, err := TokenActor(t, m.Now(), r.AdminTokenID)
 			if err != nil {
 				return err
 			}
-			if !token.Active || token.Scope != "system-admin" || !m.Now().Before(token.ExpiresAt) {
-				return s.ErrAccessDenied
-			}
-			actorID = token.UserID
+			actorID, admin = token.UserID, token.Scope == s.TokenScopeSystem
 		} else {
 			credential, err := get[s.Credential](t, "credentials", r.CredentialID)
 			if err != nil {
@@ -166,13 +166,17 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 			if !credential.Active || !credential.SystemAdmin {
 				return s.ErrAccessDenied
 			}
-			actorID = credential.UserID
+			user, err := get[s.User](t, "users", credential.UserID)
+			if err != nil {
+				return err
+			}
+			if !user.Active {
+				return s.ErrAccessDenied
+			}
 		}
-		user, err := get[s.User](t, "users", actorID)
-		if err != nil {
-			return err
-		}
-		if !user.Active {
+		// Non-admin tokens may only manage grants on owned buckets and revoke
+		// their own tokens; both are rechecked against the stored records below.
+		if !admin && r.Entity != "BucketGrants" && (r.Entity != "AdminTokens" || !r.Deleted) {
 			return s.ErrAccessDenied
 		}
 		identity := r.ID
@@ -314,6 +318,13 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 			if (!parent.Active && !r.Deleted) || parent.ID != r.ParentID {
 				return s.ErrBucketNotFound
 			}
+			if !admin && parent.OwnerID != actorID {
+				return s.ErrAccessDenied
+			}
+			// Owner rights are implicit; a grant row for the owner is never valid.
+			if r.ID == parent.OwnerID && !r.Deleted {
+				return s.ErrInvalid
+			}
 			if _, err := get[s.User](t, "users", r.ID); err != nil {
 				return err
 			}
@@ -348,10 +359,14 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 			}
 			previous = old
 			v := r.Credential
-			if v.ID != r.ID || v.UserID == "" || r.ExpectedRevision > 0 && v.UserID != old.UserID {
+			if v.ID != r.ID || v.UserID == "" || v.DebugAllowed && !v.SystemAdmin || r.ExpectedRevision > 0 && (v.UserID != old.UserID || v.SystemAdmin != old.SystemAdmin || v.DebugAllowed != old.DebugAllowed) {
 				return s.ErrInvalid
 			}
 			v.Revision = revision
+			v.CreatedAt = old.CreatedAt
+			if r.ExpectedRevision == 0 {
+				v.CreatedAt = m.Now()
+			}
 			if r.Deleted {
 				v.Active = false
 			}
@@ -399,12 +414,15 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 			if old.Revision != r.ExpectedRevision {
 				return s.ErrConflict
 			}
+			if !admin && old.UserID != actorID {
+				return s.ErrAccessDenied
+			}
 			previous = old
 			v := r.Token
 			if r.Deleted && v.ID == "" {
 				v = old
 			}
-			if v.ID != r.ID || v.UserID == "" || len(v.Hash) != 32 || v.Scope == "" || !r.Deleted && !m.Now().Before(v.ExpiresAt) {
+			if v.ID != r.ID || v.UserID == "" || len(v.Hash) != 32 || v.Scope != s.TokenScopeSystem && v.Scope != s.TokenScopeUser || !r.Deleted && !m.Now().Before(v.ExpiresAt) {
 				return s.ErrInvalid
 			}
 			v.Revision = revision
@@ -414,7 +432,7 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 			if r.Deleted {
 				v.Active = false
 			}
-			if r.ExpectedRevision > 0 && (!old.Active && v.Active || v.UserID != old.UserID || v.Scope != old.Scope || !bytes.Equal(v.Hash, old.Hash) || !v.ExpiresAt.Equal(old.ExpiresAt)) {
+			if r.ExpectedRevision > 0 && (!old.Active && v.Active || v.UserID != old.UserID || v.Scope != old.Scope || !bytes.Equal(v.Hash, old.Hash) || !v.ExpiresAt.Equal(old.ExpiresAt) || !v.IssuedAt.Equal(old.IssuedAt)) {
 				return s.ErrInvalid
 			}
 			value = v

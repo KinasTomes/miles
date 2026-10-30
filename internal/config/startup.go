@@ -18,6 +18,7 @@ type Startup struct {
 	HealthAddress       string
 	ShutdownSeconds     int
 	S3Address           string
+	AdminAddress        string
 	Region              string
 	LocalDataPath       string
 	PackEndpoint        string
@@ -66,6 +67,8 @@ func LoadStartup(r io.Reader) (Startup, error) {
 			target = &c.HealthAddress
 		case "s3_address":
 			target = &c.S3Address
+		case "admin_address":
+			target = &c.AdminAddress
 		case "region":
 			target = &c.Region
 		case "local_data_path":
@@ -129,6 +132,16 @@ func (c Startup) Validate() error {
 		a, err := netip.ParseAddrPort(c.S3Address)
 		if err != nil || !a.Addr().Unmap().IsLoopback() {
 			return fmt.Errorf("MVP s3_address must bind literal loopback")
+		}
+	}
+	if c.AdminAddress != "" {
+		// Admin needs an IdentityStore; only the Badger-backed modes provide one.
+		if c.Mode != "local" && c.Mode != "benchmark" {
+			return fmt.Errorf("admin_address requires mode local or benchmark")
+		}
+		a, err := netip.ParseAddrPort(c.AdminAddress)
+		if err != nil || !a.Addr().Unmap().IsLoopback() {
+			return fmt.Errorf("MVP admin_address must bind literal loopback")
 		}
 	}
 	if c.Region == "" || strings.ContainsAny(c.Region, "/ \t\r\n") {

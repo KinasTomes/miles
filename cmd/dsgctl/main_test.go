@@ -40,7 +40,7 @@ func TestCLICommandsAndErrors(t *testing.T) {
 			t.Fatal("read command failed", command, err)
 		}
 	}
-	for _, command := range [][]string{{"job", "ls"}, {"job", "run", "scrub"}, {"admin-token", "bootstrap"}} {
+	for _, command := range [][]string{{"job", "ls"}, {"job", "run", "scrub"}, {"layout", "demo", "key"}} {
 		var out, diagnostics bytes.Buffer
 		args := append([]string{"--endpoint", server.URL, "--token-file", file}, command...)
 		if err := run(context.Background(), args, &out, &diagnostics); !errors.Is(err, adminclient.ErrUnsupported) || out.Len() != 0 {
@@ -69,7 +69,7 @@ func TestCLIRequiresTokenOnlyForSupportedReadCommands(t *testing.T) {
 			t.Fatal("help/version must not require a token", err)
 		}
 	}
-	if err := run(context.Background(), []string{"admin-token", "bootstrap"}, &bytes.Buffer{}, &bytes.Buffer{}); !errors.Is(err, adminclient.ErrUnsupported) {
+	if err := run(context.Background(), []string{"layout", "demo", "key"}, &bytes.Buffer{}, &bytes.Buffer{}); !errors.Is(err, adminclient.ErrUnsupported) {
 		t.Fatal("unsupported commands must remain explicit", err)
 	}
 }

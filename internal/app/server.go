@@ -51,17 +51,25 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	health := &http.Server{Handler: h.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 150 * time.Second, MaxHeaderBytes: 16 << 10}
 	servers := []*http.Server{health}
 	listeners := []net.Listener{ln}
-	if c.S3Address != "" {
-		if d.S3Handler == nil || c.Mode == "runtime" {
+	names := []string{"health"}
+	for _, l := range []struct {
+		name, address string
+		handler       func(*Admission) http.Handler
+	}{{"s3", c.S3Address, d.S3Handler}, {"admin", c.AdminAddress, d.AdminHandler}} {
+		if l.address == "" {
+			continue
+		}
+		if l.handler == nil || c.Mode == "runtime" {
 			return closeDependencies(d, ErrRuntimeUnavailable)
 		}
-		s3ln, err := net.Listen("tcp", c.S3Address)
+		listener, err := net.Listen("tcp", l.address)
 		if err != nil {
 			return closeDependencies(d, err)
 		}
-		defer s3ln.Close()
-		servers = append(servers, &http.Server{Handler: d.S3Handler(admission), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 150 * time.Second, MaxHeaderBytes: 16 << 10})
-		listeners = append(listeners, s3ln)
+		defer listener.Close()
+		servers = append(servers, &http.Server{Handler: l.handler(admission), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 150 * time.Second, MaxHeaderBytes: 16 << 10})
+		listeners = append(listeners, listener)
+		names = append(names, l.name)
 	}
 	probeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -76,11 +84,7 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	for i, s := range servers {
 		listener := listeners[i]
 		go func() { done <- s.Serve(listener) }()
-		name := "health"
-		if i > 0 {
-			name = "s3"
-		}
-		logger.Info(name+" server listening", "address", listener.Addr().String(), "profile", c.Profile, "mode", c.Mode)
+		logger.Info(names[i]+" server listening", "address", listener.Addr().String(), "profile", c.Profile, "mode", c.Mode)
 	}
 	if c.Mode != "runtime" {
 		logger.Warn("development installation; simulated clock readiness, no distributed R1/R2", "mode", c.Mode)

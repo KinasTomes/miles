@@ -1,57 +1,14 @@
 package s3
 
-import (
-	"slices"
-	"strings"
-	"testing"
-)
+import "testing"
 
-// quota.json is the quota contract of API v2 2.6, and the admin rows of
-// authorization.json the Admin API matrix of 2.2.3. No handler serves them
-// yet (W03/W04), so these tests run every fixture input through reference
-// functions written from those sections and compare the results. Handlers
-// must pass the same fixtures; their tests then replace these functions. The
-// S3 rows of authorization.json run through the Router in authz_test.go,
-// multipart.json through internal/multipart.
-
-// adminTerms are the terms of the requires column of the admin rows: '|'
-// separates alternatives.
-var adminTerms = []string{"owner", "admin", "self"}
-
-// TestAdminAuthorizationFixture checks the admin rows: a disabled user or a
-// revoked token is 401, then requires decides between allow and 403.
-func TestAdminAuthorizationFixture(t *testing.T) {
-	var f authFixture
-	readFixture(t, "authorization.json", &f)
-	for _, row := range f.Admin {
-		for alt := range strings.SplitSeq(row.Requires, "|") {
-			if !slices.Contains(adminTerms, alt) {
-				t.Errorf("%s: unknown term %q in requires", row.Endpoint, alt)
-			}
-		}
-		for name := range f.Principals {
-			if _, ok := row.Expect[name]; !ok {
-				t.Errorf("%s: no cell for %s", row.Endpoint, name)
-			}
-		}
-		for name, want := range row.Expect {
-			p, ok := f.Principals[name]
-			rights := map[string]bool{"owner": p.UserID == f.Bucket.OwnerID, "admin": p.SystemAdmin, "self": p.UserID == row.UserID}
-			got := "403"
-			switch {
-			case !ok:
-				got = "unknown principal"
-			case p.AuthStatus == "revoked" || p.UserStatus == "disabled":
-				got = "401"
-			case slices.ContainsFunc(strings.Split(row.Requires, "|"), func(alt string) bool { return rights[alt] }):
-				got = "allow"
-			}
-			if got != want {
-				t.Errorf("%s by %s: got %s, want %s", row.Endpoint, name, got, want)
-			}
-		}
-	}
-}
+// quota.json is the quota contract of API v2 2.6. No handler serves it yet
+// (W03), so this test runs every fixture input through a reference function
+// written from that section and compares the results. Handlers must pass
+// the same fixture; their tests then replace the function. The S3 rows of
+// authorization.json run through the Router in authz_test.go, its Admin
+// rows through the Admin server in internal/api/admin, multipart.json
+// through internal/multipart.
 
 type ledgerResult struct {
 	R             int64

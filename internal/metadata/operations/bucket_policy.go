@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/config"
 	s "github.com/KinasTomes/miles/internal/storage"
@@ -49,20 +50,13 @@ func ReadBucketPolicy(t Tx, bucket, id string, revision uint64) (s.PolicySnapsho
 // WriteBucketPolicy shares business rules, not persistence. The adapter validates
 // its writer authority before entering this function. History/current/producer
 // payload/outbox are committed together by the backend's transaction engine.
-func WriteBucketPolicy(t Tx, ctx context.Context, r s.BucketPolicyUpdate) (s.PolicySnapshot, error) {
+func WriteBucketPolicy(t Tx, ctx context.Context, now time.Time, r s.BucketPolicyUpdate) (s.PolicySnapshot, error) {
 	var zero s.PolicySnapshot
-	if r.Bucket == "" || r.BucketID == "" || r.ExpectedRevision > s.MaxPolicyRevision || r.Candidate.Version != s.ModelVersion || r.Candidate.Revision != 0 {
+	if r.Bucket == "" || r.BucketID == "" || r.ExpectedRevision > s.MaxPolicyRevision || r.Candidate.Version != s.ModelVersion || r.Candidate.Revision != 0 || (r.CredentialID == "") == (r.AdminTokenID == "") {
 		return zero, s.ErrInvalid
 	}
-	a, err := t.Authorize(r.CredentialID, r.Bucket)
-	if err != nil {
+	if err := bucketPolicyActor(t, now, r); err != nil {
 		return zero, err
-	}
-	if !a.SystemAdmin && a.UserID != a.Bucket.OwnerID {
-		return zero, s.ErrAccessDenied
-	}
-	if a.Bucket.ID != r.BucketID {
-		return zero, s.ErrConflict
 	}
 	c, admitted := s.MutationFromContext(ctx)
 	if !admitted || c.Writer != r.Writer {
@@ -143,4 +137,40 @@ func WriteBucketPolicy(t Tx, ctx context.Context, r s.BucketPolicyUpdate) (s.Pol
 		return zero, err
 	}
 	return out, nil
+}
+
+// bucketPolicyActor allows the bucket owner or a system admin and binds the
+// name to r.BucketID (ErrConflict on another incarnation).
+func bucketPolicyActor(t Tx, now time.Time, r s.BucketPolicyUpdate) error {
+	if r.CredentialID != "" {
+		a, err := t.Authorize(r.CredentialID, r.Bucket)
+		if err != nil {
+			return err
+		}
+		if !a.SystemAdmin && a.UserID != a.Bucket.OwnerID {
+			return s.ErrAccessDenied
+		}
+		if a.Bucket.ID != r.BucketID {
+			return s.ErrConflict
+		}
+		return nil
+	}
+	token, err := TokenActor(t, now, r.AdminTokenID)
+	if err != nil {
+		return err
+	}
+	b, err := get[s.Bucket](t, "buckets", r.Bucket)
+	if errors.Is(err, s.ErrNotFound) || err == nil && !b.Active {
+		return s.ErrBucketNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if token.Scope != s.TokenScopeSystem && token.UserID != b.OwnerID {
+		return s.ErrAccessDenied
+	}
+	if b.ID != r.BucketID {
+		return s.ErrConflict
+	}
+	return nil
 }

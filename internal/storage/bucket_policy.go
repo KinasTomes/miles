@@ -33,8 +33,10 @@ type BucketPolicyStore interface {
 	PutBucketPolicy(context.Context, BucketPolicyUpdate) (PolicySnapshot, error)
 }
 
+// Exactly one of CredentialID or AdminTokenID names the actor (see PolicyUpdate).
 type BucketPolicyUpdate struct {
 	Bucket, BucketID, CredentialID string
+	AdminTokenID                   string
 	ExpectedRevision               uint64
 	Candidate                      PolicySnapshot // complete cache-only document; Revision must be zero
 	Writer                         WriterFence

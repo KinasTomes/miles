@@ -24,7 +24,7 @@ func TestRequestGateDeadlineDrainAndQuiescence(t *testing.T) {
 		entered <- r.Context()
 		<-r.Context().Done()
 		<-finish // Cancellation is not quiescence.
-	}))
+	}), s3Unavailable)
 	go func() {
 		defer close(done)
 		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/", nil))
@@ -66,7 +66,7 @@ func TestDeadlineInterruptsBlockedRequestBody(t *testing.T) {
 	server := httptest.NewServer(requestGate(a, 60*time.Millisecond, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer close(done)
 		_, _ = io.Copy(io.Discard, r.Body)
-	})))
+	}), s3Unavailable))
 	defer server.Close()
 	reader, writer := io.Pipe()
 	defer reader.Close()

@@ -79,3 +79,21 @@ func TestBenchmarkModeIsExplicitAndDoesNotRelaxLocalMode(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminAddressRequiresIdentityModeAndLoopback(t *testing.T) {
+	valid := `{"mode":"local","admin_address":"127.0.0.1:0","local_data_path":"/tmp/miles-local","pack_endpoint":"http://127.0.0.1:12345","pack_bucket":"test"}`
+	if c, err := LoadStartup(strings.NewReader(valid)); err != nil || c.AdminAddress != "127.0.0.1:0" {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{
+		strings.Replace(valid, "127.0.0.1:0", "0.0.0.0:9000", 1),
+		strings.Replace(valid, "127.0.0.1:0", "localhost:9000", 1),
+		`{"mode":"dev","admin_address":"127.0.0.1:0"}`,
+		`{"mode":"runtime","admin_address":"127.0.0.1:0"}`,
+		`{"mode":"dev","admin_address":null}`,
+	} {
+		if _, err := LoadStartup(strings.NewReader(bad)); err == nil {
+			t.Fatal("accepted", bad)
+		}
+	}
+}
