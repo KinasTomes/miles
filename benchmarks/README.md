@@ -4,6 +4,8 @@ Harness W03-HUNG-02: [runner, artifact và lệnh chạy](warm-harness.md),
 [validation](warm-harness-validation.md),
 [số sơ bộ AWS thật và cleanup](warm-aws-results.md).
 
+Prototype W04-HUNG-03: [cost/simulator, native DynamoDB probe và integration smoke](cost-simulator.md).
+
 Phần W2 dưới đây chuẩn bị hợp đồng/đầu vào; số đo W3 nằm ở báo cáo riêng phía trên. Phụ thuộc W01-HUNG-02/W01-HUNG-03; không yêu cầu thêm host Edge hoặc triển khai Cloud để nghiệm thu phần W2.
 
 | Checklist W02-HUNG-02 | Đầu ra |
@@ -12,7 +14,7 @@ Phần W2 dưới đây chuẩn bị hợp đồng/đầu vào; số đo W3 nằ
 | Ba nhóm dataset, generator/seed/checksum |[Dataset contract](datasets/README.md), [smoke manifest](datasets/smoke-manifest.json), `go run ./cmd/datasetgen` |
 | Direct-S3 baseline cùng workload/topology/class; chunk-per-object chỉ phụ |[Baseline specification](baseline.md) gồm workload/transport/cache/Cold/domain và evidence requirements |
 
-Pricing schema dùng chung cho cost/report/simulator ở task sau; chưa viết Go cost engine/simulator hoặc tự bổ sung command dsgctl. Generator là dev tool, không thay gateway runtime. `cmd/datasetgen` được kiểm trong `go test ./...`; Makefile fmt thêm package embed schema trong configs/pricing; vet/test ./... kiểm cả pricing package và CLI.
+Pricing schema được dùng chung bởi prototype `internal/cost`, `internal/simulator` và `cmd/costsim`; không thêm cost route/command vào dsgctl. Generator là dev tool, không thay gateway runtime. `cmd/datasetgen` được kiểm trong `go test ./...`; Makefile fmt thêm package embed schema trong configs/pricing; vet/test ./... kiểm cả pricing package và CLI.
 
 ## Kiểm tra nhanh
 

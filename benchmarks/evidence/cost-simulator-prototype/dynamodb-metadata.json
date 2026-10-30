@@ -1,0 +1,166 @@
+{
+  "go_version": "go1.27.2",
+  "kind": "native-adapter-timing-probe",
+  "limitations": [
+    "4-byte manifest fixture; not the Warm dataset or HTTP PUT/GET throughput",
+    "Test-only lease authority; no production R1/R2 runtime, physical S3 I/O, AWS latency or billed units measured",
+    "Table creation, cleanup, outbox verification and replay checks excluded from samples"
+  ],
+  "metadata_backend": "dynamodb-local",
+  "mvp_threshold_applied": false,
+  "samples": [
+    {
+      "iteration": 0,
+      "operation": "prepare_manifest_and_reservation",
+      "latency_ns": 30120414
+    },
+    {
+      "iteration": 0,
+      "operation": "commit_object",
+      "latency_ns": 56597657
+    },
+    {
+      "iteration": 0,
+      "operation": "peer_head_and_manifest_read",
+      "latency_ns": 4528215
+    },
+    {
+      "iteration": 1,
+      "operation": "prepare_manifest_and_reservation",
+      "latency_ns": 22716151
+    },
+    {
+      "iteration": 1,
+      "operation": "commit_object",
+      "latency_ns": 56397497
+    },
+    {
+      "iteration": 1,
+      "operation": "peer_head_and_manifest_read",
+      "latency_ns": 3327810
+    },
+    {
+      "iteration": 2,
+      "operation": "prepare_manifest_and_reservation",
+      "latency_ns": 26784164
+    },
+    {
+      "iteration": 2,
+      "operation": "commit_object",
+      "latency_ns": 55651814
+    },
+    {
+      "iteration": 2,
+      "operation": "peer_head_and_manifest_read",
+      "latency_ns": 3682452
+    },
+    {
+      "iteration": 3,
+      "operation": "prepare_manifest_and_reservation",
+      "latency_ns": 24164076
+    },
+    {
+      "iteration": 3,
+      "operation": "commit_object",
+      "latency_ns": 55985175
+    },
+    {
+      "iteration": 3,
+      "operation": "peer_head_and_manifest_read",
+      "latency_ns": 3097770
+    },
+    {
+      "iteration": 4,
+      "operation": "prepare_manifest_and_reservation",
+      "latency_ns": 24475796
+    },
+    {
+      "iteration": 4,
+      "operation": "commit_object",
+      "latency_ns": 59057305
+    },
+    {
+      "iteration": 4,
+      "operation": "peer_head_and_manifest_read",
+      "latency_ns": 3213770
+    },
+    {
+      "iteration": 5,
+      "operation": "prepare_manifest_and_reservation",
+      "latency_ns": 23847835
+    },
+    {
+      "iteration": 5,
+      "operation": "commit_object",
+      "latency_ns": 55343453
+    },
+    {
+      "iteration": 5,
+      "operation": "peer_head_and_manifest_read",
+      "latency_ns": 3532531
+    },
+    {
+      "iteration": 6,
+      "operation": "prepare_manifest_and_reservation",
+      "latency_ns": 23297953
+    },
+    {
+      "iteration": 6,
+      "operation": "commit_object",
+      "latency_ns": 61129192
+    },
+    {
+      "iteration": 6,
+      "operation": "peer_head_and_manifest_read",
+      "latency_ns": 3332650
+    },
+    {
+      "iteration": 7,
+      "operation": "prepare_manifest_and_reservation",
+      "latency_ns": 23497593
+    },
+    {
+      "iteration": 7,
+      "operation": "commit_object",
+      "latency_ns": 53505368
+    },
+    {
+      "iteration": 7,
+      "operation": "peer_head_and_manifest_read",
+      "latency_ns": 3018689
+    },
+    {
+      "iteration": 8,
+      "operation": "prepare_manifest_and_reservation",
+      "latency_ns": 21526188
+    },
+    {
+      "iteration": 8,
+      "operation": "commit_object",
+      "latency_ns": 55987975
+    },
+    {
+      "iteration": 8,
+      "operation": "peer_head_and_manifest_read",
+      "latency_ns": 3256170
+    },
+    {
+      "iteration": 9,
+      "operation": "prepare_manifest_and_reservation",
+      "latency_ns": 22186069
+    },
+    {
+      "iteration": 9,
+      "operation": "commit_object",
+      "latency_ns": 54974452
+    },
+    {
+      "iteration": 9,
+      "operation": "peer_head_and_manifest_read",
+      "latency_ns": 2820329
+    }
+  ],
+  "schema_version": 1,
+  "status": "passed",
+  "verified_head_revisions": 10
+}
