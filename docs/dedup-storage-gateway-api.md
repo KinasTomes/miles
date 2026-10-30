@@ -144,7 +144,7 @@ Hợp đồng của parser/xác thực S3. `tests/fixtures/s3/transport.json` gi
 
 ### 2.2.3 Danh tính, snapshot quyền và binding upload — hợp đồng W1
 
-Hợp đồng cho auth, metadata Users/Credentials/Buckets/BucketGrants/Uploads và Admin API danh tính. Test case: `tests/fixtures/s3/authorization.json` gồm ma trận S3/Admin theo vai trò, thứ tự lỗi, CopyObject, binding upload và tuổi snapshot. Dòng S3 chạy qua `s3.Router` thật trên fake metadata store (`internal/api/s3/authz_test.go`), dòng snapshot qua `internal/auth` và commit của fake store; dòng Admin chạy qua Admin server thật trên Badger (`internal/api/admin/server_test.go`), trừ `/objects/layout` và `/buckets/{b}/stats` (W04-HAI-03) được liệt kê pending.
+Hợp đồng cho auth, metadata Users/Credentials/Buckets/BucketGrants/Uploads và Admin API danh tính. Test case: `tests/fixtures/s3/authorization.json` gồm ma trận S3/Admin theo vai trò, thứ tự lỗi, CopyObject, binding upload và tuổi snapshot. Dòng S3 chạy qua `s3.Router` thật trên fake metadata store (`internal/api/s3/authz_test.go`), dòng snapshot qua `internal/auth` và commit của fake store; dòng Admin chạy qua Admin server thật trên Badger (`internal/api/admin/server_test.go`). Stats/layout authorization now runs through the same production Admin server.
 
 **Định danh**
 
@@ -790,6 +790,15 @@ Không trả dedup/physical bytes, dù user-b là chủ bucket. Ví dụ user-b 
 - dedup_ratio=logical/unique_raw; compression_ratio=unique_raw/unique_stored; total_reduction=logical/physical. Không hứa total_reduction=dedup_ratio×compression_ratio khi có rác/overhead. Mẫu số 0 trả null. Revival tăng physical, không tự giảm dedup_ratio.
 - revived_*_total là counters tích lũy có khoảng đo, khác snapshot. Bucket physical allocation admin-only phải ghi phương pháp chia sẻ, không cộng bucket unique totals như total hệ thống.
 
+### Storage statistics implementation observation contract
+
+See [storage statistics](contracts/storage-statistics.md) for the measured scope.
+`bytes_stored` is retained listed durable bytes (including noncurrent versions).
+Temporary restored billed bytes and revival counters without verified sources
+are null, not zero. Cached observations include timestamps, version scope,
+allocation methodology and consistency=approximate. Layout is metadata-only,
+not an integrity certification. Physical allocation never changes user quota.
+
 **PUT /admin/v1/policy** (system admin; ví dụ đổi default GLACIER_IR sang GLACIER):
 
 ```json
@@ -1029,7 +1038,7 @@ Kiểu: `string`, `bool`, `int` (JSON integer 0..2^53−1); thời gian RFC 3339
 - PATCH `logical_limit` nhỏ hơn `used + reserved` hiện tại trả 400 `invalid_request`, kiểm trong cùng transaction với user/quota/outbox (giữ bất biến ledger mà mọi reservation, kể cả reservation 0 byte của DELETE, đòi hỏi). Quyết định no-op của PATCH user dùng snapshot user+quota nhất quán (đọc lại user sau quota, cùng revision). Mọi route có body không nhận query parameter: có bất kỳ thì 400 ở bước 4, trước khi ghi.
 - `dsgctl admin-token bootstrap` gọi `BootstrapAdmin`: một transaction điều kiện marker chưa có ghi marker, user (tạo hoặc kích hoạt lại, quota 1 TiB), system token và global policy revision 1 nếu chưa có. Chưa ghi outbox epoch 0 (export R2 thuộc W04-PHONG-04); `--recover` báo lỗi vì recovery gate R2 §15 chưa có.
 - DynamoDB không có GSI: list users/credentials/admin-tokens quét cả bảng rồi sắp xếp mỗi trang (quy mô vận hành); grants dùng Query theo `bucket_id`. Record Credentials/AdminTokens ghi trước khi thêm `debug_allowed/created_at/issued_at` không đọc được trên DynamoDB (chưa có dữ liệu runtime).
-- Pending: `/objects/layout`, `/buckets/{b}/stats` (W04-HAI-03), route jobs/nodes/packs/cache/cost/faults chưa phục vụ.
+- Stats/layout: `/stats`, `/buckets/{b}/stats`, `/objects/layout` use system-admin-only handlers. Local/benchmark collects bounded background observations; absent/stale providers return unavailable. Other operational routes follow their respective modules.
 
 ---
 

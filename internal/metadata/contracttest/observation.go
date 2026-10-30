@@ -17,6 +17,7 @@ type ObservingStore interface {
 }
 type ObservationFactory func(*testing.T, shared.Fixture) ObservingStore
 type observationInventory struct {
+	before    func()
 	inventory s.PhysicalInventory
 	err       error
 	calls     int
@@ -24,6 +25,9 @@ type observationInventory struct {
 
 func (i *observationInventory) CollectInventory(ctx context.Context, _ int) (s.PhysicalInventory, error) {
 	i.calls++
+	if i.before != nil {
+		i.before()
+	}
 	if err := ctx.Err(); err != nil {
 		return i.inventory, err
 	}
@@ -108,6 +112,23 @@ func RunObservation(t *testing.T, factory ObservationFactory) {
 	after, err := m.GetQuota(ctx, "owner")
 	if err != nil || !reflect.DeepEqual(before, after) {
 		t.Fatal("stats changed logical quota", before, after, err)
+	}
+	late := f.Request("stats-late", 0)
+	late.Head.Object.Key = "late"
+	late.Event.Object = late.Head.Object
+	shared.Prepare(t, m, f, late, 4)
+	if _, err = m.CommitObject(ctx, late); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = svc.Layout(ctx, "demo", "late"); !errors.Is(err, s.ErrUnavailable) {
+		t.Fatal("new live object misreported as missing", err)
+	}
+	if err = svc.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	newLayout, err := svc.Layout(ctx, "demo", "late")
+	if err != nil || newLayout.Shared != 1 {
+		t.Fatal(newLayout, err)
 	}
 	inv.err = s.ErrUnavailable
 	if err = svc.Refresh(ctx); err == nil {

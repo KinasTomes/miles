@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"github.com/KinasTomes/miles/internal/engine"
 	s "github.com/KinasTomes/miles/internal/storage"
 	"sync"
@@ -33,7 +34,7 @@ type Service struct {
 }
 
 func New(o Options) (*Service, error) {
-	if o.Store == nil || o.Inventory == nil || o.Now == nil || o.MaxRecords < 1 || o.MaxReferences < 1 || o.MaxPhysicalObjects < 1 || o.Timeout <= 0 || o.MaxAge <= 0 || o.Interval <= 0 {
+	if o.Store == nil || o.Inventory == nil || o.Now == nil || o.MaxRecords < 1 || o.MaxRecords > 1000000 || o.MaxReferences < 1 || o.MaxReferences > 1000000 || o.MaxPhysicalObjects < 1 || o.MaxPhysicalObjects > 1000000 || o.Timeout <= 0 || o.MaxAge <= 0 || o.Interval <= 0 {
 		return nil, s.ErrInvalid
 	}
 	return &Service{o: o}, nil
@@ -260,19 +261,22 @@ func (m *Service) Global(ctx context.Context) (Summary, error) {
 }
 func (m *Service) Bucket(ctx context.Context, name string) (BucketSummary, error) {
 	var v BucketSummary
+	current, err := m.o.Store.GetBucket(ctx, name)
+	if errors.Is(err, s.ErrNotFound) {
+		return v, s.ErrBucketNotFound
+	}
+	if err != nil {
+		return v, err
+	}
 	e := m.view(ctx, func(r *Report) (any, error) {
 		b, ok := r.Buckets[name]
 		if !ok {
-			return nil, s.ErrBucketNotFound
+			return nil, s.ErrUnavailable // exists, but has not been measured yet
 		}
 		return b, nil
 	}, &v)
 	if e == nil {
-		b, err := m.o.Store.GetBucket(ctx, name)
-		if err != nil {
-			return v, err
-		}
-		if b.ID != v.BucketID {
+		if current.ID != v.BucketID {
 			return v, s.ErrConflict
 		}
 	}
@@ -280,25 +284,28 @@ func (m *Service) Bucket(ctx context.Context, name string) (BucketSummary, error
 }
 func (m *Service) Layout(ctx context.Context, bucket, key string) (Layout, error) {
 	b, err := m.o.Store.GetBucket(ctx, bucket)
+	if errors.Is(err, s.ErrNotFound) {
+		return Layout{}, s.ErrBucketNotFound
+	}
 	if err != nil {
 		return Layout{}, err
 	}
 	var v Layout
+	h, err := m.o.Store.GetObject(ctx, s.ObjectKey{Bucket: bucket, BucketID: b.ID, Key: key})
+	if err != nil {
+		return v, err
+	}
+	if h.Deleted {
+		return v, s.ErrNotFound
+	}
 	e := m.view(ctx, func(r *Report) (any, error) {
 		l, ok := r.Layouts[s.ObjectKey{Bucket: bucket, BucketID: b.ID, Key: key}]
 		if !ok {
-			return nil, s.ErrNotFound
+			return nil, s.ErrUnavailable // new live object, absent from the old report
 		}
 		return l, nil
 	}, &v)
 	if e == nil {
-		h, err := m.o.Store.GetObject(ctx, s.ObjectKey{Bucket: bucket, BucketID: b.ID, Key: key})
-		if err != nil {
-			return v, err
-		}
-		if h.Deleted {
-			return v, s.ErrNotFound
-		}
 		if h.Revision != v.Revision {
 			return v, s.ErrConflict
 		}

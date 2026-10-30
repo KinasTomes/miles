@@ -13,3 +13,11 @@ func TestObservationContract(t *testing.T) {
 		return m
 	})
 }
+
+func TestObservationCAS(t *testing.T) {
+	suite.RunObservationCAS(t, func(t *testing.T, f shared.Fixture) suite.ObservingStore {
+		m, _ := fixtureStore(t, f)
+		t.Cleanup(func() { _ = m.Close() })
+		return m
+	})
+}

@@ -42,3 +42,19 @@ All version inventory uses paginated ListObjectVersions, including marker-only
 pages, under the configured bucket. IAM list/version failures are unavailable,
 never a fallback to zero or latest-only totals. The reader needs listing access;
 PackStore serving paths remain independent of listing permission.
+
+Local/benchmark collection defaults: 10,000 metadata records, 100,000 manifest
+references, 10,000 physical versions, 20-second collection timeout, 30-second
+refresh and 2-minute maximum report age. Exceeding budgets does not publish a
+truncated complete report. Production constructors require explicit providers
+and budgets. The service role needs s3:ListBucketVersions on the dedicated
+physical bucket; no role/policy is deployed by this implementation.
+
+Layout includes integrity=metadata-only/not-verified. Stored blob/footer CRC,
+raw SHA-256 and generation checks remain on verified format/read paths. A layout
+200 is never evidence that every physical blob was downloaded and validated.
+
+Resource existence is checked independently of report coverage: a current bucket
+or live object created after collection returns unavailable until measured,
+not a false 404. Missing buckets/objects retain distinct not-found errors; a
+changed head/incarnation conflicts with the cached layout binding.

@@ -41,3 +41,57 @@ rechecks bucket incarnation and current head revision. Collection remains an
 approximate observation, not a distributed snapshot, integrity certification,
 billing report or R1/GC permission. Missing metric producers return null, not
 fabricated revival/cache/restored counters.
+
+## Property, integrity and concurrency
+
+An independent reference oracle exercises 60 deterministic seeds: overlapping
+bucket references, repeated occurrences, the same hash across two domains,
+raw/zstd stored lengths, empty objects, retained noncurrent versions, sidecars
+and order-independent allocation/conservation. Tests count bytes from a real
+production pack and sidecar and reject stored CRC corruption, wrong raw SHA,
+corrupted index and wrong generation through existing production verifiers.
+Calculator integrity guards reject overlapping distinct-identity ranges and
+metadata/physical size mismatch. Layout explicitly reports metadata-only integrity.
+
+Both actual adapters race canonical insert and location CAS (one winner each).
+The collected report counts both physical packs but only one live identity, and
+leaves quota unchanged. An actual canonical CAS injected during inventory makes
+refresh fail with conflict and retains the previous report; a later stable
+refresh succeeds. Collector cancellation joins work without publishing zeros.
+
+Final Linux verification, Go 1.27.2, MILES_DDB_LOCAL_REQUIRED=1:
+
+```text
+go vet ./... && go build ./...
+PASS
+go test ./... -count=1 -timeout=10m
+PASS all packages; Badger 32.308s; native DynamoDB 21.020s.
+go test -race ./internal/stats ./internal/api/admin ./internal/metadata/... ./internal/storage/... ./internal/engine/... ./internal/manifest ./internal/pack ./internal/readpath ./internal/app -count=1 -timeout=10m
+PASS; stats 1.296s; Badger 40.682s; native DynamoDB 50.309s.
+go test -race ./internal/metadata/badger ./internal/metadata/dynamodb -run Observation -count=3 -timeout=4m
+PASS Badger 1.918s; native DynamoDB 3.984s (includes during-collection CAS).
+go test -race ./internal/stats -count=10 -timeout=3m
+PASS 2.455s (600 seeded reference-oracle cases plus integrity/lifecycle tests).
+python3 -B -m unittest discover -s scripts/tests -v
+PASS 19 tests in Linux.
+```
+
+Format, tracked document names and diff whitespace checks pass. Windows tooling
+cannot import deployment's fcntl; those tests pass in Linux, not by skipping or
+weakening them. DynamoDB fixtures use dummy credentials and isolated table names;
+the task's compose project is removed after verification. No real AWS or
+distributed R1/R2 acceptance is inferred. Planning files remain untracked.
+
+Final HTTP/cache refinements also passed vet and focused Linux race regression:
+
+```text
+go vet ./...
+go test -race ./internal/api/admin ./internal/stats ./internal/metadata/badger ./internal/metadata/dynamodb -run 'Statistics|Observation|Collector' -count=1 -timeout=4m
+PASS admin 1.815s; stats 1.019s; Badger 1.471s; native DynamoDB 2.293s.
+```
+
+These cases include actual Badger collector-to-HTTP responses, distinct bucket/
+object 404 mapping, one collection ID shared by global/bucket reports, and a new
+committed object absent from cache returning unavailable until the next refresh.
+The latter is exercised through both real adapters, followed by external-sharing
+verification after refresh. Coverage absence is not treated as resource absence.

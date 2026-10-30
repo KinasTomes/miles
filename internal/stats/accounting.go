@@ -53,6 +53,7 @@ type LayoutPack struct {
 	Chunks       int64          `json:"chunks"`
 }
 type Layout struct {
+	Integrity   string       `json:"integrity"`
 	Bucket      string       `json:"bucket"`
 	Domain      string       `json:"domain_id"`
 	Key         string       `json:"key"`
@@ -168,7 +169,7 @@ func Calculate(in Input) (Report, error) {
 		}
 		self[h.Object] = counts
 		r.Buckets[b.Name] = bs
-		layout := Layout{Bucket: b.Name, Key: h.Object.Key, Domain: h.Domain, Revision: h.Revision, Size: h.Size, Occurrences: int64(h.ChunkCount), Packs: []LayoutPack{}, Consistency: "approximate"}
+		layout := Layout{Integrity: "metadata-only/not-verified", Bucket: b.Name, Key: h.Object.Key, Domain: h.Domain, Revision: h.Revision, Size: h.Size, Occurrences: int64(h.ChunkCount), Packs: []LayoutPack{}, Consistency: "approximate"}
 		for ref, n := range groups {
 			p := in.Packs[ref]
 			layout.Packs = append(layout.Packs, LayoutPack{PackID: ref.ID, Generation: ref.Generation, State: strings.ToLower(p.State), StorageClass: p.Class, Chunks: n})
@@ -180,9 +181,11 @@ func Calculate(in Input) (Report, error) {
 		r.Layouts[h.Object] = layout
 	}
 	weights := map[s.PackRef]map[string]*big.Rat{}
+	ranges := map[s.PackRef][]s.ByteRange{}
 	var liveStored int64
 	for k, buckets := range users {
 		c := in.Chunks[k]
+		ranges[c.Location.Pack] = append(ranges[c.Location.Pack], c.Location.Range)
 		r.Global.Chunks++
 		if add(&r.Global.BytesUniqueRaw, c.RawBytes) != nil || add(&r.Global.BytesUniqueStored, c.Location.Range.Length) != nil {
 			return r, s.ErrUnavailable
@@ -205,6 +208,16 @@ func Calculate(in Input) (Report, error) {
 				weights[c.Location.Pack][name] = new(big.Rat)
 			}
 			weights[c.Location.Pack][name].Add(weights[c.Location.Pack][name], share)
+		}
+	}
+	// Distinct domain/hash identities cannot claim the same physical bytes.
+	// Repeated logical occurrences have already been deduplicated above.
+	for _, spans := range ranges {
+		sort.Slice(spans, func(i, j int) bool { return spans[i].Offset < spans[j].Offset })
+		for i := 1; i < len(spans); i++ {
+			if spans[i].Offset < spans[i-1].Offset+spans[i-1].Length {
+				return r, s.ErrUnavailable
+			}
 		}
 	}
 	for obj, counts := range self {
@@ -246,6 +259,9 @@ func Calculate(in Input) (Report, error) {
 		r.Global.Breakdown[o.Category] = v
 		if !o.Current || o.Category != "pack" {
 			continue
+		}
+		if p, ok := in.Packs[o.Pack]; ok && len(weights[o.Pack]) > 0 && p.Size != o.Size {
+			return r, s.ErrUnavailable
 		}
 		if packSeen[o.Pack] {
 			return r, s.ErrUnavailable

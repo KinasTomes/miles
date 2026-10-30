@@ -65,3 +65,25 @@ func TestVerifiedOverheadAndRounding(t *testing.T) {
 		t.Fatal("impossible verified index accepted")
 	}
 }
+
+func TestCorruptCanonicalAccountingRejected(t *testing.T) {
+	in := accountingInput()
+	in.Physical.Objects[0].Size = 1
+	if _, err := Calculate(in); err == nil {
+		t.Fatal("physical/metadata size mismatch accepted")
+	}
+	in = accountingInput()
+	old := in.Heads[1].Object
+	k := in.References[old][0].Key
+	other := k
+	other.Domain = "isolated"
+	c := in.Chunks[k]
+	c.Key = other
+	in.Chunks[other] = c
+	in.Buckets[1].Domain = other.Domain
+	in.Heads[1].Domain = other.Domain
+	in.References[old][0].Key = other
+	if _, err := Calculate(in); err == nil {
+		t.Fatal("cross-domain identities aliased to overlapping range")
+	}
+}

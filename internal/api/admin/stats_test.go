@@ -4,16 +4,46 @@ import (
 	"context"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/stats"
+	st "github.com/KinasTomes/miles/internal/storage"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Auth fixture only: actual calculator/adapter/collection tests run separately.
 type fixtureStatistics struct {
 	calls int
 	key   string
+}
+
+type realEmptyInventory struct{}
+
+func (realEmptyInventory) CollectInventory(context.Context, int) (st.PhysicalInventory, error) {
+	return st.PhysicalInventory{Complete: true, VersionScope: "all-retained"}, nil
+}
+func TestStatisticsActualBadgerCollectorHTTP(t *testing.T) {
+	w := newWorld(t, badger.Bootstrap{})
+	svc, err := stats.New(stats.Options{Store: w.store, Inventory: realEmptyInventory{}, Now: func() time.Time { return w.clk.Now().WallUTC }, MaxRecords: 100, MaxReferences: 100, MaxPhysicalObjects: 100, Timeout: time.Minute, MaxAge: time.Minute, Interval: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = svc.Refresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	w.opts.Statistics = svc
+	w.h, err = NewServer(w.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := decode[stats.Summary](t, w.must(w.do("GET", "/admin/v1/stats", w.root, ""), http.StatusOK))
+	b := decode[stats.BucketSummary](t, w.must(w.do("GET", "/admin/v1/buckets/demo/stats", w.root, ""), http.StatusOK))
+	if g.SnapshotID == "" || g.SnapshotID != b.SnapshotID || g.BytesStored == nil || *g.BytesStored != 0 || g.TotalReduction != nil {
+		t.Fatal(g, b)
+	}
+	w.expect(w.do("GET", "/admin/v1/objects/layout?bucket=missing&key=k", w.root, ""), http.StatusNotFound, "bucket_not_found")
+	w.expect(w.do("GET", "/admin/v1/objects/layout?bucket=demo&key=missing", w.root, ""), http.StatusNotFound, "object_not_found")
 }
 
 func (f *fixtureStatistics) Global(context.Context) (stats.Summary, error) {
