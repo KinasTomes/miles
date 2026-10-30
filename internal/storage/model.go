@@ -108,7 +108,10 @@ func (r BucketCreate) Validate() error {
 type Credential struct {
 	ID, UserID          string
 	Active, SystemAdmin bool
-	Revision            uint64
+	// DebugAllowed requires SystemAdmin (API v2 2.2.3). CreatedAt is set once.
+	DebugAllowed bool
+	CreatedAt    time.Time
+	Revision     uint64
 }
 type Grant struct {
 	BucketID, UserID string
@@ -391,10 +394,14 @@ type PolicySnapshot struct {
 	Revision uint64
 	Document []byte
 }
+
+// Exactly one of CredentialID (SigV4 caller) or AdminTokenID (Admin API bearer)
+// names the actor; the backend rechecks it in the same transaction.
 type PolicyUpdate struct {
 	Candidate        PolicySnapshot
 	ExpectedRevision uint64
 	CredentialID     string
+	AdminTokenID     string
 	Writer           WriterFence
 	Event            *OutboxEvent // required for a change, absent on a semantic no-op.
 }

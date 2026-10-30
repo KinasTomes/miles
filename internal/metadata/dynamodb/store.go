@@ -222,6 +222,8 @@ func resolve(k string) (address, error) {
 	case "policy-current":
 		a.key, err = PolicyKey(0)
 		a.scope = "revision"
+	case "admin-installation":
+		a.key = stringKey("SystemConfig", "config_id", "admin/installation")
 	case "bucket-cache-current", "bucket-cache-history":
 		if arg(0) == "" || parts[0] == "bucket-cache-history" && arg(1) == "" {
 			return a, s.ErrInvalid

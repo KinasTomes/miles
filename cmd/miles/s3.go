@@ -17,17 +17,33 @@ const RequestTimeout = 30 * time.Minute
 
 type devCredentials struct{ d app.Dependencies }
 
+// Credential prefers the dev-minted secret, then the sealed secret of an
+// Admin-created credential (local/benchmark). Secrets are never logged.
 func (c devCredentials) Credential(ctx context.Context, id string) (api.Credential, error) {
 	record, err := c.d.Metadata.GetCredential(ctx, id)
 	if err != nil {
 		return api.Credential{}, err
 	}
+	credential := api.Credential{UserID: record.UserID, Active: record.Active, SystemAdmin: record.SystemAdmin, DebugAllowed: record.DebugAllowed}
 	for _, v := range c.d.DevCredentials {
 		if v.AccessKeyID == id && v.UserID == record.UserID {
-			return api.Credential{UserID: record.UserID, Secret: v.Secret, Active: record.Active, SystemAdmin: record.SystemAdmin}, nil
+			credential.Secret = v.Secret
+			return credential, nil
 		}
 	}
-	return api.Credential{}, storage.ErrNotFound
+	if c.d.Admin == nil {
+		return api.Credential{}, storage.ErrNotFound
+	}
+	sec, err := c.d.Admin.Store.GetCredentialSecurity(ctx, id)
+	if err != nil {
+		return api.Credential{}, err
+	}
+	secret, err := c.d.Admin.Sealer.Open(ctx, id, sec)
+	if err != nil {
+		return api.Credential{}, err
+	}
+	credential.Secret = string(secret)
+	return credential, nil
 }
 
 func s3Handler(region string, d app.Dependencies, a *app.Admission) http.Handler {
@@ -39,12 +55,17 @@ func s3Handler(region string, d app.Dependencies, a *app.Admission) http.Handler
 		}
 	}
 	rt := &api.Router{Region: region, Now: func() time.Time { return clk.Now().WallUTC }, Credentials: devCredentials{d}, Access: auth.NewSnapshots(d.Metadata, clk), Handlers: handlers}
-	return requestGate(a, RequestTimeout, rt)
+	return requestGate(a, RequestTimeout, rt, s3Unavailable)
+}
+
+func s3Unavailable(w http.ResponseWriter, r *http.Request) {
+	_ = api.WriteError(w, r, &api.Error{Code: api.ErrServiceUnavailable}, api.NewRequestID())
 }
 
 // Admission does not consult cached readiness. Each handler still owns auth,
 // current dependency checks and R1. Release only after the handler is quiescent.
-func requestGate(a *app.Admission, budget time.Duration, next http.Handler) http.Handler {
+// reject writes the protocol's 503 when admission is closed.
+func requestGate(a *app.Admission, budget time.Duration, next http.Handler, reject http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), budget)
 		defer cancel()
@@ -59,7 +80,7 @@ func requestGate(a *app.Admission, budget time.Duration, next http.Handler) http
 				release()
 			}
 			w.Header().Set("Connection", "close")
-			_ = api.WriteError(w, r, &api.Error{Code: api.ErrServiceUnavailable}, api.NewRequestID())
+			reject(w, r)
 			return
 		}
 		defer release()

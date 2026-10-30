@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -11,7 +12,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/api/admin"
 	"github.com/KinasTomes/miles/internal/cache"
+	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
@@ -52,7 +55,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 	// One-time authoritative dev provisioning; Bootstrap refuses to overwrite existing state.
 	err = m.Bootstrap(context.Background(), badger.Bootstrap{
 		Users:       []storage.User{{ID: DevUser, Active: true, Revision: 1, DefaultDomain: "default"}},
-		Credentials: []storage.Credential{{ID: cred.AccessKeyID, UserID: DevUser, Active: true, Revision: 1}},
+		Credentials: []storage.Credential{{ID: cred.AccessKeyID, UserID: DevUser, Active: true, Revision: 1, CreatedAt: time.Now().UTC()}},
 	})
 	if err != nil && !errors.Is(err, storage.ErrConflict) {
 		return d, err
@@ -126,11 +129,84 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		}
 		return ctx.Err()
 	}
-	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Close: func() error {
+	adminOptions, err := localAdmin(c.LocalDataPath, m, metadata.authority)
+	if err != nil {
+		stopObjects()
+		_ = closeCache()
+		transport.CloseIdleConnections()
+		return d, err
+	}
+	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Admin: adminOptions, Close: func() error {
 		stopObjects()
 		transport.CloseIdleConnections()
 		return errors.Join(closeCache(), m.Close())
 	}}, nil
+}
+
+// localAdmin wires the Admin API to the local store. Cursor keys are
+// per-process: cursors die on restart. The credential key seals S3 secrets.
+func localAdmin(dataPath string, m *badger.Store, authority *badger.LocalAuthority) (*admin.Options, error) {
+	key, err := credentialKey(filepath.Join(dataPath, "credential-key"))
+	if err != nil {
+		return nil, err
+	}
+	sealer, err := admin.NewAESSealer("local-aes-gcm-v1", key)
+	if err != nil {
+		return nil, err
+	}
+	cursor := make([]byte, 32)
+	if _, err := rand.Read(cursor); err != nil {
+		return nil, err
+	}
+	admit := func(ctx context.Context, tokenID string) (storage.MutationContext, error) {
+		var op [16]byte
+		if _, err := rand.Read(op[:]); err != nil {
+			return storage.MutationContext{}, err
+		}
+		deadline := time.Now().Add(30 * time.Second)
+		if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+			deadline = d
+		}
+		return authority.AdmitAdmin(ctx, tokenID, hex.EncodeToString(op[:]), deadline)
+	}
+	return &admin.Options{Store: m, Admit: admit, Sealer: sealer, Cursors: admin.Keyring{Current: "local", Keys: map[string][]byte{"local": cursor}}, Clock: clock.NewReal()}, nil
+}
+
+func credentialKey(path string) ([]byte, error) {
+	key, err := secretfile.Read(path, 32)
+	if err == nil {
+		if len(key) != 32 {
+			return nil, errors.New("credential-key must hold exactly 32 bytes")
+		}
+		return key, nil
+	}
+	if _, statErr := os.Lstat(path); !os.IsNotExist(statErr) {
+		return nil, err
+	}
+	key = make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return nil, errors.New("cannot create credential-key")
+	}
+	_, writeErr := f.Write(key)
+	if errors.Join(writeErr, f.Sync(), f.Close()) != nil {
+		return nil, errors.New("cannot persist credential-key")
+	}
+	return key, syncDir(filepath.Dir(path))
+}
+
+func syncDir(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return errors.New("cannot open data directory")
+	}
+	if errors.Join(directory.Sync(), directory.Close()) != nil {
+		return errors.New("cannot sync data directory")
+	}
+	return nil
 }
 
 func benchmarkCredential(path string) (aws.Credentials, error) {

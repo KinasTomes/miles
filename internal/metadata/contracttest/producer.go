@@ -94,6 +94,27 @@ func RunProducers(t *testing.T, factory MultipartFactory) {
 				t.Fatal("non-admin mutation", err)
 			}
 		}
+		ownerGrant := s.ControlMutation{Context: makeContext("owner-grant"), CredentialID: "admin-key", Entity: "BucketGrants", ParentID: "bucket-new", ID: "user-æµ·", Bucket: s.Bucket{Name: "new-bucket"}, Grant: s.Grant{BucketID: "bucket-new", UserID: "user-æµ·", Read: true}}
+		if _, err := p.MutateControl(ctx, ownerGrant); !errors.Is(err, s.ErrInvalid) {
+			t.Fatal("grant to bucket owner", err)
+		}
+		reissued := requests[4]
+		reissued.Context, reissued.CredentialID, reissued.ExpectedRevision = makeContext("token-reissue"), "admin-key", 1
+		reissued.Token.IssuedAt = f.Now
+		if _, err := p.MutateControl(ctx, reissued); !errors.Is(err, s.ErrInvalid) {
+			t.Fatal("token issued_at changed", err)
+		}
+		elevated := requests[3]
+		elevated.Context, elevated.CredentialID, elevated.ExpectedRevision = makeContext("credential-elevate"), "admin-key", 1
+		elevated.Credential.SystemAdmin = true
+		if _, err := p.MutateControl(ctx, elevated); !errors.Is(err, s.ErrInvalid) {
+			t.Fatal("credential flags changed", err)
+		}
+		anonymous := requests[0]
+		anonymous.Context, anonymous.ExpectedRevision = makeContext("no-actor"), 1
+		if _, err := p.MutateControl(ctx, anonymous); !errors.Is(err, s.ErrInvalid) {
+			t.Fatal("mutation without actor", err)
+		}
 		for i, r := range requests {
 			r.Context = makeContext(fmt.Sprint("control-delete-", i))
 			r.CredentialID = "admin-key"

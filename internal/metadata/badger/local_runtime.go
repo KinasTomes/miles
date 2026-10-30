@@ -94,20 +94,10 @@ func (a *LocalAuthority) Incarnation() string { return a.state.Incarnation }
 // Admit installs a fresh per-operation fence atomically after current identity
 // and bucket checks. A zero object is only for the local CreateBucket adapter.
 func (a *LocalAuthority) Admit(ctx context.Context, credential string, object s.ObjectKey, opID string, deadline time.Time) (s.MutationContext, error) {
-	c := s.MutationContext{HistoryID: a.state.History, LogicalOpID: opID, MutationID: opID, Object: object,
-		Writer: s.WriterFence{LeaseID: "local-" + opID, ServiceIncarnation: a.state.Incarnation, Epoch: 1}}
-	if c.Validate() != nil || (object != (s.ObjectKey{}) && object.Validate() != nil) {
+	if object != (s.ObjectKey{}) && object.Validate() != nil {
 		return s.MutationContext{}, s.ErrInvalid
 	}
-	err := a.store.update(ctx, func(t *db.Txn) error {
-		now := a.store.now()
-		if !deadline.After(now) || deadline.After(now.Add(30*time.Minute)) {
-			return s.ErrFenced
-		}
-		current, err := get[localRuntimeState](t, "local-runtime")
-		if err != nil || current != a.state {
-			return s.ErrFenced
-		}
+	return a.admit(ctx, object, opID, deadline, func(t *db.Txn) error {
 		cred, err := get[s.Credential](t, key("credentials", credential))
 		if err != nil || !cred.Active || cred.UserID != a.state.Owner {
 			return s.ErrAccessDenied
@@ -127,6 +117,44 @@ func (a *LocalAuthority) Admit(ctx context.Context, credential string, object s.
 			if !auth.Write {
 				return s.ErrAccessDenied
 			}
+		}
+		return nil
+	})
+}
+
+// AdmitAdmin admits one Admin API write by a usable bearer token whose user is
+// active; role checks stay with MutateControl/PutPolicy in their transaction.
+func (a *LocalAuthority) AdmitAdmin(ctx context.Context, tokenID, opID string, deadline time.Time) (s.MutationContext, error) {
+	return a.admit(ctx, s.ObjectKey{}, opID, deadline, func(t *db.Txn) error {
+		token, err := get[s.AdminToken](t, key("admin-tokens", tokenID))
+		if err != nil || !token.Usable(a.store.now()) {
+			return s.ErrAccessDenied
+		}
+		user, err := get[s.User](t, key("users", token.UserID))
+		if err != nil || !user.Active {
+			return s.ErrAccessDenied
+		}
+		return nil
+	})
+}
+
+func (a *LocalAuthority) admit(ctx context.Context, object s.ObjectKey, opID string, deadline time.Time, authorize func(*db.Txn) error) (s.MutationContext, error) {
+	c := s.MutationContext{HistoryID: a.state.History, LogicalOpID: opID, MutationID: opID, Object: object,
+		Writer: s.WriterFence{LeaseID: "local-" + opID, ServiceIncarnation: a.state.Incarnation, Epoch: 1}}
+	if c.Validate() != nil {
+		return s.MutationContext{}, s.ErrInvalid
+	}
+	err := a.store.update(ctx, func(t *db.Txn) error {
+		now := a.store.now()
+		if !deadline.After(now) || deadline.After(now.Add(30*time.Minute)) {
+			return s.ErrFenced
+		}
+		current, err := get[localRuntimeState](t, "local-runtime")
+		if err != nil || current != a.state {
+			return s.ErrFenced
+		}
+		if err := authorize(t); err != nil {
+			return err
 		}
 		found, err := exists(t, key("writers", c.Writer.LeaseID))
 		if err != nil {

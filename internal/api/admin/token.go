@@ -1,7 +1,7 @@
-// Package admin holds the wire rules of the Admin API (API §6.5) that the
-// W04 routes share: bearer tokens (§6.4), pagination cursors (§6.5.3) and
-// revision preconditions (§6.5.2). Routes, handlers, JSON body decoding and
-// metadata access are W04 and live elsewhere.
+// Package admin is the Admin API (API §6): the identity, grant and policy
+// routes of NewServer and the wire rules they share: bearer tokens (§6.4),
+// pagination cursors (§6.5.3), revision preconditions (§6.5.2) and strict
+// JSON bodies (§6.5.1).
 package admin
 
 import (

@@ -240,9 +240,13 @@ func (m *Metadata) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySna
 	if err := m.fence(r.Writer); err != nil {
 		return s.PolicySnapshot{}, err
 	}
+	if (r.CredentialID == "") == (r.AdminTokenID == "") {
+		return s.PolicySnapshot{}, s.ErrInvalid
+	}
+	// The fake stores no Admin tokens, so every token actor is unknown.
 	c, ok := m.credentials[r.CredentialID]
 	u := m.users[c.UserID]
-	if !ok || !c.Active || !u.Active || !c.SystemAdmin {
+	if r.AdminTokenID != "" || !ok || !c.Active || !u.Active || !c.SystemAdmin {
 		return s.PolicySnapshot{}, s.ErrAccessDenied
 	}
 	if r.Event != nil && r.Event.EntityID != "global-policy" {

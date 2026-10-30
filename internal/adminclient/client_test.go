@@ -156,3 +156,38 @@ func TestResource404IsNotUnsupportedEndpoint(t *testing.T) {
 		t.Fatal("oversized 404 must fail the response bound before classification", err)
 	}
 }
+
+func TestWriteMethodsErrorCodesAndNoContent(t *testing.T) {
+	path, _ := tokenFile(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":{"code":"revision_conflict","message":"x","request_id":"r"}}`))
+		case http.MethodPatch:
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"Bad Code\n","message":"x","request_id":"r"}}`))
+		case http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer server.Close()
+	client, err := New(server.URL, path, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ctx := context.Background()
+	if _, err := client.Request(ctx, http.MethodPut, "/admin/v1/policy", []byte(`{}`)); err == nil || err.Error() != "Admin request failed (HTTP 409 revision_conflict)" {
+		t.Fatal(err)
+	}
+	if _, err := client.Request(ctx, http.MethodPatch, "/admin/v1/users/a", []byte(`{}`)); err == nil || err.Error() != "Admin request failed (HTTP 400)" {
+		t.Fatal("unsafe code must be dropped", err)
+	}
+	if b, err := client.Request(ctx, http.MethodDelete, "/admin/v1/credentials/A", nil); err != nil || b != nil {
+		t.Fatal(b, err)
+	}
+	if _, err := client.Request(ctx, "HEAD", "/admin/v1/users", nil); err == nil {
+		t.Fatal("accepted HEAD")
+	}
+}

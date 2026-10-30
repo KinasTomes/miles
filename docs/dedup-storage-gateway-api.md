@@ -144,7 +144,7 @@ Hợp đồng của parser/xác thực S3. `tests/fixtures/s3/transport.json` gi
 
 ### 2.2.3 Danh tính, snapshot quyền và binding upload — hợp đồng W1
 
-Hợp đồng cho auth, metadata Users/Credentials/Buckets/BucketGrants/Uploads và Admin API danh tính. Test case: `tests/fixtures/s3/authorization.json` gồm ma trận S3/Admin theo vai trò, thứ tự lỗi, CopyObject, binding upload và tuổi snapshot. Dòng S3 chạy qua `s3.Router` thật trên fake metadata store (`internal/api/s3/authz_test.go`), dòng snapshot qua `internal/auth` và commit của fake store; dòng Admin vẫn kiểm bằng hàm tham chiếu trong `internal/api/s3/contract_test.go` tới khi route Admin (W04) chạy cùng fixture.
+Hợp đồng cho auth, metadata Users/Credentials/Buckets/BucketGrants/Uploads và Admin API danh tính. Test case: `tests/fixtures/s3/authorization.json` gồm ma trận S3/Admin theo vai trò, thứ tự lỗi, CopyObject, binding upload và tuổi snapshot. Dòng S3 chạy qua `s3.Router` thật trên fake metadata store (`internal/api/s3/authz_test.go`), dòng snapshot qua `internal/auth` và commit của fake store; dòng Admin chạy qua Admin server thật trên Badger (`internal/api/admin/server_test.go`), trừ `/objects/layout` và `/buckets/{b}/stats` (W04-HAI-03) được liệt kê pending.
 
 **Định danh**
 
@@ -1020,6 +1020,17 @@ Kiểu: `string`, `bool`, `int` (JSON integer 0..2^53−1); thời gian RFC 3339
 | GET /admin-tokens | `?user_id=` lọc tùy chọn | 200 list AdminToken | — |
 | DELETE /admin-tokens/{token_id} | — | 204, kể cả đã revoked | 404 `token_not_found` (mục 6.5.1 bước 3) |
 
+#### 6.5.5 Hiện thực (W04-CHIEN-01)
+
+- `admin.NewServer` (`internal/api/admin`) phục vụ đúng các route ở bảng 6.5.4; path khác trả 404 không envelope, sai method trên route có thật trả 405. Store là Badger hoặc DynamoDB qua `storage.IdentityStore` (Get/List user, grant, credential, token; `GetCredentialSecurity`; `BootstrapAdmin`) cùng `MutateControl`, `PutPolicy`, `PutBucketPolicy` với `AdminTokenID` là actor; transaction ghi kiểm lại token (active, chưa hết hạn), user active và quyền: token không phải system chỉ được grant trên bucket mình sở hữu và thu hồi token của chính mình; grant cho owner bị từ chối trong transaction.
+- Bearer: snapshot token+user qua `auth.Cache` (≤ 5 giây, không quá `expires_at`), secret so constant-time mỗi request. Grant bị DELETE giữ tombstone `read=write=false` để revision không lặp; với API, tombstone là "chưa có grant" (PUT `expected_revision` 0 tạo lại, DELETE trả 404, list bỏ qua).
+- Credential secret niêm phong bằng `Sealer` (AES-256-GCM, AAD = access_key_id). Local/benchmark dùng key 32 byte `<local_data_path>/credential-key`; adapter KMS cho runtime thuộc phần compose runtime (W05-HUNG-01). S3 local tra secret dev trước, rồi secret đã niêm phong.
+- Bucket chưa có cache policy: GET materialize revision 1 = default cache (ghi có event dưới token caller); PUT kiểm schema/bucket_id/revision trên default trong bộ nhớ trước, request bị 400/409 không ghi gì.
+- PATCH `logical_limit` nhỏ hơn `used + reserved` hiện tại trả 400 `invalid_request`, kiểm trong cùng transaction với user/quota/outbox (giữ bất biến ledger mà mọi reservation, kể cả reservation 0 byte của DELETE, đòi hỏi). Quyết định no-op của PATCH user dùng snapshot user+quota nhất quán (đọc lại user sau quota, cùng revision). Mọi route có body không nhận query parameter: có bất kỳ thì 400 ở bước 4, trước khi ghi.
+- `dsgctl admin-token bootstrap` gọi `BootstrapAdmin`: một transaction điều kiện marker chưa có ghi marker, user (tạo hoặc kích hoạt lại, quota 1 TiB), system token và global policy revision 1 nếu chưa có. Chưa ghi outbox epoch 0 (export R2 thuộc W04-PHONG-04); `--recover` báo lỗi vì recovery gate R2 §15 chưa có.
+- DynamoDB không có GSI: list users/credentials/admin-tokens quét cả bảng rồi sắp xếp mỗi trang (quy mô vận hành); grants dùng Query theo `bucket_id`. Record Credentials/AdminTokens ghi trước khi thêm `debug_allowed/created_at/issued_at` không đọc được trên DynamoDB (chưa có dữ liệu runtime).
+- Pending: `/objects/layout`, `/buckets/{b}/stats` (W04-HAI-03), route jobs/nodes/packs/cache/cost/faults chưa phục vụ.
+
 ---
 
 ## 7. dsgctl
@@ -1044,7 +1055,7 @@ Kiểu: `string`, `bool`, `int` (JSON integer 0..2^53−1); thời gian RFC 3339
 | rebuild-index [--dry-run] | Offline với S3/DDB/KMS; không qua gateway khi metadata mất |
 | sim run --trace ... --policies A,B,C,D | Offline, package policy/Clock/pricing chung |
 
-dsgctl phân biệt bearer Admin API và SigV4 key để debug S3; không chuyển bearer thành header Authorization S3. Token/log không in secret. CLI nền đã nối bearer transport cho `stats`, `policy get`, `user ls`, `pack ls`, `job ls/show/run/cancel`, `node ls/drain`; Admin routes/listener và các command còn lại chưa hiện thực thì báo lỗi/unsupported, không giả success. Schema endpoint vẫn theo hợp đồng R4. Token file đọc cục bộ permission 0600; không nhận raw bearer làm argument in history. [Jobs/Nodes backend và handoff](contracts/jobs-and-nodes.md).
+dsgctl phân biệt bearer Admin API và SigV4 key để debug S3; không chuyển bearer thành header Authorization S3. Token/log không in secret. CLI đã nối bearer transport cho `stats`, `pack ls`, `user create/ls/show/set`, `usage`, `bucket show`, `grant ls/set/rm`, `policy get/set`, `bucket-policy get/set`, `credentials create/ls/rm`, `admin-token create/ls/revoke`, `job ls/show/run/cancel`, `node ls/drain`; secret/token của create chỉ ghi vào file `--out` mới (O_EXCL, 0600) và bị che trên stdout. `admin-token bootstrap` chạy offline trên Badger (`--local-data-path`, gateway phải dừng) hoặc DynamoDB (`--ddb-table-prefix --region`, credential provisioning từ env `AWS_*`), ghi token vào `--token-file` mới, chạy lần hai bị từ chối; `--recover` báo lỗi (R2 chưa có). Command còn lại chưa hiện thực thì báo lỗi/unsupported, không giả success. Schema endpoint vẫn theo hợp đồng R4. Token file đọc cục bộ permission 0600; không nhận raw bearer làm argument in history. [Jobs/Nodes backend và handoff](contracts/jobs-and-nodes.md).
 
 ---
 

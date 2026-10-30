@@ -35,6 +35,7 @@ File JSON tối đa64KiB, chỉ nhận các fields dưới; unknown/duplicate/nu
 | `profile` | `edge` | `cloud` hoặc `edge`, cùng core |
 | `mode` | `runtime` | `dev` volatile, `local` durable dev/Moto, `benchmark` Badger + S3 HTTPS thật, `runtime` chưa nối Cloud; development chỉ bind loopback |
 | `s3_address` | không mở | Literal loopback IP:port; dev/local/benchmark, runtime bị từ chối khi validate. Local/benchmark gắn bucket và object P0; dev fixture chỉ gắn bucket |
+| `admin_address` | không mở | Literal loopback IP:port; chỉ local/benchmark (cần IdentityStore Badger). Admin API bearer; Sealer AES-GCM với key 32 byte `<local_data_path>/credential-key` (tạo 0600 lần đầu); cursor key random mỗi process nên cursor mất khi restart. Token đầu tiên: `dsgctl admin-token bootstrap --local-data-path` khi gateway đã dừng |
 | `region` | `ap-southeast-1` | Region SigV4 của gateway và local pack client |
 | `local_data_path` | không có | Bắt buộc ở local/benchmark; directory không symlink, permission 0700 |
 | `pack_endpoint` | không có | Local: HTTP literal loopback với port explicit; benchmark: HTTPS origin. Không userinfo/path/query |
@@ -86,17 +87,22 @@ Local/benchmark hiện nối PUT/GET/HEAD/Range/LIST/DELETE qua object service t
 
 Token file là raw bearer format API §6.4, permission đúng 0600, regular file không symlink; có thể có một newline cuối. CLI không nhận raw token argument, không dùng SigV4 và chỉ gửi bearer đến `/admin/v1/`. Plain HTTP chỉ cho literal loopback/tunnel; endpoint remote bắt buộc HTTPS với certificate verification. Không follow redirect hoặc environment proxy; response tối đa 2 MiB, timeout bao phủ cả đọc response. Error không in response body hay transport URL/token; reflected bearer trong JSON success được redact.
 
-Transport hỗ trợ `stats`, `policy get`, `user ls`, `pack ls`; `job ls/show/run/cancel` và
-`node ls/drain`. Đặt global flags trước command; job/node list nhận `--limit` và
-`--cursor`, job run nhận `--dry-run`, `--params-file`, `--policy-revision`.
-Xem [Jobs/Nodes contract](../contracts/jobs-and-nodes.md) và [validation](../testing/jobs-nodes-metrics-validation.md).
+Transport hỗ trợ `stats`, `pack ls`, lệnh danh tính/quyền/policy (`user`, `usage`,
+`bucket show`, `grant`, `policy`, `bucket-policy`, `credentials`, `admin-token`),
+`job ls/show/run/cancel` và `node ls/drain`. Đặt global flags trước command; list nhận
+`--limit` và `--cursor`, job run nhận `--dry-run`, `--params-file`, `--policy-revision`.
+Secret/token do `credentials create`/`admin-token create` trả chỉ ghi vào file `--out`
+mới (O_EXCL, 0600), stdout bị che. Xem [Jobs/Nodes contract](../contracts/jobs-and-nodes.md),
+[validation](../testing/jobs-nodes-metrics-validation.md) và
+[Admin identity validation](../testing/admin-identity-validation.md).
 
-Gateway hiện chưa compose Admin routes/listener hoặc token bootstrap. Các lệnh cần
-Admin endpoint thật có authentication/authorization; transport test không chứng minh
-route production đã chạy. Response405/501 hoặc router404 không có Admin error envelope
-báo unsupported; JSON404 có `error.code` trả `adminclient.ErrNotFound`. Error vẫn
-bounded/redacted, exit nonzero, không giả success. W04-CHIEN-01 cung cấp identity/token/
-grants/policy routes; W05-HUNG-01/02 nối shared jobs/nodes với runtime và executors thật.
+Local/benchmark mở Admin API khi có `admin_address`. Token đầu tiên cấp offline khi
+gateway dừng: `dsgctl admin-token bootstrap --user <id> --token-file <path>
+--local-data-path <local_data_path>` (lần hai bị từ chối, không ghi gì); sau đó system
+admin cấp thêm token/credential qua API. Route stats/packs/jobs/nodes chưa phục vụ:
+router404 không có Admin error envelope báo unsupported; JSON404 có `error.code` trả
+`adminclient.ErrNotFound`. Error vẫn bounded/redacted, exit nonzero, không giả success.
+W05-HUNG-01/02 nối runtime Cloud/Edge, shared jobs/nodes và executors thật.
 
 ## Test không cần container
 

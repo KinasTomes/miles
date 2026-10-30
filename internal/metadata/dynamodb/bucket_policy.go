@@ -20,7 +20,7 @@ func (m *Store) PutBucketPolicy(ctx context.Context, r s.BucketPolicyUpdate) (ou
 		if err := m.fence(t, r.Writer); err != nil {
 			return err
 		}
-		out, err = operations.WriteBucketPolicy(multipartTx{t}, ctx, r)
+		out, err = operations.WriteBucketPolicy(multipartTx{t}, ctx, m.now(), r)
 		if err == nil && m.beforePublish != nil {
 			err = m.beforePublish()
 		}

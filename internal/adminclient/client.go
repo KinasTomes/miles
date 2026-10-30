@@ -67,7 +67,7 @@ func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 }
 
 func (c *Client) Request(ctx context.Context, method, path string, body []byte) ([]byte, error) {
-	if method != http.MethodGet && method != http.MethodPost && method != http.MethodDelete {
+	if method != http.MethodGet && method != http.MethodPost && method != http.MethodPut && method != http.MethodPatch && method != http.MethodDelete {
 		return nil, errors.New("invalid Admin method")
 	}
 	if len(body) > 16<<10 || (len(body) > 0 && !json.Valid(body)) {
@@ -104,24 +104,29 @@ func (c *Client) Request(ctx context.Context, method, path string, body []byte) 
 	case http.StatusForbidden:
 		return nil, errors.New("Admin access denied (HTTP 403)")
 	}
-	if response.StatusCode != http.StatusNotFound && (response.StatusCode < 200 || response.StatusCode >= 300) {
-		return nil, fmt.Errorf("Admin request failed (HTTP %d)", response.StatusCode)
-	}
 	b, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil || len(b) > maxResponseBytes {
 		return nil, errors.New("Admin response unreadable or exceeds 2 MiB")
 	}
-	if response.StatusCode == http.StatusNotFound {
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var failure struct {
 			Error struct {
 				Code string `json:"code"`
 			} `json:"error"`
 		}
-		// Admin resource errors have the API envelope; router 404s do not.
-		if json.Unmarshal(b, &failure) == nil && failure.Error.Code != "" {
-			return nil, ErrNotFound
+		_ = json.Unmarshal(b, &failure)
+		code := failure.Error.Code
+		if !validCode(code) {
+			code = ""
 		}
-		return nil, ErrUnsupported
+		// Admin resource errors have the API envelope; router 404s do not.
+		if response.StatusCode == http.StatusNotFound && code == "" {
+			return nil, ErrUnsupported
+		}
+		return nil, &APIError{Status: response.StatusCode, Code: code}
+	}
+	if response.StatusCode == http.StatusNoContent {
+		return nil, nil
 	}
 	if !json.Valid(b) {
 		return nil, errors.New("Admin response is not JSON")
@@ -129,4 +134,37 @@ func (c *Client) Request(ctx context.Context, method, path string, body []byte) 
 	b = bytes.ReplaceAll(b, []byte(c.token), []byte("[REDACTED]"))
 	b = bytes.ReplaceAll(b, []byte(c.secret), []byte("[REDACTED]"))
 	return b, nil
+}
+
+// APIError carries only status and the envelope code; messages may echo input.
+type APIError struct {
+	Status int
+	Code   string
+}
+
+func (e *APIError) Error() string {
+	detail := fmt.Sprintf("HTTP %d", e.Status)
+	if e.Code != "" {
+		detail += " " + e.Code
+	}
+	if e.Status == http.StatusNotFound {
+		return "Admin resource not found (" + detail + ")"
+	}
+	return "Admin request failed (" + detail + ")"
+}
+
+func (e *APIError) Is(target error) bool {
+	return target == ErrNotFound && e.Status == http.StatusNotFound
+}
+
+func validCode(s string) bool {
+	if len(s) == 0 || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if (r < 'a' || r > 'z') && r != '_' {
+			return false
+		}
+	}
+	return true
 }

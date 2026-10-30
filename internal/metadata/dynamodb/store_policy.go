@@ -84,14 +84,7 @@ func (m *Store) PutPolicy(ctx context.Context, r s.PolicyUpdate) (s.PolicySnapsh
 		if err := m.fence(t, r.Writer); err != nil {
 			return err
 		}
-		c, err := optional[s.Credential](t, key("credentials", r.CredentialID))
-		if err != nil {
-			return err
-		}
-		if !c.Active || !c.SystemAdmin {
-			return s.ErrAccessDenied
-		}
-		if err := activeUser(t, c.UserID); err != nil {
+		if err := operations.SystemActor(multipartTx{t}, m.now(), r.CredentialID, r.AdminTokenID); err != nil {
 			return err
 		}
 		if r.Event != nil && r.Event.EntityID != "global-policy" {

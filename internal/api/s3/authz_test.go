@@ -66,12 +66,6 @@ type authFixture struct {
 		Expect   map[string]string
 	}
 	S3Cases []authCase `json:"s3_cases"`
-	Admin   []struct {
-		Endpoint string
-		Requires string
-		UserID   string `json:"user_id"`
-		Expect   map[string]string
-	}
 }
 
 const authRegion = "us-east-1"
