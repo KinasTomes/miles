@@ -160,6 +160,10 @@ func resolve(k string) (address, error) {
 		a.scope = "security"
 	case "admin-tokens":
 		a.key = stringKey("AdminTokens", "token_id", arg(0))
+	case "jobs":
+		a.key = stringKey("Jobs", "job_id", arg(0))
+	case "nodes":
+		a.key = stringKey("Nodes", "node_id", arg(0))
 	case "producer-outcome":
 		a.key, err = OperationKey(arg(0))
 		a.scope = "producer"

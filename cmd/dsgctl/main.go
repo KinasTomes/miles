@@ -24,7 +24,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	tokenFile := flags.String("token-file", "", "Bắt buộc: bearer token file permission 0600; không truyền raw token")
 	timeout := flags.Duration("timeout", 30*time.Second, "Thời hạn toàn bộ request, tối đa 30m")
 	flags.Usage = func() {
-		fmt.Fprintln(stderr, "CLI quản trị Miles\n\nRead commands: stats, policy get, user ls, pack ls, job ls, node ls\nCác lệnh còn lại chưa hỗ trợ. Đặt flags trước command.")
+		fmt.Fprintln(stderr, "CLI quản trị Miles\n\nRead: stats, policy get, user ls, pack ls\nJobs: job ls, job show <id>, job run <type> [--dry-run] [--params-file file] [--policy-revision n], job cancel <id>\nNodes: node ls, node drain <id>\nList flags: --limit 1..1000, --cursor token. Đặt global flags trước command.")
 		flags.SetOutput(stderr)
 		flags.PrintDefaults()
 		flags.SetOutput(io.Discard)
@@ -44,6 +44,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return errors.New("a command is required")
 	}
 	path := ""
+	method := "GET"
+	var body []byte
 	switch strings.Join(flags.Args(), " ") {
 	case "stats":
 		path = "/admin/v1/stats"
@@ -53,12 +55,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		path = "/admin/v1/users"
 	case "pack ls":
 		path = "/admin/v1/packs"
-	case "job ls":
-		path = "/admin/v1/jobs"
-	case "node ls":
-		path = "/admin/v1/cluster/nodes"
 	default:
-		return adminclient.ErrUnsupported
+		var err error
+		method, path, body, err = operationCommand(flags.Args())
+		if err != nil {
+			return err
+		}
 	}
 	if *tokenFile == "" {
 		return errors.New("--token-file is required")
@@ -68,7 +70,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	defer client.Close()
-	b, err := client.Get(ctx, path)
+	b, err := client.Request(ctx, method, path, body)
 	if err != nil {
 		return err
 	}

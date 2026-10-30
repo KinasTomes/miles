@@ -57,7 +57,7 @@ func TestCLICommandsAndErrors(t *testing.T) {
 }
 
 func TestCLIRequiresTokenOnlyForSupportedReadCommands(t *testing.T) {
-	for _, args := range [][]string{{"stats"}, {"policy", "get"}, {"node", "ls"}} {
+	for _, args := range [][]string{{"stats"}, {"policy", "get"}, {"node", "ls"}, {"job", "run", "scrub"}, {"job", "cancel", "job-fixture"}, {"node", "drain", "node-a"}} {
 		var out, diagnostics bytes.Buffer
 		err := run(context.Background(), args, &out, &diagnostics)
 		if err == nil || err.Error() != "--token-file is required" || out.Len() != 0 {
@@ -69,7 +69,7 @@ func TestCLIRequiresTokenOnlyForSupportedReadCommands(t *testing.T) {
 			t.Fatal("help/version must not require a token", err)
 		}
 	}
-	if err := run(context.Background(), []string{"job", "run", "scrub"}, &bytes.Buffer{}, &bytes.Buffer{}); !errors.Is(err, adminclient.ErrUnsupported) {
+	if err := run(context.Background(), []string{"admin-token", "bootstrap"}, &bytes.Buffer{}, &bytes.Buffer{}); !errors.Is(err, adminclient.ErrUnsupported) {
 		t.Fatal("unsupported commands must remain explicit", err)
 	}
 }

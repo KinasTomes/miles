@@ -309,7 +309,7 @@ def main():
             # disposable Moto container, never purges application recovery roots.
             cli = directory / "dsgctl"
             command(["go", "build", "-o", str(cli), "./cmd/dsgctl"], env, timeout=120)
-            command([str(cli), "node", "drain"], env, expect_error="not supported")
+            command([str(cli), "node", "drain"], env, expect_error="invalid job/node command")
         finally:
             command(compose + ["down", "--volumes", "--remove-orphans"], env, timeout=60)
     print("PASS local fixtures complete; temporary project, processes and files removed", flush=True)

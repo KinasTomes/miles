@@ -20,13 +20,14 @@ import (
 // Dependencies use the existing storage ports. Probe is supplied by their wiring,
 // including validated clock readiness; health handlers never invent clock proof.
 type Dependencies struct {
-	Metadata  storage.MetadataStore
-	Packs     storage.PackStore
-	Cache     storage.Cache
-	Objects   *object.Service // real Warm service in local/benchmark mode; absent in fixture/runtime modes
-	Probe     func(context.Context) error
-	Close     func() error
-	S3Handler func(*Admission) http.Handler
+	Metadata   storage.MetadataStore
+	Packs      storage.PackStore
+	Cache      storage.Cache
+	Objects    *object.Service // real Warm service in local/benchmark mode; absent in fixture/runtime modes
+	Probe      func(context.Context) error
+	Close      func() error
+	S3Handler  func(*Admission) http.Handler
+	Operations *Operational
 	// DevCredentials are the SigV4 test credentials dev provisioning minted
 	// into the selected development store (API v2 3.5 format, bound to DevUser,
 	// no admin rights). Dev/local only; runtime leaves it empty.

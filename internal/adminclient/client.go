@@ -63,17 +63,30 @@ func New(endpoint, tokenFile string, timeout time.Duration) (*Client, error) {
 func (c *Client) Close() { c.http.CloseIdleConnections() }
 
 func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
+	return c.Request(ctx, http.MethodGet, path, nil)
+}
+
+func (c *Client) Request(ctx context.Context, method, path string, body []byte) ([]byte, error) {
+	if method != http.MethodGet && method != http.MethodPost && method != http.MethodDelete {
+		return nil, errors.New("invalid Admin method")
+	}
+	if len(body) > 16<<10 || (len(body) > 0 && !json.Valid(body)) {
+		return nil, errors.New("invalid Admin JSON request")
+	}
 	// Commands choose Admin routes only; a bearer can never become S3 authorization.
 	u, err := url.Parse(path)
 	if err != nil || u.IsAbs() || u.Host != "" || !strings.HasPrefix(u.Path, "/admin/v1/") || u.Fragment != "" || u.RawPath != "" || strings.Contains(u.Path, "..") {
 		return nil, errors.New("invalid Admin route")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint+path, nil)
+	req, err := http.NewRequestWithContext(ctx, method, c.endpoint+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, errors.New("cannot construct Admin request")
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	response, err := c.http.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
