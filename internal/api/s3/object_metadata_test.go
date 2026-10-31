@@ -26,7 +26,7 @@ func TestObjectMetadataRemovesTransportEncoding(t *testing.T) {
 			for _, v := range tc.input {
 				r.Header.Add("Content-Encoding", v)
 			}
-			metadata := requestMetadata(r)
+			metadata := RequestMetadata(r)
 			if got := metadata["content-encoding"]; got != tc.want {
 				t.Fatalf("stored encoding %q, want %q", got, tc.want)
 			}
@@ -78,7 +78,7 @@ func TestDecodedLengthMatchesPayloadMode(t *testing.T) {
 			r.ContentLength = tc.encoded
 			r.Header.Set("X-Amz-Content-Sha256", tc.mode)
 			r.Header.Set("X-Amz-Decoded-Content-Length", tc.decoded)
-			if got := decodedLength(r); got != tc.want {
+			if got := DecodedLength(r); got != tc.want {
 				t.Fatal("length does not match decoder", got, tc.want)
 			}
 		})

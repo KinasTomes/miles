@@ -13,8 +13,8 @@ import (
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
-// maxObjectKeyBytes is the S3 object key limit (API v2 4.1).
-const maxObjectKeyBytes = 1024
+// MaxKeyBytes is the S3 object key limit (API v2 4.1).
+const MaxKeyBytes = 1024
 
 // ObjectWriter is the stateful write port. The service streams the body to
 // packs and publishes the head or tombstone; the handler owns HTTP validation
@@ -54,15 +54,15 @@ func NewObjectHandlers(writer ObjectWriter, reader ObjectReader, lister ObjectLi
 }
 
 func objectKey(r *Request) error {
-	if len(r.Key) > maxObjectKeyBytes {
+	if len(r.Key) > MaxKeyBytes {
 		return &Error{Code: ErrKeyTooLong, Bucket: r.Bucket, Key: r.Key}
 	}
 	return nil
 }
 
-// decodedLength is the logical body size: aws-chunked declares it separately
-// from the encoded Content-Length (API v2 2.2.2).
-func decodedLength(r *http.Request) int64 {
+// DecodedLength is the logical body size: aws-chunked declares it separately
+// from the encoded Content-Length (API v2 2.2.2). It is -1 when unknown.
+func DecodedLength(r *http.Request) int64 {
 	if strings.HasPrefix(r.Header.Get("X-Amz-Content-Sha256"), "STREAMING-") {
 		n, err := strconv.ParseInt(r.Header.Get("X-Amz-Decoded-Content-Length"), 10, 64)
 		if err != nil || n < 0 {
@@ -73,9 +73,9 @@ func decodedLength(r *http.Request) int64 {
 	return r.ContentLength
 }
 
-// requestMetadata keeps the HTTP metadata of API v2 4.2 in the head's lower
+// RequestMetadata keeps the HTTP metadata of API v2 4.2 in the head's lower
 // case map. A missing Content-Type stores the S3 default explicitly.
-func requestMetadata(r *http.Request) map[string]string {
+func RequestMetadata(r *http.Request) map[string]string {
 	metadata := map[string]string{"content-type": "binary/octet-stream"}
 	for _, name := range []string{"Content-Type", "Cache-Control", "Content-Disposition", "Expires"} {
 		if v := r.Header.Get(name); v != "" {
@@ -110,11 +110,11 @@ func (o *Objects) PutObject(w http.ResponseWriter, r *Request) error {
 	if err := objectKey(r); err != nil {
 		return err
 	}
-	length := decodedLength(r.HTTP)
+	length := DecodedLength(r.HTTP)
 	if length < 0 {
 		return &Error{Code: ErrInvalidRequest, Message: "Content-Length or x-amz-decoded-content-length is required.", Bucket: r.Bucket, Key: r.Key}
 	}
-	metadata := requestMetadata(r.HTTP)
+	metadata := RequestMetadata(r.HTTP)
 	if err := object.ValidatePut(length, metadata); err != nil {
 		return objectError(err, r.Bucket, r.Key)
 	}

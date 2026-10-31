@@ -164,6 +164,8 @@ type serviceFixture struct {
 	physical *memS3
 	bucket   storage.Bucket
 	options  Options
+	// before runs ahead of every managed writer dispatch when set.
+	before func(operation string)
 }
 
 func newServiceFixture(t *testing.T) *serviceFixture {
@@ -183,7 +185,7 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	fences := make([]storage.WriterFence, 10)
+	fences := make([]storage.WriterFence, 64)
 	for i := range fences {
 		fences[i] = storage.WriterFence{LeaseID: fmt.Sprintf("writer-lease-%d", i+1), ServiceIncarnation: f.Lease.Fence.ServiceIncarnation, Epoch: 1}
 	}
@@ -212,7 +214,13 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := coordination.NewWriterRegistry(gate, limits, coordination.Hooks{})
+	fixture := &serviceFixture{}
+	registry, err := coordination.NewWriterRegistry(gate, limits, coordination.Hooks{Before: func(_ context.Context, operation string, _ storage.WriterFence) error {
+		if fixture.before != nil {
+			fixture.before(operation)
+		}
+		return nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,12 +281,14 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 		Budget:         testBudget(64 << 20),
 		MaxOutstanding: 3,
 		RequestTimeout: 30 * time.Second,
+		Uploads:        db,
 	}
 	service, err := New(options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &serviceFixture{service: service, metadata: db, physical: physical, bucket: f.Bucket, options: options}
+	*fixture = serviceFixture{service: service, metadata: db, physical: physical, bucket: f.Bucket, options: options}
+	return fixture
 }
 
 func testBudget(n int64) readpath.Budget {

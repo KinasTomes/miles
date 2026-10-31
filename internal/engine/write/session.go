@@ -9,6 +9,7 @@ import (
 
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/coordination"
+	"github.com/KinasTomes/miles/internal/manifest"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -113,28 +114,49 @@ func (s *WriteSession) active() error {
 // Lookup/Publisher values. The caller provides chunking/compression settings,
 // while the admitted bucket fixes the dedup domain. Returned descriptor is owned.
 func (s *WriteSession) Prepare(pipeline Pipeline, body io.Reader, manifestID string) (PreparedObject, error) {
+	p, _, err := s.prepare(manifest.ObjectPage, pipeline, body, manifestID)
+	return p, err
+}
+
+// PreparePart is Prepare for one multipart part: immutable kind-2 pages in the
+// PartPageStore namespace, plus every exact pack generation the part's chunks
+// resolve to, for RetainPublisherPacks. It publishes no part head.
+func (s *WriteSession) PreparePart(pipeline Pipeline, body io.Reader, manifestID string) (PreparedObject, []storage.PackRef, error) {
+	return s.prepare(manifest.PartPage, pipeline, body, manifestID)
+}
+
+func (s *WriteSession) prepare(kind byte, pipeline Pipeline, body io.Reader, manifestID string) (PreparedObject, []storage.PackRef, error) {
 	if s == nil || s.writeSession == nil || body == nil {
-		return PreparedObject{}, storage.ErrInvalid
+		return PreparedObject{}, nil, storage.ErrInvalid
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.active(); err != nil {
-		return PreparedObject{}, err
+		return PreparedObject{}, nil, err
 	}
 	if s.prepared != nil {
-		return PreparedObject{}, storage.ErrConflict
+		return PreparedObject{}, nil, storage.ErrConflict
+	}
+	var pages PageStore = s.metadata
+	if kind == manifest.PartPage {
+		parts, ok := s.metadata.store.(storage.PartPageStore)
+		if !ok {
+			return PreparedObject{}, nil, storage.ErrInvalid
+		}
+		pages = partPages{s.metadata, parts}
 	}
 	pipeline.Lookup = s.metadata
-	pipeline.Publisher = &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil, WriteCache: pipeline.WriteCache, AdmitOnWrite: pipeline.AdmitOnWrite}
-	p, err := PrepareObject(s.ctx, pipeline, s.metadata, s.writer.Fence(), body, s.auth.Bucket.Domain, manifestID)
+	packs := &packRecorder{Publisher: &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil, WriteCache: pipeline.WriteCache, AdmitOnWrite: pipeline.AdmitOnWrite}, packs: map[storage.PackRef]struct{}{}}
+	pipeline.Publisher = packs
+	p, err := prepare(s.ctx, kind, pipeline, pages, s.writer.Fence(), body, s.auth.Bucket.Domain, manifestID)
 	if err != nil {
 		s.failed = true
-		return PreparedObject{}, err
+		return PreparedObject{}, nil, err
 	}
 	owned := p
 	owned.PageIndex = append([]uint64(nil), p.PageIndex...)
 	s.prepared = &owned
-	return p, nil
+	return p, packs.refs(), nil
 }
 
 func (s *WriteSession) Reserve(r storage.Reservation) error {
@@ -200,6 +222,27 @@ func (s *WriteSession) Commit(r storage.CommitRequest) (storage.CommitResult, er
 }
 func (s *WriteSession) Delete(r storage.CommitRequest) (storage.CommitResult, error) {
 	return s.publish(r, true)
+}
+
+// Do dispatches one further side effect of this session's operation, such as
+// multipart pack retention or part publication, through the managed writer
+// like Commit: it fails once the session or its R1 registration has closed,
+// and is serialized against that closure. A lost outcome stays unknown, so
+// Release keeps the writer's pins until it is reconciled.
+func (s *WriteSession) Do(operation string, effect func(context.Context, storage.WriterFence) error) error {
+	if s == nil || s.writeSession == nil || operation == "" || effect == nil {
+		return storage.ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.active(); err != nil {
+		return err
+	}
+	err := s.writer.Do(s.ctx, operation, func(f storage.WriterFence) error { return effect(s.ctx, f) })
+	if errors.Is(err, storage.ErrUnavailable) || errors.Is(err, coordination.ErrReconcilePending) {
+		s.failed = true
+	}
+	return err
 }
 
 func (s *WriteSession) Close() error {

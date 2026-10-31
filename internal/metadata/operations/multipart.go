@@ -424,12 +424,27 @@ func (m Multipart) cancel(ctx context.Context, r s.MultipartRequest, id string, 
 		return put(t, "upload-record", u, u.ID)
 	})
 }
+
+// List is public ListParts: (read AND initiator) OR owner OR admin (API v2
+// 2.2.3). Unlike Abort it needs no write right.
 func (m Multipart) List(ctx context.Context, r s.MultipartRequest, after uint32, limit int) (s.PartListPage, error) {
 	u, err := m.Get(ctx, r.UploadID)
 	if err != nil {
 		return s.PartListPage{}, err
 	}
-	err = m.View(ctx, func(t Tx) error { return authorize(t, r, u, false) })
+	err = m.View(ctx, func(t Tx) error {
+		a, err := t.Authorize(r.Credential, u.Object.Bucket)
+		if err != nil {
+			return err
+		}
+		if a.Bucket.ID != u.Object.BucketID {
+			return s.ErrBucketNotFound
+		}
+		if !(a.Read && a.UserID == u.Initiator || a.UserID == u.Owner || a.SystemAdmin) {
+			return s.ErrAccessDenied
+		}
+		return nil
+	})
 	if err != nil {
 		return s.PartListPage{}, err
 	}
@@ -437,6 +452,25 @@ func (m Multipart) List(ctx context.Context, r s.MultipartRequest, after uint32,
 		return s.PartListPage{}, s.ErrNotFound
 	}
 	return m.Parts(ctx, u.ID, after, limit)
+}
+
+// CurrentPart is the current head of one part number for its UploadPart
+// publisher: the base revision Register needs, under the UploadPart right
+// (write AND initiator), not the ListParts one. ErrNotFound when none.
+func (m Multipart) CurrentPart(ctx context.Context, r s.MultipartRequest, number uint32) (s.UploadPart, error) {
+	var part s.UploadPart
+	err := m.View(ctx, func(t Tx) error {
+		u, err := get[s.MultipartUpload](t, "upload-record", r.UploadID)
+		if err != nil {
+			return err
+		}
+		if err = authorize(t, r, u, true); err != nil {
+			return err
+		}
+		part, err = get[s.UploadPart](t, "part-head", u.ID, fmt.Sprint(number))
+		return err
+	})
+	return part, err
 }
 func (m Multipart) stream(ctx context.Context, d s.StreamDescriptor) ([]byte, error) {
 	if d.Length > 8<<20 {

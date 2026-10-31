@@ -67,6 +67,7 @@ type Payload struct {
 	wantMD5   string
 	sum       hash.Hash
 	algorithm string // upper case, as in API v2 2.7
+	requested string // algorithm the request names, upper case; empty when defaulted
 	wantSum   []byte // digest of the x-amz-checksum-<alg> header; nil when not sent
 }
 
@@ -77,6 +78,9 @@ func newPayload(r *http.Request, op Operation, s *signer) *Payload {
 	p := &Payload{src: r.Body}
 	var hashes []io.Writer
 	alg, want, sent := requestChecksum(r.Header)
+	if op != CompleteMultipartUpload {
+		p.requested = strings.ToUpper(alg)
+	}
 	switch {
 	case op == CompleteMultipartUpload && r.Header.Get("X-Amz-Trailer") != "":
 		p.err = &Error{Code: ErrInvalidRequest, Message: "CompleteMultipartUpload takes the object checksum as an x-amz-checksum-<algorithm> header, not as a trailer."}
@@ -206,6 +210,11 @@ func (p *Payload) Checksum() (algorithm string, digest []byte) {
 	}
 	return p.algorithm, p.sum.Sum(nil)
 }
+
+// RequestedChecksum is the checksum algorithm the request itself names in a
+// header or trailer, upper case, known before the body is read. It is empty
+// when the request names none and Checksum falls back to CRC64NVME.
+func (p *Payload) RequestedChecksum() string { return p.requested }
 
 // DecodeXML reads the whole payload, then unmarshals it into v, so a payload
 // error ranks before MalformedXML. A payload longer than limit bytes is

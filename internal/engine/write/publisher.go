@@ -2,9 +2,13 @@ package write
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/pack"
@@ -211,4 +215,36 @@ func (p *StorePublisher) readCanonical(ctx context.Context, key storage.ChunkKey
 	}
 	row, ok := rows[key]
 	return row, ok, nil
+}
+
+// packRecorder collects the exact pack generation of every chunk location
+// a Publisher reused or published, for multipart root retention.
+type packRecorder struct {
+	Publisher
+	packs map[storage.PackRef]struct{}
+}
+
+func (r *packRecorder) Reuse(ctx context.Context, row storage.Chunk) (bool, error) {
+	ok, err := r.Publisher.Reuse(ctx, row)
+	if ok && err == nil {
+		r.packs[row.Location.Pack] = struct{}{}
+	}
+	return ok, err
+}
+
+func (r *packRecorder) Publish(ctx context.Context, ref storage.PackRef, data, sidecar []byte, entries []pack.Entry, prior map[storage.ChunkKey]storage.Chunk) (map[storage.ChunkKey]storage.Chunk, error) {
+	out, err := r.Publisher.Publish(ctx, ref, data, sidecar, entries, prior)
+	for _, row := range out {
+		r.packs[row.Location.Pack] = struct{}{}
+	}
+	return out, err
+}
+
+// refs returns the recorded generations in a stable order.
+func (r *packRecorder) refs() []storage.PackRef {
+	out := slices.Collect(maps.Keys(r.packs))
+	slices.SortFunc(out, func(a, b storage.PackRef) int {
+		return cmp.Or(strings.Compare(a.ID, b.ID), strings.Compare(a.Generation, b.Generation))
+	})
+	return out
 }

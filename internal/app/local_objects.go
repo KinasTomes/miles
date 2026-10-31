@@ -106,7 +106,7 @@ func localObjects(m *badger.Store, packs *packs3.Store, resident storage.Cache, 
 		BucketPolicy: func(id string) (config.BucketSnapshot, error) {
 			return validator.NewBucketSnapshot(id, 1, cachePolicy)
 		},
-		Budget: request, MaxOutstanding: 4, RequestTimeout: 30 * time.Minute,
+		Budget: request, MaxOutstanding: 4, RequestTimeout: 30 * time.Minute, Uploads: m,
 	})
 	if err != nil {
 		return nil, nil, nil, err
