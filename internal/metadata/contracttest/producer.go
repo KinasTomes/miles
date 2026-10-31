@@ -287,6 +287,63 @@ func RunProducers(t *testing.T, factory MultipartFactory) {
 			t.Fatal("namespace emptiness guard bypassed", err)
 		}
 	})
+	t.Run("s3-delete-bucket-owner-incarnation-and-recreate", func(t *testing.T) {
+		ctx := context.Background()
+		f := NewFixture()
+		h := factory(t, f)
+		h.SetStrict(true)
+		p := h.Metadata.(s.ProducerStore)
+		admitted := func(label string) (context.Context, s.MutationContext) {
+			op := fixtureOpID(label)
+			c := s.MutationContext{HistoryID: fixtureHistoryID, LogicalOpID: op, MutationID: op, Writer: f.Lease.Fence}
+			return s.WithMutation(ctx, c), c
+		}
+		live, _ := admitted("doomed-create")
+		doomed, created, err := h.Metadata.CreateBucket(live, s.BucketCreate{CredentialID: "owner-key", UserID: "owner", Name: "doomed"})
+		if err != nil || !created {
+			t.Fatal(created, err)
+		}
+		if err := h.Metadata.DeleteBucket(ctx, s.BucketDelete{CredentialID: "owner-key", Bucket: doomed}); !errors.Is(err, s.ErrFenced) {
+			t.Fatal("delete without trusted admission", err)
+		}
+		live, _ = admitted("doomed-stranger")
+		if err := h.Metadata.DeleteBucket(live, s.BucketDelete{CredentialID: "writer-key", Bucket: doomed}); !errors.Is(err, s.ErrAccessDenied) {
+			t.Fatal("non-owner deleted a bucket", err)
+		}
+		stale := doomed
+		stale.ID = "bucket-older-incarnation"
+		live, _ = admitted("doomed-stale")
+		if err := h.Metadata.DeleteBucket(live, s.BucketDelete{CredentialID: "owner-key", Bucket: stale}); !errors.Is(err, s.ErrBucketNotFound) {
+			t.Fatal("delete of another incarnation", err)
+		}
+		live, c := admitted("doomed-delete")
+		if err := h.Metadata.DeleteBucket(live, s.BucketDelete{CredentialID: "owner-key", Bucket: doomed}); err != nil {
+			t.Fatal(err)
+		}
+		out, err := p.GetMutation(ctx, c.MutationID)
+		if err != nil || out.Event.Entity != "Buckets" || out.Event.Action != "entity_delete" || out.Event.Revision != 2 {
+			t.Fatal("bucket delete not journaled", out, err)
+		}
+		if _, err := h.Metadata.GetBucket(ctx, "doomed"); !errors.Is(err, s.ErrNotFound) {
+			t.Fatal("deleted bucket still visible", err)
+		}
+		if _, err := h.Metadata.Authorize(ctx, "owner-key", "doomed"); !errors.Is(err, s.ErrBucketNotFound) {
+			t.Fatal("deleted bucket still authorizes", err)
+		}
+		live, _ = admitted("doomed-delete-again")
+		if err := h.Metadata.DeleteBucket(live, s.BucketDelete{CredentialID: "owner-key", Bucket: doomed}); !errors.Is(err, s.ErrBucketNotFound) {
+			t.Fatal("second delete", err)
+		}
+		live, _ = admitted("doomed-recreate")
+		again, created, err := h.Metadata.CreateBucket(live, s.BucketCreate{CredentialID: "writer-key", UserID: "writer", Name: "doomed"})
+		if err != nil || !created || again.ID == doomed.ID || again.OwnerID != "writer" || again.Revision != 3 || !again.Active {
+			t.Fatal("name not reusable after delete", again, created, err)
+		}
+		live, _ = admitted("doomed-admin-delete")
+		if err := h.Metadata.DeleteBucket(live, s.BucketDelete{CredentialID: "admin-key", Bucket: again}); err != nil {
+			t.Fatal("system admin delete", err)
+		}
+	})
 }
 
 type MultipartFactory = shared.MultipartFactory

@@ -40,6 +40,9 @@ func (t multipartTx) Admit(c s.MutationContext) error {
 func (m *Store) MutateControl(ctx context.Context, r s.ControlMutation) (s.MutationResult, error) {
 	return m.multipartOps().Mutate(ctx, r)
 }
+func (m *Store) DeleteBucket(ctx context.Context, r s.BucketDelete) error {
+	return m.multipartOps().DeleteBucket(ctx, r)
+}
 func (m *Store) GetMutation(ctx context.Context, id string) (s.MutationResult, error) {
 	return read[s.MutationResult](m, ctx, key("producer-outcome", id))
 }

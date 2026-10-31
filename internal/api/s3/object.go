@@ -21,6 +21,7 @@ const MaxKeyBytes = 1024
 // and responses.
 type ObjectWriter interface {
 	PutObject(ctx context.Context, r object.PutRequest) (object.PutResult, error)
+	CopyObject(ctx context.Context, r object.CopyRequest) (object.CopyResult, error)
 	DeleteObject(ctx context.Context, r object.DeleteRequest) error
 }
 
@@ -36,8 +37,9 @@ type ObjectLister interface {
 	ListObjects(ctx context.Context, r storage.ListObjectsRequest) (object.ListPage, error)
 }
 
-// Objects serves the P0 object operations of API v2 4.2: PutObject,
-// GetObject, HeadObject, DeleteObject and ListObjectsV2.
+// Objects serves the object operations of API v2 4.2, 4.5 and 4.6: PutObject,
+// CopyObject, GetObject, HeadObject, DeleteObject, DeleteObjects and
+// ListObjectsV2.
 type Objects struct {
 	Writer ObjectWriter
 	Reader ObjectReader
@@ -48,8 +50,8 @@ type Objects struct {
 func NewObjectHandlers(writer ObjectWriter, reader ObjectReader, lister ObjectLister) map[Operation]Handler {
 	o := &Objects{Writer: writer, Reader: reader, Lister: lister}
 	return map[Operation]Handler{
-		PutObject: o.PutObject, GetObject: o.GetObject, HeadObject: o.HeadObject,
-		DeleteObject: o.DeleteObject, ListObjectsV2: o.ListObjectsV2,
+		PutObject: o.PutObject, CopyObject: o.CopyObject, GetObject: o.GetObject, HeadObject: o.HeadObject,
+		DeleteObject: o.DeleteObject, DeleteObjects: o.DeleteObjects, ListObjectsV2: o.ListObjectsV2,
 	}
 }
 

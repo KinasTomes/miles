@@ -197,7 +197,8 @@ func (m *Metadata) CreateBucket(ctx context.Context, r s.BucketCreate) (s.Bucket
 	if !ok || !u.Active {
 		return s.Bucket{}, false, s.ErrAccessDenied
 	}
-	if old, ok := m.buckets[r.Name]; ok {
+	old, ok := m.buckets[r.Name]
+	if ok && old.Active {
 		return old, false, nil
 	}
 	id, err := s.NewBucketID()
@@ -211,9 +212,47 @@ func (m *Metadata) CreateBucket(ctx context.Context, r s.BucketCreate) (s.Bucket
 	if err := s.ValidateDomain(domain); err != nil {
 		return s.Bucket{}, false, err
 	}
-	b := s.Bucket{Name: r.Name, ID: id, OwnerID: u.ID, Domain: domain, Revision: 1, Active: true, CreatedAt: m.now()}
+	b := s.Bucket{Name: r.Name, ID: id, OwnerID: u.ID, Domain: domain, Revision: old.Revision + 1, Active: true, CreatedAt: m.now()}
 	m.buckets[r.Name] = b
 	return b, true, nil
+}
+
+// DeleteBucket mirrors the namespace guard of the backends: the admitted
+// incarnation, owner or system admin, then no live head and no
+// Active/Completing upload of that bucket_id.
+func (m *Metadata) DeleteBucket(ctx context.Context, r s.BucketDelete) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	auth, err := m.authorize(r.CredentialID, r.Bucket.Name)
+	if err != nil {
+		return err
+	}
+	b := auth.Bucket
+	switch {
+	case b.ID != r.Bucket.ID:
+		return s.ErrBucketNotFound
+	case auth.UserID != b.OwnerID && !auth.SystemAdmin:
+		return s.ErrAccessDenied
+	case b.Revision != r.Bucket.Revision:
+		return s.ErrConflict
+	}
+	for k, h := range m.heads {
+		if k.BucketID == b.ID && !h.Deleted {
+			return s.ErrBucketNotEmpty
+		}
+	}
+	for _, u := range m.uploads {
+		if u.BucketID == b.ID && (u.State == "Active" || u.State == "Completing") {
+			return s.ErrBucketNotEmpty
+		}
+	}
+	b.Active = false
+	b.Revision++
+	m.buckets[b.Name] = b
+	return nil
 }
 func (m *Metadata) authorize(credential, bucket string) (s.Authorization, error) {
 	c, ok := m.credentials[credential]

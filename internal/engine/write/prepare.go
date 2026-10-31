@@ -87,6 +87,94 @@ func prepare(ctx context.Context, kind byte, pipeline Pipeline, pages PageStore,
 		PageCount: pageCount, PageIndex: index, PackCount: result.PackCount}, nil
 }
 
+// CopyManifest writes manifestID as a same-domain copy of the committed source
+// head (architecture 5.3): the same refs in the same order, no payload read.
+// Before a ref is emitted its canonical row is pinned and its pack protection
+// extended through Reuse, exactly like a dedup hit of PUT, so the chunk
+// outlives the copy's publication. A chunk Reuse refuses (an archived pack)
+// fails the copy with ErrCold; metadata copy of Cold sources is W06 work.
+func CopyManifest(ctx context.Context, publisher Publisher, lookup Lookup, pages PageStore, writer storage.WriterFence,
+	source storage.ObjectHead, manifestID string) (PreparedObject, error) {
+	if publisher == nil || lookup == nil || pages == nil || writer.LeaseID == "" || source.Deleted || source.ValidateManifestDescriptor() != nil {
+		return PreparedObject{}, storage.ErrInvalid
+	}
+	pager, err := manifest.NewStreamWriter(manifest.ObjectPage, manifestID, source.Domain,
+		func(page storage.ManifestPage, digest [32]byte) error {
+			return writeVerifiedPage(ctx, manifest.ObjectPage, pages, writer, page, digest)
+		})
+	if err != nil {
+		return PreparedObject{}, err
+	}
+	for n := uint32(0); n < source.PageCount; n++ {
+		page, err := pages.GetManifestPage(ctx, source.ManifestID, n)
+		if err != nil {
+			return PreparedObject{}, sourceRecord(err)
+		}
+		if page.ManifestID != source.ManifestID || page.Domain != source.Domain || page.Number != n {
+			return PreparedObject{}, fmt.Errorf("%w: source manifest page", storage.ErrInvalid)
+		}
+		for start := 0; start < len(page.Chunks); start += maxBatchKeys {
+			batch := page.Chunks[start:min(start+maxBatchKeys, len(page.Chunks))]
+			if err := reuseRefs(ctx, publisher, lookup, batch); err != nil {
+				return PreparedObject{}, err
+			}
+			for _, ref := range batch {
+				if err := pager.Add(ref); err != nil {
+					return PreparedObject{}, err
+				}
+			}
+		}
+	}
+	if err := pager.Finish(); err != nil {
+		return PreparedObject{}, err
+	}
+	size, chunks, pageCount, index, _, err := pager.Descriptor()
+	if err != nil || size != source.Size || chunks != source.ChunkCount {
+		return PreparedObject{}, fmt.Errorf("%w: copied manifest does not match its source", storage.ErrInvalid)
+	}
+	return PreparedObject{ManifestID: manifestID, Domain: source.Domain, Size: size, ChunkCount: chunks,
+		PageCount: pageCount, PageIndex: index}, nil
+}
+
+// reuseRefs pins every distinct chunk of one batch of source refs.
+func reuseRefs(ctx context.Context, publisher Publisher, lookup Lookup, refs []storage.ChunkRef) error {
+	keys := make([]storage.ChunkKey, 0, len(refs))
+	seen := make(map[storage.ChunkKey]bool, len(refs))
+	for _, ref := range refs {
+		if !seen[ref.Key] {
+			seen[ref.Key] = true
+			keys = append(keys, ref.Key)
+		}
+	}
+	rows, err := lookupComplete(ctx, lookup, keys)
+	if err != nil {
+		return err
+	}
+	for _, key := range keys {
+		row, ok := rows[key]
+		if !ok || row.Key != key {
+			return fmt.Errorf("%w: source chunk has no canonical row", storage.ErrUnavailable)
+		}
+		reused, err := publisher.Reuse(ctx, row)
+		if err != nil {
+			return sourceRecord(err)
+		}
+		if !reused {
+			return storage.ErrCold
+		}
+	}
+	return nil
+}
+
+// sourceRecord reports a missing page or pack of a committed source head as
+// backend inconsistency, never as an absent key the client could act on.
+func sourceRecord(err error) error {
+	if errors.Is(err, storage.ErrNotFound) {
+		return fmt.Errorf("%w: copy source record missing: %v", storage.ErrUnavailable, err)
+	}
+	return err
+}
+
 func writeVerifiedPage(ctx context.Context, kind byte, pages PageStore, writer storage.WriterFence,
 	page storage.ManifestPage, expected [32]byte) error {
 	for attempt := 0; attempt < 3; attempt++ {

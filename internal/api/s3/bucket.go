@@ -16,24 +16,30 @@ import (
 )
 
 // BucketStore is the metadata the bucket handlers run on: the CreateBucket
-// write transaction and the accessible-bucket listing. storage.MetadataStore
-// implements both; the fake store stands in for it in tests.
+// and DeleteBucket transactions and the accessible-bucket listing.
+// storage.MetadataStore implements all three; the fake store stands in for it
+// in tests.
 type BucketStore interface {
 	CreateBucket(ctx context.Context, request storage.BucketCreate) (storage.Bucket, bool, error)
+	DeleteBucket(ctx context.Context, request storage.BucketDelete) error
 	ListAccessibleBuckets(ctx context.Context, request storage.BucketListRequest) (storage.BucketListPage, error)
 }
 
-// Buckets serves the P0 bucket operations of API v2 4.2: CreateBucket,
-// HeadBucket and ListBuckets. The router has already authenticated the caller
-// and authorized the request on the bucket, so HeadBucket only answers 200;
-// CreateBucket re-runs its conditions as a metadata transaction; ListBuckets
-// asks the store for the buckets the caller owns or holds a grant on.
+// Buckets serves the bucket operations of API v2 4.2: CreateBucket,
+// HeadBucket, ListBuckets, DeleteBucket and GetBucketLocation. The router has
+// already authenticated the caller and authorized the request on the bucket,
+// so HeadBucket only answers 200; CreateBucket and DeleteBucket re-run their
+// conditions as a metadata transaction; ListBuckets asks the store for the
+// buckets the caller owns or holds a grant on.
 type Buckets struct{ Store BucketStore }
 
 // NewBucketHandlers wires the bucket handlers into a Router's Handlers map.
 func NewBucketHandlers(store BucketStore) map[Operation]Handler {
 	b := &Buckets{Store: store}
-	return map[Operation]Handler{CreateBucket: b.CreateBucket, HeadBucket: b.HeadBucket, ListBuckets: b.ListBuckets}
+	return map[Operation]Handler{
+		CreateBucket: b.CreateBucket, HeadBucket: b.HeadBucket, ListBuckets: b.ListBuckets,
+		DeleteBucket: b.DeleteBucket, GetBucketLocation: b.GetBucketLocation,
+	}
 }
 
 // maxBucketConfigBytes bounds the CreateBucketConfiguration body, which names
@@ -101,6 +107,51 @@ func (b *Buckets) HeadBucket(w http.ResponseWriter, r *Request) error {
 	w.Header().Set("x-amz-bucket-region", r.Region())
 	w.WriteHeader(http.StatusOK)
 	return nil
+}
+
+// DeleteBucket retires the admitted incarnation (API v2 4.2): the router
+// already checked owner or system admin; the store's transaction checks the
+// caller, the bucket_id and the namespace counters again, so a write admitted
+// before cannot land after the empty check. A live object or an active upload
+// is BucketNotEmpty. The name is free afterwards; a new CreateBucket gets a
+// new bucket_id and none of the old grants.
+func (b *Buckets) DeleteBucket(w http.ResponseWriter, r *Request) error {
+	if _, err := io.Copy(io.Discard, r.Body); err != nil {
+		return err
+	}
+	err := b.Store.DeleteBucket(r.HTTP.Context(), storage.BucketDelete{CredentialID: r.Caller.AccessKeyID, Bucket: r.Access.Bucket})
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	case errors.Is(err, storage.ErrBucketNotEmpty):
+		return &Error{Code: ErrBucketNotEmpty, Bucket: r.Bucket}
+	case errors.Is(err, storage.ErrNotFound):
+		return &Error{Code: ErrNoSuchBucket, Bucket: r.Bucket}
+	case errors.Is(err, storage.ErrAccessDenied):
+		return &Error{Code: ErrAccessDenied}
+	case errors.Is(err, storage.ErrConflict):
+		return &Error{Code: ErrOperationAborted, Bucket: r.Bucket}
+	case errors.Is(err, storage.ErrUnavailable), errors.Is(err, storage.ErrFenced):
+		return &Error{Code: ErrServiceUnavailable}
+	}
+	return fmt.Errorf("s3: delete bucket %q: %w", r.Bucket, err)
+}
+
+// locationConstraint is the GetBucketLocation response of API v2 4.2.
+type locationConstraint struct {
+	XMLName xml.Name `xml:"LocationConstraint"`
+	Region  string   `xml:",chardata"`
+}
+
+// GetBucketLocation answers the gateway region for a caller with read. Like
+// S3, us-east-1 is the empty constraint.
+func (b *Buckets) GetBucketLocation(w http.ResponseWriter, r *Request) error {
+	region := r.Region()
+	if region == "us-east-1" {
+		region = ""
+	}
+	return WriteXML(w, locationConstraint{Region: region})
 }
 
 // listAllMyBucketsResult is the ListBuckets response of API v2 4.2. Owner.ID

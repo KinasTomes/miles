@@ -67,13 +67,16 @@ func (m *Store) CreateBucket(ctx context.Context, r s.BucketCreate) (s.Bucket, b
 			return replayErr
 		}
 		old, err := get[s.Bucket](t, key("buckets", r.Name))
-		if err == nil {
+		if err == nil && old.Active {
 			out = old
 			return operations.NoOp(multipartTx{t}, ctx, "Buckets", r.Name, r, old)
 		}
-		if !errors.Is(err, s.ErrNotFound) {
+		if err != nil && !errors.Is(err, s.ErrNotFound) {
 			return err
 		}
+		// A deleted incarnation leaves its record inactive; the next one
+		// continues its revision so the name's journal stays monotonic.
+		revision := old.Revision + 1
 		id, err := s.NewBucketID()
 		if err != nil {
 			return err
@@ -85,7 +88,7 @@ func (m *Store) CreateBucket(ctx context.Context, r s.BucketCreate) (s.Bucket, b
 		if err := s.ValidateDomain(domain); err != nil {
 			return err
 		}
-		out = s.Bucket{Name: r.Name, ID: id, OwnerID: u.ID, Domain: domain, Revision: 1, Active: true, CreatedAt: m.now()}
+		out = s.Bucket{Name: r.Name, ID: id, OwnerID: u.ID, Domain: domain, Revision: revision, Active: true, CreatedAt: m.now()}
 
 		created = true
 		if err := put(t, key("buckets", r.Name), out); err != nil {

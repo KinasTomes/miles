@@ -495,6 +495,12 @@ Không nhận dedup_domain tùy ý từ user qua header PUT/CreateBucket; domain
 - `tests/fixtures/s3/buckets.json` pin toàn bộ row trên (tên hợp lệ/không, create đúng/sai region, collision, HEAD theo principal, XML ListBuckets của từng hình dạng truy cập) và chạy qua Router + handler thật; row lỗi pin HTTP status đối chiếu bảng 2.4.
 - Dev provisioning (`internal/app`): mode dev mint một cặp SigV4 test credential theo format 3.5 (access key 20 ký tự [A-Z0-9], secret base64 của 30 byte CSPRNG, rejection sampling không lệch modulo) gắn user dev, không có cờ admin; runtime mode không mint, secret không ghi log.
 
+**Hiện thực (W04-CHIEN-04)**:
+
+- DeleteBucket: `s3.NewBucketHandlers` lắp thêm DeleteBucket và GetBucketLocation. Router đã kiểm owner ∨ system admin; handler đọc payload tới EOF rồi gọi `storage.MetadataStore.DeleteBucket(BucketDelete{credential, bucket đã admit})`. Badger và DynamoDB chạy nó như control mutation `Buckets`/`entity_delete` (`operations.Multipart.DeleteBucket`) dưới mutation context tin cậy của request (local runtime admit như CreateBucket; thiếu context trả `ErrFenced` → 503): cùng transaction kiểm lại credential/user active, caller là owner hoặc credential system admin (credential thường chỉ được mutation này), bucket còn active đúng `bucket_id` đã admit (không thì `NoSuchBucket`), revision, và counter namespace `LiveObjects`/`Uploads` mà mọi commit object/upload cập nhật trong transaction của chúng — khác 0 trả `BucketNotEmpty` 409, nên write đã admit trước không commit được sau kiểm tra trống. Thành công: record bucket thành inactive (`deleting` trên Admin API) và event `entity_delete`; 204. Tên được giải phóng: CreateBucket sau đó tạo incarnation mới với `bucket_id` mới, revision = revision cũ + 1 (journal theo tên đơn điệu), không kế thừa grant (grant cũ gắn `bucket_id` cũ, chưa dọn vật lý).
+- Cửa sổ snapshot 2.2.3 áp cho bucket vừa xóa: node còn snapshot ≤ 5 giây có thể vẫn trả HeadBucket 200 hoặc CreateBucket `BucketAlreadyOwnedByYou` cho tên đó; write vào incarnation cũ luôn thất bại ở transaction.
+- GetBucketLocation (quyền read): `<LocationConstraint>` là Region cấu hình; `us-east-1` trả phần tử rỗng như S3.
+
 ### 4.3 Multipart upload (P1)
 
 | Operation | Chi tiết |
@@ -661,6 +667,13 @@ Nếu sau này làm UploadPartCopy: khoảng byte của part nguồn không kh�
 
 Edge copy chunk thiếu chạy S3 → Edge → S3, đo network bytes hai chiều theo dữ liệu thực, gồm read-ahead/nén/race.
 
+**Hiện thực (W04-CHIEN-04)** — copy nền cùng miền:
+
+- Handler (`internal/api/s3/copy.go`): `x-amz-copy-source` = `[/]bucket/key` decode một lần; thiếu bucket/key hoặc encode sai `InvalidArgument`, `?versionId=` `NotImplemented`. `x-amz-metadata-directive` rỗng/`COPY`/`REPLACE`, giá trị khác `InvalidArgument`. Payload đọc tới EOF (kiểm SHA-256/checksum) rồi `AuthorizeCopySource` (bước 5 mục 2.2.3) trước mọi lookup nguồn. Response 200 `CopyObjectResult` (ETag nguồn, LastModified = commit time đích).
+- Service `object.Service.CopyObject`: đọc head nguồn một lần (không có/tombstone → `NoSuchKey` với key nguồn), rồi trước admission: nguồn > 5 GiB (`MaxCopyBytes`, đúng 5 GiB vẫn qua) `InvalidRequest`; miền nguồn ≠ miền đích `NotImplemented` (copy khác miền là W06-CHIEN-02); `x-amz-checksum-algorithm` khác algorithm nguồn `InvalidRequest`; self-copy (cùng bucket_id/key) với COPY `InvalidRequest`. Metadata COPY = metadata HTTP nguồn, REPLACE = header request như PutObject (thiếu Content-Type lưu `binary/octet-stream` như PUT); giới hạn 2 KiB user metadata như PUT.
+- Ghi như PUT: admit writer cho key đích, reservation quota của **owner bucket đích** (`max(0, size − size head đích)`, staged = size), `WriteSession.PrepareCopy` ghi manifest mới (`manifest_id` mới) lặp lại đúng refs nguồn theo thứ tự, không đọc payload: mỗi chunk khác nhau trong lô ≤ 100 được pin generation và gia hạn protection qua `Reuse` như dedup hit của PUT (chunk ở pack không Warm/IR → `InvalidObjectState`; copy metadata nguồn Cold là W06). Head đích giữ ETag/ETagKind/checksum nguồn (R4), commit + outbox `Objects/object_commit` + quota trong một transaction như PUT; lỗi trước commit giữ head đích cũ và release reservation. Self-copy REPLACE ra revision/manifest mới, quota delta 0.
+- Không có ngưỡng ở server: mọi copy ≤ 5 GiB qua `s3api copy-object`; `aws s3 cp/mv` giữa key từ `multipart_threshold` (8 MiB) dừng ở GetObjectTagging 501 (AWS CLI 2.36.41), UploadPartCopy trả 501. Bằng chứng: [copy/delete validation](testing/copy-delete-bucket-validation.md).
+
 ### 4.6 DeleteObjects (P1)
 
 POST /bucket?delete; write bucket. XML Delete gồm tối đa 1000 Object/Key và Quiet. Validate XML, keys, Content-MD5 hoặc checksum header được SDK mục tiêu hỗ trợ **trước mutation**. VersionId ngoài phạm vi trả lỗi rõ.
@@ -668,6 +681,8 @@ POST /bucket?delete; write bucket. XML Delete gồm tối đa 1000 Object/Key v�
 - Response 200 XML DeleteResult: Deleted cho key thành công (kể cả key đã không tồn tại), Error(Code/Message/Key) cho lỗi riêng; Quiet=true bỏ Deleted, vẫn trả Error.
 - Không hứa atomic toàn batch. Mỗi key commit tombstone/quota/outbox riêng, retry idempotent; lỗi giữa batch trả kết quả per-key khi có thể. Bucket không có/quyền thiếu trả top-level error, không tiết lộ keys.
 - Head/pages/pack cũ vẫn chịu reader/recovery protection như DELETE thường. Không giảm refcount/quota lần nữa cho tombstone đã tồn tại.
+
+**Hiện thực (W04-CHIEN-04)**: handler `internal/api/s3/delete_objects.go`. Trước mutation: thiếu cả Content-MD5, header `x-amz-checksum-*` lẫn trailer trả `InvalidRequest`; payload (≤ 8 MiB) đọc qua `Payload.DecodeXML` nên Content-MD5/checksum sai là `BadDigest`, XML hỏng `MalformedXML`; 0 hoặc > 1000 Object, Key rỗng `MalformedXML`; key > 1024 byte `KeyTooLongError`; `VersionId` hoặc điều kiện `ETag`/`LastModifiedTime`/`Size` trong Object `NotImplemented` — không bỏ qua. Sau đó từng key gọi `object.Service.DeleteObject` theo thứ tự request (tombstone/quota/outbox riêng; key không có hoặc đã là tombstone không publish gì); lỗi của một key thành `<Error>` (Key/Code/Message theo bảng 2.4), các key khác vẫn chạy. Quiet bỏ `<Deleted>`.
 
 ### 4.7 Presigned và điều kiện (P1/P2)
 
