@@ -19,6 +19,7 @@ import (
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/secretfile"
+	"github.com/KinasTomes/miles/internal/stats"
 	"github.com/KinasTomes/miles/internal/storage"
 	packs3 "github.com/KinasTomes/miles/internal/storage/s3"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -136,7 +137,15 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		transport.CloseIdleConnections()
 		return d, err
 	}
-	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Admin: adminOptions, Close: func() error {
+	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: client, Bucket: c.PackBucket}, Now: time.Now, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second})
+	if err != nil {
+		stopObjects()
+		_ = closeCache()
+		transport.CloseIdleConnections()
+		return d, err
+	}
+	adminOptions.Statistics = measurements
+	return Dependencies{Statistics: measurements, Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Admin: adminOptions, Close: func() error {
 		stopObjects()
 		transport.CloseIdleConnections()
 		return errors.Join(closeCache(), m.Close())

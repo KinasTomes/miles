@@ -15,6 +15,7 @@ import (
 	"github.com/KinasTomes/miles/internal/auth"
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/stats"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -36,12 +37,21 @@ type Store interface {
 type Admit func(ctx context.Context, tokenID string) (storage.MutationContext, error)
 
 type Options struct {
-	Store   Store
-	Admit   Admit
-	Sealer  Sealer
-	Cursors Keyring
-	Clock   clock.Clock
-	Logger  *slog.Logger // audit log; never bearer/secret/hash
+	Statistics Statistics
+	Store      Store
+	Admit      Admit
+	Sealer     Sealer
+	Cursors    Keyring
+	Clock      clock.Clock
+	Logger     *slog.Logger // audit log; never bearer/secret/hash
+}
+
+// Statistics is a read-only report consumer. Auth precedes every method call;
+// HTTP handlers cannot trigger collection or modify logical quota.
+type Statistics interface {
+	Global(context.Context) (stats.Summary, error)
+	Bucket(context.Context, string) (stats.BucketSummary, error)
+	Layout(context.Context, string, string) (stats.Layout, error)
 }
 
 type server struct {
@@ -97,6 +107,9 @@ func NewServer(o Options) (http.Handler, error) {
 		mutation bool
 		h        func(*call) error
 	}{
+		{"GET /admin/v1/stats", false, s.stats},
+		{"GET /admin/v1/buckets/{b}/stats", false, s.bucketStats},
+		{"GET /admin/v1/objects/layout", false, s.layout},
 		{"POST /admin/v1/users", true, s.createUser},
 		{"GET /admin/v1/users", false, s.listUsers},
 		{"GET /admin/v1/users/{id}", false, s.getUser},
