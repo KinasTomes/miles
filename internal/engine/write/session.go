@@ -162,6 +162,39 @@ func (s *WriteSession) prepare(kind byte, pipeline Pipeline, body io.Reader, man
 	return p, packs.refs(), nil
 }
 
+// PrepareCopy writes a fresh same-domain manifest for a CopyObject of source,
+// the committed head the caller read on its pinned source snapshot. Like
+// Prepare it binds the descriptor Commit publishes; it reads no payload.
+func (s *WriteSession) PrepareCopy(source storage.ObjectHead, manifestID string) (PreparedObject, error) {
+	if s == nil || s.writeSession == nil {
+		return PreparedObject{}, storage.ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.active(); err != nil {
+		return PreparedObject{}, err
+	}
+	if s.prepared != nil {
+		return PreparedObject{}, storage.ErrConflict
+	}
+	if source.Domain != s.auth.Bucket.Domain {
+		return PreparedObject{}, storage.ErrInvalid
+	}
+	if err := s.writer.BindRoot(s.ctx, s.object, manifestID); err != nil {
+		return PreparedObject{}, err
+	}
+	publisher := &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil}
+	p, err := CopyManifest(s.ctx, publisher, s.metadata, s.metadata, s.writer.Fence(), source, manifestID)
+	if err != nil {
+		s.failed = true
+		return PreparedObject{}, err
+	}
+	owned := p
+	owned.PageIndex = append([]uint64(nil), p.PageIndex...)
+	s.prepared = &owned
+	return p, nil
+}
+
 func (s *WriteSession) Reserve(r storage.Reservation) error {
 	if s == nil || s.writeSession == nil {
 		return storage.ErrInvalid

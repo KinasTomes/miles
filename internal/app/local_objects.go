@@ -25,19 +25,36 @@ type localMetadata struct {
 }
 
 func (m *localMetadata) CreateBucket(ctx context.Context, r storage.BucketCreate) (storage.Bucket, bool, error) {
-	id, err := write.NewManifestID()
+	ctx, err := m.admit(ctx, r.CredentialID)
 	if err != nil {
 		return storage.Bucket{}, false, err
+	}
+	return m.Store.CreateBucket(ctx, r)
+}
+
+func (m *localMetadata) DeleteBucket(ctx context.Context, r storage.BucketDelete) error {
+	ctx, err := m.admit(ctx, r.CredentialID)
+	if err != nil {
+		return err
+	}
+	return m.Store.DeleteBucket(ctx, r)
+}
+
+// admit binds one bucket control write to a fresh local mutation context.
+func (m *localMetadata) admit(ctx context.Context, credentialID string) (context.Context, error) {
+	id, err := write.NewManifestID()
+	if err != nil {
+		return nil, err
 	}
 	deadline := time.Now().Add(30 * time.Minute)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
-	c, err := m.authority.Admit(ctx, r.CredentialID, storage.ObjectKey{}, id, deadline)
+	c, err := m.authority.Admit(ctx, credentialID, storage.ObjectKey{}, id, deadline)
 	if err != nil {
-		return storage.Bucket{}, false, err
+		return nil, err
 	}
-	return m.Store.CreateBucket(storage.WithMutation(ctx, c), r)
+	return storage.WithMutation(ctx, c), nil
 }
 
 func localObjects(m *badger.Store, packs *packs3.Store, resident storage.Cache, cachePolicy config.CachePolicy) (*object.Service, *localMetadata, func(), error) {

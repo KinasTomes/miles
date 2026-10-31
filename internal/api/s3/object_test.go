@@ -18,6 +18,7 @@ import (
 
 type fakeObjectWriter struct {
 	got     object.PutRequest
+	copied  object.CopyRequest
 	deleted object.DeleteRequest
 	result  object.PutResult
 	err     error
@@ -26,6 +27,11 @@ type fakeObjectWriter struct {
 func (f *fakeObjectWriter) PutObject(_ context.Context, r object.PutRequest) (object.PutResult, error) {
 	f.got = r
 	return f.result, f.err
+}
+
+func (f *fakeObjectWriter) CopyObject(_ context.Context, r object.CopyRequest) (object.CopyResult, error) {
+	f.copied = r
+	return object.CopyResult{ETag: f.result.ETag}, f.err
 }
 
 func (f *fakeObjectWriter) DeleteObject(_ context.Context, r object.DeleteRequest) error {

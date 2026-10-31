@@ -132,6 +132,21 @@ func Projection(entity, identity string, revision uint64, value any, deleted boo
 	}
 	return e, nil
 }
+
+// DeleteBucket runs S3 DeleteBucket as the Buckets entity_delete control
+// mutation under the trusted mutation context ctx carries: the same
+// transaction rechecks the caller, the admitted incarnation and the namespace
+// counters every object/upload write keeps, so no write lands after the check.
+func (m Multipart) DeleteBucket(ctx context.Context, r s.BucketDelete) error {
+	c, ok := s.MutationFromContext(ctx)
+	if !ok {
+		return s.ErrFenced
+	}
+	_, err := m.Mutate(ctx, s.ControlMutation{Context: c, CredentialID: r.CredentialID, Entity: "Buckets", ID: r.Bucket.Name,
+		ExpectedRevision: r.Bucket.Revision, Deleted: true, Bucket: r.Bucket})
+	return err
+}
+
 func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationResult, error) {
 	var result s.MutationResult
 	if r.ID == "" || len(r.ID) > 1024 || r.ExpectedRevision >= s.MaxPolicyRevision || r.Deleted && r.ExpectedRevision == 0 {
@@ -163,7 +178,9 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 			if err != nil {
 				return err
 			}
-			if !credential.Active || !credential.SystemAdmin {
+			// A SigV4 credential mutates control records only as system admin,
+			// except S3 DeleteBucket, which the bucket owner may also run.
+			if !credential.Active || !credential.SystemAdmin && (r.Entity != "Buckets" || !r.Deleted) {
 				return s.ErrAccessDenied
 			}
 			user, err := get[s.User](t, "users", credential.UserID)
@@ -173,10 +190,12 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 			if !user.Active {
 				return s.ErrAccessDenied
 			}
+			actorID, admin = credential.UserID, credential.SystemAdmin
 		}
-		// Non-admin tokens may only manage grants on owned buckets and revoke
-		// their own tokens; both are rechecked against the stored records below.
-		if !admin && r.Entity != "BucketGrants" && (r.Entity != "AdminTokens" || !r.Deleted) {
+		// Non-admin actors may only manage grants on owned buckets, revoke
+		// their own tokens and delete owned buckets; all are rechecked against
+		// the stored records below.
+		if !admin && r.Entity != "BucketGrants" && (r.Entity != "AdminTokens" || !r.Deleted) && (r.Entity != "Buckets" || !r.Deleted || r.CredentialID == "") {
 			return s.ErrAccessDenied
 		}
 		identity := r.ID
@@ -271,7 +290,16 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 		case "Buckets":
 			var old s.Bucket
 			if err := read("buckets", &old, r.ID); err != nil {
+				if r.Deleted && errors.Is(err, s.ErrNotFound) {
+					return s.ErrBucketNotFound
+				}
 				return err
+			}
+			if r.Deleted && (!old.Active || old.ID != r.Bucket.ID) {
+				return s.ErrBucketNotFound
+			}
+			if r.Deleted && !admin && old.OwnerID != actorID {
+				return s.ErrAccessDenied
 			}
 			if old.Revision != r.ExpectedRevision {
 				return s.ErrConflict
@@ -300,11 +328,11 @@ func (m Multipart) Mutate(ctx context.Context, r s.ControlMutation) (s.MutationR
 			}
 			if r.Deleted {
 				n, e := get[s.BucketNamespace](t, "bucket-namespace", r.ID)
-				if e != nil {
+				if e != nil || n.Version != 1 {
 					return s.ErrUnavailable
 				}
 				if n.LiveObjects != 0 || n.Uploads != 0 {
-					return s.ErrConflict
+					return s.ErrBucketNotEmpty
 				}
 				v.Active = false
 			}

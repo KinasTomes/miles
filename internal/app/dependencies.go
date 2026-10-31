@@ -76,7 +76,9 @@ func Bootstrap(c config.Startup) (Dependencies, error) {
 		return Dependencies{}, err
 	}
 	probe := func(ctx context.Context) error {
-		if _, err := m.GetBucket(ctx, bucket); err != nil {
+		// The probe bucket belongs to the dev user, who may delete it; the
+		// minted credential is the fixture record the user cannot remove.
+		if _, err := m.GetCredential(ctx, credential.ID); err != nil {
 			return fmt.Errorf("dev metadata: %w", err)
 		}
 		if _, err := p.HeadPack(ctx, ref); err != nil {

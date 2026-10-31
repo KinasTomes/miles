@@ -19,6 +19,13 @@ type MetadataStore interface {
 	// bucket_id, owner, domain and CreatedAt are set by the transaction, not
 	// the request.
 	CreateBucket(ctx context.Context, request BucketCreate) (Bucket, bool, error)
+	// DeleteBucket retires the admitted incarnation as one journaled control
+	// mutation (entity_delete) under the trusted mutation context of ctx. It
+	// returns ErrBucketNotFound when the name no longer holds that active
+	// incarnation, ErrAccessDenied when the caller is neither owner nor system
+	// admin and ErrBucketNotEmpty while the namespace counts a live object or
+	// an active upload. The name is free again afterwards.
+	DeleteBucket(ctx context.Context, request BucketDelete) error
 	GetCredential(ctx context.Context, credentialID string) (Credential, error)
 	ListAccessibleBuckets(ctx context.Context, request BucketListRequest) (BucketListPage, error)
 	GetPolicy(ctx context.Context, revision uint64) (PolicySnapshot, error) // zero selects current.

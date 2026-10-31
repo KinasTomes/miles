@@ -22,6 +22,9 @@ var (
 	// absent reservation or another internal record.
 	ErrBucketNotFound = fmt.Errorf("%w: bucket missing, inactive or incarnation changed", ErrNotFound)
 	ErrConflict       = errors.New("storage revision or immutable content conflict")
+	// ErrBucketNotEmpty is the DeleteBucket guard: the bucket namespace still
+	// counts a live object or an Active/Completing upload.
+	ErrBucketNotEmpty = fmt.Errorf("%w: bucket has live objects or active uploads", ErrConflict)
 	ErrAccessDenied   = errors.New("storage access denied")
 	ErrQuotaExceeded  = errors.New("logical quota exceeded")
 	ErrFenced         = errors.New("writer lease or fence is no longer valid")
@@ -103,6 +106,16 @@ func (r BucketCreate) Validate() error {
 		return fmt.Errorf("%w: bucket create identity", ErrInvalid)
 	}
 	return nil
+}
+
+// BucketDelete is the S3 DeleteBucket transaction of API v2 2.2.3/4.2: the
+// credential that signed the request (its user must still be active and own
+// the bucket, or the credential must be system admin) and the bucket
+// incarnation the router admitted. The bucket must still be that incarnation
+// and empty: no live object and no Active/Completing upload.
+type BucketDelete struct {
+	CredentialID string
+	Bucket       Bucket
 }
 
 type Credential struct {
