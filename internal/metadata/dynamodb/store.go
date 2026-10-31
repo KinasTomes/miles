@@ -281,6 +281,7 @@ type observedRow struct {
 	dirty         bool
 }
 type transaction struct {
+	r1Fences        map[s.WriterFence]bool
 	store           *Store
 	ctx             context.Context
 	rows            map[string]*observedRow
@@ -442,7 +443,15 @@ func (t *transaction) commit() error {
 	if t.operationID != "" {
 		return t.dispatchOperation(input, images, inventory)
 	}
-	_, err := t.store.api.TransactWriteItems(t.ctx, input)
+	if err := t.revalidateR1(); err != nil {
+		return err
+	}
+	var err error
+	if _, shared := t.store.authority.(*SharedAuthority); shared {
+		_, err = t.store.api.TransactWriteItems(t.ctx, input, func(o *ddb.Options) { o.Retryer = aws.NopRetryer{} })
+	} else {
+		_, err = t.store.api.TransactWriteItems(t.ctx, input)
+	}
 	return backend(err)
 }
 
@@ -583,6 +592,12 @@ func (t *transaction) setPage(k string, body []byte) error {
 }
 
 func (m *Store) fence(t *transaction, w s.WriterFence) error {
+	if _, ok := m.authority.(*SharedAuthority); ok {
+		if t.r1Fences == nil {
+			t.r1Fences = map[s.WriterFence]bool{}
+		}
+		t.r1Fences[w] = true
+	}
 	return m.authority.Check(t.ctx, w, func(k Key) (Item, error) {
 		row, err := t.observe(k)
 		if err != nil {
