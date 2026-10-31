@@ -1,4 +1,4 @@
-// Package coordination provides the single-process Warm read lifetime boundary.
+// Package coordination owns local execution lifetimes and optional shared R1 admission.
 package coordination
 
 import (
@@ -9,11 +9,11 @@ import (
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
-// WarmGate is deliberately local to one runtime. All physical retirement must
-// enter Retire; direct backend deletion and other processes are outside this
-// boundary. W03 adds local R1 integration; durable coordination remains W04.
-// No lock is held across a GET. Restart loses these handles, never reconstructs
-// authority.
+// WarmGate owns process-local handles. NewSharedR1Gate attaches the durable
+// metadata protocol; NewWarmGate/NewR1Gate remain the local-only boundaries.
+// No lock is held across an entire GET. Shared maintenance must use its durable
+// protocol, never the local Retire method. Restart cannot reconstruct authority
+// from old handles, timestamps, or cache bytes.
 type WarmGate struct {
 	mu          sync.Mutex
 	clock       clock.Clock
@@ -23,6 +23,9 @@ type WarmGate struct {
 	incarnation string
 	limits      LeaseLimits
 	closed      bool
+	shared      storage.R1Store
+	sharedTime  storage.R1TimeSource
+	owner       string
 }
 
 // WarmView is opaque. Its root is logical; physical protection comes only from
@@ -41,6 +44,7 @@ type warmView struct {
 	leaseRevision             uint64
 	closing                   bool
 	work                      int
+	sharedFence               storage.WriterFence
 }
 
 func NewWarmGate(c clock.Clock) (*WarmGate, error) {
@@ -76,6 +80,21 @@ func (g *WarmGate) Acquire(ctx context.Context, object storage.ObjectKey, deadli
 	if err := v.check(ctx); err != nil {
 		return nil, err
 	}
+	if g.shared != nil {
+		id, err := storage.NewBucketID()
+		if err != nil {
+			return nil, err
+		}
+		wall, err := g.sharedDeadline(ctx, deadline)
+		if err != nil {
+			return nil, err
+		}
+		f := storage.WriterFence{LeaseID: id, ServiceIncarnation: g.incarnation, Epoch: 1}
+		if _, err = g.shared.AcquireR1(ctx, storage.R1Acquire{Fence: f, Owner: g.owner, Kind: "reader", Object: object, Deadline: wall}); err != nil {
+			return nil, err
+		}
+		v.sharedFence = f
+	}
 	g.resolving++
 	return &WarmView{state: v}, nil
 }
@@ -88,6 +107,12 @@ func (v *warmView) check(ctx context.Context) error {
 	if v.released || v.lost || v.closing || v.owner.closed || v.incarnation != v.owner.incarnation {
 		v.lost = true
 		return storage.ErrFenced
+	}
+	if v.owner.shared != nil && v.sharedFence.LeaseID != "" {
+		if _, err := v.owner.shared.CheckR1(ctx, v.sharedFence); err != nil {
+			v.lost = true
+			return err
+		}
 	}
 	cmp, err := v.owner.clock.Now().Instant.Compare(v.deadline)
 	if err != nil {
@@ -133,6 +158,11 @@ func (handle *WarmView) Bind(ctx context.Context, h storage.ObjectHead) error {
 		return storage.ErrConflict
 	}
 	v.root = h.ManifestID
+	if v.owner.shared != nil {
+		if err := v.owner.shared.BindR1(ctx, v.sharedFence, h); err != nil {
+			return err
+		}
+	}
 	v.revision = h.Revision
 	return nil
 }
@@ -152,6 +182,14 @@ func (h *WarmView) Pin(ctx context.Context, refs []storage.PackRef) error {
 	}
 	if v.root == "" || !v.resolving {
 		return storage.ErrInvalid
+	}
+	if g.shared != nil {
+		for start := 0; start < len(refs); start += 32 {
+			end := min(start+32, len(refs))
+			if err := g.shared.PinR1(ctx, v.sharedFence, refs[start:end]); err != nil {
+				return err
+			}
+		}
 	}
 	for _, r := range refs {
 		if r.Validate() != nil {
@@ -184,6 +222,11 @@ func (h *WarmView) Resolved(ctx context.Context) error {
 		return storage.ErrInvalid
 	}
 	if v.resolving {
+		if g.shared != nil {
+			if err := g.shared.ResolvedR1(ctx, v.sharedFence); err != nil {
+				return err
+			}
+		}
 		v.resolving = false
 		g.resolving--
 	}
@@ -213,6 +256,16 @@ func (h *WarmView) Release() {
 
 func (v *warmView) releaseLocked() {
 	g := v.owner
+	if g.shared != nil {
+		ctx, cancel := cleanupContext()
+		defer cancel()
+		if err := g.shared.CloseR1(ctx, v.sharedFence); err != nil {
+			return
+		}
+		if err := g.shared.ReleaseR1(ctx, v.sharedFence); err != nil {
+			return
+		}
+	}
 	v.released = true
 	if v.resolving {
 		g.resolving--
@@ -318,6 +371,11 @@ func (h *WarmView) Heartbeat(ctx context.Context) error {
 	if err := v.check(ctx); err != nil {
 		return err
 	}
+	if g.shared != nil {
+		if _, err := g.shared.RenewR1(ctx, v.sharedFence); err != nil {
+			return err
+		}
+	}
 	v.lease = next
 	v.leaseRevision++
 	return nil
@@ -339,6 +397,9 @@ func (h *WarmView) KeepAlive(ctx context.Context) (context.Context, func(), erro
 func (g *WarmGate) Retire(ref storage.PackRef) error {
 	if ref.Validate() != nil {
 		return storage.ErrInvalid
+	}
+	if g.shared != nil {
+		return ErrMaintenanceDisabled
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()

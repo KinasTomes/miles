@@ -53,3 +53,21 @@ func TestObjectMissingBucketAndKeyErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestSharedR1GateBusyMapsTo503(t *testing.T) {
+	w := newBucketWorld(t)
+	w.router.Handlers = NewObjectHandlers(&fakeObjectWriter{err: storage.ErrR1Busy}, &fakeObjectReader{}, nil)
+	r := httptest.NewRequest(http.MethodPut, "/demo/k", nil)
+	sign(r, accessKey("owner"), "secret-owner")
+	rec := httptest.NewRecorder()
+	err := w.router.serve(rec, r, "R1BUSY")
+	if err == nil || code(t, err) != ErrServiceUnavailable {
+		t.Fatal("gate busy mapping", err)
+	}
+	if err := WriteError(rec, r, err.(*Error), "R1BUSY"); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatal(rec.Code)
+	}
+}

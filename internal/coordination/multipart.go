@@ -36,6 +36,11 @@ func (w *Writer) ReconcileMultipart(ctx context.Context, store s.MultipartRecove
 	if u.ID != r.UploadID || u.Object != w.state.object || u.CompletionOp != w.state.operationID || u.ClosedWriter != w.Fence() || u.ClosedFence != attempt || u.State != "Aborting" && u.State != "Aborted" {
 		return unknown, s.ErrConflict
 	}
+	if w.owner.gate.shared != nil {
+		if err := w.owner.gate.shared.SettleR1Action(ctx, w.Fence(), "commit/"+r.OpID); err != nil {
+			return unknown, err
+		}
+	}
 	delete(w.state.unknown, "commit/"+r.OpID)
 	return out, nil
 }
