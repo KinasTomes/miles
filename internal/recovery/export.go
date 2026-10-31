@@ -1,5 +1,6 @@
-// Package recovery contains the bounded W03 exporter prototype. It does not
-// close epochs, grant worker authority, publish seals or enable recovery.
+// Package recovery exports immutable journal inputs and seals exact closed
+// epochs. Checkpoints, physical retention coverage and recovery installation
+// remain independent prerequisites for an advertised recovery target.
 package recovery
 
 import (
@@ -74,6 +75,7 @@ type Exporter struct {
 	Metadata s.OutboxExportStore
 	Payloads PayloadSource
 	Objects  ImmutableStore
+	Worker   s.WriterFence
 }
 
 func eventRoot(e s.OutboxEvent) string {
@@ -83,6 +85,14 @@ func eventRoot(e s.OutboxEvent) string {
 func (w Exporter) Export(ctx context.Context, id string) error {
 	if w.Metadata == nil || w.Payloads == nil || w.Objects == nil {
 		return s.ErrInvalid
+	}
+	if authority, ok := w.Metadata.(interface {
+		CheckRecoveryWorker(context.Context, s.WriterFence) error
+	}); ok {
+		if err := authority.CheckRecoveryWorker(ctx, w.Worker); err != nil {
+			return err
+		}
+		w.Objects = guardedObjects{w.Objects, func(ctx context.Context) error { return authority.CheckRecoveryWorker(ctx, w.Worker) }}
 	}
 	e, err := w.Metadata.GetOutbox(ctx, id)
 	if err != nil {
@@ -179,7 +189,19 @@ func (w Exporter) Export(ctx context.Context, id string) error {
 	if err = putVerified(ctx, w.Objects, key, body); err != nil {
 		return err
 	}
-	return w.Metadata.MarkOutboxExported(ctx, s.OutboxExport{Event: e, DescriptorKey: key, DescriptorSHA256: digest(body)})
+	return w.Metadata.MarkOutboxExported(ctx, s.OutboxExport{Event: e, DescriptorKey: key, DescriptorSHA256: digest(body), Worker: w.Worker})
+}
+
+type guardedObjects struct {
+	ImmutableStore
+	check func(context.Context) error
+}
+
+func (g guardedObjects) Create(ctx context.Context, key string, b []byte) error {
+	if err := g.check(ctx); err != nil {
+		return err
+	}
+	return g.ImmutableStore.Create(ctx, key, b)
 }
 func putVerified(ctx context.Context, sink ImmutableStore, key string, body []byte) error {
 	if err := ctx.Err(); err != nil {

@@ -164,7 +164,7 @@ func TestExportEffectSemantics(t *testing.T) {
 					t.Fatal("committed input digest", err)
 				}
 				sink := &memoryObjects{objects: map[string][]byte{}}
-				w := Exporter{m, memoryInputs{event.PayloadPointer: body}, sink}
+				w := Exporter{Metadata: m, Payloads: memoryInputs{event.PayloadPointer: body}, Objects: sink}
 				err = w.Export(ctx, event.ID)
 				valid := strings.HasPrefix(scenario, "valid-")
 				if valid {
@@ -282,7 +282,7 @@ func TestExportIntegrityAndMissingPayload(t *testing.T) {
 			case "collision":
 				sink.objects[eventRoot(e)+"pages/0.json"] = []byte("different")
 			}
-			w := Exporter{metadata, source, sink}
+			w := Exporter{Metadata: metadata, Payloads: source, Objects: sink}
 			if err := w.Export(context.Background(), e.ID); err == nil {
 				t.Fatal("integrity failure accepted")
 			}
@@ -301,7 +301,7 @@ func TestOutboxPaginationAndHistoryIsolation(t *testing.T) {
 			m, f, _ := producerFixture(t, backend)
 			e, b := commitInput(t, m, f, "one", 0)
 			e2, b2 := commitInput(t, m, f, "two", 1)
-			w := Exporter{m, memoryInputs{e.PayloadPointer: b, e2.PayloadPointer: b2}, &memoryObjects{objects: map[string][]byte{}}}
+			w := Exporter{Metadata: m, Payloads: memoryInputs{e.PayloadPointer: b, e2.PayloadPointer: b2}, Objects: &memoryObjects{objects: map[string][]byte{}}}
 			q := s.OutboxQuery{HistoryID: e.HistoryID, Epoch: e.Epoch, Limit: 1}
 			next, err := w.RunPage(context.Background(), q)
 			if err != nil || next == "" {
@@ -399,7 +399,7 @@ func TestExportProgressLostACK(t *testing.T) {
 				m, f, reopen := producerFixture(t, backend)
 				e, body := commitInput(t, m, f, "mark", 0)
 				sink := &memoryObjects{objects: map[string][]byte{}}
-				w := Exporter{progressFault{m, after}, memoryInputs{e.PayloadPointer: body}, sink}
+				w := Exporter{Metadata: progressFault{m, after}, Payloads: memoryInputs{e.PayloadPointer: body}, Objects: sink}
 				if err := w.Export(ctx, e.ID); !errors.Is(err, crash) {
 					t.Fatal(err)
 				}
@@ -470,7 +470,7 @@ func TestConfigProducerExportAndUnsupportedProducers(t *testing.T) {
 			if _, err = m.PutPolicy(ctx, s.PolicyUpdate{Candidate: s.PolicySnapshot{Version: 1, Document: []byte(doc)}, CredentialID: "admin-key", Writer: f.Lease.Fence, Event: &e}); err != nil {
 				t.Fatal(err)
 			}
-			w := Exporter{m, memoryInputs{e.PayloadPointer: body}, &memoryObjects{objects: map[string][]byte{}}}
+			w := Exporter{Metadata: m, Payloads: memoryInputs{e.PayloadPointer: body}, Objects: &memoryObjects{objects: map[string][]byte{}}}
 			if err = w.Export(ctx, id); err != nil {
 				t.Fatal(err)
 			}
