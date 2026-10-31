@@ -29,7 +29,12 @@ Bucket unique totals overlap and must NEVER be summed to form global unique.
 Global/bucket/layout views share a bounded collected report. Collection timestamps
 and consistency=approximate are mandatory: consistent reads do not establish a
 multi-table snapshot. A cached report is an observation, not a current authorization
-or reachability proof. Auth is checked on every endpoint request before lookup.
+or reachability proof. Bearer authentication precedes resource lookup on every
+endpoint. For /admin/v1/buckets/{b}/stats, API §6.5.1 requires bucket existence
+(404 bucket_not_found) before the system-admin role check (403), followed by
+query validation (400). Only the metadata lookup precedes the role check; the
+statistics provider is never called for non-admin or invalid-query requests.
+The service still rechecks current bucket existence and report incarnation.
 
 Layout shared occurrences sum self(k) for identities with total(k)>self(k).
 Repeated chunks inside one object alone are not shared with another object.

@@ -95,3 +95,33 @@ object 404 mapping, one collection ID shared by global/bucket reports, and a new
 committed object absent from cache returning unavailable until the next refresh.
 The latter is exercised through both real adapters, followed by external-sharing
 verification after refresh. Coverage absence is not treated as resource absence.
+
+## PR review: bucket statistics error precedence
+
+The review regression reproduced a valid owner requesting a missing bucket
+receiving 403 instead of 404. The handler now resolves bucket metadata after
+bearer authentication and before role/query validation, as required by API
+§6.5.1. The statistics provider remains behind the system-admin and query checks;
+its current-bucket/report-incarnation recheck is retained.
+
+TestBucketStatisticsErrorOrder exercises missing/invalid bearer (including the
+Bearer challenge), missing bucket for owner/stranger/admin, invalid query,
+existing-bucket role denial, provider call suppression, successful no-store
+response and absent-provider behavior. HTTP errors retain request IDs.
+
+Review-fix verification on Windows, Go 1.27.2:
+
+```text
+go test ./internal/api/admin ./internal/stats -count=1 -timeout=4m
+PASS admin 0.737s; stats 0.598s.
+go vet ./internal/api/admin ./internal/stats
+PASS
+go build ./...
+PASS
+```
+
+The app suite cannot validate POSIX private-file/directory modes or local socket
+access in this Windows sandbox. Those checks were not weakened. Docker Linux
+engine was unavailable during this review-fix pass; full Linux/native-DynamoDB
+and race verification must be checked on the updated PR CI. Earlier Linux results
+above describe the original implementation and are not new review-fix runs.
