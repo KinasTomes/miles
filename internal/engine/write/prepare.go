@@ -55,12 +55,19 @@ func NewManifestID() (string, error) {
 // and uses the returned descriptor in its separately fenced CommitObject.
 func PrepareObject(ctx context.Context, pipeline Pipeline, pages PageStore, writer storage.WriterFence,
 	body io.Reader, domain, manifestID string) (PreparedObject, error) {
+	return prepare(ctx, manifest.ObjectPage, pipeline, pages, writer, body, domain, manifestID)
+}
+
+// prepare streams body into packs and immutable pages of kind (object pages,
+// or part pages through a PageStore over storage.PartPageStore).
+func prepare(ctx context.Context, kind byte, pipeline Pipeline, pages PageStore, writer storage.WriterFence,
+	body io.Reader, domain, manifestID string) (PreparedObject, error) {
 	if pages == nil || writer.LeaseID == "" {
 		return PreparedObject{}, storage.ErrInvalid
 	}
-	pager, err := manifest.NewStreamWriter(manifest.ObjectPage, manifestID, domain,
+	pager, err := manifest.NewStreamWriter(kind, manifestID, domain,
 		func(page storage.ManifestPage, digest [32]byte) error {
-			return writeVerifiedPage(ctx, pages, writer, page, digest)
+			return writeVerifiedPage(ctx, kind, pages, writer, page, digest)
 		})
 	if err != nil {
 		return PreparedObject{}, err
@@ -80,7 +87,7 @@ func PrepareObject(ctx context.Context, pipeline Pipeline, pages PageStore, writ
 		PageCount: pageCount, PageIndex: index, PackCount: result.PackCount}, nil
 }
 
-func writeVerifiedPage(ctx context.Context, pages PageStore, writer storage.WriterFence,
+func writeVerifiedPage(ctx context.Context, kind byte, pages PageStore, writer storage.WriterFence,
 	page storage.ManifestPage, expected [32]byte) error {
 	for attempt := 0; attempt < 3; attempt++ {
 		writeErr := pages.WriteManifestPages(ctx, []storage.ManifestPage{page}, writer)
@@ -89,7 +96,7 @@ func writeVerifiedPage(ctx context.Context, pages PageStore, writer storage.Writ
 		}
 		actual, readErr := pages.GetManifestPage(ctx, page.ManifestID, page.Number)
 		if readErr == nil {
-			body, err := manifest.Encode(manifest.ObjectPage, actual)
+			body, err := manifest.Encode(kind, actual)
 			if err != nil || sha256.Sum256(body) != expected {
 				return fmt.Errorf("%w: manifest page mismatch", storage.ErrConflict)
 			}

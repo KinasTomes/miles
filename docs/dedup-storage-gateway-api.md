@@ -144,7 +144,7 @@ Hợp đồng của parser/xác thực S3. `tests/fixtures/s3/transport.json` gi
 
 ### 2.2.3 Danh tính, snapshot quyền và binding upload — hợp đồng W1
 
-Hợp đồng cho auth, metadata Users/Credentials/Buckets/BucketGrants/Uploads và Admin API danh tính. Test case: `tests/fixtures/s3/authorization.json` gồm ma trận S3/Admin theo vai trò, thứ tự lỗi, CopyObject, binding upload và tuổi snapshot. Dòng S3 chạy qua `s3.Router` thật trên fake metadata store (`internal/api/s3/authz_test.go`), dòng snapshot qua `internal/auth` và commit của fake store; dòng Admin chạy qua Admin server thật trên Badger (`internal/api/admin/server_test.go`), trừ `/objects/layout` và `/buckets/{b}/stats` (W04-HAI-03) được liệt kê pending.
+Hợp đồng cho auth, metadata Users/Credentials/Buckets/BucketGrants/Uploads và Admin API danh tính. Test case: `tests/fixtures/s3/authorization.json` gồm ma trận S3/Admin theo vai trò, thứ tự lỗi, CopyObject, binding upload và tuổi snapshot. Dòng S3 chạy qua `s3.Router` thật trên fake metadata store (`internal/api/s3/authz_test.go`), dòng snapshot qua `internal/auth` và commit của fake store; dòng Admin chạy qua Admin server thật trên Badger (`internal/api/admin/server_test.go`). Stats/layout authorization now runs through the same production Admin server.
 
 **Định danh**
 
@@ -519,6 +519,14 @@ Complete validate danh sách không rỗng, PartNumber tăng nghiêm ngặt, t�
 
 Part upload song song/sai thứ tự được hỗ trợ; cùng partNumber CAS head, last publisher wins khi Active. Candidate/staging bounds ở 2.6 và kiến trúc 9.2. Terminal cleanup giải phóng reservation/counters một lần; TTL chỉ dọn metadata sau receipt/recovery/read protection, không dọn Completing. CI kill sau freeze, sau prepare, trước/sau transaction và khi mất response; retry sau Active expiry nhưng trong receipt retention vẫn trả receipt nếu namespace incarnation còn đúng.
 
+**Hiện thực (W04-CHIEN-02)**: handler `internal/multipart` (`NewHandlers`, wire trong `cmd/miles` cùng object service local/benchmark) cho CreateMultipartUpload, UploadPart, ListParts và AbortMultipartUpload; service trong `internal/object` (`CreateUpload`, `UploadPart`, `ListParts`, `AbortUpload`) dùng `storage.MultipartStore` của W04-HAI-02. CompleteMultipartUpload vẫn `NotImplemented` (W04-CHIEN-03), nên gửi đủ part không tạo object.
+
+- Create: không gửi algorithm thì CRC64NVME/FULL_OBJECT; gửi algorithm không gửi type thì CRC64NVME→FULL_OBJECT, còn lại COMPOSITE. Metadata HTTP/`x-amz-meta-*` (≤ 2 KiB) lưu vào upload. Backend đặt initiator, owner, domain, expiry 24 giờ, ledger và cap 16 upload.
+- Thứ tự mọi op có `uploadId`: router (bước 2–4), `GetUpload` (chỉ record upload, không đọc receipt) → `Request.CheckUpload` (sai bucket_id/key/ID → `NoSuchUpload`, rồi `AccessDenied` khi thiếu quyền initiator) → chỉ khi upload Completed mới đọc receipt (`ReceiptExpiresAt`) → `Dispatch` bảng 4.3.1, tất cả trước body. Ghi thua (`ErrFenced`/`ErrConflict`) đọc lại upload và trả theo state đã thắng (Completing → `OperationAborted`, Aborting/hết hạn → `NoSuchUpload`); state vẫn Active thì 503.
+- UploadPart: `Content-Length` hoặc decoded length bắt buộc, > 5 GiB trả `EntityTooLarge` trước admission. Publisher đăng ký trên revision part hiện tại (`MultipartStore.GetPart`, quyền write ∧ initiator như UploadPart) **trước body**, nên quota/staging vượt trả `QuotaExceeded` khi chưa đọc byte nào. Body đi qua pipeline chunk/dedup/nén/pack như PUT nhưng ghi page kind 2 (`WriteSession.PreparePart`). `RetainPublisherPacks` (đúng generation pack của mọi chunk) và `PublishPart` (CAS candidate/part/upload/quota) đều dispatch qua writer R1 được quản lý (`WriteSession.Do` → `Writer.Do`): registration đã đóng thì dừng trước dispatch, kết quả chưa rõ giữ unknown, pin và publisher/roots cho recovery. Part head giữ ETag MD5, raw length và checksum Base64 theo algorithm của upload. Request gửi checksum phải đúng algorithm đã chọn lúc Create (kể cả CRC64NVME mặc định), sai trả `InvalidRequest` trước body, và được verify trên body; request không gửi checksum thì server tự tính theo algorithm của upload. Cùng PartNumber: publisher thua CAS hủy candidate, đăng ký lại trên revision vừa thắng và publish lại cùng page bất biến, nên publisher xong sau thắng (tối đa 8 lần). Body lỗi hoặc thiếu byte hủy publisher và trả provisional.
+- ListParts: quyền (read ∧ initiator) ∨ owner ∨ admin cả ở router và transaction của store, nên initiator chỉ có grant read vẫn liệt kê được còn initiator chỉ có grant write thì không. `max-parts` 0..1000 (mặc định 1000), `part-number-marker` ≥ 0; XML có ETag, Size, `Checksum<ALG>`, Initiator/Owner là user_id DSG, checksum algorithm/type của upload. Part head không lưu thời gian publish nên không trả `LastModified` (SDK đã pin chấp nhận thiếu phần tử).
+- Abort: Active không có publisher mở → Aborted một transaction, trả ledger/reservation/staged/slot một lần. Có publisher mở → Aborting, rồi `ResolvePartPublisher` từng candidate (publish hoặc cancel thắng, không cả hai), đọc lại revision và Aborted; chỉ trả 204 khi đã Aborted, kết quả chưa rõ trả 503 và giữ Aborting cho recovery. Abort không xóa pack, chunk hay page: dedup có thể dùng chung với object/upload khác, chỉ GC thu hồi.
+
 #### 4.3.1 Complete: input chuẩn hóa, receipt và lỗi — hợp đồng W1
 
 Test case: `tests/fixtures/s3/multipart.json` gồm golden input từ request của client đã pin (XML → canonical → SHA-256 → response lưu trong receipt), ca validation và bảng state. `internal/multipart` (W02-CHIEN-02) hiện thực validation và bảng state dưới đây; test chạy mọi request của fixture (header + XML) qua package đó, so canonical, digest, mã lỗi, state sau lỗi, ETag và checksum của receipt. Handler và freeze/commit thuộc W04.
@@ -790,6 +798,15 @@ Không trả dedup/physical bytes, dù user-b là chủ bucket. Ví dụ user-b 
 - dedup_ratio=logical/unique_raw; compression_ratio=unique_raw/unique_stored; total_reduction=logical/physical. Không hứa total_reduction=dedup_ratio×compression_ratio khi có rác/overhead. Mẫu số 0 trả null. Revival tăng physical, không tự giảm dedup_ratio.
 - revived_*_total là counters tích lũy có khoảng đo, khác snapshot. Bucket physical allocation admin-only phải ghi phương pháp chia sẻ, không cộng bucket unique totals như total hệ thống.
 
+### Storage statistics implementation observation contract
+
+See [storage statistics](contracts/storage-statistics.md) for the measured scope.
+`bytes_stored` is retained listed durable bytes (including noncurrent versions).
+Temporary restored billed bytes and revival counters without verified sources
+are null, not zero. Cached observations include timestamps, version scope,
+allocation methodology and consistency=approximate. Layout is metadata-only,
+not an integrity certification. Physical allocation never changes user quota.
+
 **PUT /admin/v1/policy** (system admin; ví dụ đổi default GLACIER_IR sang GLACIER):
 
 ```json
@@ -1029,7 +1046,7 @@ Kiểu: `string`, `bool`, `int` (JSON integer 0..2^53−1); thời gian RFC 3339
 - PATCH `logical_limit` nhỏ hơn `used + reserved` hiện tại trả 400 `invalid_request`, kiểm trong cùng transaction với user/quota/outbox (giữ bất biến ledger mà mọi reservation, kể cả reservation 0 byte của DELETE, đòi hỏi). Quyết định no-op của PATCH user dùng snapshot user+quota nhất quán (đọc lại user sau quota, cùng revision). Mọi route có body không nhận query parameter: có bất kỳ thì 400 ở bước 4, trước khi ghi.
 - `dsgctl admin-token bootstrap` gọi `BootstrapAdmin`: một transaction điều kiện marker chưa có ghi marker, user (tạo hoặc kích hoạt lại, quota 1 TiB), system token và global policy revision 1 nếu chưa có. Chưa ghi outbox epoch 0 (export R2 thuộc W04-PHONG-04); `--recover` báo lỗi vì recovery gate R2 §15 chưa có.
 - DynamoDB không có GSI: list users/credentials/admin-tokens quét cả bảng rồi sắp xếp mỗi trang (quy mô vận hành); grants dùng Query theo `bucket_id`. Record Credentials/AdminTokens ghi trước khi thêm `debug_allowed/created_at/issued_at` không đọc được trên DynamoDB (chưa có dữ liệu runtime).
-- Pending: `/objects/layout`, `/buckets/{b}/stats` (W04-HAI-03), route jobs/nodes/packs/cache/cost/faults chưa phục vụ.
+- Stats/layout: `/stats`, `/buckets/{b}/stats`, `/objects/layout` use system-admin-only handlers. Local/benchmark collects bounded background observations; absent/stale providers return unavailable. Other operational routes follow their respective modules.
 
 ---
 

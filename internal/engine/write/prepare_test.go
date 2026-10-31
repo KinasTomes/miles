@@ -147,7 +147,7 @@ func TestPrepareEmptyObjectAndReconcilePageLostACK(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &lostPageACK{PageStore: meta}
-	if err := writeVerifiedPage(ctx, store, fence, page, sha256.Sum256(body)); err != nil || !store.once {
+	if err := writeVerifiedPage(ctx, manifest.ObjectPage, store, fence, page, sha256.Sum256(body)); err != nil || !store.once {
 		t.Fatalf("lost page ACK was not reconciled: %v", err)
 	}
 }

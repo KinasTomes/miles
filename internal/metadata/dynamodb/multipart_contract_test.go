@@ -1,10 +1,13 @@
 package dynamodb
 
 import (
-	producertest "github.com/KinasTomes/miles/internal/metadata/contracttest"
-	"github.com/KinasTomes/miles/internal/storage/contracttest"
+	"context"
 	"testing"
 	"time"
+
+	producertest "github.com/KinasTomes/miles/internal/metadata/contracttest"
+	s "github.com/KinasTomes/miles/internal/storage"
+	"github.com/KinasTomes/miles/internal/storage/contracttest"
 )
 
 func TestLocalMultipartContract(t *testing.T) {
@@ -13,7 +16,12 @@ func TestLocalMultipartContract(t *testing.T) {
 		now := f.Now
 		m.now = func() time.Time { return now }
 		m.authority = fixtureAuthority{m.now}
-		return contracttest.MultipartHarness{Metadata: m, Store: m, SetStrict: func(v bool) { m.requireProducers = v }, SetTime: func(n time.Time) { now = n }}
+		setGrant := func(g s.Grant) {
+			if err := m.update(context.Background(), func(tx *transaction) error { return put(tx, key("grants", g.BucketID, g.UserID), g) }); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return contracttest.MultipartHarness{Metadata: m, Store: m, SetStrict: func(v bool) { m.requireProducers = v }, SetTime: func(n time.Time) { now = n }, SetGrant: setGrant}
 	})
 }
 

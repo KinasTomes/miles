@@ -31,6 +31,9 @@ large manifests use protected immutable descriptors rather than per-page final
 ConditionChecks. Required provider facts count toward those same caps and may
 cause fail-closed rejection. Candidate retained packs are bounded to 1,024 exact
 physical generations. ListParts/ListPublishers accept 1..1,000 rows per page.
+ListParts authorizes (read AND initiator) OR owner OR admin; GetPart returns the
+current head of one part number under the UploadPart right (write AND initiator)
+for a publisher's base revision.
 
 ## API sequence
 

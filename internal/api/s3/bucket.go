@@ -163,11 +163,11 @@ func (b *Buckets) ListBuckets(w http.ResponseWriter, r *Request) error {
 		}
 		after = page.NextAfter
 	}
-	return writeXML(w, out)
+	return WriteXML(w, out)
 }
 
-// writeXML answers 200 with v as one XML document.
-func writeXML(w http.ResponseWriter, v any) error {
+// WriteXML answers 200 with v as one XML document.
+func WriteXML(w http.ResponseWriter, v any) error {
 	body, err := xml.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("s3: encode %T: %w", v, err)

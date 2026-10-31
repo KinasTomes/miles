@@ -26,6 +26,9 @@ func (m *Store) CancelPartPublisher(c context.Context, r s.MultipartRequest, id 
 func (m *Store) ListParts(c context.Context, r s.MultipartRequest, a uint32, n int) (s.PartListPage, error) {
 	return m.multipartOps().List(c, r, a, n)
 }
+func (m *Store) GetPart(c context.Context, r s.MultipartRequest, n uint32) (s.UploadPart, error) {
+	return m.multipartOps().CurrentPart(c, r, n)
+}
 func (m *Store) FreezeCompletion(c context.Context, r s.FreezeRequest) (s.MultipartUpload, error) {
 	return m.multipartOps().Freeze(c, r)
 }

@@ -144,7 +144,7 @@ func (o *Objects) ListObjectsV2(w http.ResponseWriter, r *Request) error {
 	for i, p := range page.CommonPrefixes {
 		out.CommonPrefixes[i] = listPrefix{Prefix: enc(p)}
 	}
-	return writeXML(w, out)
+	return WriteXML(w, out)
 }
 
 func listError(err error, bucket string) error {
