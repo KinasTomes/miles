@@ -73,6 +73,11 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	}
 	probeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	var statsDone chan struct{}
+	if d.Statistics != nil {
+		statsDone = make(chan struct{})
+		go func() { defer close(statsDone); d.Statistics.Run(probeCtx) }()
+	}
 	probeDone := make(chan struct{})
 	go func() { defer close(probeDone); h.Run(probeCtx) }()
 	var operationsDone chan error
@@ -135,6 +140,13 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	}
 	var probeErr error
 	var operationsErr error
+	if statsDone != nil {
+		select {
+		case <-statsDone:
+		case <-shutdown.Done():
+			probeErr = shutdown.Err()
+		}
+	}
 	select {
 	case <-probeDone:
 	case <-shutdown.Done():

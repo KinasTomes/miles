@@ -14,6 +14,7 @@ import (
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/object"
+	"github.com/KinasTomes/miles/internal/stats"
 	"github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/fake"
 )
@@ -21,13 +22,14 @@ import (
 // Dependencies use the existing storage ports. Probe is supplied by their wiring,
 // including validated clock readiness; health handlers never invent clock proof.
 type Dependencies struct {
-	Metadata  storage.MetadataStore
-	Packs     storage.PackStore
-	Cache     storage.Cache
-	Objects   *object.Service // real Warm service in local/benchmark mode; absent in fixture/runtime modes
-	Probe     func(context.Context) error
-	Close     func() error
-	S3Handler func(*Admission) http.Handler
+	Statistics *stats.Service
+	Metadata   storage.MetadataStore
+	Packs      storage.PackStore
+	Cache      storage.Cache
+	Objects    *object.Service // real Warm service in local/benchmark mode; absent in fixture/runtime modes
+	Probe      func(context.Context) error
+	Close      func() error
+	S3Handler  func(*Admission) http.Handler
 	// AdminHandler serves admin_address; Admin holds the local/benchmark
 	// server options (Logger left for the process to set), nil elsewhere.
 	AdminHandler func(*Admission) http.Handler
