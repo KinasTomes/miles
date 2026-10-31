@@ -180,6 +180,9 @@ func (s *WriteSession) PrepareCopy(source storage.ObjectHead, manifestID string)
 	if source.Domain != s.auth.Bucket.Domain {
 		return PreparedObject{}, storage.ErrInvalid
 	}
+	if err := s.writer.BindRoot(s.ctx, s.object, manifestID); err != nil {
+		return PreparedObject{}, err
+	}
 	publisher := &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil}
 	p, err := CopyManifest(s.ctx, publisher, s.metadata, s.metadata, s.writer.Fence(), source, manifestID)
 	if err != nil {

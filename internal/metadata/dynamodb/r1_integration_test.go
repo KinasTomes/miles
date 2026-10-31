@@ -190,6 +190,64 @@ func TestLocalR1ManagedPutPeerGetAndCopySourcePins(t *testing.T) {
 	if _, err = reader.Read(ctx, q, func(_ context.Context, b []byte) error { copyBytes = append(copyBytes, b...); return nil }); err != nil || !bytes.Equal(copyBytes, body) {
 		t.Fatal("copied object body", err)
 	}
+	t.Run("metadata-copy-binds-destination-root", func(t *testing.T) {
+		head, sourceDone, err := reader.BindSource(ctx, r.Head.Object, readDeadline)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = sourceDone(ctx) })
+		request := f.Request("shared-metadata-copy", 0)
+		request.Head.Object.Key = "metadata-copied"
+		request.Event.Object = request.Head.Object
+		request.Writer = s.WriterFence{LeaseID: request.Head.OpID, Epoch: 1, ServiceIncarnation: "shared-service"}
+		producer := s.MutationContext{HistoryID: strings.Repeat("1", 32), LogicalOpID: request.Head.OpID, MutationID: request.Head.OpID, Object: request.Head.Object, Writer: request.Writer}
+		request.Producer = &producer
+		copyCtx := s.WithMutation(context.Background(), producer)
+		session, err := write.BeginWriteSession(copyCtx, write.SessionOptions{Registry: registry, Metadata: m, Packs: physical, Fence: request.Writer, Deadline: deadline, Object: request.Head.Object, OpID: request.Head.OpID, CredentialID: request.CredentialID, ProtectedUntil: f.Now.Add(time.Hour)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = session.Close() })
+		if err = session.Reserve(s.Reservation{Version: 1, ID: request.ReservationID, OpID: request.Head.OpID, OwnerID: f.Bucket.OwnerID, Object: request.Head.Object, Revision: 1, State: s.ReservationActive, Deadline: f.Now.Add(time.Minute), Bytes: int64(len(body)), StagedBytes: int64(len(body)), Writer: request.Writer}); err != nil {
+			t.Fatal(err)
+		}
+		id, err := write.NewManifestID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		prepared, err := session.PrepareCopy(head, id)
+		if err != nil {
+			t.Fatal("metadata copy prepare", err)
+		}
+		lease, err := peer.GetR1Lease(copyCtx, request.Writer.LeaseID)
+		if err != nil || len(lease.Roots) != 1 || lease.Roots[0] != id {
+			t.Fatal("destination manifest is not a shared writer root", lease.Roots, err)
+		}
+		if err = sourceDone(ctx); err != nil {
+			t.Fatal("source handoff", err)
+		}
+		request.Head.ETag, request.Head.ETagKind, request.Head.Checksum = head.ETag, head.ETagKind, head.Checksum
+		request.Head, err = prepared.BindHead(request.Head)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = session.Commit(request); err != nil {
+			t.Fatal("metadata copy commit", err)
+		}
+		if err = session.Close(); err != nil {
+			t.Fatal("metadata copy release", err)
+		}
+		read := q
+		read.Key = request.Head.Object.Key
+		var got []byte
+		if _, err = reader.Read(ctx, read, func(_ context.Context, b []byte) error { got = append(got, b...); return nil }); err != nil || !bytes.Equal(got, body) {
+			t.Fatal("metadata copy body", err)
+		}
+		gate, err := peer.GetR1Gate(ctx)
+		if err != nil || gate.Active != 0 || gate.Resolving != 0 {
+			t.Fatal("metadata copy leaked shared roots", gate, err)
+		}
+	})
 	q.Key = r.Head.Object.Key
 	// Copy source uses the same authorized read view/root/pin protocol. It is
 	// independent of the target writer; this does not implement CopyObject HTTP.
