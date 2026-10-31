@@ -176,3 +176,30 @@ suites nêu trên, `go vet ./...` và `go build ./cmd/...` đều pass. Regressi
 multipart publication bổ sung cũng pass với race detector và native DDB Local.
 Linux Python script suite: 19 tests pass. Đây là bằng chứng dev fixture cho
 ba checklist, không phải chứng nhận production AWS hoặc nguồn UTC thực tế.
+
+## PR #51 review follow-up (2026-10-31)
+
+- Refresh conservative UTC bounds sau khi đọc gate/lease; authority reads chậm
+  không được cấp quyền gửi transaction mới sau expiry. Native regression trì
+  hoãn lease read của final publication guard tới E+1s và xác nhận không có
+  `TransactWriteItems` send. Existing pre-expiry/in-flight settlement tests vẫn
+  giữ nguyên hai thứ tự có/không có closure.
+- Sau ACK `BeginR1Action`, `Writer.Do` kiểm tra lại cancellation, shared authority
+  và local lease/deadline trước callback. Nếu chưa dispatch, settle registration
+  bằng cleanup context; settlement lỗi giữ cả local unknown và durable pending.
+  Native tests cover delayed ACK qua cả hai clocks, cancellation và unknown settle.
+- `ReconcileMultipart` chỉ settle shared `commit/<op>` sau exact trusted
+  `RecoveryClosed` proof. Local unknown chỉ xóa sau durable settlement thành công;
+  `ReconcileCommit` cũng dùng cùng thứ tự. Native regression xác nhận settlement
+  failure giữ protection, retry proof thành công cho phép release và gate drain.
+
+Regressions: `TestLocalR1FinalDispatchRejectsExpiryDuringAuthorityRead` và
+`TestLocalR1ActionACKAndMultipartReconciliation` (4 subcases). Các proof/clock
+seams phục vụ kiểm thử; không thay đổi giới hạn production ở trên.
+
+Validation follow-up: regressions fail trên reviewed code `68fad1c` được mount
+riêng trong container và pass trên bản sửa. Sáu package coordination,
+engine/write, readpath, object, metadata/dynamodb và api/s3 pass với `-race`,
+`MILES_DDB_LOCAL_REQUIRED=1`; `go vet ./...`, `go build ./cmd/...`, doc-name và
+whitespace checks pass. Final regression rerun dùng native transaction probe
+hợp lệ cũng pass với race detector.

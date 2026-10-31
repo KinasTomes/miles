@@ -117,15 +117,16 @@ func r1Observed[T any](observe Observe, k Key) (T, error) {
 	return r1Decode[T](item)
 }
 func (a *SharedAuthority) checkLease(ctx context.Context, f s.WriterFence, observe Observe) error {
-	b, err := a.bounds(ctx)
-	if err != nil {
-		return err
-	}
 	g, err := r1Observed[s.R1Gate](observe, r1GateKey())
 	if err != nil {
 		return err
 	}
 	l, err := r1Observed[s.R1Lease](observe, r1LeaseKey(f.LeaseID))
+	if err != nil {
+		return err
+	}
+	// Reads may cross expiry. Sample dispatch time only after authority I/O.
+	b, err := a.bounds(ctx)
 	if err != nil {
 		return err
 	}

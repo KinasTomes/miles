@@ -279,6 +279,17 @@ func (w *Writer) Do(ctx context.Context, operation string, effect func(storage.W
 			r.mu.Unlock()
 			return err
 		}
+		// Registration is an RPC, not dispatch permission: its ACK can cross E.
+		if err := w.checkLocked(ctx); err != nil {
+			settle, stop := cleanupContext()
+			e := r.gate.shared.SettleR1Action(settle, w.Fence(), operation)
+			stop()
+			if e != nil {
+				w.state.unknown[operation] = true
+			}
+			r.mu.Unlock()
+			return errors.Join(err, e)
+		}
 	}
 	err := w.effectLocked(operation, effect)
 	if err != nil {
@@ -408,12 +419,12 @@ func (w *Writer) ReconcileCommit(ctx context.Context, store OutcomeReader, op st
 	if w.state.inflight != 0 {
 		return storage.CommitResult{}, ErrWorkPending
 	}
-	delete(w.state.unknown, "commit/"+op)
 	if w.owner.gate.shared != nil {
 		if err := w.owner.gate.shared.SettleR1Action(ctx, w.Fence(), "commit/"+op); err != nil {
 			return storage.CommitResult{}, err
 		}
 	}
+	delete(w.state.unknown, "commit/"+op)
 	return result, nil
 }
 func (w *Writer) CloseFence() {
