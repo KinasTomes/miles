@@ -7,8 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
-	crc32pkg "hash/crc32"
-	crc64pkg "hash/crc64"
+	"hash/crc32"
 	"io"
 	"net/http/httptest"
 	"strings"
@@ -39,17 +38,21 @@ func (c credentials) Credential(_ context.Context, id string) (s3.Credential, er
 }
 
 // fakeService records what the handlers pass on; uploads are keyed by ID.
+// Receipts are separate, as in the store, and every read of one is counted.
 type fakeService struct {
-	mu        sync.Mutex
-	uploads   map[string]object.Upload
-	created   object.CreateUploadRequest
-	part      object.PartRequest
-	partBody  []byte
-	partErr   error
-	onPartErr func() // the state that won against a failed publish
-	listed    object.ListPartsRequest
-	parts     storage.PartListPage
-	aborted   int
+	mu           sync.Mutex
+	uploads      map[string]storage.MultipartUpload
+	receipts     map[string]time.Time
+	receiptErr   error
+	receiptReads int
+	created      object.CreateUploadRequest
+	part         object.PartRequest
+	partBody     []byte
+	partErr      error
+	onPartErr    func() // the state that won against a failed publish
+	listed       object.ListPartsRequest
+	parts        storage.PartListPage
+	aborted      int
 }
 
 func (f *fakeService) CreateUpload(_ context.Context, r object.CreateUploadRequest) (storage.MultipartUpload, error) {
@@ -57,20 +60,27 @@ func (f *fakeService) CreateUpload(_ context.Context, r object.CreateUploadReque
 	defer f.mu.Unlock()
 	f.created = r
 	id := strings.Repeat("c", 32)
-	f.uploads[id] = object.Upload{MultipartUpload: storage.MultipartUpload{ID: id, State: "Active", Initiator: "writer", Owner: r.Bucket.OwnerID,
+	f.uploads[id] = storage.MultipartUpload{ID: id, State: "Active", Initiator: "writer", Owner: r.Bucket.OwnerID,
 		Object: storage.ObjectKey{Bucket: r.Bucket.Name, BucketID: r.Bucket.ID, Key: r.Key}, ExpiresAt: time.Now().Add(24 * time.Hour),
-		ChecksumAlgorithm: r.ChecksumAlgorithm, ChecksumType: r.ChecksumType}}
-	return f.uploads[id].MultipartUpload, nil
+		ChecksumAlgorithm: r.ChecksumAlgorithm, ChecksumType: r.ChecksumType}
+	return f.uploads[id], nil
 }
 
-func (f *fakeService) GetUpload(_ context.Context, id string) (object.Upload, error) {
+func (f *fakeService) GetUpload(_ context.Context, id string) (storage.MultipartUpload, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	u, ok := f.uploads[id]
 	if !ok {
-		return object.Upload{}, storage.ErrNotFound
+		return storage.MultipartUpload{}, storage.ErrNotFound
 	}
 	return u, nil
+}
+
+func (f *fakeService) ReceiptExpiresAt(_ context.Context, id string) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.receiptReads++
+	return f.receipts[id], f.receiptErr
 }
 
 func (f *fakeService) UploadPart(_ context.Context, r object.PartRequest) (object.PartResult, error) {
@@ -103,7 +113,7 @@ func (f *fakeService) AbortUpload(context.Context, object.AbortRequest) error {
 	return nil
 }
 
-func (f *fakeService) set(u object.Upload) {
+func (f *fakeService) set(u storage.MultipartUpload) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.uploads[u.ID] = u
@@ -119,7 +129,7 @@ func newWorld(t *testing.T) *world {
 	t.Helper()
 	f := contracttest.NewFixture()
 	meta := fake.NewMetadata(fake.Seed{Buckets: []storage.Bucket{f.Bucket}, Users: f.Users, Credentials: f.Credentials, Grants: []storage.Grant{f.Grant}, Quotas: []storage.LogicalQuota{f.Quota}})
-	w := &world{svc: &fakeService{uploads: map[string]object.Upload{}}, now: time.Now(), clients: map[string]*awss3.Client{}}
+	w := &world{svc: &fakeService{uploads: map[string]storage.MultipartUpload{}, receipts: map[string]time.Time{}}, now: time.Now(), clients: map[string]*awss3.Client{}}
 	creds := credentials{}
 	for _, c := range f.Credentials {
 		creds[c.ID] = s3.Credential{UserID: c.UserID, Secret: "secret-" + c.ID, Active: true, SystemAdmin: c.SystemAdmin}
@@ -138,10 +148,10 @@ func newWorld(t *testing.T) *world {
 }
 
 // upload seeds an Active upload of demo/key started by writer.
-func (w *world) upload(state string) object.Upload {
-	u := object.Upload{MultipartUpload: storage.MultipartUpload{ID: strings.Repeat("a", 32), State: state, Initiator: "writer", Owner: "owner",
+func (w *world) upload(state string) storage.MultipartUpload {
+	u := storage.MultipartUpload{ID: strings.Repeat("a", 32), State: state, Initiator: "writer", Owner: "owner",
 		Object: storage.ObjectKey{Bucket: "demo", BucketID: "bucket-1", Key: "key"}, ExpiresAt: w.now.Add(time.Hour),
-		ChecksumAlgorithm: "CRC64NVME", ChecksumType: "FULL_OBJECT"}}
+		ChecksumAlgorithm: "CRC64NVME", ChecksumType: "FULL_OBJECT"}
 	w.svc.set(u)
 	return u
 }
@@ -224,6 +234,12 @@ func TestBindingRejectsBeforeState(t *testing.T) {
 	gone := u
 	gone.ID, gone.Object.BucketID = strings.Repeat("d", 32), "old-incarnation"
 	w.svc.set(gone)
+	// A Completed upload of another key whose receipt read would fail: the
+	// binding must reject it before any receipt read.
+	completed := u
+	completed.ID, completed.State, completed.Object.Key = strings.Repeat("f", 32), "Completed", "done"
+	w.svc.set(completed)
+	w.svc.receiptErr = storage.ErrUnavailable
 	for name, tc := range map[string]struct {
 		key, id, want string
 	}{
@@ -231,6 +247,7 @@ func TestBindingRejectsBeforeState(t *testing.T) {
 		"malformed id":         {"key", "../" + u.ID, "NoSuchUpload"},
 		"other key":            {"key", other.ID, "NoSuchUpload"},
 		"other incarnation":    {"key", gone.ID, "NoSuchUpload"},
+		"completed, other key": {"key", completed.ID, "NoSuchUpload"},
 		"owner, not initiator": {"key", u.ID, "AccessDenied"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -244,8 +261,12 @@ func TestBindingRejectsBeforeState(t *testing.T) {
 	if _, err := uploadPart(w.clients["admin-key"], u.ID, "key", 1, []byte("x"), ""); code(err) != "AccessDenied" {
 		t.Fatal(err)
 	}
-	if w.svc.part.Number != 0 {
-		t.Fatal("a rejected binding reached the service")
+	if w.svc.part.Number != 0 || w.svc.receiptReads != 0 {
+		t.Fatalf("a rejected binding reached the service (%d receipt reads)", w.svc.receiptReads)
+	}
+	// Control: on its own key the binding passes and the receipt is read.
+	if _, err := uploadPart(w.clients["writer-key"], completed.ID, "done", 1, []byte("x"), ""); code(err) != "ServiceUnavailable" || w.svc.receiptReads != 1 {
+		t.Fatal(err, w.svc.receiptReads)
 	}
 }
 
@@ -269,7 +290,7 @@ func TestStateTable(t *testing.T) {
 			u := w.upload(tc.state)
 			u.LeaseUntil = w.now.Add(time.Minute)
 			if tc.receipt {
-				u.ReceiptExpiresAt = w.now.Add(time.Hour)
+				w.svc.receipts[u.ID] = w.now.Add(time.Hour)
 			}
 			w.svc.set(u)
 			if tc.expired {
@@ -305,28 +326,35 @@ func TestLostPublishAnswersWinningState(t *testing.T) {
 	}
 }
 
-// A part naming another algorithm than the default CRC64NVME upload is
-// verified with it and stored with the server's CRC64NVME (boto3 without
-// awscrt sends CRC32 and cannot send CRC64NVME).
-func TestDefaultUploadStoresCRC64NVMEOfAnyPartChecksum(t *testing.T) {
+// A part must name the algorithm the upload was created with, whether Create
+// chose it explicitly or by default; a part naming none gets the upload's
+// checksum computed by the server.
+func TestPartChecksumMustMatchUpload(t *testing.T) {
 	w := newWorld(t)
+	ctx := context.Background()
+	data := []byte("part")
+	for _, alg := range []types.ChecksumAlgorithm{types.ChecksumAlgorithmCrc64nvme, ""} {
+		created, err := w.clients["writer-key"].CreateMultipartUpload(ctx, &awss3.CreateMultipartUploadInput{Bucket: aws.String("demo"), Key: aws.String("key"), ChecksumAlgorithm: alg})
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.svc.part = object.PartRequest{}
+		if _, err := uploadPart(w.clients["writer-key"], aws.ToString(created.UploadId), "key", 1, data, types.ChecksumAlgorithmCrc32); code(err) != "InvalidRequest" || w.svc.part.Number != 0 {
+			t.Fatalf("Create %q, part CRC32: %v", alg, err)
+		}
+	}
 	u := w.upload("Active")
-	data := []byte("boto3 part")
-	out, err := uploadPart(w.clients["writer-key"], u.ID, "key", 1, data, types.ChecksumAlgorithmCrc32)
+	u.ChecksumAlgorithm, u.ChecksumType = "CRC32", "FULL_OBJECT"
+	w.svc.set(u)
+	out, err := uploadPart(w.clients["writer-key"], u.ID, "key", 1, data, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	crc32, crc64 := make([]byte, 4), make([]byte, 8)
-	binary.BigEndian.PutUint32(crc32, crc32pkg.ChecksumIEEE(data))
-	binary.BigEndian.PutUint64(crc64, crc64pkg.Checksum(data, crc64pkg.MakeTable(0x9a6c9329ac4bc9b5)))
+	want := make([]byte, 4)
+	binary.BigEndian.PutUint32(want, crc32.ChecksumIEEE(data))
 	algorithm, stored := w.svc.part.Body.Checksum()
-	if aws.ToString(out.ChecksumCRC32) != base64.StdEncoding.EncodeToString(crc32) || algorithm != "CRC64NVME" || !bytes.Equal(stored, crc64) {
+	if algorithm != "CRC32" || !bytes.Equal(stored, want) || aws.ToString(out.ChecksumCRC32) != base64.StdEncoding.EncodeToString(want) {
 		t.Fatalf("response %+v, stored %s %x", out, algorithm, stored)
-	}
-	u.ChecksumAlgorithm, u.ChecksumType = "CRC32C", "COMPOSITE"
-	w.svc.set(u)
-	if _, err := uploadPart(w.clients["writer-key"], u.ID, "key", 1, data, types.ChecksumAlgorithmCrc32); code(err) != "InvalidRequest" {
-		t.Fatal("an explicit algorithm must match:", err)
 	}
 }
 

@@ -105,6 +105,9 @@ type MultipartStore interface {
 	PublishPart(context.Context, PartPublishRequest) (UploadPart, error)
 	CancelPartPublisher(context.Context, MultipartRequest, string) error
 	ListParts(context.Context, MultipartRequest, uint32, int) (PartListPage, error)
+	// GetPart is the current head of one part number for UploadPart (write and
+	// initiator), ErrNotFound when none; ListParts carries the read right.
+	GetPart(context.Context, MultipartRequest, uint32) (UploadPart, error)
 	FreezeCompletion(context.Context, FreezeRequest) (MultipartUpload, error)
 	PrepareCompletion(context.Context, PrepareCompletionRequest) (MultipartUpload, error)
 	ClaimCompletion(context.Context, MultipartRequest) (MultipartUpload, error)

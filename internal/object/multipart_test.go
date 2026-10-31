@@ -7,6 +7,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,9 +30,11 @@ func (f *serviceFixture) uploadPart(ctx context.Context, u storage.MultipartUplo
 	return f.service.UploadPart(ctx, PartRequest{Upload: u, Number: n, Body: body(data), ContentLength: int64(len(data)), CredentialID: "writer-key"})
 }
 
+// parts lists as the bucket owner: the writer's grant is write-only, and
+// ListParts needs read (API v2 2.2.3).
 func (f *serviceFixture) parts(t *testing.T, ctx context.Context, id string) []storage.UploadPart {
 	t.Helper()
-	page, err := f.service.ListParts(ctx, ListPartsRequest{UploadID: id, CredentialID: "writer-key", Limit: 1000})
+	page, err := f.service.ListParts(ctx, ListPartsRequest{UploadID: id, CredentialID: "owner-key", Limit: 1000})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,7 +278,7 @@ func TestAbortReleasesUploadAndKeepsSharedData(t *testing.T) {
 	if _, err := f.uploadPart(ctx, u, 2, shared[:10]); err == nil {
 		t.Fatal("aborted upload accepted a part")
 	}
-	if _, err := f.service.ListParts(ctx, ListPartsRequest{UploadID: u.ID, CredentialID: "writer-key", Limit: 10}); !errors.Is(err, storage.ErrNotFound) {
+	if _, err := f.service.ListParts(ctx, ListPartsRequest{UploadID: u.ID, CredentialID: "owner-key", Limit: 10}); !errors.Is(err, storage.ErrNotFound) {
 		t.Fatal("aborted upload listed parts:", err)
 	}
 	if err := f.service.AbortUpload(ctx, AbortRequest{Upload: u, CredentialID: "owner-key"}); err != nil {
@@ -310,5 +314,32 @@ func TestAbortClosesOpenPublisher(t *testing.T) {
 	q, qerr := f.metadata.GetQuota(ctx, "owner")
 	if err != nil || qerr != nil || u.State != "Aborted" || u.Publishers != 0 || q.Reserved != 0 || q.Staged != 0 || q.ActiveUploads != 0 {
 		t.Fatalf("upload %+v quota %+v: %v %v", u, q, err, qerr)
+	}
+}
+
+// The R1 registration closes after the packs are retained and before the
+// publication is dispatched: the part must not publish, and its provisional
+// bytes are released.
+func TestUploadPartStopsWhenWriterAuthorityCloses(t *testing.T) {
+	ctx := context.Background()
+	f := newServiceFixture(t)
+	u := f.createUpload(t, ctx, "fenced")
+	var dispatched []string
+	f.before = func(operation string) {
+		dispatched = append(dispatched, operation)
+		if strings.HasPrefix(operation, "publish/") {
+			f.options.Registry.Invalidate()
+		}
+	}
+	if _, err := f.uploadPart(ctx, u, 1, random(t, 20<<10)); !errors.Is(err, storage.ErrFenced) {
+		t.Fatal("publication after the writer closed:", err)
+	}
+	f.before = nil
+	if !slices.ContainsFunc(dispatched, func(op string) bool { return strings.HasPrefix(op, "retain/") }) {
+		t.Fatal("packs were not retained before publication:", dispatched)
+	}
+	q, err := f.metadata.GetQuota(ctx, "owner")
+	if parts := f.parts(t, ctx, u.ID); len(parts) != 0 || err != nil || q.Staged != 0 || f.openPublishers(t, ctx, u.ID) != 0 {
+		t.Fatalf("parts %+v quota %+v %v", parts, q, err)
 	}
 }

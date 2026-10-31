@@ -164,6 +164,8 @@ type serviceFixture struct {
 	physical *memS3
 	bucket   storage.Bucket
 	options  Options
+	// before runs ahead of every managed writer dispatch when set.
+	before func(operation string)
 }
 
 func newServiceFixture(t *testing.T) *serviceFixture {
@@ -212,7 +214,13 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := coordination.NewWriterRegistry(gate, limits, coordination.Hooks{})
+	fixture := &serviceFixture{}
+	registry, err := coordination.NewWriterRegistry(gate, limits, coordination.Hooks{Before: func(_ context.Context, operation string, _ storage.WriterFence) error {
+		if fixture.before != nil {
+			fixture.before(operation)
+		}
+		return nil
+	}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +287,8 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &serviceFixture{service: service, metadata: db, physical: physical, bucket: f.Bucket, options: options}
+	*fixture = serviceFixture{service: service, metadata: db, physical: physical, bucket: f.Bucket, options: options}
+	return fixture
 }
 
 func testBudget(n int64) readpath.Budget {

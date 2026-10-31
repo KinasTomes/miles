@@ -224,6 +224,27 @@ func (s *WriteSession) Delete(r storage.CommitRequest) (storage.CommitResult, er
 	return s.publish(r, true)
 }
 
+// Do dispatches one further side effect of this session's operation, such as
+// multipart pack retention or part publication, through the managed writer
+// like Commit: it fails once the session or its R1 registration has closed,
+// and is serialized against that closure. A lost outcome stays unknown, so
+// Release keeps the writer's pins until it is reconciled.
+func (s *WriteSession) Do(operation string, effect func(context.Context, storage.WriterFence) error) error {
+	if s == nil || s.writeSession == nil || operation == "" || effect == nil {
+		return storage.ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.active(); err != nil {
+		return err
+	}
+	err := s.writer.Do(s.ctx, operation, func(f storage.WriterFence) error { return effect(s.ctx, f) })
+	if errors.Is(err, storage.ErrUnavailable) || errors.Is(err, coordination.ErrReconcilePending) {
+		s.failed = true
+	}
+	return err
+}
+
 func (s *WriteSession) Close() error {
 	if s == nil || s.writeSession == nil {
 		return storage.ErrInvalid

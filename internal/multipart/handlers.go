@@ -1,9 +1,7 @@
 package multipart
 
 import (
-	"cmp"
 	"context"
-	"encoding/base64"
 	"encoding/xml"
 	"errors"
 	"hash"
@@ -23,7 +21,8 @@ import (
 // implements it over the shared multipart store.
 type Service interface {
 	CreateUpload(context.Context, object.CreateUploadRequest) (storage.MultipartUpload, error)
-	GetUpload(context.Context, string) (object.Upload, error)
+	GetUpload(context.Context, string) (storage.MultipartUpload, error)
+	ReceiptExpiresAt(context.Context, string) (time.Time, error)
 	UploadPart(context.Context, object.PartRequest) (object.PartResult, error)
 	ListParts(context.Context, object.ListPartsRequest) (storage.PartListPage, error)
 	AbortUpload(context.Context, object.AbortRequest) error
@@ -93,13 +92,9 @@ func (h *Handlers) Create(w http.ResponseWriter, r *s3.Request) error {
 	return s3.WriteXML(w, initiateResult{Bucket: r.Bucket, Key: r.Key, UploadID: u.ID})
 }
 
-// UploadPart stores one part with the checksum of the upload's algorithm,
-// computed by the server when the request sends another one or none. A
-// checksum the request sends is verified on the body either way. Only a
-// CRC64NVME upload (the default when Create names no algorithm) accepts a part
-// naming another algorithm, so clients without CRC64NVME (boto3 without
-// awscrt) can upload to it; any other mismatch is InvalidRequest before the
-// body is read.
+// UploadPart stores one part with the checksum of the upload's algorithm. A
+// request naming another algorithm is InvalidRequest before the body is read;
+// a request naming none has the upload's checksum computed by the server.
 func (h *Handlers) UploadPart(w http.ResponseWriter, r *s3.Request) error {
 	u, err := h.upload(r)
 	if err != nil {
@@ -112,28 +107,22 @@ func (h *Handlers) UploadPart(w http.ResponseWriter, r *s3.Request) error {
 	if length > object.MaxPartBytes {
 		return &s3.Error{Code: s3.ErrEntityTooLarge, Message: "A part may not exceed 5 GiB.", Bucket: r.Bucket, Key: r.Key}
 	}
-	requested := r.Body.RequestedChecksum()
-	if requested != "" && requested != u.ChecksumAlgorithm && u.ChecksumAlgorithm != "CRC64NVME" {
-		return &s3.Error{Code: s3.ErrInvalidRequest, Message: "The upload was created with the " + u.ChecksumAlgorithm + " checksum algorithm, not " + requested + ".", Bucket: r.Bucket, Key: r.Key}
-	}
 	body := &partBody{Payload: r.Body, algorithm: u.ChecksumAlgorithm}
-	if cmp.Or(requested, "CRC64NVME") != u.ChecksumAlgorithm { // the payload's own checksum is of another algorithm
+	switch requested := r.Body.RequestedChecksum(); {
+	case requested != "" && requested != u.ChecksumAlgorithm:
+		return &s3.Error{Code: s3.ErrInvalidRequest, Message: "The upload was created with the " + u.ChecksumAlgorithm + " checksum algorithm, not " + requested + ".", Bucket: r.Bucket, Key: r.Key}
+	case requested == "" && u.ChecksumAlgorithm != "CRC64NVME": // the payload defaults to CRC64NVME
 		body.sum, _ = s3.ChecksumHash(u.ChecksumAlgorithm)
 	}
 	number, _ := strconv.ParseUint(r.Query.Get("partNumber"), 10, 32) // the router checked 1..10000
 	res, err := h.Service.UploadPart(r.HTTP.Context(), object.PartRequest{
-		Upload: u.MultipartUpload, Number: uint32(number), Body: body, ContentLength: length, CredentialID: r.Caller.AccessKeyID,
+		Upload: u, Number: uint32(number), Body: body, ContentLength: length, CredentialID: r.Caller.AccessKeyID,
 	})
 	if err != nil {
 		return h.stateFailure(r, err)
 	}
-	algorithm, value := res.ChecksumAlgorithm, res.ChecksumValue
-	if requested != "" && requested != algorithm { // echo the checksum the client sent
-		name, digest := r.Body.Checksum()
-		algorithm, value = name, base64.StdEncoding.EncodeToString(digest)
-	}
 	w.Header().Set("ETag", `"`+res.ETag+`"`)
-	w.Header().Set("x-amz-checksum-"+strings.ToLower(algorithm), value)
+	w.Header().Set("x-amz-checksum-"+strings.ToLower(res.ChecksumAlgorithm), res.ChecksumValue)
 	w.WriteHeader(http.StatusOK)
 	return nil
 }
@@ -239,7 +228,7 @@ func (h *Handlers) Abort(w http.ResponseWriter, r *s3.Request) error {
 	if _, err := io.Copy(io.Discard, r.Body); err != nil {
 		return err
 	}
-	if err := h.Service.AbortUpload(r.HTTP.Context(), object.AbortRequest{Upload: u.MultipartUpload, CredentialID: r.Caller.AccessKeyID}); err != nil {
+	if err := h.Service.AbortUpload(r.HTTP.Context(), object.AbortRequest{Upload: u, CredentialID: r.Caller.AccessKeyID}); err != nil {
 		return h.stateFailure(r, err)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -248,11 +237,12 @@ func (h *Handlers) Abort(w http.ResponseWriter, r *s3.Request) error {
 
 // upload is steps 6-7 of the API v2 2.2.3 order for the uploadId of r: the
 // binding (NoSuchUpload, then AccessDenied without the initiator right),
-// then the state table of 4.3.1, before anything else reads the upload.
-func (h *Handlers) upload(r *s3.Request) (object.Upload, error) {
+// then the state table of 4.3.1. Only an upload that passed the binding has
+// its receipt read, and before the body.
+func (h *Handlers) upload(r *s3.Request) (storage.MultipartUpload, error) {
 	id := r.Query.Get("uploadId")
 	var binding *s3.UploadBinding
-	var u object.Upload
+	var u storage.MultipartUpload
 	if uploadID(id) {
 		var err error
 		u, err = h.Service.GetUpload(r.HTTP.Context(), id)
@@ -266,10 +256,22 @@ func (h *Handlers) upload(r *s3.Request) (object.Upload, error) {
 	if e := r.CheckUpload(binding); e != nil {
 		return u, e
 	}
-	if _, err := Dispatch(r.Op, status(u), "", h.Now()); err != nil {
-		return u, err
+	return u, h.dispatch(r, u)
+}
+
+// dispatch runs the 4.3.1 state table on a bound upload u.
+func (h *Handlers) dispatch(r *s3.Request, u storage.MultipartUpload) error {
+	st := Status{State: State(strings.ToLower(u.State)), ExpiresAt: u.ExpiresAt, LeaseExpiresAt: u.LeaseUntil, InputDigest: u.Input.SHA256}
+	if st.State == Completed {
+		var err error
+		if st.ReceiptExpiresAt, err = h.Service.ReceiptExpiresAt(r.HTTP.Context(), u.ID); err != nil {
+			return failure(r, err)
+		}
 	}
-	return u, nil
+	if _, err := Dispatch(r.Op, st, "", h.Now()); err != nil {
+		return err
+	}
+	return nil
 }
 
 // stateFailure answers a failed write from the state that won it: a freeze,
@@ -282,7 +284,8 @@ func (h *Handlers) stateFailure(r *s3.Request, err error) error {
 			return &s3.Error{Code: s3.ErrNoSuchUpload, Bucket: r.Bucket, Key: r.Key}
 		}
 		if readErr == nil {
-			if _, e := Dispatch(r.Op, status(u), "", h.Now()); e != nil {
+			var e *s3.Error
+			if errors.As(h.dispatch(r, u), &e) {
 				return e
 			}
 		}
@@ -311,11 +314,6 @@ func failure(r *s3.Request, err error) error {
 	}
 	e.Bucket, e.Key = r.Bucket, r.Key
 	return e
-}
-
-func status(u object.Upload) Status {
-	return Status{State: State(strings.ToLower(u.State)), ExpiresAt: u.ExpiresAt, LeaseExpiresAt: u.LeaseUntil,
-		ReceiptExpiresAt: u.ReceiptExpiresAt, InputDigest: u.Input.SHA256}
 }
 
 // uploadID reports whether id has the upload_id format of API v2 2.2.3.

@@ -40,13 +40,6 @@ type CreateUploadRequest struct {
 	CredentialID                    string
 }
 
-// Upload is an upload record with the receipt expiry of a Completed upload,
-// which the multipart state table needs.
-type Upload struct {
-	storage.MultipartUpload
-	ReceiptExpiresAt time.Time
-}
-
 type PartRequest struct {
 	Upload        storage.MultipartUpload // as read for the binding check
 	Number        uint32
@@ -101,24 +94,26 @@ func (s *Service) CreateUpload(ctx context.Context, r CreateUploadRequest) (stor
 	})
 }
 
-// GetUpload reads the upload record; ErrNotFound when there is none.
-func (s *Service) GetUpload(ctx context.Context, id string) (Upload, error) {
+// GetUpload reads the upload record; ErrNotFound when there is none. It never
+// reads the receipt: callers check the upload binding first.
+func (s *Service) GetUpload(ctx context.Context, id string) (storage.MultipartUpload, error) {
 	if s.o.Uploads == nil {
-		return Upload{}, storage.ErrInvalid
+		return storage.MultipartUpload{}, storage.ErrInvalid
 	}
-	u, err := s.o.Uploads.GetUpload(ctx, id)
-	if err != nil {
-		return Upload{}, err
+	return s.o.Uploads.GetUpload(ctx, id)
+}
+
+// ReceiptExpiresAt is the receipt expiry of a Completed upload, zero when its
+// receipt is gone. Call it only after the upload binding check.
+func (s *Service) ReceiptExpiresAt(ctx context.Context, id string) (time.Time, error) {
+	if s.o.Uploads == nil {
+		return time.Time{}, storage.ErrInvalid
 	}
-	out := Upload{MultipartUpload: u}
-	if u.State == "Completed" {
-		receipt, err := s.o.Uploads.GetCompletionReceipt(ctx, id)
-		if err != nil && !errors.Is(err, storage.ErrNotFound) {
-			return Upload{}, err
-		}
-		out.ReceiptExpiresAt = receipt.ExpiresAt
+	receipt, err := s.o.Uploads.GetCompletionReceipt(ctx, id)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return time.Time{}, err
 	}
-	return out, nil
+	return receipt.ExpiresAt, nil
 }
 
 // UploadPart streams one part into packs and kind-2 part pages, then
@@ -182,16 +177,27 @@ func (s *Service) UploadPart(ctx context.Context, r PartRequest) (PartResult, er
 		Checksum:   storage.Checksum{Algorithm: algorithm, Type: u.ChecksumType, Value: base64.StdEncoding.EncodeToString(digest)},
 		ManifestID: manifestID, Pages: prepared.PageCount}
 	for attempt := 1; ; attempt++ {
-		if err := s.o.Uploads.RetainPublisherPacks(ctx, req, pub.ID, packs); err != nil {
+		// Both final side effects go through the managed writer, so a closed
+		// R1 registration stops them before dispatch, never after.
+		err := session.Do("retain/"+pub.ID, func(ctx context.Context, f storage.WriterFence) error {
+			return s.o.Uploads.RetainPublisherPacks(ctx, req, pub.ID, packs)
+		})
+		if err != nil {
 			return fail(err)
 		}
-		published, err := s.o.Uploads.PublishPart(ctx, storage.PartPublishRequest{Request: req, PublisherID: pub.ID, Part: part})
+		var published storage.UploadPart
+		err = session.Do("publish/"+pub.ID, func(ctx context.Context, f storage.WriterFence) error {
+			var e error
+			published, e = s.o.Uploads.PublishPart(ctx, storage.PartPublishRequest{Request: req, PublisherID: pub.ID, Part: part})
+			return e
+		})
 		switch {
 		case err == nil:
 			return PartResult{ETag: published.ETag, ChecksumAlgorithm: published.Checksum.Algorithm, ChecksumValue: published.Checksum.Value}, nil
 		case errors.Is(err, storage.ErrUnavailable):
 			// Unknown outcome: the publisher keeps its provisional bytes and
-			// roots until recovery proves publish or cancellation.
+			// roots, and the writer its pins, until recovery proves publish
+			// or cancellation.
 			return PartResult{}, err
 		case !errors.Is(err, storage.ErrConflict) || attempt == maxPartAttempts:
 			return fail(err)
@@ -209,14 +215,11 @@ func (s *Service) UploadPart(ctx context.Context, r PartRequest) (PartResult, er
 // number, so provisional quota and staging are charged before the body.
 func (s *Service) register(ctx context.Context, req storage.MultipartRequest, candidate storage.PartPublisher) (storage.PartPublisher, error) {
 	for attempt := 1; ; attempt++ {
-		page, err := s.o.Uploads.ListParts(ctx, req, candidate.PartNumber-1, 1)
-		if err != nil {
+		current, err := s.o.Uploads.GetPart(ctx, req, candidate.PartNumber)
+		if err != nil && !errors.Is(err, storage.ErrNotFound) {
 			return storage.PartPublisher{}, err
 		}
-		candidate.BaseRevision = 0
-		if len(page.Parts) == 1 && page.Parts[0].Number == candidate.PartNumber {
-			candidate.BaseRevision = page.Parts[0].Revision
-		}
+		candidate.BaseRevision = current.Revision
 		if candidate.ID, err = write.NewManifestID(); err != nil {
 			return storage.PartPublisher{}, err
 		}
