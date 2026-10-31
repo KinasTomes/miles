@@ -22,6 +22,7 @@ import (
 type Tx interface {
 	Attach(byte, string, string, uint32, int64, string) (format.PayloadDependency, error)
 	Admit(s.MutationContext) error
+	RecordRecoveryEvent(s.MutationContext, s.OutboxEvent) error
 	Get(string, []string, any) error
 	Put(string, []string, any) error
 	Authorize(string, string) (s.Authorization, error)

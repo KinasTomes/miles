@@ -182,7 +182,7 @@ func (a *SharedAuthority) CheckProducer(ctx context.Context, c s.MutationContext
 	if err != nil {
 		return err
 	}
-	if l.OpID != c.LogicalOpID || l.Object != c.Object {
+	if l.OpID != c.LogicalOpID || l.Object != c.Object || (g.RecoveryVersion == 1 && (l.HistoryID != c.HistoryID || l.RecoveryEpoch != c.Epoch)) {
 		return s.ErrFenced
 	}
 	return nil
@@ -228,7 +228,7 @@ func (m *Store) InitializeR1(ctx context.Context, incarnation, history string, e
 		if !errors.Is(err, s.ErrNotFound) {
 			return err
 		}
-		return r1Put(t, r1GateKey(), s.R1Gate{Version: s.ModelVersion, Incarnation: incarnation, HistoryID: history, Epoch: epoch, State: "Open", Revision: 1})
+		return r1Put(t, r1GateKey(), s.R1Gate{Version: s.ModelVersion, Incarnation: incarnation, HistoryID: history, Epoch: epoch, State: "Open", Revision: 1, RecoveryVersion: 1})
 	})
 }
 func (m *Store) GetR1Gate(ctx context.Context) (s.R1Gate, error) {
@@ -250,7 +250,7 @@ func (m *Store) SetR1Gate(ctx context.Context, revision uint64, state string) er
 		if err != nil {
 			return err
 		}
-		if g.Revision != revision || g.State == "Maintenance" {
+		if g.Revision != revision || (g.State == "Maintenance" || g.State == "RecoveryCut") {
 			return s.ErrConflict
 		}
 		g.State = state
@@ -277,10 +277,10 @@ func (m *Store) RotateR1(ctx context.Context, revision uint64, next string) erro
 }
 func (m *Store) AcquireR1(ctx context.Context, r s.R1Acquire) (s.R1Lease, error) {
 	var out s.R1Lease
-	if r.Owner == "" || len(r.Owner) > 128 || len(r.OpID) > 64 || r.Fence.LeaseID == "" || len(r.Fence.LeaseID) > 128 || r.Fence.Epoch == 0 || r.Fence.Epoch > s.MaxPolicyRevision || r.Deadline.IsZero() || (r.Kind != "reader" && r.Kind != "writer" && r.Kind != "control") {
+	if r.Owner == "" || len(r.Owner) > 128 || len(r.OpID) > 64 || r.Fence.LeaseID == "" || len(r.Fence.LeaseID) > 128 || r.Fence.Epoch == 0 || r.Fence.Epoch > s.MaxPolicyRevision || r.Deadline.IsZero() || (r.Kind != "reader" && r.Kind != "writer" && r.Kind != "control" && r.Kind != "recovery") {
 		return out, s.ErrInvalid
 	}
-	if r.Kind != "control" && r.Object.Validate() != nil {
+	if r.Kind != "control" && r.Kind != "recovery" && r.Object.Validate() != nil {
 		return out, s.ErrInvalid
 	}
 	err := m.update(ctx, func(t *transaction) error {
@@ -312,7 +312,7 @@ func (m *Store) AcquireR1(ctx context.Context, r s.R1Acquire) (s.R1Lease, error)
 		} else if r.Fence.Epoch != 1 {
 			return s.ErrFenced
 		}
-		if g.State != "Open" {
+		if g.State != "Open" && !(g.State == "RecoveryCut" && (r.Kind == "reader" || r.Kind == "recovery")) {
 			return s.ErrR1Busy
 		}
 		if !b.Upper.Before(r.Deadline) || r.Deadline.After(b.Horizon) {
@@ -323,11 +323,14 @@ func (m *Store) AcquireR1(ctx context.Context, r s.R1Acquire) (s.R1Lease, error)
 		if r.Deadline.Before(expires) {
 			expires = r.Deadline
 		}
-		out = s.R1Lease{Version: s.ModelVersion, Fence: r.Fence, Owner: r.Owner, Kind: r.Kind, OpID: r.OpID, Object: r.Object, Deadline: r.Deadline, ExpiresAt: expires, Revision: 1, State: "Active", Resolving: true, Pending: []string{}, Roots: []string{}}
+		out = s.R1Lease{Version: s.ModelVersion, Fence: r.Fence, Owner: r.Owner, Kind: r.Kind, OpID: r.OpID, Object: r.Object, Deadline: r.Deadline, ExpiresAt: expires, Revision: 1, State: "Active", HistoryID: g.HistoryID, RecoveryEpoch: g.Epoch, Resolving: true, Pending: []string{}, Roots: []string{}}
 		g.Active++
 		g.Resolving++
 		g.Revision++
 		if err = r1Put(t, r1GateKey(), g); err != nil {
+			return err
+		}
+		if err := m.recordRecoveryAdmission(t, g, out); err != nil {
 			return err
 		}
 		return r1Put(t, r1LeaseKey(r.Fence.LeaseID), out)
@@ -381,6 +384,9 @@ func (m *Store) CloseR1(ctx context.Context, f s.WriterFence) error {
 		}
 		l.State = "Closed"
 		l.Revision++
+		if err := m.recordRecoveryClosure(t, l); err != nil {
+			return err
+		}
 		return r1Put(t, r1LeaseKey(f.LeaseID), l)
 	})
 }
@@ -411,6 +417,9 @@ func (m *Store) ReclaimR1(ctx context.Context, f s.WriterFence, grace time.Durat
 		}
 		l.State = "Closed"
 		l.Revision++
+		if err := m.recordRecoveryClosure(t, l); err != nil {
+			return err
+		}
 		return r1Put(t, r1LeaseKey(f.LeaseID), l)
 	})
 }
@@ -491,6 +500,9 @@ func (m *Store) BeginR1Action(ctx context.Context, f s.WriterFence, id string) e
 		if err != nil {
 			return err
 		}
+		if l.Kind == "recovery" {
+			return s.ErrFenced
+		}
 		if slices.Contains(l.Pending, id) {
 			return s.ErrR1Busy
 		}
@@ -520,6 +532,9 @@ func (m *Store) SettleR1Action(ctx context.Context, f s.WriterFence, id string) 
 		}
 		l.Pending = slices.Delete(l.Pending, at, at+1)
 		l.Revision++
+		if err := m.recordRecoveryClosure(t, l); err != nil {
+			return err
+		}
 		return r1Put(t, r1LeaseKey(f.LeaseID), l)
 	})
 }
@@ -533,6 +548,11 @@ func (t *transaction) revalidateR1() error {
 	}
 	for f := range t.r1Fences {
 		if err := a.Check(t.ctx, f, r1Observe(t)); err != nil {
+			return err
+		}
+	}
+	for f := range t.recoveryFences {
+		if err := t.store.recoveryFence(t, f, false); err != nil {
 			return err
 		}
 	}
