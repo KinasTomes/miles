@@ -59,6 +59,57 @@ func (f *fixtureStatistics) Layout(_ context.Context, b, k string) (stats.Layout
 	f.key = k
 	return stats.Layout{Bucket: b, Key: k}, nil
 }
+
+func TestBucketStatisticsErrorOrder(t *testing.T) {
+	w := newWorld(t, badger.Bootstrap{})
+	f := &fixtureStatistics{}
+	w.opts.Statistics = f
+	var err error
+	w.h, err = NewServer(w.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, bucket, query, token, code string
+		status                           int
+	}{
+		{"missing bearer first", "missing", "?unexpected=1", "", "unauthorized", 401},
+		{"invalid bearer first", "missing", "?unexpected=1", "invalid", "unauthorized", 401},
+		{"missing bucket before owner role", "missing", "", w.bearer["owner"], "bucket_not_found", 404},
+		{"missing bucket before stranger role", "missing", "?unexpected=1", w.bearer["stranger"], "bucket_not_found", 404},
+		{"missing bucket before query", "missing", "?unexpected=1", w.root, "bucket_not_found", 404},
+		{"owner forbidden before query", "demo", "?unexpected=1", w.bearer["owner"], "forbidden", 403},
+		{"stranger forbidden", "demo", "", w.bearer["stranger"], "forbidden", 403},
+		{"existing bucket invalid query", "demo", "?unexpected=1", w.root, "invalid_request", 400},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Keep fixture failures attached to this case rather than its parent.
+			cw := *w
+			cw.t = t
+			before := f.calls
+			rec := cw.do("GET", "/admin/v1/buckets/"+tc.bucket+"/stats"+tc.query, tc.token, "")
+			cw.expect(rec, tc.status, tc.code)
+			if f.calls != before {
+				t.Fatal("rejected request reached statistics provider")
+			}
+			if tc.status == 401 && rec.Header().Get("WWW-Authenticate") != "Bearer" {
+				t.Fatal("missing Bearer challenge")
+			}
+		})
+	}
+	rec := w.must(w.do("GET", "/admin/v1/buckets/demo/stats", w.root, ""), http.StatusOK)
+	if f.calls != 1 || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("authorized statistics request", f.calls, rec.Header())
+	}
+	w.opts.Statistics = nil
+	w.h, err = NewServer(w.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.expect(w.do("GET", "/admin/v1/buckets/missing/stats?unexpected=1", w.root, ""), 404, "bucket_not_found")
+	w.expect(w.do("GET", "/admin/v1/buckets/demo/stats", w.root, ""), 503, "unavailable")
+}
+
 func TestStatisticsAuthAndEncoding(t *testing.T) {
 	w := newWorld(t, badger.Bootstrap{})
 	f := &fixtureStatistics{}

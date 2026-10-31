@@ -26,6 +26,15 @@ func (s *server) stats(c *call) error {
 	return nil
 }
 func (s *server) bucketStats(c *call) error {
+	// API §6.5.1: authenticated callers learn bucket existence before role/query
+	// errors. Resolve metadata only; the statistics provider stays admin-only.
+	_, err := s.Store.GetBucket(c.r.Context(), c.r.PathValue("b"))
+	if errors.Is(err, st.ErrNotFound) || errors.Is(err, st.ErrBucketNotFound) {
+		return errBucketNotFound
+	}
+	if err != nil {
+		return err
+	}
 	if err := c.admin(); err != nil {
 		return err
 	}
