@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -104,7 +105,7 @@ func TestCopyToItself(t *testing.T) {
 	if f.head(t, "k").Revision != before.Revision {
 		t.Fatal("refused self-copy published")
 	}
-	replaced := map[string]string{"content-type": "text/csv", "x-amz-meta-tag": "v2"}
+	replaced := map[string]string{"content-type": "text/csv", "content-language": "vi-VN", "x-amz-meta-tag": "v2"}
 	if _, err := f.copy(ctx, "k", "k", replaced); err != nil {
 		t.Fatal("self REPLACE", err)
 	}
@@ -143,18 +144,74 @@ func TestCopyQuotaExceededKeepsDestination(t *testing.T) {
 	}
 }
 
-// sourceHead overrides the source head the service reads, for limits no test
-// should materialize (a 5 GiB object) or states the fixture cannot reach.
-type sourceHead struct {
-	Metadata
-	head storage.ObjectHead
+// headHook is the Warm reader's metadata. override replaces a head no test
+// should materialize (a 5 GiB object); after runs once the real lookup
+// returned, at the boundary where a source must already be protected.
+type headHook struct {
+	*badger.Store
+	override func(storage.ObjectKey) (storage.ObjectHead, bool)
+	after    func(storage.ObjectKey)
 }
 
-func (m sourceHead) GetObject(ctx context.Context, k storage.ObjectKey) (storage.ObjectHead, error) {
-	if k.Key == "src" {
-		return m.head, nil
+func (m *headHook) GetObject(ctx context.Context, k storage.ObjectKey) (storage.ObjectHead, error) {
+	if m.override != nil {
+		if h, ok := m.override(k); ok {
+			return h, nil
+		}
 	}
-	return m.Metadata.GetObject(ctx, k)
+	h, err := m.Store.GetObject(ctx, k)
+	if m.after != nil {
+		m.after(k)
+	}
+	return h, err
+}
+
+// Retiring a source pack right after the source head lookup must be refused
+// for CopyObject exactly as for GET: the source view protects resolution
+// before the destination writer pins anything.
+func TestCopySourceHeadIsProtectedAgainstRetirement(t *testing.T) {
+	for _, op := range []string{"GET", "CopyObject"} {
+		t.Run(op, func(t *testing.T) {
+			f := newServiceFixture(t)
+			ctx := context.Background()
+			data := bytes.Repeat([]byte("retire"), 5000)
+			f.put(t, ctx, "src", data)
+			pack := f.chunkPack(t, f.head(t, "src"))
+			var retire error
+			hooked := false
+			f.reads.after = func(k storage.ObjectKey) {
+				if k.Key == "src" && !hooked {
+					hooked = true
+					retire = f.gate.Retire(pack)
+				}
+			}
+			var err error
+			if op == "GET" {
+				_, err = f.service.GetObject(ctx, GetRequest{Bucket: f.bucket.Name, BucketID: f.bucket.ID, Key: "src", CredentialID: "owner-key",
+					Emit: func(context.Context, []byte) error { return nil }})
+			} else {
+				_, err = f.copy(ctx, "src", "dst", nil)
+			}
+			if !hooked || !errors.Is(retire, storage.ErrConflict) || err != nil {
+				t.Fatalf("hooked=%v retire=%v %s=%v", hooked, retire, op, err)
+			}
+			if op == "CopyObject" {
+				if _, got := f.get(t, ctx, "dst", nil); !bytes.Equal(got, data) {
+					t.Fatal("copy bytes differ")
+				}
+			}
+		})
+	}
+}
+
+func (f *serviceFixture) chunkPack(t *testing.T, h storage.ObjectHead) storage.PackRef {
+	t.Helper()
+	key := f.refs(t, h)[0].Key
+	rows, err := f.metadata.GetChunks(context.Background(), []storage.ChunkKey{key}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return rows[key].Location.Pack
 }
 
 func TestCopyRejectsBeforeAdmission(t *testing.T) {
@@ -178,11 +235,13 @@ func TestCopyRejectsBeforeAdmission(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			head := real
+			head.Object.Key = "src"
 			r := CopyRequest{Source: f.bucket, SourceKey: "src", Bucket: f.bucket, Key: "dst", UserID: "owner", CredentialID: "owner-key"}
 			tc.edit(&head, &r)
+			f.reads.override = func(k storage.ObjectKey) (storage.ObjectHead, bool) { return head, k.Key == "src" }
+			defer func() { f.reads.override = nil }()
 			admitted := false
 			o := f.options
-			o.Metadata = sourceHead{f.options.Metadata, head}
 			o.AdmitWriter = func(ctx context.Context, w WriterRequest) (AdmittedWriter, error) {
 				admitted = true
 				return f.options.AdmitWriter(ctx, w)

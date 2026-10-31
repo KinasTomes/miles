@@ -92,7 +92,7 @@ func prepare(ctx context.Context, kind byte, pipeline Pipeline, pages PageStore,
 // Before a ref is emitted its canonical row is pinned and its pack protection
 // extended through Reuse, exactly like a dedup hit of PUT, so the chunk
 // outlives the copy's publication. A chunk Reuse refuses (an archived pack)
-// fails the copy with ErrCold; metadata copy of Cold sources is W06 work.
+// fails the copy with ErrCold: metadata copy of unreadable sources is not supported.
 func CopyManifest(ctx context.Context, publisher Publisher, lookup Lookup, pages PageStore, writer storage.WriterFence,
 	source storage.ObjectHead, manifestID string) (PreparedObject, error) {
 	if publisher == nil || lookup == nil || pages == nil || writer.LeaseID == "" || source.Deleted || source.ValidateManifestDescriptor() != nil {

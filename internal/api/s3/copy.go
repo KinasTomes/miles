@@ -42,6 +42,9 @@ func (o *Objects) CopyObject(w http.ResponseWriter, r *Request) error {
 	case "", "COPY":
 	case "REPLACE":
 		metadata = RequestMetadata(r.HTTP)
+		if r.HTTP.Header.Get("Content-Type") == "" {
+			metadata["content-type"] = "application/octet-stream" // API v2 4.5 REPLACE default
+		}
 	default:
 		return &Error{Code: ErrInvalidArgument, Message: "Unknown metadata directive.", Bucket: r.Bucket, Key: r.Key}
 	}

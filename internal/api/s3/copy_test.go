@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
@@ -52,8 +53,10 @@ func TestCopyObjectSourceAndDirective(t *testing.T) {
 	}{
 		{name: "leading slash, key decoded once", headers: map[string]string{"X-Amz-Copy-Source": "/demo/a%2Bb%2520c"}, srcKey: "a+b%20c"},
 		{name: "COPY is the default and keeps source metadata", headers: map[string]string{"X-Amz-Copy-Source": "demo/a", "X-Amz-Metadata-Directive": "COPY", "Content-Type": "text/csv"}, srcKey: "a"},
-		{name: "REPLACE takes the request headers", headers: map[string]string{"X-Amz-Copy-Source": "demo/a", "X-Amz-Metadata-Directive": "REPLACE", "X-Amz-Meta-Tag": "v2"}, srcKey: "a",
-			replaced: map[string]string{"content-type": "binary/octet-stream", "x-amz-meta-tag": "v2"}},
+		{name: "REPLACE takes the request headers", headers: map[string]string{"X-Amz-Copy-Source": "demo/a", "X-Amz-Metadata-Directive": "REPLACE", "X-Amz-Meta-Tag": "v2", "Content-Language": "vi-VN"}, srcKey: "a",
+			replaced: map[string]string{"content-type": "application/octet-stream", "content-language": "vi-VN", "x-amz-meta-tag": "v2"}},
+		{name: "REPLACE keeps an explicit Content-Type", headers: map[string]string{"X-Amz-Copy-Source": "demo/a", "X-Amz-Metadata-Directive": "REPLACE", "Content-Type": "text/csv"}, srcKey: "a",
+			replaced: map[string]string{"content-type": "text/csv"}},
 		{name: "checksum algorithm is passed for the source check", headers: map[string]string{"X-Amz-Copy-Source": "demo/a", "X-Amz-Checksum-Algorithm": "crc32"}, srcKey: "a", algorithm: "CRC32"},
 		{name: "unknown directive", headers: map[string]string{"X-Amz-Copy-Source": "demo/a", "X-Amz-Metadata-Directive": "MERGE"}, code: ErrInvalidArgument},
 		{name: "source without key", headers: map[string]string{"X-Amz-Copy-Source": "demo/"}, code: ErrInvalidArgument},
@@ -100,6 +103,70 @@ func equalMaps(a, b map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// metadataObjects keeps each key's stored HTTP metadata the way the service
+// does: COPY repeats the source's, REPLACE stores the request's.
+type metadataObjects struct {
+	fakeObjectWriter
+	stored map[string]map[string]string
+}
+
+func (m *metadataObjects) CopyObject(_ context.Context, r object.CopyRequest) (object.CopyResult, error) {
+	md := r.Metadata
+	if md == nil {
+		md = m.stored[r.SourceKey]
+	}
+	m.stored[r.Key] = md
+	return object.CopyResult{ETag: `"e"`}, nil
+}
+func (m *metadataObjects) info(key string) object.GetResult {
+	return object.GetResult{Info: object.Info{ETag: `"e"`, Size: 1, Metadata: m.stored[key]}, Range: storage.ByteRange{Length: 1}}
+}
+func (m *metadataObjects) Stat(_ context.Context, r object.GetRequest) (object.GetResult, error) {
+	return m.info(r.Key), nil
+}
+func (m *metadataObjects) GetObject(ctx context.Context, r object.GetRequest) (object.GetResult, error) {
+	res := m.info(r.Key)
+	if err := r.Ready(res); err != nil {
+		return res, err
+	}
+	return res, r.Emit(ctx, []byte("x"))
+}
+
+// REPLACE metadata, Content-Language included, is what GET and HEAD return
+// afterwards; COPY keeps the source's.
+func TestCopyObjectMetadataReadsBack(t *testing.T) {
+	w := newBucketWorld(t)
+	objects := &metadataObjects{stored: map[string]map[string]string{
+		"a": {"content-type": "text/plain", "content-language": "en", "x-amz-meta-k": "v"},
+	}}
+	w.router.Handlers = NewObjectHandlers(objects, objects, nil)
+	if _, e := w.sendHeaders(t, http.MethodPut, "/demo/b", "owner", "", map[string]string{"X-Amz-Copy-Source": "demo/a"}); e != nil {
+		t.Fatal(e)
+	}
+	if _, e := w.sendHeaders(t, http.MethodPut, "/demo/c", "owner", "", map[string]string{
+		"X-Amz-Copy-Source": "demo/a", "X-Amz-Metadata-Directive": "REPLACE", "Content-Language": "vi-VN", "X-Amz-Meta-Tag": "v2",
+	}); e != nil {
+		t.Fatal(e)
+	}
+	want := map[string]map[string]string{
+		"b": {"Content-Type": "text/plain", "Content-Language": "en", "X-Amz-Meta-K": "v", "X-Amz-Meta-Tag": ""},
+		"c": {"Content-Type": "application/octet-stream", "Content-Language": "vi-VN", "X-Amz-Meta-K": "", "X-Amz-Meta-Tag": "v2"},
+	}
+	for key, headers := range want {
+		for _, method := range []string{http.MethodHead, http.MethodGet} {
+			rec, e := w.sendHeaders(t, method, "/demo/"+key, "owner", "", nil)
+			if e != nil {
+				t.Fatal(key, method, e)
+			}
+			for name, value := range headers {
+				if got := rec.Header().Get(name); got != value {
+					t.Fatalf("%s %s: %s = %q, want %q", method, key, name, got, value)
+				}
+			}
+		}
+	}
 }
 
 // Copy needs write on the destination (router) and read on the source

@@ -1,14 +1,14 @@
 # CopyObject, DeleteObjects và bucket P1 validation
 
-Task **W04-CHIEN-04**, ngày 31/10/2026, từ `origin/main` `92deb23`. Hard dependencies
-W03-CHIEN-03 và W04-HAI-01 đã Done trên backlog. Acceptance: single-copy ≤ 5 GiB và
-bucket/delete operations pass; copy khác miền có contract, hoàn thiện ở W06-CHIEN-02.
+Kiểm chứng CopyObject cùng miền, DeleteObjects, DeleteBucket và GetBucketLocation.
+Yêu cầu: single-copy ≤ 5 GiB, bucket/delete operations đúng hợp đồng; copy khác miền
+trả lỗi rõ thay vì ghi tham chiếu chéo miền.
 Hợp đồng: [API §2.2.3, §4.2, §4.5, §4.6](../dedup-storage-gateway-api.md),
 [kiến trúc §5.3](../dedup-storage-gateway-architecture.md).
 
-| Checklist | Implementation / proof |
+| Yêu cầu | Implementation / proof |
 |---|---|
-| CopyObject cùng miền, MetadataDirective COPY/REPLACE/self-copy, giữ opaque ETag/checksum nguồn | `object.Service.CopyObject` + `WriteSession.PrepareCopy`/`write.CopyManifest`; handler `internal/api/s3/copy.go`. `TestCopySameDomainRepeatsRefsWithoutPayload`, `TestCopyToItself`, `TestCopyObjectSourceAndDirective` |
+| CopyObject cùng miền, MetadataDirective COPY/REPLACE/self-copy, giữ opaque ETag/checksum nguồn, nguồn được bảo vệ trước khi resolve | `object.Service.CopyObject` + `readpath.WarmReader.BindSource` + `WriteSession.PrepareCopy`/`write.CopyManifest`; handler `internal/api/s3/copy.go`. `TestCopySameDomainRepeatsRefsWithoutPayload`, `TestCopyToItself`, `TestCopySourceHeadIsProtectedAgainstRetirement`, `TestCopyObjectSourceAndDirective`, `TestCopyObjectMetadataReadsBack` |
 | DeleteObjects XML per-key, DeleteBucket empty guard, GetBucketLocation | `internal/api/s3/delete_objects.go`, `bucket.go`; `storage.MetadataStore.DeleteBucket` qua control mutation `Buckets`/`entity_delete`. `TestDeleteObjectsPerKeyResults`, `TestDeleteObjectsRejectsBeforeAnyDelete`, `TestDeleteBucketFreesTheName`, contract `s3-delete-bucket-owner-incarnation-and-recreate` (Badger + DynamoDB), `TestGetBucketLocation` |
 | Read nguồn/write đích, quota owner đích, threshold−1/=/+1, UploadPartCopy 501 | `TestCopyObjectNeedsSourceReadAndDestinationWrite`, dòng CopyObject của `authorization.json`; `TestCopySameDomainRepeatsRefsWithoutPayload` (grantee copy, owner trả quota), `TestCopyQuotaExceededKeepsDestination`; `TestCopyRejectsBeforeAdmission` (5 GiB + 1 / đúng 5 GiB); dòng `UploadPartCopy is P2` của `routes.json`; smoke AWS CLI bên dưới |
 
@@ -20,9 +20,14 @@ Hợp đồng: [API §2.2.3, §4.2, §4.5, §4.6](../dedup-storage-gateway-api.m
   copy không đổi byte của bản copy. Self-copy COPY bị từ chối trước admission, REPLACE ra
   revision và manifest mới, cùng ETag/nội dung, metadata mới, quota không đổi. Copy vượt
   quota owner trả `QuotaExceeded`, head đích và ledger giữ nguyên.
-- Trước admission (head nguồn thay bằng stub): tombstone `NoSuchKey`, 5 GiB + 1
+- Bảo vệ nguồn: hook ngay sau lookup head nguồn gọi `WarmGate.Retire` cho pack nguồn; với
+  GET (đối chứng) và CopyObject đều bị `ErrConflict`, request hoàn tất và bản copy đọc đúng
+  byte nguồn.
+- Trước admission (head nguồn thay qua metadata của reader): tombstone `NoSuchKey`, 5 GiB + 1
   `InvalidRequest`, đúng 5 GiB qua giới hạn copy rồi dừng ở quota, miền khác
   `NotImplemented`, đổi checksum algorithm `InvalidRequest`, cùng algorithm thành công.
+- Metadata: REPLACE lưu Content-Language và mặc định `application/octet-stream` khi thiếu
+  Content-Type; HEAD và GET của bản REPLACE trả header mới, bản COPY trả header nguồn.
 - Handler qua `s3.Router` trên fake metadata: parse `x-amz-copy-source` (dấu `/` đầu, decode
   một lần, thiếu key, `versionId`, encode hỏng, bucket nguồn không có), directive, thứ tự
   quyền (writer không read nguồn, reader không write đích đều `AccessDenied` trước service),
@@ -40,9 +45,10 @@ Hợp đồng: [API §2.2.3, §4.2, §4.5, §4.6](../dedup-storage-gateway-api.m
 
 Kết quả trên source hiện tại: `gofmt`, `go vet ./...` sạch; `go test -count=1 ./...` pass
 trên Linux (Go 1.27.2, WSL); `go test -race -count=1` pass cho `internal/api/s3`,
-`internal/object`, `internal/engine/write`, `internal/metadata/badger`, `internal/app`,
-`cmd/miles`. Contract DynamoDB chạy với Moto 5.2.5 server loopback
-(`MILES_DDB_LOCAL_ENDPOINT`); CI chạy lại với DynamoDB Local.
+`internal/object`, `internal/readpath`, `internal/engine/write`, `internal/multipart`,
+`internal/metadata/badger`, `internal/app`, `cmd/miles`. Contract producer DynamoDB (gồm
+DeleteBucket) chạy với Moto 5.2.5 loopback (`MILES_DDB_LOCAL_ENDPOINT`); toàn bộ suite
+DynamoDB chạy trong CI với DynamoDB Local.
 
 ## Smoke binary thật
 
@@ -52,8 +58,8 @@ region `ap-southeast-1`, path-style:
 | Bước | Kết quả |
 |---|---|
 | `get-bucket-location` | `{"LocationConstraint":"ap-southeast-1"}` |
-| `copy-object demo/a → b` (3 MiB) | ETag = MD5 nguồn, Content-Type/metadata giữ, byte tải về bằng nguồn, số object pack trên Moto 8 → 8 |
-| `--metadata-directive REPLACE` | Content-Type/metadata mới, ETag nguồn giữ |
+| `copy-object demo/a → b` (3 MiB) | ETag = MD5 nguồn, Content-Type/Content-Language/metadata giữ, byte tải về bằng nguồn, số object pack trên Moto không đổi |
+| `--metadata-directive REPLACE --content-language vi-VN` (không Content-Type) | HEAD/GET: `application/octet-stream`, `vi-VN`, metadata mới, ETag nguồn giữ |
 | self-copy COPY / REPLACE | `InvalidRequest` / 200, ETag giữ, Content-Type mới |
 | ghi đè nguồn sau copy | bản copy giữ byte cũ |
 | nguồn không có key / bucket; `--checksum-algorithm SHA256` | `NoSuchKey` / `NoSuchBucket`; `InvalidRequest` |
@@ -67,8 +73,9 @@ region `ap-southeast-1`, path-style:
 
 ## Giới hạn
 
-- Copy khác miền trả `NotImplemented` (W06-CHIEN-02); nguồn ở pack không Warm/IR trả
-  `InvalidObjectState` (copy metadata nguồn Cold là W06).
+- Copy khác miền trả `NotImplemented`: chưa có đường đọc/verify chunk nguồn rồi ghi lại
+  trong miền đích. Nguồn ở pack không Warm/IR trả `InvalidObjectState`: copy metadata hiện
+  chỉ nhận nguồn đọc được ngay.
 - Grant của incarnation đã xóa không bị dọn vật lý; chúng gắn `bucket_id` cũ nên không có
   hiệu lực. Chưa có journal cleanup theo `bucket_id`.
 - Trong ≤ 5 giây sau DeleteBucket, node còn snapshot quyền có thể trả HeadBucket 200 hoặc

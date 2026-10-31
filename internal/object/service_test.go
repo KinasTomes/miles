@@ -166,6 +166,9 @@ type serviceFixture struct {
 	options  Options
 	// before runs ahead of every managed writer dispatch when set.
 	before func(operation string)
+	gate   *coordination.WarmGate
+	// reads is the Warm reader's metadata; tests may hook its head lookups.
+	reads *headHook
 }
 
 func newServiceFixture(t *testing.T) *serviceFixture {
@@ -247,8 +250,9 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 	if writeCache != nil {
 		readCache = writeCache
 	}
+	reads := &headHook{Store: db}
 	reader, err := readpath.NewWarmReader(readpath.WarmOptions{
-		Metadata: db, Packs: store, Cache: readCache, Admission: admission, Gate: gate, Clock: c,
+		Metadata: reads, Packs: store, Cache: readCache, Admission: admission, Gate: gate, Clock: c,
 		Global: global, Metrics: &readpath.WarmMetrics{}, TransportBytes: 4096,
 		MaxManifestPages: 4, MaxManifestChunks: 20000,
 	})
@@ -287,7 +291,7 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	*fixture = serviceFixture{service: service, metadata: db, physical: physical, bucket: f.Bucket, options: options}
+	*fixture = serviceFixture{service: service, metadata: db, physical: physical, bucket: f.Bucket, options: options, gate: gate, reads: reads}
 	return fixture
 }
 

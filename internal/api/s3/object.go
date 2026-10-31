@@ -79,7 +79,7 @@ func DecodedLength(r *http.Request) int64 {
 // case map. A missing Content-Type stores the S3 default explicitly.
 func RequestMetadata(r *http.Request) map[string]string {
 	metadata := map[string]string{"content-type": "binary/octet-stream"}
-	for _, name := range []string{"Content-Type", "Cache-Control", "Content-Disposition", "Expires"} {
+	for _, name := range []string{"Content-Type", "Cache-Control", "Content-Disposition", "Content-Language", "Expires"} {
 		if v := r.Header.Get(name); v != "" {
 			metadata[strings.ToLower(name)] = v
 		}
@@ -283,7 +283,7 @@ func writeObjectMetadata(h http.Header, metadata map[string]string) {
 	h.Set("Content-Type", contentType)
 	for name, header := range map[string]string{
 		"cache-control": "Cache-Control", "content-disposition": "Content-Disposition",
-		"content-encoding": "Content-Encoding", "expires": "Expires",
+		"content-encoding": "Content-Encoding", "content-language": "Content-Language", "expires": "Expires",
 	} {
 		if v := metadata[name]; v != "" {
 			h.Set(header, v)

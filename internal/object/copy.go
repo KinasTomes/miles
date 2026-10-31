@@ -49,8 +49,10 @@ type CopyResult struct {
 // CopyObject publishes a new destination head over a fresh manifest that
 // repeats the source refs (API v2 4.5, architecture 5.3). It never reads the
 // payload: ETag and checksum are the source's, kept opaque. The source head is
-// read once, so a concurrent source overwrite cannot mix two versions. Only
-// same-domain copies are served; across domains is W06.
+// read once under a bound source read view that keeps retirement closed until
+// the destination writer holds its own generation pins, so a concurrent source
+// overwrite or retirement cannot mix versions or drop a referenced pack. Only
+// same-domain copies are served.
 func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, error) {
 	if ctx == nil || r.Key == "" || r.SourceKey == "" || r.UserID == "" || r.CredentialID == "" ||
 		r.Source.Name == "" || r.Source.ID == "" || r.Source.Domain == "" ||
@@ -62,7 +64,11 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 	if source.Validate() != nil || object.Validate() != nil {
 		return CopyResult{}, storage.ErrInvalid
 	}
-	src, err := s.o.Metadata.GetObject(ctx, source)
+	deadline, _, err := s.deadline(ctx)
+	if err != nil {
+		return CopyResult{}, err
+	}
+	src, sourceDone, err := s.o.Reader.BindSource(ctx, source, deadline)
 	switch {
 	case errors.Is(err, storage.ErrBucketNotFound):
 		return CopyResult{}, ErrNoSuchCopySourceBucket
@@ -71,9 +77,13 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 	case err != nil:
 		return CopyResult{}, err
 	}
+	sourceHeld := true
+	defer func() {
+		if sourceHeld {
+			_ = sourceDone(ctx)
+		}
+	}()
 	switch {
-	case src.Deleted:
-		return CopyResult{}, ErrNoSuchCopySource
 	case src.Size > MaxCopyBytes:
 		return CopyResult{}, ErrCopySourceTooLarge
 	case src.Domain != r.Bucket.Domain:
@@ -128,6 +138,11 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 		return CopyResult{}, err
 	}
 	prepared, err := session.PrepareCopy(src, manifestID)
+	if err == nil {
+		// Every source generation is now pinned by the destination writer.
+		sourceHeld = false
+		err = sourceDone(ctx)
+	}
 	if err != nil {
 		s.release(ctx, reservationID, opID, fence)
 		return CopyResult{}, fmt.Errorf("prepare copy: %w", err)
