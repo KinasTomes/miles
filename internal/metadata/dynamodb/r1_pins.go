@@ -56,7 +56,7 @@ func (m *Store) PinR1(ctx context.Context, f s.WriterFence, refs []s.PackRef) er
 		if err != nil {
 			return err
 		}
-		if !l.Resolving {
+		if !l.Resolving || l.Kind == "recovery" {
 			return s.ErrFenced
 		}
 		for _, p := range refs {
@@ -231,6 +231,9 @@ func (m *Store) ReleaseR1(ctx context.Context, f s.WriterFence) error {
 				if err = r1Put(t, r1GateKey(), g); err != nil {
 					return err
 				}
+			}
+			if err := m.recordRecoveryClosure(t, l); err != nil {
+				return err
 			}
 			return r1Put(t, r1LeaseKey(f.LeaseID), l)
 		})

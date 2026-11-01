@@ -36,6 +36,17 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if m.requireProducers && r.Producer == nil {
 			return s.ErrFenced
 		}
+		if r.Producer == nil {
+			if _, shared := m.authority.(*SharedAuthority); shared {
+				g, err := r1Read[s.R1Gate](t, r1GateKey())
+				if err != nil {
+					return err
+				}
+				if g.RecoveryEnabled {
+					return s.ErrFenced
+				}
+			}
+		}
 		if err := r.Validate(); err != nil {
 			return err
 		}

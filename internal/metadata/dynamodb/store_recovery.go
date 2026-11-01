@@ -87,6 +87,12 @@ func (m *Store) MarkOutboxExported(ctx context.Context, p s.OutboxExport) error 
 		return err
 	}
 	return m.update(ctx, func(t *transaction) error {
+		if _, shared := m.authority.(*SharedAuthority); shared {
+			if err := m.recoveryFence(t, p.Worker, true); err != nil {
+				return err
+			}
+		}
+		p.Worker = s.WriterFence{} // progress is independent of an export attempt
 		e, err := get[s.OutboxEvent](t, key("events", p.Event.ID))
 		if err != nil {
 			return err

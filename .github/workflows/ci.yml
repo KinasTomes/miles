@@ -32,14 +32,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Start pinned ephemeral DynamoDB Local
+      - name: Start pinned ephemeral DynamoDB Local and recovery S3 emulator
         shell: bash
         run: |
           set -euo pipefail
-          docker compose -f deploy/local/compose.yaml -p miles-metadata-contract up -d dynamodb
+          docker compose -f deploy/local/compose.yaml -p miles-metadata-contract up -d dynamodb s3
           address=$(docker compose -f deploy/local/compose.yaml -p miles-metadata-contract port dynamodb 8000)
           echo "MILES_DDB_LOCAL_ENDPOINT=http://${address}" >> "$GITHUB_ENV"
           echo "MILES_DDB_LOCAL_REQUIRED=1" >> "$GITHUB_ENV"
+          s3_address=$(docker compose -f deploy/local/compose.yaml -p miles-metadata-contract port s3 5000)
+          echo "MILES_RECOVERY_S3_ENDPOINT=http://${s3_address}" >> "$GITHUB_ENV"
+          echo "MILES_RECOVERY_S3_REQUIRED=1" >> "$GITHUB_ENV"
       - name: Run shared contracts and fault tests against native DynamoDB
         run: go test -v -race -count=1 -timeout=10m ./internal/metadata/dynamodb ./internal/metadata/badger ./internal/storage/contracttest ./internal/readpath
       - name: Remove only this job's ephemeral fixtures

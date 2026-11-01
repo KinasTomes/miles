@@ -282,6 +282,7 @@ type observedRow struct {
 }
 type transaction struct {
 	r1Fences        map[s.WriterFence]bool
+	recoveryFences  map[s.WriterFence]bool
 	store           *Store
 	ctx             context.Context
 	rows            map[string]*observedRow

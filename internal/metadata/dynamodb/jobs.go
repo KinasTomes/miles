@@ -53,7 +53,7 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 			return e
 		}
 		if c.WorkerChange() {
-			if e = m.fence(t, c.Fence); e != nil {
+			if e = m.jobFence(t, old.Type, c.Fence); e != nil {
 				return e
 			}
 			n, e := get[jobs.Node](t, key("nodes", c.NodeID))
@@ -80,6 +80,19 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 		return put(t, key("jobs", c.JobID), out)
 	})
 	return out, e
+}
+
+func (m *Store) jobFence(t *transaction, kind jobs.Type, f s.WriterFence) error {
+	if _, shared := m.authority.(*SharedAuthority); shared && kind == "journal_flush" {
+		l, err := r1Read[s.R1Lease](t, r1LeaseKey(f.LeaseID))
+		if err != nil {
+			return err
+		}
+		if l.Kind == "recovery" {
+			return m.recoveryFence(t, f, true)
+		}
+	}
+	return m.fence(t, f)
 }
 func (m *Store) GetNode(ctx context.Context, id string) (jobs.Node, error) {
 	if !jobs.ValidID(id) {

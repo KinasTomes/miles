@@ -18,6 +18,9 @@ func (t multipartTx) Admit(c s.MutationContext) error {
 	}
 	return t.m.fence(t.t, c.Writer)
 }
+
+// Local Badger has no distributed epoch closure; its exporter remains usable.
+func (t multipartTx) RecordRecoveryEvent(s.MutationContext, s.OutboxEvent) error { return nil }
 func (m *Store) MutateControl(ctx context.Context, r s.ControlMutation) (s.MutationResult, error) {
 	return m.multipartOps().Mutate(ctx, r)
 }
