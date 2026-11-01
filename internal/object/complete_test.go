@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/multipart/core"
 	"github.com/KinasTomes/miles/internal/storage"
 )
@@ -486,9 +487,9 @@ func TestRecoverUploadResumesFrozenInput(t *testing.T) {
 	}
 }
 
-// An expired Completing upload is not removed by time: only a takeover
-// closes its attempt and aborts it, releasing the reservation once.
-func TestRecoverExpiredCompletingAborts(t *testing.T) {
+// A Completing upload is not removed by time: past expires_at a takeover
+// still resumes its frozen input and commits once (API v2 4.3.1).
+func TestRecoverExpiredCompletingResumes(t *testing.T) {
 	ctx := context.Background()
 	f := newServiceFixtureQuota(t, nil, 64*mib)
 	data := map[uint32][]byte{1: random(t, 5*mib), 2: random(t, 3<<10)}
@@ -507,8 +508,42 @@ func TestRecoverExpiredCompletingAborts(t *testing.T) {
 	if s := f.state(t, ctx, u.ID); s.State != "Completing" || f.quota(t, ctx).Staged == 0 {
 		t.Fatal("expiry alone changed a Completing upload", s.State)
 	}
-	if _, err := f.service.RecoverUpload(ctx, u.ID); err == nil {
-		t.Fatal("an expired upload was completed")
+	head, err := f.service.RecoverUpload(ctx, u.ID)
+	if err != nil {
+		t.Fatal("takeover past expires_at", err)
+	}
+	if _, got := f.get(t, ctx, "k", nil); string(got) != string(concat(data[1], data[2])) {
+		t.Fatal("read back differs")
+	}
+	if q := f.quota(t, ctx); q.Used != head.Size || q.Reserved != 0 || q.Staged != 0 || q.ActiveUploads != 0 {
+		t.Fatalf("quota %+v", q)
+	}
+}
+
+// A takeover past expires_at that fails a known check cannot reopen an
+// expired upload: it aborts and releases the reservation once.
+func TestExpiredTakeoverFailureAborts(t *testing.T) {
+	ctx := context.Background()
+	f := newServiceFixtureQuota(t, nil, 64*mib)
+	data := map[uint32][]byte{1: random(t, 5*mib), 2: random(t, 3<<10)}
+	u, res := f.stage(t, ctx, "k", "CRC64NVME", "FULL_OBJECT", data)
+	in := input(u, res, false, 1, 2)
+	refuse := func(prefix string, err error) func(string) error {
+		return func(op string) error {
+			if strings.HasPrefix(op, prefix) {
+				return err
+			}
+			return nil
+		}
+	}
+	f.refuse = refuse("prepare/", storage.ErrUnavailable)
+	if _, err := f.complete(ctx, u.ID, in); err == nil {
+		t.Fatal("killed attempt completed")
+	}
+	f.advance(25 * time.Hour)
+	f.refuse = refuse("commit/", storage.ErrQuotaExceeded)
+	if _, err := f.complete(ctx, u.ID, in); !errors.Is(err, storage.ErrQuotaExceeded) {
+		t.Fatal(err)
 	}
 	if s := f.state(t, ctx, u.ID); s.State != "Aborted" {
 		t.Fatal("upload", s.State)
@@ -517,8 +552,62 @@ func TestRecoverExpiredCompletingAborts(t *testing.T) {
 	if q.Used != 0 || q.Reserved != 0 || q.Staged != 0 || q.ActiveUploads != 0 {
 		t.Fatalf("quota %+v", q)
 	}
+	f.refuse = nil
 	if _, err := f.service.RecoverUpload(ctx, u.ID); !errors.Is(err, storage.ErrConflict) || f.quota(t, ctx) != q {
-		t.Fatal("second recovery", err)
+		t.Fatal("recovery after abort", err)
+	}
+}
+
+// A prepare longer than the 60 s completion lease keeps its fence: the
+// heartbeat renews the lease while it runs, and the first attempt commits.
+func TestCompleteRenewsLeaseDuringLongPrepare(t *testing.T) {
+	ctx := context.Background()
+	f := newServiceFixtureQuota(t, nil, 64*mib)
+	// The writer's own deadline must outlast the slow prepare.
+	o := f.options
+	o.RequestTimeout = 30 * time.Minute
+	service, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service = service
+	v := o.Clock.(*clock.Virtual)
+	data := map[uint32][]byte{1: random(t, 5*mib), 2: random(t, 3<<10)}
+	u, res := f.stage(t, ctx, "k", "CRC64NVME", "FULL_OBJECT", data)
+	renewals := 0
+	f.before = func(op string) {
+		if !strings.HasPrefix(op, "prepare/") {
+			return
+		}
+		// 75 s of metadata time pass in 15 s steps; each step waits until
+		// the heartbeat, driven by the service clock, renewed the lease.
+		for range 5 {
+			lease := f.state(t, ctx, u.ID).LeaseUntil
+			f.advance(15 * time.Second)
+			for i := 0; i < 400 && !f.state(t, ctx, u.ID).LeaseUntil.After(lease); i++ {
+				if err := v.Advance(time.Second); err != nil {
+					t.Error(err)
+					return
+				}
+				time.Sleep(2 * time.Millisecond)
+			}
+			if f.state(t, ctx, u.ID).LeaseUntil.After(lease) {
+				renewals++
+			}
+		}
+	}
+	head, err := f.complete(ctx, u.ID, input(u, res, false, 1, 2))
+	if err != nil {
+		t.Fatalf("complete with a 75 s prepare after %d renewals: %v", renewals, err)
+	}
+	if renewals != 5 {
+		t.Fatal("renewals", renewals)
+	}
+	if _, got := f.get(t, ctx, "k", nil); string(got) != string(concat(data[1], data[2])) {
+		t.Fatal("read back differs")
+	}
+	if q := f.quota(t, ctx); q.Used != head.Size || q.Reserved != 0 || q.Staged != 0 || q.ActiveUploads != 0 {
+		t.Fatalf("quota %+v", q)
 	}
 }
 

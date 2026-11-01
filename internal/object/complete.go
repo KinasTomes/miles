@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/engine/write"
@@ -76,12 +77,17 @@ func (s *Service) receipt(ctx context.Context, id, credentialID, digest string) 
 	return r.Head, err
 }
 
+// renewEvery is the completion lease heartbeat of API v2 4.3 (lease 60 s).
+const renewEvery = 15 * time.Second
+
 // completion is one attempt at an upload's completion op: its admitted writer
-// and the latest upload record the attempt wrote or read.
+// and the latest upload record the attempt wrote or read. Once run starts,
+// the lease heartbeat shares u, so it is read and written under mu.
 type completion struct {
 	s                *Service
 	ctx              context.Context
 	session          *write.WriteSession
+	mu               sync.Mutex
 	u                storage.MultipartUpload
 	op               string
 	fence            storage.WriterFence
@@ -89,10 +95,27 @@ type completion struct {
 	takeover         bool
 }
 
+func (c *completion) upload() storage.MultipartUpload {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.u
+}
+
+// observe keeps the newest record of this attempt: a reply that arrives
+// after a newer CAS of the same fence never moves u back.
+func (c *completion) observe(u storage.MultipartUpload) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if u.Fence == c.u.Fence && u.Revision > c.u.Revision {
+		c.u = u
+	}
+}
+
 // request is the next CAS on the upload this attempt holds.
 func (c *completion) request() storage.MultipartRequest {
-	return storage.MultipartRequest{UploadID: c.u.ID, Credential: c.credential, OpID: c.op,
-		ExpectedRevision: c.u.Revision, Fence: c.u.Fence, Writer: c.fence}
+	u := c.upload()
+	return storage.MultipartRequest{UploadID: u.ID, Credential: c.credential, OpID: c.op,
+		ExpectedRevision: u.Revision, Fence: u.Fence, Writer: c.fence}
 }
 
 func (s *Service) complete(ctx context.Context, u storage.MultipartUpload, in core.Input, userID, credentialID string) (storage.ObjectHead, error) {
@@ -157,16 +180,16 @@ func (c *completion) freeze(in core.Input) error {
 }
 
 // claim takes a Completing upload over with a new fence once its lease and
-// grace have passed. An expired upload (ErrFenced) or a revoked initiator
-// cannot be resumed: the attempt is closed and the upload aborted, releasing
-// once. A fence that is not ours fails that close too and changes nothing.
+// grace have passed, even past expires_at (API v2 4.3.1). A revoked
+// initiator cannot resume it: the attempt is closed and the upload aborted,
+// releasing once.
 func (c *completion) claim() error {
 	u, err := c.s.o.Uploads.ClaimCompletion(c.ctx, c.request())
 	if err == nil {
 		c.u = u
 		return nil
 	}
-	if errors.Is(err, storage.ErrFenced) || errors.Is(err, storage.ErrAccessDenied) {
+	if errors.Is(err, storage.ErrAccessDenied) {
 		c.abandon()
 	}
 	return err
@@ -175,7 +198,11 @@ func (c *completion) claim() error {
 // run is steps 1-3 after the freeze: close every provisional publisher,
 // snapshot and check the selected part heads (rows 6-11), prepare the object
 // manifest and commit head, quota, outbox and receipt in one transaction.
+// The completion lease is renewed every 15 s meanwhile, so a long snapshot
+// or prepare keeps its fence.
 func (c *completion) run(in core.Input) (storage.ObjectHead, error) {
+	stop := c.keepAlive()
+	defer stop()
 	if err := c.closePublishers(); err != nil {
 		return storage.ObjectHead{}, err
 	}
@@ -183,33 +210,48 @@ func (c *completion) run(in core.Input) (storage.ObjectHead, error) {
 	if err != nil {
 		return storage.ObjectHead{}, err
 	}
-	// ponytail: the lease is renewed between steps, not on a timer; one step
-	// over 60 s (Prepare of a huge upload on a slow store) loses the fence to
-	// a takeover. Add a heartbeat if that shows up.
-	if err := c.renew(); err != nil {
-		return storage.ObjectHead{}, err
-	}
 	manifestID, err := write.NewManifestID()
 	if err != nil {
 		return storage.ObjectHead{}, err
 	}
 	_, err = c.session.PrepareCompletion(manifestID, func(ctx context.Context, _ storage.WriterFence) (storage.ObjectHead, error) {
+		// Prepare is bound to this attempt's fence, not to the revision the
+		// heartbeat keeps moving.
 		u, err := c.s.o.Uploads.PrepareCompletion(ctx, storage.PrepareCompletionRequest{Request: c.request(), Snapshot: snapshot,
-			Head: storage.ObjectHead{Object: c.u.Object, ManifestID: manifestID}})
+			Head: storage.ObjectHead{Object: c.upload().Object, ManifestID: manifestID}})
 		if err != nil {
 			return storage.ObjectHead{}, err
 		}
-		c.u = u
+		c.observe(u)
 		return u.Prepared, nil
 	})
 	if err != nil {
 		return storage.ObjectHead{}, err
 	}
-	// Renewal rechecks the initiator's right before publication.
+	// The commit conditions on the exact Completing revision: stop the
+	// heartbeat, then one renewal rechecks the initiator's right and fixes
+	// the revision the transaction expects.
+	stop()
 	if err := c.renew(); err != nil {
 		return storage.ObjectHead{}, err
 	}
 	return c.commit()
+}
+
+// keepAlive renews the completion lease every renewEvery until the returned
+// stop, which waits for an in-flight renewal. A failed renewal is retried on
+// the next beat; losing the lease fails the step that needs it.
+func (c *completion) keepAlive() (stop func()) {
+	ctx, cancel := context.WithCancel(c.ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for c.s.o.Clock.Sleep(ctx, renewEvery) == nil {
+			_ = c.renew()
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { cancel(); <-done }) }
 }
 
 // closePublishers cancels every publisher still open at the freeze: the
@@ -217,7 +259,7 @@ func (c *completion) run(in core.Input) (storage.ObjectHead, error) {
 // provisional bytes return. Packs it wrote wait for GC.
 func (c *completion) closePublishers() error {
 	for after := ""; ; {
-		page, err := c.s.o.Uploads.ListPublishers(c.ctx, c.u.ID, after, 1000)
+		page, err := c.s.o.Uploads.ListPublishers(c.ctx, c.upload().ID, after, 1000)
 		if err != nil {
 			return err
 		}
@@ -234,14 +276,14 @@ func (c *completion) closePublishers() error {
 		}
 		after = page.Next
 	}
-	u, err := c.s.o.Uploads.GetUpload(c.ctx, c.u.ID)
+	u, err := c.s.o.Uploads.GetUpload(c.ctx, c.upload().ID)
 	if err != nil {
 		return err
 	}
-	if u.State != "Completing" || u.Fence != c.u.Fence || u.Publishers != 0 || u.ProvisionalBytes != 0 {
+	if u.State != "Completing" || u.Fence != c.upload().Fence || u.Publishers != 0 || u.ProvisionalBytes != 0 {
 		return storage.ErrUnavailable
 	}
-	c.u = u
+	c.observe(u)
 	return nil
 }
 
@@ -283,12 +325,28 @@ func (c *completion) snapshot(in core.Input) (storage.StreamDescriptor, error) {
 	})
 }
 
+// renew extends this attempt's lease. Renewal CASes the revision, which this
+// attempt's own cancellations, prepare or heartbeat may have moved: it
+// rereads the upload and retries while the fence is still this attempt's.
 func (c *completion) renew() error {
-	u, err := c.s.o.Uploads.RenewCompletion(c.ctx, c.request())
-	if err == nil {
-		c.u = u
+	for attempt := 1; ; attempt++ {
+		u, err := c.s.o.Uploads.RenewCompletion(c.ctx, c.request())
+		if err == nil {
+			c.observe(u)
+			return nil
+		}
+		if !errors.Is(err, storage.ErrConflict) || attempt == maxPartAttempts {
+			return err
+		}
+		current, e := c.s.o.Uploads.GetUpload(c.ctx, c.upload().ID)
+		if e != nil {
+			return e
+		}
+		if current.State != "Completing" || current.Fence != c.upload().Fence {
+			return err
+		}
+		c.observe(current)
 	}
-	return err
 }
 
 // commit is the R2 transaction of step 3: head CAS, quota, outbox and the

@@ -82,26 +82,28 @@ func RunMultipartRecovery(t *testing.T, factory MultipartFactory) {
 				if result, err := recovery.ResolveCompletion(ctx, r); !errors.Is(err, s.ErrConflict) || result.Disposition != s.RecoveryUnknown {
 					t.Fatal("grace became proof", result, err)
 				}
+				// Takeover starts after lease+grace and is not stopped by
+				// business expiry: the frozen attempt resumes past expires_at.
+				at := u.LeaseUntil.Add(5 * time.Second)
 				if scenario == "expired-completion" {
-					h.SetTime(u.ExpiresAt)
-				} else {
-					h.SetTime(u.LeaseUntil.Add(5 * time.Second))
-					old := r
-					previous := u
-					u, err = m.ClaimCompletion(ctx, r)
-					if err != nil || u.Fence != previous.Fence+1 || u.Input != previous.Input || u.CompletionOp != previous.CompletionOp {
-						t.Fatal("takeover changed frozen identity", u, err)
-					}
-					if _, err = m.ReopenUpload(ctx, old); !errors.Is(err, s.ErrConflict) {
-						t.Fatal("stale worker changed new attempt", err)
-					}
-					r.ExpectedRevision, r.Fence = u.Revision, u.Fence
-					u, err = m.RenewCompletion(ctx, r)
-					if err != nil {
-						t.Fatal("takeover renewal", err)
-					}
-					r.ExpectedRevision = u.Revision
+					at = u.ExpiresAt
 				}
+				h.SetTime(at)
+				old := r
+				previous := u
+				u, err = m.ClaimCompletion(ctx, r)
+				if err != nil || u.Fence != previous.Fence+1 || u.Input != previous.Input || u.CompletionOp != previous.CompletionOp {
+					t.Fatal("takeover changed frozen identity", u, err)
+				}
+				if _, err = m.ReopenUpload(ctx, old); !errors.Is(err, s.ErrConflict) {
+					t.Fatal("stale worker changed new attempt", err)
+				}
+				r.ExpectedRevision, r.Fence = u.Revision, u.Fence
+				u, err = m.RenewCompletion(ctx, r)
+				if err != nil {
+					t.Fatal("takeover renewal", err)
+				}
+				r.ExpectedRevision = u.Revision
 				result, err := recovery.ResolveCompletion(ctx, r)
 				if err != nil || result.Disposition != s.RecoveryClosed || result.Upload.State != "Aborting" || result.Upload.ClosedFence != u.Fence || result.Upload.ClosedWriter != r.Writer {
 					t.Fatal(result, err)

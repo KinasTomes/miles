@@ -34,12 +34,22 @@ func ValidStaging(t Tx, r s.CommitRequest, ledger s.Reservation) bool {
 	return err == nil && u.Fence == r.MultipartAttempt && u.Publishers == 0 && u.ProvisionalBytes == 0 && u.PublishedBytes == ledger.StagedBytes && ledger.StagedBytes >= r.Head.Size
 }
 
+// attempt is the completion attempt r holds: the upload and its nonzero
+// fence. Prepare conditions on it rather than the upload revision, so the
+// attempt's own lease renewals during a long prepare do not invalidate it.
+func attempt(u s.MultipartUpload, r s.MultipartRequest) error {
+	if u.ID != r.UploadID || r.Fence == 0 || u.Fence != r.Fence {
+		return s.ErrConflict
+	}
+	return nil
+}
+
 func (m Multipart) Prepare(ctx context.Context, r s.PrepareCompletionRequest) (s.MultipartUpload, error) {
 	u, err := m.Get(ctx, r.Request.UploadID)
 	if err != nil {
 		return u, err
 	}
-	if u.State != "Completing" || check(u, r.Request) != nil || u.Publishers != 0 || u.Writer != r.Request.Writer || !m.Now().Before(u.LeaseUntil) {
+	if u.State != "Completing" || attempt(u, r.Request) != nil || u.Publishers != 0 || u.Writer != r.Request.Writer || !m.Now().Before(u.LeaseUntil) {
 		return u, s.ErrFenced
 	}
 	input, err := m.stream(ctx, u.Input)
@@ -133,7 +143,7 @@ func (m Multipart) Prepare(ctx context.Context, r s.PrepareCompletionRequest) (s
 		if err = m.auth(t, r.Request, current, true); err != nil {
 			return err
 		}
-		if check(current, r.Request) != nil || current.State != "Completing" || current.Publishers != 0 || current.Writer != r.Request.Writer || !m.Now().Before(current.LeaseUntil) {
+		if attempt(current, r.Request) != nil || current.State != "Completing" || current.Publishers != 0 || current.Writer != r.Request.Writer || !m.Now().Before(current.LeaseUntil) {
 			return s.ErrFenced
 		}
 		current.Snapshot = r.Snapshot
@@ -181,9 +191,8 @@ func (m Multipart) Lease(ctx context.Context, r s.MultipartRequest, takeover boo
 			}
 			u.Fence++
 			u.Writer = r.Writer
-			if !m.Now().Before(u.ExpiresAt) {
-				return s.ErrFenced
-			}
+			// Business expiry does not stop a takeover (API v2 4.3.1): the
+			// frozen input resumes under the same op even past expires_at.
 			if err = m.auth(t, r, u, true); err != nil {
 				return err
 			}

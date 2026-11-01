@@ -1,17 +1,18 @@
 # CompleteMultipartUpload validation
 
-Task **W04-CHIEN-03**, ngày 01/11/2026, từ `origin/main` `98ad195`. Hard dependencies
-W04-CHIEN-02, W04-HAI-01, W04-HAI-02 và W04-PHONG-03 đã Done trên backlog. Acceptance:
-large multipart upload/read-back đúng; lost-response retry không tái tạo object hoặc
-double quota; kill tests lõi pass. Hợp đồng: [API §2.6, §2.7, §4.3, §4.3.1](../dedup-storage-gateway-api.md),
+Ngày 01/11/2026, từ `origin/main` `98ad195`. Phụ thuộc: handler và service part
+multipart (Create/UploadPart/ListParts/Abort), adapter DynamoDB với transaction commit/quota,
+multipart pages/receipt/producer và R1 gate/lease/pins. Acceptance: large multipart
+upload/read-back đúng; lost-response retry không tái tạo object hoặc double quota; kill
+tests lõi pass. Hợp đồng: [API §2.6, §2.7, §4.3, §4.3.1](../dedup-storage-gateway-api.md),
 [multipart metadata handoff](../contracts/multipart-metadata-handoff.md).
 
 | Checklist | Implementation / proof |
 |---|---|
 | Input digest trước freeze; hủy publisher rồi quiesce; snapshot pages bất biến | `completion.freeze` ghi page kind 3 rồi `FreezeCompletion`; `closePublishers` (`CancelPartPublisher`, kiểm `Publishers = ProvisionalBytes = 0`); `snapshot` ghi page kind 4 từ part head hiện hành. `TestCompleteCancelsOpenPublisher`, `TestRecoverUploadResumesFrozenInput` (resume từ input kind 3 đã freeze) |
-| Commit head/quota/outbox/Completed receipt cùng transaction; fence/lease/quyền trước publish | `WriteSession.PrepareCompletion` + `WriteSession.Commit` với `MultipartAttempt`, projection Completing, receipt 7 ngày; `RenewCompletion` (kiểm lại quyền initiator) trước prepare và commit. `TestCompleteLargeUploadReadsBackOnce`, `TestCompleteQuotaExceededKeepsReservation`, `TestCompleteDeniedCommit` |
+| Commit head/quota/outbox/Completed receipt cùng transaction; fence/lease/quyền trước publish | `WriteSession.PrepareCompletion` + `WriteSession.Commit` với `MultipartAttempt`, projection Completing, receipt 7 ngày; heartbeat `RenewCompletion` 15 giây (kiểm lại quyền initiator) trong lúc snapshot/prepare, một renewal cuối trước commit. `TestCompleteLargeUploadReadsBackOnce`, `TestCompleteQuotaExceededKeepsReservation`, `TestCompleteDeniedCommit`, `TestCompleteRenewsLeaseDuringLongPrepare` |
 | CRC full combine, SHA/CRC composite, gap/order/size, retry identical/different, receipt trước Active expiry | `TestCompleteChecksumModes`, `TestCompleteValidationReopensActive`, `TestCompleteLargeUploadReadsBackOnce`; thứ tự/digest qua router và SDK: `TestSDKComplete` |
-| Takeover sau lease/grace; unknown outcome giữ pins/reservation, đọc op_id/receipt; không TTL mù Completing | `TestCompleteKillPointsTakeOverOnce`, `TestCompleteLostCommitResponse`, `TestRecoverUploadResumesFrozenInput`, `TestRecoverExpiredCompletingAborts` |
+| Takeover sau lease/grace; unknown outcome giữ pins/reservation, đọc op_id/receipt; không TTL mù Completing | `TestCompleteKillPointsTakeOverOnce`, `TestCompleteLostCommitResponse`, `TestRecoverUploadResumesFrozenInput`, `TestRecoverExpiredCompletingResumes`, `TestExpiredTakeoverFailureAborts`; contract store `expired-completion` (claim quá `expires_at`) và `complete-subset-and-receipt` (prepare sau renewal) trên Badger + DynamoDB Local |
 
 ## Kiểm thử tự động
 
@@ -46,8 +47,14 @@ thật (`internal/object`); router + handler + AWS SDK Go v2 trên service giả
   không commit lại; retry trả receipt; quota một lần.
 - `RecoverUpload` (đầu vào `recover_uploads`): trong grace (62 giây) `ErrConflict`, sau
   66 giây resume input kind 3 đã freeze và commit. Completing quá 25 giờ vẫn Completing
-  (không TTL); recovery không resume upload hết hạn: attempt bị đóng, upload Aborted,
-  `Reserved = Staged = ActiveUploads = 0` một lần; recovery lặp lại không đổi counters.
+  (không TTL); recovery vẫn takeover sau `expires_at` (bảng 4.3.1), commit một lần, GET
+  đúng, quota trừ một lần.
+- Takeover quá `expires_at` gặp lỗi đã biết (hook trả `ErrQuotaExceeded` ở commit): reopen
+  bị từ chối vì upload hết hạn, upload Aborted, `Reserved = Staged = ActiveUploads = 0`
+  một lần; recovery lặp lại không đổi counters.
+- Prepare dài 75 giây clock metadata (hook trước dispatch, 5 bước 15 giây; clock service
+  điều khiển heartbeat): lease được gia hạn 5 lần, attempt đầu commit, GET đúng, quota một
+  lần. Tắt heartbeat thì cùng test fail (0 lần gia hạn, prepare mất fence).
 - Commit bị từ chối quyền (hook trả `ErrAccessDenied`): attempt của client → Active,
   quota giữ; attempt takeover → Aborted, release một lần.
 - Router + SDK: Active tới service với input đã chuẩn hóa (ETag bỏ ngoặc, chữ thường),
@@ -81,18 +88,18 @@ Client: AWS CLI 2.36.41 (bản pin, Windows) và boto3 1.43.122 không awscrt.
 
 ## Giới hạn và bàn giao
 
-- Lịch sweeper `recover_uploads` mỗi 60 giây (job, lease job, quét Completing) là
-  W05-CHIEN-02; task này giao `object.Service.RecoverUpload` cho một upload. Admission của
-  recovery dùng credential lưu trong upload: credential bị thu hồi thì local authority từ
-  chối admit, upload giữ Completing cho recovery authority sau này.
-- `ClaimCompletion` (W04-HAI-02) từ chối takeover khi quá `expires_at`, nên Completing quá
-  hạn được Abort (bước 4) thay vì resume như dòng Completing của bảng 4.3.1 ("kể cả quá
-  `expires_at`"). Cần chốt hợp đồng nếu muốn resume.
-- Lease gia hạn giữa các bước, không theo timer; một bước (prepare upload rất lớn) quá 60
-  giây mất fence cho takeover. Takeover luôn snapshot/prepare lại (part không đổi khi
-  Completing), không dùng lại manifest đã prepare của attempt cũ; manifest đó chờ GC.
+- Lịch sweeper `recover_uploads` mỗi 60 giây (job, lease job, quét Completing) chưa có;
+  service giao `object.Service.RecoverUpload` cho một upload. Admission của recovery dùng
+  credential lưu trong upload: credential bị thu hồi thì local authority từ chối admit,
+  upload giữ Completing cho recovery authority sau này.
+- `PrepareCompletion` vẫn dispatch qua `Writer.Do`, giữ lock registry R1 suốt lúc backend
+  prepare đọc part pages và ghi manifest pages; heartbeat R1 lease của writer chờ trong lúc
+  đó. Prepare bị chặn bởi 100 GiB/`MaxPages`; prepare thật dài hơn lease R1 60 giây chưa
+  được đo.
+- Takeover luôn snapshot/prepare lại (part không đổi khi Completing), không dùng lại
+  manifest đã prepare của attempt cũ; manifest đó chờ GC.
 - Quyền bị thu hồi thật được chứng minh ở contract store (commit/renew kiểm initiator); test
-  service mô phỏng từ chối bằng hook writer. Đường HTTP chỉ chạy trên Badger; DynamoDB đã
-  pass contract multipart của W04-HAI-02, chưa chạy qua service này.
+  service mô phỏng từ chối bằng hook writer. Đường HTTP chỉ chạy trên Badger; DynamoDB pass
+  contract multipart, chưa chạy qua service này.
 - Local authority cấp lease mới cho mỗi lần admit thay vì một lease cố định theo op, để
   retry/takeover admit lại completion op; không lease nào bị dùng lại.
