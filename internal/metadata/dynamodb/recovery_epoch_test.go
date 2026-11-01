@@ -620,3 +620,172 @@ func TestLocalRecoveryEnablementBlocksLegacyPeerBypass(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestLocalRecoveryHourlyCutSurvivesShortLeaseRestarts(t *testing.T) {
+	f := newRecoveryFixture(t)
+	ctx := context.Background()
+	request, producer := f.mutation(t, "hourly-cadence")
+	if _, err := f.m.MutateControl(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	f.release(t, producer)
+	start := f.utc.Now()
+	for generation := uint64(1); generation <= 7; generation++ {
+		fence := f.worker
+		if generation > 1 {
+			fence = f.acquire(t, f.worker.LeaseID, "recovery", "", generation)
+		}
+		store := f.m
+		if generation%2 == 0 {
+			store = f.peer
+		}
+		worker := f.service(store, fence)
+		runCtx, cancel := context.WithCancel(ctx)
+		done := make(chan error, 1)
+		joined := false
+		t.Cleanup(func() {
+			cancel()
+			if !joined {
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					t.Error("worker did not join")
+				}
+			}
+		})
+		go func() { done <- worker.Run(runCtx) }()
+		// Each authority has a nine-minute hard deadline; the seventh owner must
+		// seal the original epoch at hour one, rather than start a new hour.
+		for tick := 0; tick < 36; tick++ {
+			deadline := time.Now().Add(10 * time.Second)
+			for f.local.Pending() < 2 {
+				select {
+				case err := <-done:
+					joined = true
+					t.Fatalf("generation %d stopped before hard deadline: %v", generation, err)
+				default:
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("worker did not register its timers")
+				}
+				runtime.Gosched()
+			}
+			f.utc.Advance(15 * time.Second)
+			if err := f.local.Advance(15 * time.Second); err != nil {
+				t.Fatal(err)
+			}
+			if generation == 2 && tick == 0 {
+				if err := f.local.SetWall(start.Add(48 * time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		select {
+		case err := <-done:
+			joined = true
+			if !errors.Is(err, s.ErrFenced) && !errors.Is(err, context.Canceled) {
+				t.Fatal("unexpected worker exit", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("worker continued past its hard deadline")
+		}
+		cancel()
+		lease, err := store.GetR1Lease(ctx, fence.LeaseID)
+		if err != nil || !lease.Deadline.Equal(start.Add(time.Duration(generation)*9*time.Minute)) {
+			t.Fatal("renewal extended hard deadline", lease, err)
+		}
+		f.release(t, fence)
+		gate, err := store.GetR1Gate(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if generation < 7 && gate.Epoch != 0 {
+			t.Fatal("epoch closed before its hourly schedule", gate)
+		}
+	}
+	epoch, err := f.peer.GetRecoveryEpoch(ctx, f.catalog.History, 0)
+	if err != nil || epoch.State != "Sealed" {
+		t.Fatalf("hourly epoch never sealed across seven nine-minute leases: state=%s err=%v", epoch.State, err)
+	}
+	if !epoch.CutAt.Equal(start.Add(time.Hour)) {
+		t.Fatal("successor reset the persisted hourly schedule", epoch.CutAt)
+	}
+	if _, err := recovery.VerifyCut(ctx, f.objects, f.catalog, 0); err != nil {
+		t.Fatal(err)
+	}
+	state, err := f.peer.GetRecoveryState(ctx, f.catalog.History)
+	if err != nil || state.NextCutEpoch != 1 || !state.NextCutAt.Equal(epoch.CutAt.Add(time.Hour)) {
+		t.Fatal("next schedule did not advance with Closed", state, err)
+	}
+}
+
+type uncertainRecoveryTime struct{ s.R1TimeSource }
+
+func (u uncertainRecoveryTime) Bounds(ctx context.Context) (s.R1Bounds, error) {
+	b, err := u.R1TimeSource.Bounds(ctx)
+	b.Lower = b.Lower.Add(-time.Second)
+	b.Upper = b.Upper.Add(time.Second)
+	return b, err
+}
+
+func TestLocalRecoveryScheduleUsesValidatedTimeAndSurvivesAbort(t *testing.T) {
+	f := newRecoveryFixture(t)
+	ctx := context.Background()
+	initial, err := f.m.GetRecoveryState(ctx, f.catalog.History)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.NextCutEpoch != 0 || !initial.NextCutAt.Equal(f.utc.Now().Add(time.Hour)) {
+		t.Fatal(initial)
+	}
+	f.release(t, f.worker)
+	f.utc.Advance(time.Hour)
+	fence := f.acquire(t, f.worker.LeaseID, "recovery", "", 2)
+	f.m.authority.(*SharedAuthority).Time = uncertainRecoveryTime{f.utc}
+	epoch, due, err := f.m.RecoveryCutDue(ctx, f.catalog.History, fence)
+	if err != nil || due || epoch != 0 {
+		t.Fatal("upper bound alone triggered a cut", epoch, due, err)
+	}
+	f.utc.Advance(time.Second)
+	if epoch, due, err = f.m.RecoveryCutDue(ctx, f.catalog.History, fence); err != nil || !due || epoch != 0 {
+		t.Fatal("lower-bound equality did not trigger cut", epoch, due, err)
+	}
+	base, err := f.objects.Read(ctx, "recovery/histories/"+f.catalog.History+"/genesis-"+f.catalog.Genesis.SHA256+".json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = recovery.ProvisionHistory(ctx, f.m, f.objects, f.catalog, base); err != nil {
+		t.Fatal(err)
+	}
+	cut := f.request(epoch)
+	cut.Worker = fence
+	if _, err = f.m.BeginRecoveryCut(ctx, cut); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.m.AbortRecoveryCut(ctx, cut); err != nil {
+		t.Fatal(err)
+	}
+	after, err := f.peer.GetRecoveryState(ctx, f.catalog.History)
+	if err != nil || !reflect.DeepEqual(after, initial) {
+		t.Fatal("retry/abort reset the schedule", after, initial, err)
+	}
+	cut.CloseID = strings.Repeat("d", 32)
+	if _, err = f.service(f.m, fence).CloseAndSeal(ctx, cut); err != nil {
+		t.Fatal(err)
+	}
+	// A scheduling observation for the old epoch cannot close the newly opened
+	// epoch even if another worker advanced the gate before that observation ran.
+	stale := cut
+	stale.Epoch = epoch
+	stale.CloseID = strings.Repeat("e", 32)
+	if _, err = f.service(f.peer, fence).CloseAndSeal(ctx, stale); !errors.Is(err, s.ErrConflict) {
+		t.Fatal("stale due observation closed a newer epoch", err)
+	}
+	gate, err := f.m.GetR1Gate(ctx)
+	if err != nil || gate.Epoch != 1 || gate.State != "Open" {
+		t.Fatal(gate, err)
+	}
+	if epoch, due, err = f.peer.RecoveryCutDue(ctx, f.catalog.History, fence); err != nil || due || epoch != 1 {
+		t.Fatal("new epoch was immediately due", epoch, due, err)
+	}
+}

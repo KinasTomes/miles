@@ -10,7 +10,7 @@ import (
 )
 
 const ExportInterval = 60 * time.Second
-const CutInterval = time.Hour
+const CutInterval = s.RecoveryCutInterval
 const workerHeartbeat = 15 * time.Second
 
 type Worker struct {
@@ -187,12 +187,8 @@ func (w Worker) Run(ctx context.Context) error {
 		}
 	}()
 	defer func() { cancel(nil); <-heartbeats }()
-	nextCut, err := w.Clock.Now().Instant.Add(CutInterval)
-	if err != nil {
-		return err
-	}
 	for {
-		if err = w.Flush(ctx); err != nil {
+		if err := w.Flush(ctx); err != nil {
 			if ctx.Err() != nil {
 				return context.Cause(ctx)
 			}
@@ -200,7 +196,7 @@ func (w Worker) Run(ctx context.Context) error {
 		} else {
 			w.observe("export_ok")
 		}
-		remaining, err := nextCut.Sub(w.Clock.Now().Instant)
+		epoch, due, err := w.Store.RecoveryCutDue(ctx, w.Catalog.History, w.Fence)
 		if err != nil {
 			return err
 		}
@@ -208,24 +204,23 @@ func (w Worker) Run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if remaining <= 0 || gate.State == "RecoveryCut" {
+		if due || gate.State == "RecoveryCut" {
 			id := gate.RecoveryCutID
+			if gate.State == "RecoveryCut" {
+				epoch = gate.Epoch
+			}
 			if id == "" {
 				id, err = s.NewBucketID()
 				if err != nil {
 					return err
 				}
 			}
-			_, err = w.CloseAndSeal(ctx, s.RecoveryCutRequest{HistoryID: w.Catalog.History, Epoch: gate.Epoch, CloseID: id, Worker: w.Fence})
+			_, err = w.CloseAndSeal(ctx, s.RecoveryCutRequest{HistoryID: w.Catalog.History, Epoch: epoch, CloseID: id, Worker: w.Fence})
 			if err != nil {
 				if ctx.Err() != nil {
 					return context.Cause(ctx)
 				}
 				w.observe("close_error")
-			}
-			nextCut, err = w.Clock.Now().Instant.Add(CutInterval)
-			if err != nil {
-				return err
 			}
 		}
 		if err = w.Clock.Sleep(ctx, ExportInterval); err != nil {

@@ -31,6 +31,26 @@ func (m *Store) GetRecoveryState(ctx context.Context, h string) (s.RecoveryState
 	}
 	return v, err
 }
+
+// Due is a scheduling observation, bound to its epoch. It does not grant
+// publication authority; BeginRecoveryCut still checks the current gate/fence.
+func (m *Store) RecoveryCutDue(ctx context.Context, history string, worker s.WriterFence) (uint64, bool, error) {
+	if err := m.CheckRecoveryWorker(ctx, worker); err != nil {
+		return 0, false, err
+	}
+	state, err := m.GetRecoveryState(ctx, history)
+	if err != nil {
+		return 0, false, err
+	}
+	if state.Incarnation != worker.ServiceIncarnation {
+		return 0, false, s.ErrFenced
+	}
+	bounds, err := m.r1Bounds(ctx)
+	if err != nil {
+		return 0, false, err
+	}
+	return state.NextCutEpoch, !bounds.Lower.Before(state.NextCutAt), nil
+}
 func (m *Store) GetRecoveryEpoch(ctx context.Context, h string, e uint64) (s.RecoveryEpoch, error) {
 	if !mutationID.MatchString(h) || e >= s.MaxPolicyRevision {
 		return s.RecoveryEpoch{}, s.ErrInvalid
@@ -45,6 +65,14 @@ func (m *Store) GetRecoveryEpoch(ctx context.Context, h string, e uint64) (s.Rec
 // Provisioning only, after the caller has verified the immutable genesis and
 // catalog. Refuse legacy/partially enabled producers; never synthesize a base.
 func (m *Store) InitializeRecovery(ctx context.Context, state s.RecoveryState) error {
+	if state.NextCutEpoch != 0 || !state.NextCutAt.IsZero() {
+		return s.ErrInvalid
+	}
+	bounds, err := m.r1Bounds(ctx)
+	if err != nil {
+		return err
+	}
+	state.NextCutAt = bounds.Upper.UTC().Add(s.RecoveryCutInterval)
 	if state.Validate() != nil || state.NextToSeal != 0 || state.Revision != 1 || !m.requireProducers {
 		return s.ErrInvalid
 	}
@@ -291,6 +319,19 @@ func (m *Store) StepRecoveryCut(ctx context.Context, r s.RecoveryCutRequest) (s.
 					return err
 				}
 				e.CutAt = b.Upper
+				state, err := r1Read[s.RecoveryState](t, recoveryStateKey(r.HistoryID))
+				if err != nil {
+					return err
+				}
+				if state.HistoryID != r.HistoryID || state.Incarnation != g.Incarnation || state.NextCutEpoch != r.Epoch {
+					return s.ErrConflict
+				}
+				state.NextCutEpoch = r.Epoch + 1
+				state.NextCutAt = e.CutAt.UTC().Add(s.RecoveryCutInterval)
+				state.Revision++
+				if err = r1Put(t, recoveryStateKey(r.HistoryID), state); err != nil {
+					return err
+				}
 				g.Epoch++
 				g.State = "Open"
 				g.RecoveryCutID = ""

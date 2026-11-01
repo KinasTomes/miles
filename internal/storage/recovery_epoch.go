@@ -12,6 +12,7 @@ import (
 var ErrRecoveryCloseTimeout = errors.New("recovery close wait budget exhausted")
 
 const RecoveryCloseBudget = 120 * time.Second
+const RecoveryCutInterval = time.Hour
 
 // RecoveryEpoch is closure/progress, not a checkpoint or a physical retention
 // certificate. Cursor/count/hash only advance after native base pages verify.
@@ -34,6 +35,8 @@ type RecoveryState struct {
 	GenesisLength          int
 	NextToSeal, Revision   uint64
 	SealKey, SealSHA256    string
+	NextCutEpoch           uint64
+	NextCutAt              time.Time
 }
 
 type RecoveryCutRequest struct {
@@ -52,6 +55,7 @@ type RecoveryStore interface {
 	CheckRecoveryWorker(context.Context, WriterFence) error
 	InitializeRecovery(context.Context, RecoveryState) error
 	GetRecoveryState(context.Context, string) (RecoveryState, error)
+	RecoveryCutDue(context.Context, string, WriterFence) (uint64, bool, error)
 	GetRecoveryEpoch(context.Context, string, uint64) (RecoveryEpoch, error)
 	BeginRecoveryCut(context.Context, RecoveryCutRequest) (RecoveryEpoch, error)
 	StepRecoveryCut(context.Context, RecoveryCutRequest) (RecoveryEpoch, error)
@@ -60,7 +64,7 @@ type RecoveryStore interface {
 }
 
 func (s RecoveryState) Validate() error {
-	if s.Version != 1 || !hex128(s.HistoryID) || s.Incarnation == "" || !sha256Hex.MatchString(s.GenesisSHA256) || s.GenesisLength < 1 || s.GenesisLength > 256<<10 || s.NextToSeal > MaxPolicyRevision || s.Revision == 0 || s.Revision > MaxPolicyRevision {
+	if s.Version != 1 || !hex128(s.HistoryID) || s.Incarnation == "" || !sha256Hex.MatchString(s.GenesisSHA256) || s.GenesisLength < 1 || s.GenesisLength > 256<<10 || s.NextToSeal > MaxPolicyRevision || s.Revision == 0 || s.Revision > MaxPolicyRevision || s.NextCutEpoch > MaxPolicyRevision || s.NextToSeal > s.NextCutEpoch || s.NextCutAt.IsZero() || s.NextCutAt.Year() < 1 || s.NextCutAt.Year() > 9999 {
 		return ErrInvalid
 	}
 	if s.NextToSeal == 0 {
