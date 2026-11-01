@@ -118,9 +118,19 @@ func RunMultipart(t *testing.T, factory MultipartFactory) {
 				t.Fatal(err)
 			}
 			d := write(4, strings.Repeat("c", 32), snap)
+			// A heartbeat renewal of the same attempt moves the revision while
+			// the worker prepares; prepare is bound to the fence, not to it.
+			if _, err := m.RenewCompletion(ctx, r); err != nil {
+				t.Fatal(err)
+			}
 			u, err = m.PrepareCompletion(ctx, s.PrepareCompletionRequest{Request: r, Snapshot: d, Head: s.ObjectHead{Object: u.Object, ManifestID: "prepared-final"}})
 			if err != nil {
-				t.Fatal(err)
+				t.Fatal("prepare after the attempt's own renewal", err)
+			}
+			stale := r
+			stale.Fence--
+			if _, err := m.PrepareCompletion(ctx, s.PrepareCompletionRequest{Request: stale, Snapshot: d, Head: s.ObjectHead{Object: u.Object, ManifestID: "prepared-stale"}}); !errors.Is(err, s.ErrFenced) {
+				t.Fatal("prepare of an older attempt", err)
 			}
 			ledger, err := h.Metadata.GetReservation(ctx, u.ReservationID)
 			if err != nil {

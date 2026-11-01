@@ -7,6 +7,7 @@ import (
 	"hash"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -26,12 +27,11 @@ type Service interface {
 	UploadPart(context.Context, object.PartRequest) (object.PartResult, error)
 	ListParts(context.Context, object.ListPartsRequest) (storage.PartListPage, error)
 	AbortUpload(context.Context, object.AbortRequest) error
+	CompleteUpload(context.Context, object.CompleteRequest) (storage.ObjectHead, error)
 }
 
-// Handlers serve CreateMultipartUpload, UploadPart, ListParts and
-// AbortMultipartUpload (API v2 4.3). Complete is not served here, so a full
-// set of parts never makes an object. Now is the server clock of the state
-// table.
+// Handlers serve the multipart operations of API v2 4.3. Now is the server
+// clock of the state table.
 type Handlers struct {
 	Service Service
 	Now     func() time.Time
@@ -41,7 +41,7 @@ type Handlers struct {
 func NewHandlers(svc Service, now func() time.Time) map[s3.Operation]s3.Handler {
 	h := &Handlers{Service: svc, Now: now}
 	return map[s3.Operation]s3.Handler{
-		s3.CreateMultipartUpload: h.Create, s3.UploadPart: h.UploadPart,
+		s3.CreateMultipartUpload: h.Create, s3.UploadPart: h.UploadPart, s3.CompleteMultipartUpload: h.Complete,
 		s3.ListParts: h.ListParts, s3.AbortMultipartUpload: h.Abort,
 	}
 }
@@ -119,7 +119,7 @@ func (h *Handlers) UploadPart(w http.ResponseWriter, r *s3.Request) error {
 		Upload: u, Number: uint32(number), Body: body, ContentLength: length, CredentialID: r.Caller.AccessKeyID,
 	})
 	if err != nil {
-		return h.stateFailure(r, err)
+		return h.stateFailure(r, "", err)
 	}
 	w.Header().Set("ETag", `"`+res.ETag+`"`)
 	w.Header().Set("x-amz-checksum-"+strings.ToLower(res.ChecksumAlgorithm), res.ChecksumValue)
@@ -147,14 +147,35 @@ type listPartsResult struct {
 // listedPart has no LastModified: part heads keep no publication time, and
 // pinned SDKs accept the element missing (not empty).
 type listedPart struct {
-	PartNumber        uint32
-	ETag              string
-	Size              int64
+	PartNumber uint32
+	ETag       string
+	Size       int64
+	checksums
+}
+
+// checksums are the Checksum<ALG> elements of a part or an object: only the
+// element of its algorithm is set.
+type checksums struct {
 	ChecksumCRC32     string `xml:",omitempty"`
 	ChecksumCRC32C    string `xml:",omitempty"`
 	ChecksumCRC64NVME string `xml:",omitempty"`
 	ChecksumSHA1      string `xml:",omitempty"`
 	ChecksumSHA256    string `xml:",omitempty"`
+}
+
+func (c *checksums) set(sum storage.Checksum) {
+	switch sum.Algorithm {
+	case "CRC32":
+		c.ChecksumCRC32 = sum.Value
+	case "CRC32C":
+		c.ChecksumCRC32C = sum.Value
+	case "CRC64NVME":
+		c.ChecksumCRC64NVME = sum.Value
+	case "SHA1":
+		c.ChecksumSHA1 = sum.Value
+	case "SHA256":
+		c.ChecksumSHA256 = sum.Value
+	}
 }
 
 // principal carries DSG user IDs, not AWS canonical IDs.
@@ -188,7 +209,7 @@ func (h *Handlers) ListParts(w http.ResponseWriter, r *s3.Request) error {
 	}
 	page, err := h.Service.ListParts(r.HTTP.Context(), object.ListPartsRequest{UploadID: u.ID, CredentialID: r.Caller.AccessKeyID, After: marker, Limit: max(maxParts, 1)})
 	if err != nil {
-		return h.stateFailure(r, err)
+		return h.stateFailure(r, "", err)
 	}
 	parts, truncated := page.Parts, page.Next != 0
 	if maxParts == 0 {
@@ -201,18 +222,7 @@ func (h *Handlers) ListParts(w http.ResponseWriter, r *s3.Request) error {
 	}
 	for _, p := range parts {
 		lp := listedPart{PartNumber: p.Number, ETag: `"` + p.ETag + `"`, Size: p.Size}
-		switch p.Checksum.Algorithm {
-		case "CRC32":
-			lp.ChecksumCRC32 = p.Checksum.Value
-		case "CRC32C":
-			lp.ChecksumCRC32C = p.Checksum.Value
-		case "CRC64NVME":
-			lp.ChecksumCRC64NVME = p.Checksum.Value
-		case "SHA1":
-			lp.ChecksumSHA1 = p.Checksum.Value
-		case "SHA256":
-			lp.ChecksumSHA256 = p.Checksum.Value
-		}
+		lp.set(p.Checksum)
 		out.Parts = append(out.Parts, lp)
 		out.NextPartNumberMarker = p.Number
 	}
@@ -229,17 +239,80 @@ func (h *Handlers) Abort(w http.ResponseWriter, r *s3.Request) error {
 		return err
 	}
 	if err := h.Service.AbortUpload(r.HTTP.Context(), object.AbortRequest{Upload: u, CredentialID: r.Caller.AccessKeyID}); err != nil {
-		return h.stateFailure(r, err)
+		return h.stateFailure(r, "", err)
 	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 
+// maxCompleteBodyBytes bounds a CompleteMultipartUpload body: 10,000 Parts
+// with a checksum each take under 2 MiB.
+const maxCompleteBodyBytes = 4 << 20
+
+type completeResult struct {
+	XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
+	Location string
+	Bucket   string
+	Key      string
+	ETag     string
+	checksums
+	ChecksumType string `xml:",omitempty"`
+}
+
+// Complete makes the object of an upload (API v2 4.3, 4.3.1): the binding,
+// validation rows 1-5 on the body, the state table with the input digest,
+// then the service freezes and commits, takes over or replays the receipt.
+// A retry of the same input answers the same result.
+func (h *Handlers) Complete(w http.ResponseWriter, r *s3.Request) error {
+	u, err := h.bind(r)
+	if err != nil {
+		return err
+	}
+	var doc CompleteXML
+	if err := r.Body.DecodeXML(&doc, maxCompleteBodyBytes); err != nil {
+		return err
+	}
+	upload := Upload{UploadBinding: s3.UploadBinding{BucketID: u.Object.BucketID, Key: u.Object.Key, Initiator: u.Initiator},
+		ChecksumAlgorithm: u.ChecksumAlgorithm, ChecksumType: u.ChecksumType}
+	in, e := Normalize(upload, r.HTTP.Header, &doc)
+	if e != nil {
+		e.Bucket, e.Key = r.Bucket, r.Key
+		return e
+	}
+	digest := in.Digest()
+	if err := h.dispatch(r, u, digest); err != nil {
+		return err
+	}
+	head, err := h.Service.CompleteUpload(r.HTTP.Context(), object.CompleteRequest{
+		Upload: u, Input: in, UserID: r.Caller.UserID, CredentialID: r.Caller.AccessKeyID,
+	})
+	if err != nil {
+		return h.stateFailure(r, digest, err)
+	}
+	scheme := "http"
+	if r.HTTP.TLS != nil {
+		scheme = "https"
+	}
+	out := completeResult{Location: scheme + "://" + r.HTTP.Host + (&url.URL{Path: "/" + r.Bucket + "/" + r.Key}).EscapedPath(),
+		Bucket: r.Bucket, Key: r.Key, ETag: head.ETag, ChecksumType: head.Checksum.Type}
+	out.set(head.Checksum)
+	return s3.WriteXML(w, out)
+}
+
 // upload is steps 6-7 of the API v2 2.2.3 order for the uploadId of r: the
-// binding (NoSuchUpload, then AccessDenied without the initiator right),
-// then the state table of 4.3.1. Only an upload that passed the binding has
-// its receipt read, and before the body.
+// binding, then the state table of 4.3.1, both before the body.
 func (h *Handlers) upload(r *s3.Request) (storage.MultipartUpload, error) {
+	u, err := h.bind(r)
+	if err != nil {
+		return u, err
+	}
+	return u, h.dispatch(r, u, "")
+}
+
+// bind is the binding of the uploadId of r: NoSuchUpload, then AccessDenied
+// without the initiator right. Only an upload that passed it may have its
+// receipt read.
+func (h *Handlers) bind(r *s3.Request) (storage.MultipartUpload, error) {
 	id := r.Query.Get("uploadId")
 	var binding *s3.UploadBinding
 	var u storage.MultipartUpload
@@ -256,11 +329,12 @@ func (h *Handlers) upload(r *s3.Request) (storage.MultipartUpload, error) {
 	if e := r.CheckUpload(binding); e != nil {
 		return u, e
 	}
-	return u, h.dispatch(r, u)
+	return u, nil
 }
 
-// dispatch runs the 4.3.1 state table on a bound upload u.
-func (h *Handlers) dispatch(r *s3.Request, u storage.MultipartUpload) error {
+// dispatch runs the 4.3.1 state table on a bound upload u; digest is the
+// input digest of a Complete, "" for the other operations.
+func (h *Handlers) dispatch(r *s3.Request, u storage.MultipartUpload, digest string) error {
 	st := Status{State: State(strings.ToLower(u.State)), ExpiresAt: u.ExpiresAt, LeaseExpiresAt: u.LeaseUntil, InputDigest: u.Input.SHA256}
 	if st.State == Completed {
 		var err error
@@ -268,7 +342,7 @@ func (h *Handlers) dispatch(r *s3.Request, u storage.MultipartUpload) error {
 			return failure(r, err)
 		}
 	}
-	if _, err := Dispatch(r.Op, st, "", h.Now()); err != nil {
+	if _, err := Dispatch(r.Op, st, digest, h.Now()); err != nil {
 		return err
 	}
 	return nil
@@ -276,8 +350,9 @@ func (h *Handlers) dispatch(r *s3.Request, u storage.MultipartUpload) error {
 
 // stateFailure answers a failed write from the state that won it: a freeze,
 // an abort or expiry fences publication (OperationAborted or NoSuchUpload),
-// a Complete conflicts with Abort. Otherwise err maps as is.
-func (h *Handlers) stateFailure(r *s3.Request, err error) error {
+// a Complete conflicts with Abort or another Complete. Otherwise err maps as
+// is.
+func (h *Handlers) stateFailure(r *s3.Request, digest string, err error) error {
 	if errors.Is(err, storage.ErrFenced) || errors.Is(err, storage.ErrConflict) || errors.Is(err, storage.ErrNotFound) {
 		u, readErr := h.Service.GetUpload(r.HTTP.Context(), r.Query.Get("uploadId"))
 		if errors.Is(readErr, storage.ErrNotFound) {
@@ -285,7 +360,7 @@ func (h *Handlers) stateFailure(r *s3.Request, err error) error {
 		}
 		if readErr == nil {
 			var e *s3.Error
-			if errors.As(h.dispatch(r, u), &e) {
+			if errors.As(h.dispatch(r, u, digest), &e) {
 				return e
 			}
 		}
@@ -298,7 +373,10 @@ func failure(r *s3.Request, err error) error {
 	if errors.As(err, &e) {
 		return e
 	}
+	var invalid *core.ValidationError
 	switch {
+	case errors.As(err, &invalid):
+		e = &s3.Error{Code: s3.ErrorCode(invalid.Code), Message: invalid.Message}
 	case errors.Is(err, object.ErrLengthMismatch):
 		e = &s3.Error{Code: s3.ErrIncompleteBody}
 	case errors.Is(err, object.ErrPartTooLarge), errors.Is(err, object.ErrMetadataTooLarge):

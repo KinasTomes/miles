@@ -139,12 +139,18 @@ func (a *LocalAuthority) AdmitAdmin(ctx context.Context, tokenID, opID string, d
 }
 
 func (a *LocalAuthority) admit(ctx context.Context, object s.ObjectKey, opID string, deadline time.Time, authorize func(*db.Txn) error) (s.MutationContext, error) {
+	// A fresh lease per admission, not one per op: a Complete retry or takeover
+	// admits the same completion op again under a new fence.
+	lease, err := s.NewBucketID()
+	if err != nil {
+		return s.MutationContext{}, err
+	}
 	c := s.MutationContext{HistoryID: a.state.History, LogicalOpID: opID, MutationID: opID, Object: object,
-		Writer: s.WriterFence{LeaseID: "local-" + opID, ServiceIncarnation: a.state.Incarnation, Epoch: 1}}
+		Writer: s.WriterFence{LeaseID: "local-" + lease, ServiceIncarnation: a.state.Incarnation, Epoch: 1}}
 	if c.Validate() != nil {
 		return s.MutationContext{}, s.ErrInvalid
 	}
-	err := a.store.update(ctx, func(t *db.Txn) error {
+	err = a.store.update(ctx, func(t *db.Txn) error {
 		now := a.store.now()
 		if !deadline.After(now) || deadline.After(now.Add(30*time.Minute)) {
 			return s.ErrFenced

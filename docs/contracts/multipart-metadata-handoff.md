@@ -60,11 +60,15 @@ for a publisher's base revision.
    overwrite/delete. Receipt validity is seven days from winning backend commit.
 
 The caller renews completion every 15 seconds within the 60-second lease. Renewal
-rechecks authorization. ClaimCompletion consumes the old attempt before takeover,
-uses a new fence and preserves frozen input/op; eligibility starts at lease+5s.
-If expired/revoked or abandoning an unpublishable attempt, use ResolveCompletion
-with current recovery authority, rather than retrying a public Abort. Business
-expiry and execution lease have separate clocks; no TTL deletes Completing.
+rechecks authorization and CASes the upload revision; PrepareCompletion is bound to
+the attempt fence (state, writer, live lease), not that revision, so the attempt's
+own renewals during a long prepare do not fail it. ClaimCompletion consumes the old
+attempt before takeover, uses a new fence and preserves frozen input/op; eligibility
+starts at lease+5s and business expiry does not stop it (API v2 4.3.1). If revoked,
+or abandoning an attempt that cannot reopen (expired) or publish, use
+ResolveCompletion with current recovery authority, rather than retrying a public
+Abort. Business expiry and execution lease have separate clocks; no TTL deletes
+Completing.
 
 Public Abort rejects Completing. Active with outstanding publishers becomes
 Aborting, retains counters and fences admission; it must not return a final HTTP

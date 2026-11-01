@@ -23,12 +23,13 @@ var ErrPartTooLarge = errors.New("object: part exceeds 5 GiB")
 const maxPartAttempts = 8
 
 // Uploads is the multipart slice of the shared store (W04-HAI-02): upload,
-// part and publisher records, their recovery port, and the receipt that
-// answers a Completed upload.
+// part and publisher records, their recovery port, the upload ledger a
+// Complete commits against, and the receipt that answers a Completed upload.
 type Uploads interface {
 	storage.MultipartStore
 	storage.PublisherProtection
 	storage.MultipartRecovery
+	GetReservation(context.Context, string) (storage.Reservation, error)
 	GetCompletionReceipt(context.Context, string) (storage.CompletedReceipt, error)
 }
 
@@ -67,7 +68,8 @@ type AbortRequest struct {
 
 // CreateUpload starts an upload of Bucket/Key. The store binds the caller as
 // initiator, the bucket owner and domain, the 24-hour expiry and the upload
-// ledger in one transaction.
+// ledger in one transaction. The initiation time is the LastModified of the
+// object Complete makes, as in S3.
 func (s *Service) CreateUpload(ctx context.Context, r CreateUploadRequest) (storage.MultipartUpload, error) {
 	if s.o.Uploads == nil || ctx == nil || r.CredentialID == "" || r.ChecksumAlgorithm == "" || r.ChecksumType == "" {
 		return storage.MultipartUpload{}, storage.ErrInvalid
@@ -83,14 +85,19 @@ func (s *Service) CreateUpload(ctx context.Context, r CreateUploadRequest) (stor
 	if err != nil {
 		return storage.MultipartUpload{}, err
 	}
-	ctx, a, err := s.admit(ctx, object, r.CredentialID)
+	ctx, a, err := s.admit(ctx, object, r.CredentialID, "")
 	if err != nil {
 		return storage.MultipartUpload{}, err
 	}
+	metadata := make(map[string]string, len(r.Metadata)+1)
+	for k, v := range r.Metadata {
+		metadata[k] = v
+	}
+	metadata[commitTimeKey] = s.o.Clock.Now().WallUTC.UTC().Format(time.RFC3339Nano)
 	return s.o.Uploads.CreateUpload(ctx, storage.CreateUploadRequest{
 		Request: storage.MultipartRequest{UploadID: id, Credential: r.CredentialID, OpID: a.opID, Writer: a.fence},
 		Upload: storage.MultipartUpload{ID: id, Object: object, ReservationID: "reservation-" + a.opID,
-			ChecksumAlgorithm: r.ChecksumAlgorithm, ChecksumType: r.ChecksumType, Metadata: r.Metadata},
+			ChecksumAlgorithm: r.ChecksumAlgorithm, ChecksumType: r.ChecksumType, Metadata: metadata},
 	})
 }
 
@@ -138,7 +145,7 @@ func (s *Service) UploadPart(ctx context.Context, r PartRequest) (PartResult, er
 	if policy.BucketID() != u.Object.BucketID || policy.Revision() == 0 {
 		return PartResult{}, storage.ErrInvalid
 	}
-	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, u.Object, r.CredentialID)
+	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, u.Object, r.CredentialID, "")
 	if err != nil {
 		return PartResult{}, err
 	}
@@ -261,7 +268,7 @@ func (s *Service) AbortUpload(ctx context.Context, r AbortRequest) error {
 	if s.o.Uploads == nil || ctx == nil || r.CredentialID == "" || u.ID == "" {
 		return storage.ErrInvalid
 	}
-	ctx, a, err := s.admit(ctx, u.Object, r.CredentialID)
+	ctx, a, err := s.admit(ctx, u.Object, r.CredentialID, "")
 	if err != nil {
 		return err
 	}
