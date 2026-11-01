@@ -1,10 +1,9 @@
 # Recovery exporter, epoch closure và seal
 
-Task: [W04-HUNG-04](https://miles.extase.dev/tasks/W04-HUNG-04), historical
-identity W04-PHONG-04. Extends [R2](r2-recovery.md), [shared R1](../testing/shared-r1-validation.md)
-and the existing producer/outcome registry. Scope is the first implementation
-of export, exact epoch closure and seal; checkpoint/rebuild/24h retention are
-W05-PHONG-03. No new table, GSI, dependency or public HTTP API.
+Extends [R2](r2-recovery.md), [shared R1](../testing/shared-r1-validation.md)
+and the existing producer/outcome registry. Scope is export, exact epoch closure
+and seal. Checkpoint replay, rebuild and24h physical retention remain separate
+implementations. No new table, GSI, dependency or public HTTP API.
 
 ## Entry points and authority
 
@@ -20,7 +19,7 @@ Clock and an already acquired R1 `kind=recovery` fence. `Run` supervises:
 
 - export immediately and each60s after the preceding attempt;
 - renewal every15s, using the independent validated-UTC R1 provider;
-- recovery cut each hour, or resume an interrupted shared cut;
+- recovery cut on the persisted hourly schedule, or resume an interrupted shared cut;
 - cancellation/join before the caller releases its job lease.
 
 The runtime/operational executor owns job creation, claim, cancellation and final
@@ -45,7 +44,7 @@ Existing table/key inventory is unchanged. New records use native attributes:
 | `Leases(recovery/producers/H/E, hex(lease_id)/fence)` | Retained admission for each writer/control generation; terminal closure revision written with the shared authority closure |
 | `Leases(recovery/mutations/H/E, event_id)` | Immutable membership attachment of the existing producer mutation registry; full matching event, written in the **same** transaction as outcome/outbox/business effects |
 | `RecoveryEpochs(H/E)` | Closing/proof cursor, producer and event digest chains/counts, Closed/cut_at, owner fence/revision, Sealed pointer |
-| `SystemConfig/recovery/state/H` | Genesis binding, contiguous `NextToSeal` and last published seal pointer/revision |
+| `SystemConfig/recovery/state/H` | Genesis binding, contiguous `NextToSeal`, last published seal pointer/revision, and `NextCutEpoch`/`NextCutAt` schedule |
 
 Producer slot reuse cannot erase old membership. A terminal producer receipt is
 immutable; Pending actions prevent terminal certification. Closing freezes new
@@ -57,8 +56,8 @@ used as a quiescence certificate.
 After the entire cohort is terminal, mutation membership is fixed. The next
 paged phase checks **every** registered event against consistent base Outbox,
 compares the complete source envelope, and accumulates the ordered event digest.
-At most24 members are consumed per transaction (at most51 actions including the
-Outbox checks, epoch, gate and worker authority). Existing wire/item/transaction
+At most24 members are consumed per transaction (at most52 actions including the
+Outbox checks, epoch, gate, schedule and worker authority). Existing wire/item/transaction
 budget checks remain in force. The final bounded transaction consumes the
 persisted generation-bound progress, records E Closed/cut_at and opens E+1.
 It does not loop over all producers in one transaction.
@@ -70,6 +69,24 @@ all consistent **base Outbox** pages, including empty filtered pages, and must
 reproduce that exact chain/count. A skipped member, altered source, extra member
 or missing retained payload blocks completion. Digests summarize already verified
 leaves; caller-supplied counts/digests alone cannot create a closure certificate.
+
+## Durable hourly cadence
+
+The schedule belongs to the history/epoch, independently of any worker lease.
+Provisioning sets `NextCutEpoch=0` and `NextCutAt` one hour after validated UTC's
+upper bound; an identical provisioning retry preserves that timestamp.
+`RecoveryCutDue` returns the scheduled epoch only when fresh validated UTC's
+lower bound reaches the deadline. A local wall-clock change cannot trigger it.
+The returned epoch stays bound to the observation if another worker advances
+the gate before dispatch.
+
+The same transaction that confirms Closed and opens E+1 advances the schedule
+to that next epoch, one hour after `cut_at`. Abort, unavailable/unknown outcomes
+and worker restart do not postpone an unclosed epoch. An overdue successor
+therefore attempts the existing cut immediately, rather than waiting another
+hour. Recovery leases retain their original hard deadlines: the runtime must
+join and replace an expired lease before restarting the worker, and cannot
+extend publication rights from the schedule itself.
 
 ## Budget, crash and takeover
 
@@ -121,16 +138,16 @@ installation or a GC permission.
 
 ## Downstream and activation
 
-W05-HAI-01 must keep physical roots until its independent GC/retention conjunction
-passes. W05-PHONG-03 adds checkpoint replay, full physical coverage/retention and
-recovery security/readiness. No membership, payload, epoch or root is deleted
+The GC/compaction implementation must keep physical roots until its independent
+GC/retention conjunction passes. Checkpoint/rebuild integration adds replay, full
+physical coverage/retention and recovery security/readiness. No membership, payload, epoch or root is deleted
 here; Sealed alone does not grant cleanup or remove existing retention guards.
 
 `cmd/miles` runtime still lacks the production DynamoDB/time/job composition;
 this change provides the real worker/backend and executable local integration,
-without silently replacing that runtime with test authority. The W5 composition
-owner can call `Worker.Run` with the existing shared store/verified clock and
-selected history. W4 implementation and local acceptance do not depend on W5.
+without replacing that runtime with test authority. Production composition can
+call `Worker.Run` with the existing shared store, verified clock and selected
+history. The local export/close/seal acceptance is independent of that deployment.
 
 Activation requires a fresh R1 history with RecoveryVersion1 and strict producers,
 plus audited genesis/catalog provisioning. Legacy R1 gates without retained

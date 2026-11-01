@@ -1,6 +1,6 @@
 # Recovery epoch validation
 
-Task [W04-HUNG-04](https://miles.extase.dev/tasks/W04-HUNG-04), baseline `98ad195`.
+Baseline: `98ad195`.
 Implementation and downstream contract:
 [recovery-epoch-implementation.md](../contracts/recovery-epoch-implementation.md).
 
@@ -13,6 +13,8 @@ Implementation and downstream contract:
 | Missing event/input never seals | Truncated discovery scan, deleted base event, missing retained producer payload; no marker and state remains Closed |
 | Worker death/takeover; stale publish rejected | Resume paged proof cursor; retained reused lease generations; expiry+5s closure before transfer; marker written before pointer/lost ACK; identical retry bytes |
 | Closed distinct from Sealed; unsealed incomplete | S3-only VerifyCut rejects Open/Closed and missing predecessor; malformed/golden schemas; no mutable metadata input to verifier |
+| Hourly closure survives lease restart | Native virtual-clock run across seven nine-minute hard deadlines: the seventh owner seals epoch0 at hour one; renewal never extends a deadline; process wall jump does not trigger an early cut |
+| Durable schedule correctness | Fresh validated UTC lower-bound equality; provisioning retry and abort preserve the due epoch/time; successful closure advances both atomically; stale due observation cannot close a newer epoch |
 | Job backend/authority reuse | Native journal_flush accepts recovery fence; GC rejects that same authority |
 
 ## Reproduce without AWS
@@ -54,9 +56,11 @@ full native DynamoDB race suite, signed S3 SDK/Moto end-to-end, shared
 recovery/storage/coordination race tests, and `make check`. The137-member case
 crosses both transaction page and membership leaf boundaries. Test logs are kept
 privately under `/home/ubuntu/.local/state/miles/recovery-*.log`; CI provides
-reviewable evidence on the PR head.
+reviewable evidence on the PR head. The hourly cadence regression first failed
+with no Closed/Sealed epoch after63 virtual minutes; after the schedule fix it
+seals at minute60 despite six prior lease expirations and restarts.
 
 No live AWS, real NTP/UTC source attestation, full checkpoint/rebuild, physical
 retention/GC permission or production service composition is claimed. Those
-retain their own downstream acceptance; they do not invalidate the W4 local
+retain their own downstream acceptance; they do not invalidate the local
 export/close/seal evidence above.
