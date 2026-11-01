@@ -93,6 +93,9 @@ func Produce(t Tx, c s.MutationContext, entity, action, identity string, revisio
 	if err = put(t, "events", e, e.ID); err != nil {
 		return zero, err
 	}
+	if err = t.RecordRecoveryEvent(c, e); err != nil {
+		return zero, err
+	}
 	if err = put(t, "producer-outcome", out, c.MutationID); err != nil {
 		return zero, err
 	}

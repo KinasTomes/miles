@@ -3,6 +3,10 @@
 Task: [W03-PHONG-03](https://miles.extase.dev/tasks/W03-PHONG-03).
 Baseline: `origin/main` tại `87d0769` (26/10/2026).
 
+Implementation W4 now adds native shared-authority export/close/seal and paged
+membership; see [recovery epoch validation](recovery-epoch-validation.md). The
+W03 statements below are historical prototype evidence, not current W4 limits.
+
 ## Readiness và phạm vi
 
 Khi đọc board, task Todo/Ready; hard prerequisites W01-PHONG-03,

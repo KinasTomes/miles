@@ -96,11 +96,20 @@ func (m *Store) Open(ctx context.Context, id string) (io.ReadCloser, error) {
 
 var _ s.ProducerStore = (*Store)(nil)
 
-func (m *Store) producerGate(t operations.Tx, ctx context.Context, w s.WriterFence) error {
+func (m *Store) producerGate(t multipartTx, ctx context.Context, w s.WriterFence) error {
 	c, ok := s.MutationFromContext(ctx)
 	if !ok {
 		if m.requireProducers {
 			return s.ErrFenced
+		}
+		if _, shared := m.authority.(*SharedAuthority); shared {
+			g, err := r1Read[s.R1Gate](t.transaction, r1GateKey())
+			if err != nil {
+				return err
+			}
+			if g.RecoveryEnabled {
+				return s.ErrFenced
+			}
 		}
 		return nil
 	}

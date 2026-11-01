@@ -27,6 +27,7 @@ type OutboxPage struct {
 type OutboxExport struct {
 	Event                           OutboxEvent
 	DescriptorKey, DescriptorSHA256 string
+	Worker                          WriterFence `json:",omitempty"`
 }
 
 func (q OutboxQuery) Validate() error {
