@@ -110,16 +110,27 @@ func (r *WriterRegistry) AdmitProducer(ctx context.Context, object storage.Objec
 }
 
 // Quiescent is checked only after the process has joined all request workers.
-// Unknown synchronous outcomes retain shared protection and block a clean exit.
+// Only authoritative commit reconciliation can clear an unknown result. Other
+// unknown I/O retains shared protection and blocks a clean exit.
 func (r *WriterRegistry) Quiescent() error {
 	if r == nil {
 		return storage.ErrInvalid
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	var writers []*Writer
 	for _, s := range r.writers {
 		if !s.released {
-			return ErrReconcilePending
+			if s.work != 0 || s.inflight != 0 {
+				r.mu.Unlock()
+				return ErrWorkPending
+			}
+			writers = append(writers, &Writer{owner: r, state: s})
+		}
+	}
+	r.mu.Unlock()
+	for _, writer := range writers {
+		if err := writer.Release(); err != nil {
+			return err
 		}
 	}
 	return nil

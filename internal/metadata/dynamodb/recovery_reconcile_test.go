@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/coordination"
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/contracttest"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -17,7 +18,17 @@ func recoveryCommit(t *testing.T, f *recoveryFixture, label string) s.CommitRequ
 	seed := contracttest.NewFixture()
 	r := seed.Request(label, 0)
 	r.Writer = f.acquire(t, "producer-"+label, "writer", r.Head.OpID, 1)
-	seed.Lease.Fence = r.Writer
+	r = prepareRecoveryCommit(t, f, r)
+	if err := f.m.BeginR1Action(ctx, r.Writer, "commit/"+r.Head.OpID); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func prepareRecoveryCommit(t *testing.T, f *recoveryFixture, r s.CommitRequest) s.CommitRequest {
+	t.Helper()
+	ctx := context.Background()
+	seed := contracttest.NewFixture()
 	r.Producer = &s.MutationContext{HistoryID: f.catalog.History, Epoch: 0, LogicalOpID: r.Head.OpID, MutationID: r.Head.OpID, Object: r.Head.Object, Writer: r.Writer}
 	ctx = s.WithMutation(ctx, *r.Producer)
 	if err := f.m.BindR1(ctx, r.Writer, r.Head); err != nil {
@@ -37,9 +48,6 @@ func recoveryCommit(t *testing.T, f *recoveryFixture, label string) s.CommitRequ
 	}
 	if err := f.m.ReserveLogicalQuota(ctx, s.Reservation{Version: 1, ID: r.ReservationID, OpID: r.Head.OpID, OwnerID: "owner", Object: r.Head.Object, Bytes: 4, StagedBytes: 4, Revision: 1, State: s.ReservationActive, Deadline: seed.Now.Add(30 * time.Minute), Writer: r.Writer}); err != nil {
 		t.Fatal("reserve", err)
-	}
-	if err := f.m.BeginR1Action(ctx, r.Writer, "commit/"+r.Head.OpID); err != nil {
-		t.Fatal(err)
 	}
 	return r
 }
@@ -176,5 +184,91 @@ func TestLocalRecoveryHourlyCutReconcilesCrashedCommit(t *testing.T) {
 	e, err := f.peer.GetRecoveryEpoch(ctx, f.catalog.History, 0)
 	if err != nil || e.State != "Sealed" {
 		t.Fatal(e, err)
+	}
+}
+
+type r1ReconcileFault struct {
+	s.R1Store
+	fail bool
+}
+
+func (a *r1ReconcileFault) ReconcileR1(ctx context.Context, f s.WriterFence) error {
+	if a.fail {
+		return s.ErrUnavailable
+	}
+	return a.R1Store.ReconcileR1(ctx, f)
+}
+
+func TestLocalRegistryQuiescenceReconcilesSharedCommit(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		name := "not-committed"
+		if committed {
+			name = "committed-ack-lost"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newRecoveryFixture(t)
+			ctx := context.Background()
+			seam := &r1ReconcileFault{R1Store: f.m}
+			limits := coordination.LeaseLimits{Lifetime: time.Minute, Heartbeat: 15 * time.Second}
+			gate, err := coordination.NewSharedR1Gate(f.local, f.catalog.Incarnation, "node", limits, seam, f.utc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry, err := coordination.NewWriterRegistry(gate, limits, coordination.Hooks{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := contracttest.NewFixture().Request(name, 0)
+			deadline, _ := f.local.Now().Instant.Add(time.Minute)
+			_, writer, err := registry.AdmitProducer(ctx, r.Head.Object, r.Head.OpID, deadline)
+			if err != nil {
+				t.Fatal(err)
+			}
+			work, err := writer.BeginOperation(ctx, r.Head.Object, r.Head.OpID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.Writer = writer.Fence()
+			r = prepareRecoveryCommit(t, f, r)
+			original := f.m.api
+			f.m.api = &dispatchFault{API: original, objectTable: f.m.tables["Objects"], before: !committed, after: committed}
+			if err := writer.Do(ctx, "commit/"+r.Head.OpID, func(s.WriterFence) error {
+				_, e := f.m.CommitObject(ctx, r)
+				return e
+			}); !errors.Is(err, s.ErrUnavailable) {
+				t.Fatal(err)
+			}
+			f.m.api = original
+			if err := registry.Quiescent(); !errors.Is(err, coordination.ErrWorkPending) {
+				t.Fatal("executing work was released", err)
+			}
+			lease, _ := f.peer.GetR1Lease(ctx, r.Writer.LeaseID)
+			if lease.State != "Active" {
+				t.Fatal("quiescence probe closed active work", lease)
+			}
+			work.Finish()
+			writer.CloseFence()
+			seam.fail = true
+			if err := registry.Quiescent(); !errors.Is(err, s.ErrUnavailable) {
+				t.Fatal("unconfirmed reconciliation reported clean", err)
+			}
+			lease, _ = f.peer.GetR1Lease(ctx, r.Writer.LeaseID)
+			if lease.State != "Closed" || len(lease.Pending) != 1 || len(lease.Roots) != 1 {
+				t.Fatal("unknown outcome lost protection", lease)
+			}
+			seam.fail = false
+			if err := registry.Quiescent(); err != nil {
+				t.Fatal("reconciled registry cannot shut down", err)
+			}
+			lease, _ = f.peer.GetR1Lease(ctx, r.Writer.LeaseID)
+			if lease.State != "Released" || len(lease.Pending) != 0 {
+				t.Fatal("joined writer leaked shared protection", lease)
+			}
+			if committed {
+				if out, err := writer.ReconcileCommit(ctx, f.m, r.Head.OpID); err != nil || out.Head.Revision != 1 {
+					t.Fatal("original outcome lost after safe release", out, err)
+				}
+			}
+		})
 	}
 }

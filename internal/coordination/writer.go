@@ -432,7 +432,7 @@ func (w *Writer) ReconcileCommit(ctx context.Context, store OutcomeReader, op st
 	if w.state.inflight != 0 {
 		return storage.CommitResult{}, ErrWorkPending
 	}
-	if w.owner.gate.shared != nil {
+	if w.owner.gate.shared != nil && !w.state.released {
 		if err := w.owner.gate.shared.SettleR1Action(ctx, w.Fence(), "commit/"+op); err != nil {
 			return storage.CommitResult{}, err
 		}
@@ -475,7 +475,7 @@ func (w *Writer) Release() error {
 	if s.inflight != 0 || s.work != 0 {
 		return ErrWorkPending
 	}
-	if len(s.unknown) != 0 {
+	if len(s.unknown) != 0 && (r.gate.shared == nil || !s.shared || len(s.unknown) != 1 || !s.unknown["commit/"+s.operationID]) {
 		return ErrReconcilePending
 	}
 	if r.gate.shared != nil && s.shared {
@@ -483,6 +483,12 @@ func (w *Writer) Release() error {
 		defer cancel()
 		if err := r.gate.shared.CloseR1(ctx, w.Fence()); err != nil {
 			return err
+		}
+		if len(s.unknown) != 0 {
+			if err := r.gate.shared.ReconcileR1(ctx, w.Fence()); err != nil {
+				return errors.Join(ErrReconcilePending, err)
+			}
+			clear(s.unknown)
 		}
 		if err := r.gate.shared.ReleaseR1(ctx, w.Fence()); err != nil {
 			return err
