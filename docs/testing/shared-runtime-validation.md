@@ -33,11 +33,14 @@ Terraform mock tests cover the separate certificate-bound Edge role/profile,
 private ASG bootstrap and the existing pause/resume/security contracts. They do not
 validate a real certificate, IAM grant, host, AMI or network route.
 
-## Live evidence still required
+## Live evidence
 
-Use the [live acceptance plan](../../deploy/shared-acceptance-plan.md). No result
-above proves real ALB path/Host preservation, physical Edge deployment, Internet
-reachability, Roles Anywhere issuance/refresh, owner SSH access or cleanup on AWS.
+The [native run record](cloud-edge-live-validation.md) reports partial AWS results
+and an unknown-commit recovery blocker. Live acceptance remains incomplete.
+Use the [live acceptance plan](../../deploy/shared-acceptance-plan.md) for a rerun.
+No emulator result above proves real ALB path/Host preservation, physical Edge
+deployment, Internet reachability, Roles Anywhere issuance/refresh, owner SSH
+access or cleanup on AWS.
 The existing native TLS proxy test covers transport/SigV4 with synthetic handlers;
 it is complementary to native storage tests and is not combined live evidence.
 
