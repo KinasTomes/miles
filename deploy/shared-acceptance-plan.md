@@ -17,9 +17,13 @@ resource inventory. Use the existing bootstrap/backend; inspect live state first
   dev ceiling stays 10. The lower ceiling throttles shared R1 fences even in a
   small functional run. These are request ceilings, not provisioned capacity or
   a billing hard cap.
-- One Edge process on the operator's current ARM64 Ubuntu host. Install chrony,
-  Nginx and the verified Roles Anywhere helper; inspect existing services first.
+- For subsequent runs, provision a separately budgeted AWS EC2 host for the Edge
+  profile as well as the Cloud fleet. Keep deployment runtimes and their temporary
+  services on AWS; the Oracle workstation holds only source, CLI and evidence.
+  Install chrony, Nginx and the verified Roles Anywhere helper on the Edge host.
   Keep S3/Admin/metrics on loopback behind an allowlisted HTTPS Nginx listener.
+  Its credential_process remains certificate based, including on EC2; the Edge
+  provider must not fall back to the host's instance profile.
 - Use the same release archive SHA and binary on all three nodes. Configure the
   same backend, history, global policy and shared secret. Give Edge a separate
   Roles Anywhere identity with 15-minute sessions; keep its private certificate
@@ -72,8 +76,8 @@ Allow up to two hours of active AWS resources and a small synthetic dataset
 5 USD spending envelope, subject to live regional rates and the saved plan; this
 is not a billing hard cap. Two-AZ interface endpoints, ALB, EC2/EBS, DynamoDB, KMS,
 Secrets Manager, metrics/log requests and Internet transfer all have costs.
-The current Edge host is an existing paid machine; do not present it as free
-infrastructure or silently alter unrelated services.
+Budget the separate Edge EC2, its disk and any Internet/network path explicitly;
+include them in the next saved plan and cost approval.
 
 Record the approved resource IDs before creating data. After collecting evidence,
 drain serving nodes, destroy only this test's active topology and synthetic data
