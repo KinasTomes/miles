@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"time"
 
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -235,6 +236,7 @@ func (m *Store) StepRecoveryCut(ctx context.Context, r s.RecoveryCutRequest) (s.
 		}
 		next = v.Value
 	}
+	var unresolved *recoveryProducer
 	err = m.update(ctx, func(t *transaction) error {
 		g, e, err := m.recoveryOwned(t, r)
 		if err != nil {
@@ -268,6 +270,7 @@ func (m *Store) StepRecoveryCut(ctx context.Context, r s.RecoveryCutRequest) (s.
 					return err
 				}
 				if !p.Terminal || p.ClosureRevision == 0 {
+					unresolved = &p
 					return s.ErrR1Busy
 				}
 				if p.HistoryID != r.HistoryID || p.Epoch != r.Epoch || p.Version != 1 || (p.Kind != "writer" && p.Kind != "control") {
@@ -344,6 +347,30 @@ func (m *Store) StepRecoveryCut(ctx context.Context, r s.RecoveryCutRequest) (s.
 		out = e
 		return r1Put(t, recoveryEpochKey(r.HistoryID, r.Epoch), e)
 	})
+	if errors.Is(err, s.ErrR1Busy) && unresolved != nil {
+		if unresolved.Validate() != nil || unresolved.HistoryID != r.HistoryID || unresolved.Epoch != r.Epoch || unresolved.Fence.ServiceIncarnation != r.Worker.ServiceIncarnation {
+			return out, s.ErrUnavailable
+		}
+		// Reclaim fences only expired authority, retaining roots and pins. A
+		// separate bounded transaction resolves one producer before re-querying
+		// the same proof page; no cursor/member is skipped on an unknown ACK.
+		lease, e := m.GetR1Lease(ctx, unresolved.Fence.LeaseID)
+		if e != nil {
+			return out, e
+		}
+		if lease.Fence != unresolved.Fence {
+			return out, s.ErrFenced
+		}
+		if lease.State == "Active" {
+			if e := m.ReclaimR1(ctx, lease.Fence, 5*time.Second); e != nil {
+				return out, e
+			}
+		}
+		if e := m.ReconcileR1(ctx, unresolved.Fence); e != nil {
+			return out, e
+		}
+		return before, nil
+	}
 	return out, err
 }
 func (m *Store) AbortRecoveryCut(ctx context.Context, r s.RecoveryCutRequest) error {

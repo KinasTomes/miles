@@ -209,20 +209,24 @@ func (m *Store) ReleaseLogicalQuota(ctx context.Context, r s.ReservationRelease)
 		if v.State != s.ReservationActive || v.Revision != r.ExpectedRevision || v.Revision == ^uint64(0) {
 			return s.ErrConflict
 		}
-		q, err := get[s.LogicalQuota](t, key("quotas", v.OwnerID))
-		if err != nil {
-			return err
-		}
-		if q.Reserved < v.Bytes || q.Staged < v.StagedBytes {
-			return s.ErrInvalid
-		}
-		q.Reserved -= v.Bytes
-		q.Staged -= v.StagedBytes
-		v.State = s.ReservationReleased
-		v.Revision++
-		if err := put(t, key("quotas", q.OwnerID), q); err != nil {
-			return err
-		}
-		return put(t, key("reservations", v.ID), v)
+		return releaseReservedQuota(t, v)
 	})
+}
+
+func releaseReservedQuota(t *transaction, v s.Reservation) error {
+	q, err := get[s.LogicalQuota](t, key("quotas", v.OwnerID))
+	if err != nil {
+		return err
+	}
+	if q.Reserved < v.Bytes || q.Staged < v.StagedBytes {
+		return s.ErrInvalid
+	}
+	q.Reserved -= v.Bytes
+	q.Staged -= v.StagedBytes
+	v.State = s.ReservationReleased
+	v.Revision++
+	if err := put(t, key("quotas", q.OwnerID), q); err != nil {
+		return err
+	}
+	return put(t, key("reservations", v.ID), v)
 }
