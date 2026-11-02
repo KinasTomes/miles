@@ -164,26 +164,37 @@ type serviceFixture struct {
 	physical *memS3
 	bucket   storage.Bucket
 	options  Options
-	// before runs ahead of every managed writer dispatch when set.
+	// before runs ahead of every managed writer dispatch when set; refuse
+	// may stop that dispatch with an error; after runs once a dispatch took
+	// effect, and its error hides the ack.
 	before func(operation string)
+	refuse func(operation string) error
+	after  func(operation string) error
 	gate   *coordination.WarmGate
 	// reads is the Warm reader's metadata; tests may hook its head lookups.
 	reads *headHook
+	// advance moves the metadata clock (leases, expiry, receipts).
+	advance func(time.Duration)
 }
 
 func newServiceFixture(t *testing.T) *serviceFixture {
-	return newServiceFixtureCache(t, nil)
+	return newServiceFixtureQuota(t, nil, 1<<20)
 }
 func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixture {
+	return newServiceFixtureQuota(t, writeCache, 1<<20)
+}
+func newServiceFixtureQuota(t *testing.T, writeCache storage.Cache, quota int64) *serviceFixture {
 	t.Helper()
 	ctx := context.Background()
 	f := contracttest.NewFixture()
-	f.Quota.Limit = 1 << 20
+	f.Quota.Limit = quota
 	c, err := clock.NewVirtual(f.Now, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db, err := badger.Open(badger.Options{Path: t.TempDir(), Now: func() time.Time { return f.Now }})
+	var nowMu sync.Mutex
+	now := f.Now
+	db, err := badger.Open(badger.Options{Path: t.TempDir(), Now: func() time.Time { nowMu.Lock(); defer nowMu.Unlock(); return now }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +205,7 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 	}
 	leases := make([]storage.WriterLease, len(fences))
 	for i, fence := range fences {
-		leases[i] = storage.WriterLease{Fence: fence, ExpiresAt: f.Now.Add(time.Minute)}
+		leases[i] = storage.WriterLease{Fence: fence, ExpiresAt: f.Now.Add(72 * time.Hour)}
 	}
 	if err := db.Bootstrap(ctx, badger.Bootstrap{
 		Buckets: []storage.Bucket{f.Bucket}, Users: f.Users, Credentials: f.Credentials,
@@ -221,6 +232,14 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 	registry, err := coordination.NewWriterRegistry(gate, limits, coordination.Hooks{Before: func(_ context.Context, operation string, _ storage.WriterFence) error {
 		if fixture.before != nil {
 			fixture.before(operation)
+		}
+		if fixture.refuse != nil {
+			return fixture.refuse(operation)
+		}
+		return nil
+	}, After: func(_ context.Context, operation string, _ storage.WriterFence) error {
+		if fixture.after != nil {
+			return fixture.after(operation)
 		}
 		return nil
 	}})
@@ -291,7 +310,8 @@ func newServiceFixtureCache(t *testing.T, writeCache storage.Cache) *serviceFixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	*fixture = serviceFixture{service: service, metadata: db, physical: physical, bucket: f.Bucket, options: options, gate: gate, reads: reads}
+	*fixture = serviceFixture{service: service, metadata: db, physical: physical, bucket: f.Bucket, options: options, gate: gate, reads: reads,
+		advance: func(d time.Duration) { nowMu.Lock(); defer nowMu.Unlock(); now = now.Add(d) }}
 	return fixture
 }
 

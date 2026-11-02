@@ -113,7 +113,7 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 			baseSize = 0
 		}
 	}
-	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID)
+	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID, "")
 	if err != nil {
 		return CopyResult{}, err
 	}

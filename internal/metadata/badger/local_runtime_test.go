@@ -58,8 +58,11 @@ func TestLocalAuthorityPersistsHistoryAndFencesPreviousProcess(t *testing.T) {
 	if err != nil || hex.EncodeToString(sum[:]) != mutation.Event.PayloadSHA256 {
 		t.Fatal("retained producer payload hash mismatch", err)
 	}
-	if _, err := a.Admit(ctx, "key", s.ObjectKey{}, c.MutationID, now.Add(time.Minute)); !errors.Is(err, s.ErrConflict) {
-		t.Fatal("one fence reused for two requests", err)
+	// A Complete retry or takeover admits its completion op again: it gets a
+	// new fence, never the first request's.
+	again, err := a.Admit(ctx, "key", s.ObjectKey{}, c.MutationID, now.Add(time.Minute))
+	if err != nil || again.Writer == c.Writer {
+		t.Fatal("one fence reused for two requests", again.Writer, err)
 	}
 	if err := m.Close(); err != nil {
 		t.Fatal(err)

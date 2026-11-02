@@ -195,6 +195,46 @@ func (s *WriteSession) PrepareCopy(source storage.ObjectHead, manifestID string)
 	return p, nil
 }
 
+// PrepareCompletion is Prepare for CompleteMultipartUpload: the backend's
+// PrepareCompletion (prepare) writes the kind-1 manifest manifestID from the
+// frozen part pages. Its root is bound first and prepare is dispatched
+// through the managed writer like Do; Commit then publishes the head it
+// returns. No body or pack passes through the session.
+func (s *WriteSession) PrepareCompletion(manifestID string, prepare func(context.Context, storage.WriterFence) (storage.ObjectHead, error)) (storage.ObjectHead, error) {
+	if s == nil || s.writeSession == nil || manifestID == "" || prepare == nil {
+		return storage.ObjectHead{}, storage.ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.active(); err != nil {
+		return storage.ObjectHead{}, err
+	}
+	if s.prepared != nil {
+		return storage.ObjectHead{}, storage.ErrConflict
+	}
+	if err := s.writer.BindRoot(s.ctx, s.object, manifestID); err != nil {
+		return storage.ObjectHead{}, err
+	}
+	var h storage.ObjectHead
+	err := s.writer.Do(s.ctx, "prepare/"+manifestID, func(f storage.WriterFence) error {
+		var e error
+		h, e = prepare(s.ctx, f)
+		return e
+	})
+	if errors.Is(err, storage.ErrUnavailable) || errors.Is(err, coordination.ErrReconcilePending) {
+		s.failed = true
+	}
+	if err != nil {
+		return storage.ObjectHead{}, err
+	}
+	if h.ManifestID != manifestID || h.Object != s.object || h.Domain != s.auth.Bucket.Domain || h.Deleted || h.ValidateManifestDescriptor() != nil {
+		return storage.ObjectHead{}, storage.ErrInvalid
+	}
+	s.prepared = &PreparedObject{ManifestID: h.ManifestID, Domain: h.Domain, Size: h.Size, ChunkCount: h.ChunkCount,
+		PageCount: h.PageCount, PageIndex: append([]uint64(nil), h.PageIndex...)}
+	return h, nil
+}
+
 func (s *WriteSession) Reserve(r storage.Reservation) error {
 	if s == nil || s.writeSession == nil {
 		return storage.ErrInvalid

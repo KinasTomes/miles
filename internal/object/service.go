@@ -216,7 +216,7 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 			baseSize = 0
 		}
 	}
-	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID)
+	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID, "")
 	if err != nil {
 		return PutResult{}, err
 	}
@@ -327,7 +327,7 @@ func (s *Service) DeleteObject(ctx context.Context, r DeleteRequest) error {
 	case base.Deleted:
 		return nil
 	}
-	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID)
+	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID, "")
 	if err != nil {
 		return err
 	}
@@ -385,15 +385,17 @@ type admission struct {
 
 // admit obtains writer authority for one logical write of object and carries
 // its producer context in the returned context. Every backend transaction of
-// the write checks that authority again.
-func (s *Service) admit(ctx context.Context, object storage.ObjectKey, credentialID string) (context.Context, admission, error) {
+// the write checks that authority again. An empty opID admits a fresh op; a
+// Complete passes the completion op it resumes.
+func (s *Service) admit(ctx context.Context, object storage.ObjectKey, credentialID, opID string) (context.Context, admission, error) {
 	deadline, wallDeadline, err := s.deadline(ctx)
 	if err != nil {
 		return ctx, admission{}, err
 	}
-	opID, err := write.NewManifestID()
-	if err != nil {
-		return ctx, admission{}, err
+	if opID == "" {
+		if opID, err = write.NewManifestID(); err != nil {
+			return ctx, admission{}, err
+		}
 	}
 	admitted, err := s.o.AdmitWriter(ctx, WriterRequest{Object: object, OpID: opID, CredentialID: credentialID, Deadline: deadline, WallDeadline: wallDeadline})
 	if err != nil {
@@ -414,10 +416,10 @@ func (s *Service) admit(ctx context.Context, object storage.ObjectKey, credentia
 	return ctx, admission{opID: opID, fence: admitted.Fence, protectedUntil: admitted.ProtectedUntil, deadline: deadline, wallDeadline: wallDeadline}, nil
 }
 
-// begin admits one logical write of object and opens its managed session. The
-// caller must end the session through publish or Close.
-func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentialID string) (context.Context, *write.WriteSession, string, storage.WriterFence, time.Time, error) {
-	ctx, a, err := s.admit(ctx, object, credentialID)
+// begin admits one logical write of object (opID as for admit) and opens its
+// managed session. The caller must end the session through publish or Close.
+func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentialID, opID string) (context.Context, *write.WriteSession, string, storage.WriterFence, time.Time, error) {
+	ctx, a, err := s.admit(ctx, object, credentialID, opID)
 	if err != nil {
 		return ctx, nil, "", storage.WriterFence{}, time.Time{}, err
 	}

@@ -53,6 +53,9 @@ type fakeService struct {
 	listed       object.ListPartsRequest
 	parts        storage.PartListPage
 	aborted      int
+	completed    []object.CompleteRequest
+	completeHead storage.ObjectHead
+	completeErr  error
 }
 
 func (f *fakeService) CreateUpload(_ context.Context, r object.CreateUploadRequest) (storage.MultipartUpload, error) {
@@ -111,6 +114,13 @@ func (f *fakeService) AbortUpload(context.Context, object.AbortRequest) error {
 	defer f.mu.Unlock()
 	f.aborted++
 	return nil
+}
+
+func (f *fakeService) CompleteUpload(_ context.Context, r object.CompleteRequest) (storage.ObjectHead, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.completed = append(f.completed, r)
+	return f.completeHead, f.completeErr
 }
 
 func (f *fakeService) set(u storage.MultipartUpload) {
