@@ -44,3 +44,4 @@ resource "aws_vpc_endpoint" "interface" {
 }
 output "gateway_ids" { value = { for n, e in aws_vpc_endpoint.gateway : n => e.id } }
 output "interface_ids" { value = { for n, e in aws_vpc_endpoint.interface : n => e.id } }
+output "security_group_id" { value = try(aws_security_group.interfaces[0].id, null) }

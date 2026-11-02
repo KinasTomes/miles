@@ -28,7 +28,10 @@ resource inventory. Use the existing bootstrap/backend; inspect live state first
   Install chrony, Nginx and the verified Roles Anywhere helper on the Edge host.
   Keep S3/Admin/metrics on loopback behind an allowlisted HTTPS Nginx listener.
   Its credential_process remains certificate based on EC2; no IMDS or developer
-  credential fallback is allowed. A workstation HTTPS probe now reaches a
+  credential fallback is allowed. If Edge shares the Cloud VPC, allow its dedicated
+  security group to reach interface endpoints on TCP 443: private DNS also affects
+  public subnets, so Internet egress alone cannot reach those private API addresses.
+  This rule does not expose Edge's Admin or metrics listeners. A workstation HTTPS probe now reaches a
   separate AWS public endpoint, avoiding the previous host's public-IP hairpin.
 - Use the same release archive SHA and binary on all three nodes. Configure the
   same backend, history, global policy and shared secret. Give Edge a separate
