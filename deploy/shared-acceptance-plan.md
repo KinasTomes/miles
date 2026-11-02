@@ -51,6 +51,11 @@ resource inventory. Use the existing bootstrap/backend; inspect live state first
    If an old secret name is reserved by scheduled deletion, use a fresh
    `runtime_secret_name` inside the approved prefix. Do not restore, overwrite or
    force-delete the old secret to reuse its name; preserve its recovery window.
+   For interactive CLI login, present the freshly generated authorization URL as
+   a clickable link; the operator only copies the returned code into the private
+   code file. Copying the URL is a fallback for an observed browser/link error.
+   If the source Console role session expired, switch back and assume the deploy
+   role again before authorizing CLI access; verify STS after login.
 2. Apply the approved foundation with no serving nodes. Provision the secret
    outside state and initialize empty metadata/history through the documented
    offline command. Partial provisioning must be reconciled, never reset.
