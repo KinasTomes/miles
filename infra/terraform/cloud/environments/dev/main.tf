@@ -32,6 +32,7 @@ module "security" {
   region               = var.region
   account_id           = var.account_id
   autoscaling_role_arn = try(aws_iam_service_linked_role.autoscaling[0].arn, null)
+  runtime_secret_name  = var.runtime_secret_name
 }
 module "data" {
   source      = "../../modules/data"

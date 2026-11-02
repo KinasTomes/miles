@@ -171,3 +171,8 @@ variable "edge_ca_pem" {
   default     = null
   description = "Public PEM CA certificate enables the separate Roles Anywhere Edge runtime role."
 }
+variable "runtime_secret_name" {
+  type        = string
+  default     = null
+  description = "Fresh installation secret name; null preserves the original installation name."
+}

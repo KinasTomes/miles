@@ -33,6 +33,9 @@ resource inventory. Use the existing bootstrap/backend; inspect live state first
    operator IAM with `iam-policy-autopilot generate-policies` from those JSON
    plans, compare with the existing boundary and review exact temporary grants.
    Root, if separately authorized, changes only IAM; deploy role runs workloads.
+   If an old secret name is reserved by scheduled deletion, use a fresh
+   `runtime_secret_name` inside the approved prefix. Do not restore, overwrite or
+   force-delete the old secret to reuse its name; preserve its recovery window.
 2. Apply the approved foundation with no serving nodes. Provision the secret
    outside state and initialize empty metadata/history through the documented
    offline command. Partial provisioning must be reconciled, never reset.
