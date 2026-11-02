@@ -23,6 +23,7 @@ run "private_immutable_launch" {
     data_bucket_name        = "miles-dev-data-123456789012-ap-southeast-1"
     release_sha256          = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     release_version_id      = "fixture-version-1"
+    runtime_secret_arn      = "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:runtime-fixture"
   }
   assert {
     condition     = !aws_launch_template.gateway[0].network_interfaces[0].associate_public_ip_address && aws_launch_template.gateway[0].metadata_options[0].http_tokens == "required" && aws_launch_template.gateway[0].metadata_options[0].http_put_response_hop_limit == 1 && aws_launch_template.gateway[0].block_device_mappings[0].ebs[0].encrypted && aws_launch_template.gateway[0].block_device_mappings[0].ebs[0].delete_on_termination

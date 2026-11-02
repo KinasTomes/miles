@@ -1,7 +1,7 @@
 locals {
   # Same shared metadata contract; IAM does not implement DSG user grants.
   table_actions = ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:DescribeTable", "dynamodb:ConditionCheckItem"]
-  roles         = toset(["gateway", "jobs"])
+  roles         = toset(concat(["gateway", "jobs"], var.edge_ca_pem == null ? [] : ["edge"]))
   # recovery/active-history.json deliberately excluded: only offline provisioning/recovery may write it.
   writable_prefixes = ["packs/", "packs-index/", "journal/", "checkpoints/"]
 }
@@ -10,16 +10,42 @@ resource "aws_iam_role" "runtime" {
   name                 = "${var.name}-${each.key}"
   path                 = "/miles/dev/"
   permissions_boundary = var.permissions_boundary_arn
-  assume_role_policy = jsonencode({
+  assume_role_policy = each.key == "edge" ? jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow", Action = ["sts:AssumeRole", "sts:SetSourceIdentity", "sts:TagSession"],
+      Principal = { Service = "rolesanywhere.amazonaws.com" },
+      Condition = {
+        ArnEquals    = { "aws:SourceArn" = aws_rolesanywhere_trust_anchor.edge[0].arn },
+        StringEquals = { "aws:SourceAccount" = var.account_id, "aws:PrincipalTag/x509Subject/CN" = "miles-edge" }
+      }
+    }]
+    }) : jsonencode({
     Version   = "2012-10-17"
-    Statement = [{ Effect = "Allow", Action = "sts:AssumeRole", Principal = { Service = "ec2.amazonaws.com" } }]
+    Statement = [{ Effect = "Allow", Action = ["sts:AssumeRole"], Principal = { Service = "ec2.amazonaws.com" } }]
   })
 }
 resource "aws_iam_instance_profile" "runtime" {
-  for_each = local.roles
+  for_each = toset(["gateway", "jobs"])
   name     = "${var.name}-${each.key}"
   path     = "/miles/dev/"
   role     = aws_iam_role.runtime[each.key].name
+}
+resource "aws_rolesanywhere_trust_anchor" "edge" {
+  count   = var.edge_ca_pem == null ? 0 : 1
+  name    = "${var.name}-edge"
+  enabled = true
+  source {
+    source_type = "CERTIFICATE_BUNDLE"
+    source_data { x509_certificate_data = var.edge_ca_pem }
+  }
+}
+resource "aws_rolesanywhere_profile" "edge" {
+  count            = var.edge_ca_pem == null ? 0 : 1
+  name             = "${var.name}-edge"
+  role_arns        = [aws_iam_role.runtime["edge"].arn]
+  enabled          = true
+  duration_seconds = 900
 }
 resource "aws_iam_role_policy" "runtime" {
   for_each = local.roles
@@ -57,4 +83,13 @@ output "role_arns" { value = { for n, r in aws_iam_role.runtime : n => r.arn } }
 output "instance_profile_names" {
   value      = { for n, p in aws_iam_instance_profile.runtime : n => p.name }
   depends_on = [aws_iam_role_policy.runtime]
+}
+output "edge_provider" {
+  value = var.edge_ca_pem == null ? null : {
+    trust_anchor_arn        = aws_rolesanywhere_trust_anchor.edge[0].arn
+    profile_arn             = aws_rolesanywhere_profile.edge[0].arn
+    role_arn                = aws_iam_role.runtime["edge"].arn
+    certificate_common_name = "miles-edge"
+    duration_seconds        = 900
+  }
 }

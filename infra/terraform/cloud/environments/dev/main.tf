@@ -53,6 +53,7 @@ module "iam" {
   permissions_boundary_arn = var.runtime_permissions_boundary_arn
   fleet_enabled            = var.enable_asg
   release_sha256           = var.release_sha256
+  edge_ca_pem              = var.edge_ca_pem
 }
 module "compute" {
   source            = "../../modules/compute"
@@ -104,4 +105,6 @@ module "fleet" {
   data_bucket_name        = local.data_bucket_name
   release_sha256          = var.release_sha256
   release_version_id      = var.release_version_id
+  runtime_secret_arn      = module.security.secret_arn
+  owner_ssh_public_key    = var.owner_ssh_public_key
 }

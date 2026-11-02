@@ -19,3 +19,8 @@ variable "release_sha256" {
   type    = string
   default = null
 }
+variable "edge_ca_pem" {
+  type        = string
+  default     = null
+  description = "Public CA certificate only. Private CA and leaf keys stay outside Terraform."
+}

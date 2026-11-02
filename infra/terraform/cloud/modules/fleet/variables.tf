@@ -14,3 +14,12 @@ variable "target_group_arn" { type = string }
 variable "data_bucket_name" { type = string }
 variable "release_sha256" { type = string }
 variable "release_version_id" { type = string }
+variable "runtime_secret_arn" { type = string }
+variable "owner_ssh_public_key" {
+  type    = string
+  default = null
+  validation {
+    condition     = var.owner_ssh_public_key == null || can(regex("^ssh-ed25519 [A-Za-z0-9+/=]+( [^\\r\\n]+)?$", var.owner_ssh_public_key))
+    error_message = "Owner SSH uses one reviewed ed25519 public key, never a private key."
+  }
+}
