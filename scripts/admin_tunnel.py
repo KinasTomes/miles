@@ -42,7 +42,7 @@ def command(config, alias, port):
 
 def healthy(port, user, token):
     try:
-        request = Request(f"http://127.0.0.1:{port}/admin/v1/users/{quote(user, safe='')}",
+        request = Request(f"http://127.0.0.1:{port}/admin/v1/users/{quote(user, safe='')}/usage",
                           headers={"Authorization": "Bearer " + token})
         with HTTP.open(request, timeout=2) as response:
             return response.status == 200

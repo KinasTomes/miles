@@ -5,6 +5,8 @@ import unittest
 from unittest.mock import patch, Mock
 import signal
 import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
 
 path = Path(__file__).resolve().parents[1] / "admin_tunnel.py"
 spec = importlib.util.spec_from_file_location("admin_tunnel", path)
@@ -63,3 +65,25 @@ class TunnelTest(unittest.TestCase):
             tunnel.main()
         self.assertEqual(started, ["cloud-a", "cloud-b"])
         self.assertEqual(stop.call_count, 2)
+
+    def test_owner_probe_uses_self_usage_without_system_admin(self):
+        class AdminContract(BaseHTTPRequestHandler):
+            def do_GET(self):
+                allowed = self.path == "/admin/v1/users/owner/usage" and self.headers.get("Authorization") == "Bearer owner-token"
+                self.send_response(200 if allowed else 403)
+                self.end_headers()
+
+            def log_message(self, *_):
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), AdminContract)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(tunnel.healthy(server.server_port, "owner", "owner-token"))
+            self.assertFalse(tunnel.healthy(server.server_port, "other", "owner-token"))
+            self.assertFalse(tunnel.healthy(server.server_port, "owner", "revoked-token"))
+        finally:
+            server.shutdown()
+            worker.join()
+            server.server_close()

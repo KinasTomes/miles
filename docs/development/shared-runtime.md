@@ -21,9 +21,10 @@ Admission, backend checks and request deadlines still apply after readiness pass
 
 Every request loads a complete current global policy and binds its bucket's
 current cache-policy snapshot before engine work. Read-memory admission and the
-node cache remain shared across requests. After creating a bucket, initialize its
-cache policy through the Admin API with expected revision zero before payload I/O;
-missing policy history is an error, never an instruction to invent defaults.
+node cache remain shared across requests. After creating a bucket, read its cache policy through the Admin API to materialize
+revision one before payload I/O; subsequent changes use that expected revision.
+Missing policy history in the payload path is an error; only the explicit Admin
+policy operation materializes the documented initial default.
 
 Writer admission obtains history/epoch from the same durable lease transaction.
 Multipart uploads, input/snapshot streams and destination manifests attach their
@@ -106,10 +107,10 @@ the existing trusted management channel before connecting.
 ```bash
 python3 -B scripts/admin_tunnel.py --ssh-config /private/ssh-config \
   --target cloud-a --target cloud-b --token-file /private/owner-token --user-id owner
-./bin/dsgctl --endpoint http://127.0.0.1:9000 --token-file /private/owner-token user show owner
+./bin/dsgctl --endpoint http://127.0.0.1:9000 --token-file /private/owner-token usage owner
 ```
 
-The tunnel authenticates the owner's own Admin read and moves to the next pinned
+The tunnel authenticates the owner's own usage read and moves to the next pinned
 alias when the process/endpoint becomes unhealthy. A token expiry also fails the
 probe; replace the token file through the ordinary token lifecycle. The script
 never opens management ports or copies a token to a remote shell command.
