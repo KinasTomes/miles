@@ -52,7 +52,7 @@ func s3Handler(region string, d app.Dependencies, a *app.Admission) http.Handler
 	now := func() time.Time { return clk.Now().WallUTC }
 	handlers := api.NewBucketHandlers(d.Metadata)
 	if d.Objects != nil {
-		for op, handler := range api.NewObjectHandlers(d.Objects, d.Objects, d.Objects) {
+		for op, handler := range api.NewObjectHandlers(d.Objects, d.Objects, d.Objects, d.S3ListTokenKey) {
 			handlers[op] = handler
 		}
 		for op, handler := range multipart.NewHandlers(d.Objects, now) {
@@ -60,13 +60,13 @@ func s3Handler(region string, d app.Dependencies, a *app.Admission) http.Handler
 		}
 	}
 	if d.ObjectsForRequest != nil {
-		for op := range api.NewObjectHandlers(nil, nil, nil) {
+		for op := range api.NewObjectHandlers(nil, nil, nil, d.S3ListTokenKey) {
 			handlers[op] = func(w http.ResponseWriter, r *api.Request) error {
 				service, err := d.ObjectsForRequest(r.HTTP.Context(), r.Bucket)
 				if err != nil {
 					return &api.Error{Code: api.ErrServiceUnavailable}
 				}
-				return api.NewObjectHandlers(service, service, service)[op](w, r)
+				return api.NewObjectHandlers(service, service, service, d.S3ListTokenKey)[op](w, r)
 			}
 		}
 		for op := range multipart.NewHandlers(nil, now) {

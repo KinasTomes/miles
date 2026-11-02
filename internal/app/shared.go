@@ -202,7 +202,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	if err != nil {
 		return d, err
 	}
-	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, ObjectsForRequest: objects, Admin: a, Probe: probe, Journal: journal,
+	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
 		Operations: &Operational{Registry: &jobs.Registry{Store: m, Clock: clk, Identity: jobs.Node{ID: c.RuntimeNodeID + "-" + id, Incarnation: id, ServiceIncarnation: g.Incarnation, Profile: c.Profile, Address: c.AdminAddress}}},
 		Close: func() error {
 			e := registry.Quiescent()

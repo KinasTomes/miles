@@ -54,6 +54,9 @@ The shared Secrets Manager value is a JSON document containing `key_id`,
 Provision it outside Terraform; never put values, tokens or private keys in
 user-data, state or logs. All nodes must use the same document. Replacing the
 sealing key without migrating existing sealed credentials makes them unreadable.
+The cursor key also MACs S3 LIST continuation tokens with a separate protocol
+binding, so pagination works across nodes and restarts. All nodes need the same
+key; replacing it invalidates outstanding tokens (one-hour lifetime).
 
 Install operator-managed chrony with an approved IPv4 upstream. Set
 `utc_reference` to its numeric reference address; Cloud uses the Amazon link-local

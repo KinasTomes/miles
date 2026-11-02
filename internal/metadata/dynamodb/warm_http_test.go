@@ -200,7 +200,7 @@ func TestLocalWarmHTTPDynamoDBPrototype(t *testing.T) {
 				t.Fatal(err)
 			}
 			handlers := api.NewBucketHandlers(m)
-			for op, h := range api.NewObjectHandlers(warmObjectWriter{objects, t}, objects, objects) {
+			for op, h := range api.NewObjectHandlers(warmObjectWriter{objects, t}, objects, objects, nil) {
 				handlers[op] = h
 			}
 			server := httptest.NewServer(&api.Router{Region: "ap-southeast-1", Now: func() time.Time { return clk.Now().WallUTC }, Credentials: warmCredentials{m}, Access: auth.NewSnapshots(m, clk), Handlers: handlers})

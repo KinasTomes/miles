@@ -28,6 +28,7 @@ type Dependencies struct {
 	Cache             storage.Cache
 	Objects           *object.Service // real Warm service in local/benchmark mode; absent in fixture/runtime modes
 	ObjectsForRequest func(context.Context, string) (*object.Service, error)
+	S3ListTokenKey    []byte // Shared runtime cursor key; nil only in process-local profiles.
 	Probe             func(context.Context) error
 	Close             func() error
 	S3Handler         func(*Admission) http.Handler
