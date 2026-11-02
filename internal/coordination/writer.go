@@ -25,15 +25,17 @@ type Hooks struct {
 // WriterRegistry owns local CPU/I/O lifetime and unknown-result tracking. With a
 // shared gate, BeginOperation also acquires a durable owner-bound lease and Do
 // registers the action before dispatch. Metadata still owns publication LPs.
-// Its mutex serializes local effects against local closure. Other workers close
-// shared authority via metadata CAS; expiry/timeout never proves quiescence.
+// Dispatch and closure share an I/O lock; lease state has a separate mutex so
+// heartbeats can run during callbacks. Other workers close shared authority via
+// metadata CAS; expiry/timeout never proves quiescence.
 type WriterRegistry struct {
-	mu      sync.Mutex
-	gate    *WarmGate
-	limits  LeaseLimits
-	hooks   Hooks
-	closed  bool
-	writers map[string]*writerState
+	dispatchMu sync.Mutex
+	mu         sync.Mutex
+	gate       *WarmGate
+	limits     LeaseLimits
+	hooks      Hooks
+	closed     bool
+	writers    map[string]*writerState
 }
 type Writer struct {
 	owner *WriterRegistry
@@ -261,6 +263,29 @@ func (w *Writer) Do(ctx context.Context, operation string, effect func(storage.W
 			return err
 		}
 	}
+	err := w.dispatch(ctx, operation, effect)
+	if err != nil {
+		return err
+	}
+	ackErr := w.acknowledge(ctx, operation)
+	if ackErr != nil {
+		return errors.Join(storage.ErrUnavailable, ackErr)
+	}
+	if r.gate.shared != nil {
+		if err := r.gate.shared.SettleR1Action(ctx, w.Fence(), operation); err != nil {
+			r.mu.Lock()
+			w.state.unknown[operation] = true
+			r.mu.Unlock()
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *Writer) dispatch(ctx context.Context, operation string, effect func(storage.WriterFence) error) error {
+	r := w.owner
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
 	r.mu.Lock()
 	if err := w.checkLocked(ctx); err != nil {
 		r.mu.Unlock()
@@ -292,56 +317,44 @@ func (w *Writer) Do(ctx context.Context, operation string, effect func(storage.W
 		}
 	}
 	err := w.effectLocked(operation, effect)
-	if err != nil {
-		if r.gate.shared != nil && (errors.Is(err, storage.ErrFenced) || errors.Is(err, storage.ErrInvalid) || errors.Is(err, storage.ErrConflict) || errors.Is(err, storage.ErrAccessDenied)) {
-			settle, stop := cleanupContext()
-			defer stop()
-			if e := r.gate.shared.SettleR1Action(settle, w.Fence(), operation); e != nil {
-				return errors.Join(err, e)
-			}
-		}
-		return err
-	}
-	ackErr := w.acknowledge(ctx, operation)
-	if ackErr != nil {
-		return errors.Join(storage.ErrUnavailable, ackErr)
-	}
-	if r.gate.shared != nil {
-		if err := r.gate.shared.SettleR1Action(ctx, w.Fence(), operation); err != nil {
-			r.mu.Lock()
-			w.state.unknown[operation] = true
-			r.mu.Unlock()
-			return err
+	if r.gate.shared != nil && (errors.Is(err, storage.ErrFenced) || errors.Is(err, storage.ErrInvalid) || errors.Is(err, storage.ErrConflict) || errors.Is(err, storage.ErrAccessDenied)) {
+		settle, stop := cleanupContext()
+		defer stop()
+		if e := r.gate.shared.SettleR1Action(settle, w.Fence(), operation); e != nil {
+			return errors.Join(err, e)
 		}
 	}
-	return nil
+	return err
 }
 
-// Called with registry.mu held; always unlock, including adapter panic. Panic
-// still propagates, but is never mistaken for a known-no-effect operation.
+// Called with both locks held. Drop only the state mutex during I/O, retaining
+// dispatch exclusion against closure; always reacquire it for outcome tracking.
 func (w *Writer) effectLocked(operation string, effect func(storage.WriterFence) error) (err error) {
 	r := w.owner
+	w.state.inflight++
+	r.mu.Unlock()
 	returned := false
 	defer func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		w.state.inflight--
 		if !returned {
 			w.state.unknown[operation] = true
 		}
-		r.mu.Unlock()
+		if errors.Is(err, storage.ErrFenced) {
+			w.state.lost = true
+		}
+		// Only authoritative precondition rejection proves no effect.
+		if err != nil && !errors.Is(err, storage.ErrFenced) && !errors.Is(err, storage.ErrInvalid) && !errors.Is(err, storage.ErrConflict) && !errors.Is(err, storage.ErrAccessDenied) {
+			w.state.unknown[operation] = true
+			err = errors.Join(storage.ErrUnavailable, err)
+		}
+		if returned && err == nil {
+			w.state.inflight++ // retain protection through the acknowledgement
+		}
 	}()
 	err = effect(w.Fence())
 	returned = true
-	if errors.Is(err, storage.ErrFenced) {
-		w.state.lost = true
-	}
-	// Cancellation, I/O failure or a lost response AFTER dispatch is not proof
-	// of no effect. Only explicit authoritative precondition rejection is known.
-	if err != nil && !errors.Is(err, storage.ErrFenced) && !errors.Is(err, storage.ErrInvalid) && !errors.Is(err, storage.ErrConflict) && !errors.Is(err, storage.ErrAccessDenied) {
-		w.state.unknown[operation] = true
-		err = errors.Join(storage.ErrUnavailable, err)
-	}
-	if err == nil {
-		w.state.inflight++
-	}
 	return err
 }
 
@@ -431,6 +444,8 @@ func (w *Writer) CloseFence() {
 	if w == nil || w.state == nil {
 		return
 	}
+	w.owner.dispatchMu.Lock()
+	defer w.owner.dispatchMu.Unlock()
 	w.owner.mu.Lock()
 	defer w.owner.mu.Unlock()
 	w.state.closed = true
@@ -441,13 +456,15 @@ func (w *Writer) CloseFence() {
 	}
 }
 
-// Release waits for synchronous callbacks by sharing their lock. Unknown
+// Release waits for synchronous callbacks by sharing the dispatch lock. Unknown
 // outcomes retain guard and pins; cancellation/expiry is never no-commit proof.
 func (w *Writer) Release() error {
 	if w == nil || w.state == nil {
 		return storage.ErrInvalid
 	}
 	r := w.owner
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := w.state
@@ -489,6 +506,8 @@ func (r *WriterRegistry) Invalidate() {
 	if r == nil {
 		return
 	}
+	r.dispatchMu.Lock()
+	defer r.dispatchMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.closed = true

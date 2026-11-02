@@ -275,6 +275,67 @@ func (c signaledClock) Sleep(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	}
 }
+
+func TestR1WriterHeartbeatDuringCallback(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		t.Run(map[bool]string{false: "acknowledged", true: "unknown"}[unknown], func(t *testing.T) {
+			c, g, r, _, p := r1Fixture(t)
+			timers := make(chan struct{}, 1)
+			g.clock = signaledClock{Virtual: c, registered: timers}
+			w := registerWriter(t, c, r)
+			if err := w.Pin(context.Background(), p); err != nil {
+				t.Fatal(err)
+			}
+			live, stop, err := w.KeepAlive(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-timers
+			entered, proceed := make(chan struct{}), make(chan struct{})
+			done := make(chan error, 1)
+			go func() {
+				done <- w.Do(live, "prepare/op", func(storage.WriterFence) error {
+					close(entered)
+					<-proceed
+					if unknown {
+						return storage.ErrUnavailable
+					}
+					return nil
+				})
+			}()
+			<-entered
+			defer func() {
+				close(proceed)
+				err := <-done
+				stop()
+				if unknown {
+					if !errors.Is(err, storage.ErrUnavailable) || !errors.Is(w.Release(), ErrReconcilePending) || !errors.Is(g.Retire(p), storage.ErrConflict) {
+						t.Error("unknown callback lost protection", err)
+					}
+				} else if err != nil || w.Release() != nil || g.Retire(p) != nil {
+					t.Error("acknowledged callback did not release", err)
+				}
+			}()
+			for range 5 {
+				if err := c.Advance(15 * time.Second); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case <-timers: // next timer proves the previous heartbeat completed
+				case <-time.After(time.Second):
+					t.Fatal("writer heartbeat blocked behind the running callback")
+				}
+			}
+			if err := w.Check(live); err != nil {
+				t.Fatal("writer lost its lease during callback", err)
+			}
+			if !errors.Is(g.Retire(p), storage.ErrConflict) {
+				t.Fatal("running callback lost its generation pin")
+			}
+		})
+	}
+}
+
 func TestR1HeartbeatLoopUsesInjectedClockAndJoins(t *testing.T) {
 	v, err := clock.NewVirtual(time.Now().UTC(), 100)
 	if err != nil {

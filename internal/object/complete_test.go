@@ -558,14 +558,28 @@ func TestExpiredTakeoverFailureAborts(t *testing.T) {
 	}
 }
 
-// A prepare longer than the 60 s completion lease keeps its fence: the
-// heartbeat renews the lease while it runs, and the first attempt commits.
+type completionPrepareHook struct {
+	Uploads
+	before func()
+}
+
+func (u *completionPrepareHook) PrepareCompletion(ctx context.Context, r storage.PrepareCompletionRequest) (storage.MultipartUpload, error) {
+	if u.before != nil {
+		u.before()
+	}
+	return u.Uploads.PrepareCompletion(ctx, r)
+}
+
+// Delay inside the backend callback, while Writer.Do owns dispatch: both
+// completion and R1 heartbeats must progress so the first attempt commits.
 func TestCompleteRenewsLeaseDuringLongPrepare(t *testing.T) {
 	ctx := context.Background()
 	f := newServiceFixtureQuota(t, nil, 64*mib)
 	// The writer's own deadline must outlast the slow prepare.
 	o := f.options
 	o.RequestTimeout = 30 * time.Minute
+	uploads := &completionPrepareHook{Uploads: o.Uploads}
+	o.Uploads = uploads
 	service, err := New(o)
 	if err != nil {
 		t.Fatal(err)
@@ -575,10 +589,7 @@ func TestCompleteRenewsLeaseDuringLongPrepare(t *testing.T) {
 	data := map[uint32][]byte{1: random(t, 5*mib), 2: random(t, 3<<10)}
 	u, res := f.stage(t, ctx, "k", "CRC64NVME", "FULL_OBJECT", data)
 	renewals := 0
-	f.before = func(op string) {
-		if !strings.HasPrefix(op, "prepare/") {
-			return
-		}
+	uploads.before = func() {
 		// 75 s of metadata time pass in 15 s steps; each step waits until
 		// the heartbeat, driven by the service clock, renewed the lease.
 		for range 5 {
