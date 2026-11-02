@@ -4,9 +4,9 @@
 
 The Singapore acceptance run on 2026-11-02 established a working shared deployment,
 but did **not** complete live acceptance. A retained unknown commit blocked the
-hourly recovery cut and subsequent writes. Keep the change in draft until that
-failure is reproduced, resolved through the supported fenced reconciliation path,
-and the remaining native scenarios pass.
+hourly recovery cut and subsequent writes. The local correction below reproduces
+and fixes that failure. Keep the change in draft until the corrected runtime
+passes the remaining AWS scenarios.
 
 Two private ARM64 `t4g.small` Cloud nodes ran in separate AZs behind HTTPS ALB,
 with shared S3, 20 DynamoDB tables and private AWS endpoints. Edge ran on the
@@ -59,10 +59,9 @@ shutdown reported `reconcile original operation before release or takeover`.
 
 No result row is not proof that a commit did not happen. The run did not clear
 the pending marker, reset history, forge a closure proof or force the gate open.
-The metadata backend has a fenced close-attempt primitive, but this observed
-operation was not reconciled by the composed runtime. A controlled regression
-must cover an ambiguous dispatch and a subsequent epoch cut, including safe
-shutdown/takeover, before another live run can establish forward progress.
+The metadata backend had a fenced close-attempt primitive, but this observed
+operation was not reconciled by the composed runtime. The local correction below
+does not retrospectively turn the interrupted AWS sequence into a passing run.
 
 Checkpoint/rebuild and retention/GC consume closed, sealed epochs. They must not
 treat the blocked cut as a valid seal or infer success from an absent result.
@@ -76,10 +75,31 @@ refresh timestamps, TLS/client assertions, authoritative pending-operation
 reads and shutdown logs. Credentials, private keys and signed requests must not
 be published with this record.
 
-Before the next run, reproduce and fix unknown-commit reconciliation locally.
 Prepare a new AWS-only Cloud/Edge plan with an explicit Edge host cost, then
 repeat full CRUD/copy/delete/multipart, external Edge HTTPS and an in-flight
 drain. Existing emulator/CI success does not close those native checks.
+
+## Reconciliation correction: local proof
+
+`ReconcileR1` now CAS-closes the original commit attempt and settles the producer
+receipt atomically. It releases standalone reserved quota only after that proof,
+keeps multipart-owned staging intact and retains the closed lease's physical
+roots/pins. Epoch closure revisits the producer receipt rather than skipping it.
+The process registry retries release only after its local work has joined.
+
+Native DynamoDB tests reproduce both an unsent final transaction and a committed
+transaction with a lost response. They cover a second Store instance, rejection
+of a delayed original transaction, lost closure acknowledgements and idempotent
+quota accounting, expired/crashed authority past the durable one-hour cut,
+Closed/Sealed progress, retained roots and rejection of unknown physical I/O.
+Registry tests verify that live work or unavailable reconciliation cannot report
+clean shutdown, and that a retained committed result remains readable after release.
+
+`make check` and race suites for DynamoDB, app composition, coordination, object,
+managed writes, recovery and readpath passed with scoped DynamoDB Local/Moto
+fixtures. Existing multipart settlement and short-lease hourly scheduling
+regressions also passed. Each fixture's containers/data were removed on exit.
+These results require a new AWS run for deployment acceptance.
 
 ## Cleanup
 

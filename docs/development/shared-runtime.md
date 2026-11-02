@@ -33,6 +33,12 @@ unknown actions retain protection. Short-lived control leases close only after
 their synchronous native transaction has returned. Failed cleanup prevents a
 clean shutdown claim.
 
+Joined writers reconcile ambiguous commits through the
+[closed-writer metadata protocol](../contracts/closed-writer-reconciliation.md)
+before release. Epoch closure uses the same protocol after fencing a crashed
+producer's expired authority. It retains roots/pins and refuses unknown physical
+I/O; this is not an expiry-based cleanup shortcut.
+
 The journal supervisor rotates nine-minute hard leases without resetting the
 durable hourly deadline. It uses the existing exporter/closure/seal worker, with
 the same 60-second export and immutable-byte verification. Shutdown joins it,

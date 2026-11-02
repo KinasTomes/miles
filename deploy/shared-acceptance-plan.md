@@ -20,10 +20,16 @@ resource inventory. Use the existing bootstrap/backend; inspect live state first
 - For subsequent runs, provision a separately budgeted AWS EC2 host for the Edge
   profile as well as the Cloud fleet. Keep deployment runtimes and their temporary
   services on AWS; the Oracle workstation holds only source, CLI and evidence.
+  The functional rerun proposes one `t4g.small` Edge host with a disposable,
+  encrypted 20-GiB root disk, no instance profile and a temporary operator SSH key.
+  Limit SSH/HTTPS to the operator's public IPv4 /32; transfer private files over
+  SSH only after pinning its host key through authenticated EC2 console output.
+  Inspect the saved plan for the extra instance, key pair and security-group rules.
   Install chrony, Nginx and the verified Roles Anywhere helper on the Edge host.
   Keep S3/Admin/metrics on loopback behind an allowlisted HTTPS Nginx listener.
-  Its credential_process remains certificate based, including on EC2; the Edge
-  provider must not fall back to the host's instance profile.
+  Its credential_process remains certificate based on EC2; no IMDS or developer
+  credential fallback is allowed. A workstation HTTPS probe now reaches a
+  separate AWS public endpoint, avoiding the previous host's public-IP hairpin.
 - Use the same release archive SHA and binary on all three nodes. Configure the
   same backend, history, global policy and shared secret. Give Edge a separate
   Roles Anywhere identity with 15-minute sessions; keep its private certificate
@@ -76,7 +82,9 @@ resource inventory. Use the existing bootstrap/backend; inspect live state first
 
 ## Cost, cleanup and evidence
 
-Allow up to two hours of active AWS resources and a small synthetic dataset
+The rerun proposes up to two and a half hours including bootstrap, one real
+hourly epoch cut and cleanup; approval of the prior run does not extend to this
+new window. Keep a small synthetic dataset
 (at most 256 MiB logical per test generation). The request will use a conservative
 5 USD spending envelope, subject to live regional rates and the saved plan; this
 is not a billing hard cap. Two-AZ interface endpoints, ALB, EC2/EBS, DynamoDB, KMS,
@@ -87,7 +95,7 @@ include them in the next saved plan and cost approval.
 Record the approved resource IDs before creating data. After collecting evidence,
 drain serving nodes, destroy only this test's active topology and synthetic data
 with the reviewed cleanup plan, remove the temporary certificate/provider/grants
-and restore Edge configuration. Deleting the two disposable root/cache volumes
+and remove the dedicated Edge host. Deleting the three disposable root/cache volumes
 does not require a backup of synthetic data, but still requires explicit approval.
 Existing datasets/state outside the run are preserved. Bootstrap/state and KMS or
 secret deletion windows may retain costs; report exactly what remains.
