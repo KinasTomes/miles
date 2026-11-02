@@ -59,6 +59,26 @@ func s3Handler(region string, d app.Dependencies, a *app.Admission) http.Handler
 			handlers[op] = handler
 		}
 	}
+	if d.ObjectsForRequest != nil {
+		for op := range api.NewObjectHandlers(nil, nil, nil) {
+			handlers[op] = func(w http.ResponseWriter, r *api.Request) error {
+				service, err := d.ObjectsForRequest(r.HTTP.Context(), r.Bucket)
+				if err != nil {
+					return &api.Error{Code: api.ErrServiceUnavailable}
+				}
+				return api.NewObjectHandlers(service, service, service)[op](w, r)
+			}
+		}
+		for op := range multipart.NewHandlers(nil, now) {
+			handlers[op] = func(w http.ResponseWriter, r *api.Request) error {
+				service, err := d.ObjectsForRequest(r.HTTP.Context(), r.Bucket)
+				if err != nil {
+					return &api.Error{Code: api.ErrServiceUnavailable}
+				}
+				return multipart.NewHandlers(service, now)[op](w, r)
+			}
+		}
+	}
 	rt := &api.Router{Region: region, Now: now, Credentials: devCredentials{d}, Access: auth.NewSnapshots(d.Metadata, clk), Handlers: handlers}
 	return requestGate(a, RequestTimeout, rt, s3Unavailable)
 }
