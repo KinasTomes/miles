@@ -45,7 +45,7 @@ run "active_fleet" {
     error_message = "ALB/app/drain/lifecycle budgets must agree."
   }
   assert {
-    condition     = output.runtime_inventory.compute.instance_id == null && output.runtime_inventory.compute.data_volume_id == null && length(output.runtime_inventory.expected_tables) == 20
+    condition     = output.runtime_inventory.compute.instance_id == null && output.runtime_inventory.compute.data_volume_id == null && length(output.runtime_inventory.expected_tables) == 20 && output.runtime_inventory.data.request_unit_cap == 128
     error_message = "Fleet uses shared data, never the retained single-node dev disk."
   }
 }
@@ -53,7 +53,7 @@ run "paused_fleet_plan" {
   command = plan
   variables { paused = true }
   assert {
-    condition     = output.fleet_contract == null && output.runtime_inventory.alb_dns == null && output.network_inventory.nat_count == 0 && length(output.network_inventory.interface_endpoints) == 0 && length(output.runtime_inventory.expected_tables) == 20
+    condition     = output.fleet_contract == null && output.runtime_inventory.alb_dns == null && output.network_inventory.nat_count == 0 && length(output.network_inventory.interface_endpoints) == 0 && length(output.runtime_inventory.expected_tables) == 20 && output.runtime_inventory.data.request_unit_cap == 128
     error_message = "Pause removes fleet/ALB/paid API networking while retaining the datastore."
   }
 }

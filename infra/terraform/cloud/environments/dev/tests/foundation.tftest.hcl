@@ -9,7 +9,7 @@ variables {
 run "isolated_foundation" {
   command = plan
   assert {
-    condition     = length(output.network_inventory.public_subnets) == 2 && length(output.network_inventory.private_subnets) == 2 && length(output.network_inventory.gateway_endpoints) == 2
+    condition     = length(output.network_inventory.public_subnets) == 2 && length(output.network_inventory.private_subnets) == 2 && length(output.network_inventory.gateway_endpoints) == 2 && output.runtime_inventory.data.request_unit_cap == 10
     error_message = "Foundation needs four subnets and S3/DDB gateway endpoints."
   }
   assert {

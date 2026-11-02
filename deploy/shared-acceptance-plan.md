@@ -10,6 +10,13 @@ resource inventory. Use the existing bootstrap/backend; inspect live state first
   one versioned S3 bucket and 20 DynamoDB tables. Use interface endpoints in both
   AZs plus S3/DDB gateway endpoints, with no NAT. Start with reviewed non-bursting
   compute or standard-credit instances sized for the declared engine budgets.
+  Verify account/AMI/type eligibility through the native EC2 API before launch.
+  A two-GiB ARM64 fallback can check bounded sequential functions; it does not
+  establish that concurrent read budgets plus OS/runtime headroom fit the host.
+  Fleet tables cap on-demand reads/writes at 128 units per table; the single-node
+  dev ceiling stays 10. The lower ceiling throttles shared R1 fences even in a
+  small functional run. These are request ceilings, not provisioned capacity or
+  a billing hard cap.
 - One Edge process on the operator's current ARM64 Ubuntu host. Install chrony,
   Nginx and the verified Roles Anywhere helper; inspect existing services first.
   Keep S3/Admin/metrics on loopback behind an allowlisted HTTPS Nginx listener.
@@ -33,6 +40,10 @@ resource inventory. Use the existing bootstrap/backend; inspect live state first
    operator IAM with `iam-policy-autopilot generate-policies` from those JSON
    plans, compare with the existing boundary and review exact temporary grants.
    Root, if separately authorized, changes only IAM; deploy role runs workloads.
+   On a new account, prepare the AWS-managed Roles Anywhere and ELB service-linked
+   roles before first use. Scope custom ASG role tag/read/delete/PassRole and
+   RunInstances on the owned launch template as well as its referenced resources;
+   simulator success alone does not establish these native dependencies.
    If an old secret name is reserved by scheduled deletion, use a fresh
    `runtime_secret_name` inside the approved prefix. Do not restore, overwrite or
    force-delete the old secret to reuse its name; preserve its recovery window.

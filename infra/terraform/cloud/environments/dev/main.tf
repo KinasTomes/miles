@@ -39,6 +39,8 @@ module "data" {
   name        = local.name
   bucket_name = local.data_bucket_name
   kms_key_arn = module.security.kms_key_arn
+  # Shared R1 fences and three node supervisors exceed the single-node dev ceiling.
+  max_request_units = var.enable_asg ? 128 : 10
 }
 module "iam" {
   source                   = "../../modules/iam"

@@ -94,15 +94,16 @@ resource "aws_dynamodb_table" "metadata" {
     kms_key_arn = var.kms_key_arn
   }
   on_demand_throughput {
-    max_read_request_units  = 10
-    max_write_request_units = 10
+    max_read_request_units  = var.max_request_units
+    max_write_request_units = var.max_request_units
   }
   lifecycle { prevent_destroy = true }
 }
 output "table_arns" { value = [for t in aws_dynamodb_table.metadata : t.arn] }
 output "inventory" {
   value = {
-    bucket_name = aws_s3_bucket.data.id
-    tables      = { for n, t in aws_dynamodb_table.metadata : n => { name = t.name, hash_key = t.hash_key, range_key = t.range_key, range_type = local.tables[n].range_type } }
+    bucket_name      = aws_s3_bucket.data.id
+    request_unit_cap = var.max_request_units
+    tables           = { for n, t in aws_dynamodb_table.metadata : n => { name = t.name, hash_key = t.hash_key, range_key = t.range_key, range_type = local.tables[n].range_type } }
   }
 }
