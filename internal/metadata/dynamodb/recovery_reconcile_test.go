@@ -187,6 +187,31 @@ func TestLocalRecoveryHourlyCutReconcilesCrashedCommit(t *testing.T) {
 	}
 }
 
+func TestLocalR1CommitClosurePreservesMultipartReservation(t *testing.T) {
+	f := newRecoveryFixture(t)
+	ctx := context.Background()
+	r := contracttest.NewFixture().Request("multipart-owned-reservation", 0)
+	r.Writer = f.acquire(t, "multipart-owner", "writer", r.Head.OpID, 1)
+	v := s.Reservation{Version: 1, ID: r.ReservationID, OpID: r.Head.OpID, OwnerID: "owner", Object: r.Head.Object, Revision: 1, State: s.ReservationActive, Bytes: 4, StagedBytes: 4, Deadline: f.utc.Now().Add(time.Minute), Writer: r.Writer, UploadID: "multipart-owned-upload"}
+	if err := f.m.ReserveLogicalQuota(ctx, v); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.BeginR1Action(ctx, r.Writer, "commit/"+r.Head.OpID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.CloseR1(ctx, r.Writer); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.peer.ReconcileR1(ctx, r.Writer); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.peer.GetReservation(ctx, v.ID)
+	q, quotaErr := f.peer.GetQuota(ctx, "owner")
+	if err != nil || quotaErr != nil || got != v || q.Reserved != 4 || q.Staged != 4 || q.Used != 0 {
+		t.Fatal("R1 reconciliation consumed multipart-owned staging", got, q, err, quotaErr)
+	}
+}
+
 type r1ReconcileFault struct {
 	s.R1Store
 	fail bool
