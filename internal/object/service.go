@@ -153,6 +153,7 @@ type AdmittedWriter struct {
 	Producer       *storage.MutationContext
 	Fence          storage.WriterFence
 	ProtectedUntil time.Time
+	Finish         func() // called after all work using this admission has joined
 }
 
 type Options struct {
@@ -381,6 +382,7 @@ type admission struct {
 	protectedUntil time.Time
 	deadline       clock.Instant
 	wallDeadline   time.Time
+	finish         func()
 }
 
 // admit obtains writer authority for one logical write of object and carries
@@ -402,6 +404,9 @@ func (s *Service) admit(ctx context.Context, object storage.ObjectKey, credentia
 		return ctx, admission{}, err
 	}
 	if admitted.Fence.LeaseID == "" || admitted.Fence.ServiceIncarnation == "" || admitted.Fence.Epoch == 0 || admitted.ProtectedUntil.Before(wallDeadline.Add(15*time.Minute)) {
+		if admitted.Finish != nil {
+			admitted.Finish()
+		}
 		return ctx, admission{}, storage.ErrFenced
 	}
 	// Carry trusted admission through both the managed session and all
@@ -409,16 +414,23 @@ func (s *Service) admit(ctx context.Context, object storage.ObjectKey, credentia
 	if admitted.Producer != nil {
 		c := *admitted.Producer
 		if c.Validate() != nil || c.Object != object || c.Writer != admitted.Fence || c.MutationID != opID || c.LogicalOpID != opID {
+			if admitted.Finish != nil {
+				admitted.Finish()
+			}
 			return ctx, admission{}, storage.ErrFenced
 		}
 		ctx = storage.WithMutation(ctx, c)
 	}
-	return ctx, admission{opID: opID, fence: admitted.Fence, protectedUntil: admitted.ProtectedUntil, deadline: deadline, wallDeadline: wallDeadline}, nil
+	finish := admitted.Finish
+	if finish == nil {
+		finish = func() {}
+	}
+	return ctx, admission{opID: opID, fence: admitted.Fence, protectedUntil: admitted.ProtectedUntil, deadline: deadline, wallDeadline: wallDeadline, finish: finish}, nil
 }
 
 // begin admits one logical write of object (opID as for admit) and opens its
 // managed session. The caller must end the session through publish or Close.
-func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentialID, opID string) (context.Context, *write.WriteSession, string, storage.WriterFence, time.Time, error) {
+func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentialID, opID string) (context.Context, *admittedSession, string, storage.WriterFence, time.Time, error) {
 	ctx, a, err := s.admit(ctx, object, credentialID, opID)
 	if err != nil {
 		return ctx, nil, "", storage.WriterFence{}, time.Time{}, err
@@ -428,15 +440,16 @@ func (s *Service) begin(ctx context.Context, object storage.ObjectKey, credentia
 		Deadline: a.deadline, Object: object, OpID: a.opID, CredentialID: credentialID, ProtectedUntil: a.protectedUntil,
 	})
 	if err != nil {
+		a.finish()
 		return ctx, nil, "", storage.WriterFence{}, time.Time{}, fmt.Errorf("begin: %w", err)
 	}
-	return ctx, session, a.opID, a.fence, a.wallDeadline, nil
+	return ctx, &admittedSession{WriteSession: session, finish: a.finish}, a.opID, a.fence, a.wallDeadline, nil
 }
 
 // publish commits a head or tombstone through session and always closes it.
 // A known failure releases the reservation; an unknown outcome is reconciled
 // first, because a missing outcome is not proof that the commit did not happen.
-func (s *Service) publish(ctx context.Context, session *write.WriteSession, commit storage.CommitRequest) (storage.CommitResult, error) {
+func (s *Service) publish(ctx context.Context, session *admittedSession, commit storage.CommitRequest) (storage.CommitResult, error) {
 	var result storage.CommitResult
 	var err error
 	if producer, ok := storage.MutationFromContext(ctx); ok {

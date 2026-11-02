@@ -500,6 +500,11 @@ func (w *Writer) Release() error {
 	}
 	s.pins = nil
 	s.released = true
+	if g.shared != nil {
+		// Durable Released authority rejects reuse; runtime need not retain one
+		// local handle forever for every request served by a fleet node.
+		delete(r.writers, s.fence.LeaseID)
+	}
 	return nil
 }
 func (r *WriterRegistry) Invalidate() {

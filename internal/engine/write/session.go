@@ -235,6 +235,20 @@ func (s *WriteSession) PrepareCompletion(manifestID string, prepare func(context
 	return h, nil
 }
 
+// BindRoot retains the upload/manifest identity before native multipart
+// metadata can publish under this session's writer authority.
+func (s *WriteSession) BindRoot(id string) error {
+	if s == nil || s.writeSession == nil || id == "" {
+		return storage.ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.active(); err != nil {
+		return err
+	}
+	return s.writer.BindRoot(s.ctx, s.object, id)
+}
+
 func (s *WriteSession) Reserve(r storage.Reservation) error {
 	if s == nil || s.writeSession == nil {
 		return storage.ErrInvalid

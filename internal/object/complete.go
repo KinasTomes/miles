@@ -86,7 +86,7 @@ const renewEvery = 15 * time.Second
 type completion struct {
 	s                *Service
 	ctx              context.Context
-	session          *write.WriteSession
+	session          *admittedSession
 	mu               sync.Mutex
 	u                storage.MultipartUpload
 	op               string
@@ -130,6 +130,10 @@ func (s *Service) complete(ctx context.Context, u storage.MultipartUpload, in co
 		return storage.ObjectHead{}, err
 	}
 	c := &completion{s: s, ctx: ctx, session: session, u: u, op: op, fence: fence, user: userID, credential: credentialID, takeover: takeover}
+	if err = session.BindRoot(u.ID); err != nil {
+		_ = session.Close()
+		return storage.ObjectHead{}, err
+	}
 	if takeover {
 		err = c.claim()
 	} else {
@@ -152,6 +156,9 @@ func (s *Service) complete(ctx context.Context, u storage.MultipartUpload, in co
 func (c *completion) freeze(in core.Input) error {
 	owner, err := write.NewManifestID()
 	if err != nil {
+		return err
+	}
+	if err = c.session.BindRoot(owner); err != nil {
 		return err
 	}
 	d, err := manifest.WriteCompletionStream(manifest.CompletionInput, owner, bytes.NewReader(in.Canonical()), func(n uint32, b []byte) error {
@@ -318,6 +325,9 @@ func (c *completion) snapshot(in core.Input) (storage.StreamDescriptor, error) {
 	}
 	owner, err := write.NewManifestID()
 	if err != nil {
+		return storage.StreamDescriptor{}, err
+	}
+	if err = c.session.BindRoot(owner); err != nil {
 		return storage.StreamDescriptor{}, err
 	}
 	return manifest.WriteCompletionStream(manifest.CompletionSnapshot, owner, bytes.NewReader(body), func(n uint32, b []byte) error {

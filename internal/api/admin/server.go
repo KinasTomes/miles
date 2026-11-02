@@ -40,6 +40,7 @@ type Options struct {
 	Statistics Statistics
 	Store      Store
 	Admit      Admit
+	Finish     func(context.Context, storage.MutationContext) // after the handler's synchronous metadata work
 	Sealer     Sealer
 	Cursors    Keyring
 	Clock      clock.Clock
@@ -139,16 +140,24 @@ func (s *server) now() time.Time { return s.Clock.Now().WallUTC }
 
 // call is one request in flight.
 type call struct {
-	w      http.ResponseWriter
-	r      *http.Request
-	id     string
-	p      principal
-	status int
+	w        http.ResponseWriter
+	r        *http.Request
+	id       string
+	p        principal
+	admitted []storage.MutationContext
+	status   int
 }
 
 func (s *server) handler(mutation bool, h func(*call) error) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c := &call{w: w, r: r, id: newRequestID()}
+		defer func() {
+			if s.Finish != nil {
+				for _, m := range c.admitted {
+					s.Finish(context.WithoutCancel(r.Context()), m)
+				}
+			}
+		}()
 		w.Header().Set("X-Request-Id", c.id)
 		err := s.authenticate(c)
 		if err == nil {
@@ -290,6 +299,7 @@ func (s *server) admit(c *call) (context.Context, storage.MutationContext, error
 	if err != nil {
 		return nil, m, err
 	}
+	c.admitted = append(c.admitted, m)
 	return storage.WithMutation(c.r.Context(), m), m, nil
 }
 
