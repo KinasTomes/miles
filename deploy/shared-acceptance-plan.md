@@ -76,9 +76,16 @@ resource inventory. Use the existing bootstrap/backend; inspect live state first
    signed URLs. Presigned client compatibility remains a separate suite.
 5. Keep Edge active through credential expiration/refresh (at least 16 minutes),
    verify a new temporary session succeeds without restart, then simulate helper
-   failure and verify no fallback. Prove owner tunnel failover to the other healthy
-   node, then restore the helper. Drain while a request runs; require a clean
-   process invocation and verified journal export before lifecycle completion.
+   failure and verify no fallback, then restore the helper. Hold a bounded signed
+   request open through ALB and identify its Cloud node using the existing private
+   active-request metric. Request that instance's termination through ASG without
+   decrementing desired capacity. Prove admission closes while the request remains
+   active, then finish it and verify its bytes. Require a clean process invocation
+   and journal export before lifecycle completion. Move the pinned owner tunnel to
+   the surviving node and prove the old instance is replaced by a different,
+   healthy instance, restoring two targets in different AZs. Account for a
+   temporary fourth EC2 instance and fourth root disk during replacement; verify
+   native vCPU quota first. Do not force lifecycle completion or reset deadlines.
 
 ## Cost, cleanup and evidence
 
@@ -95,8 +102,9 @@ include them in the next saved plan and cost approval.
 Record the approved resource IDs before creating data. After collecting evidence,
 drain serving nodes, destroy only this test's active topology and synthetic data
 with the reviewed cleanup plan, remove the temporary certificate/provider/grants
-and remove the dedicated Edge host. Deleting the three disposable root/cache volumes
-does not require a backup of synthetic data, but still requires explicit approval.
+and remove the dedicated Edge host. The run creates four disposable 20-GiB root
+volumes in total, including the replacement node's disk, with up to four present
+at once. Deleting all four without a backup still requires explicit approval.
 Existing datasets/state outside the run are preserved. Bootstrap/state and KMS or
 secret deletion windows may retain costs; report exactly what remains.
 
