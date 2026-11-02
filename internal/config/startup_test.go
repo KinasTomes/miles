@@ -97,3 +97,19 @@ func TestAdminAddressRequiresIdentityModeAndLoopback(t *testing.T) {
 		}
 	}
 }
+
+func TestSharedRuntimeIsExplicitAndPrivate(t *testing.T) {
+	valid := `{"profile":"cloud","mode":"runtime","runtime_node_id":"cloud-a","ddb_table_prefix":"miles-dev-","runtime_secret_arn":"arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:runtime-example","utc_reference":"169.254.169.123","health_address":"10.0.1.2:9100","s3_address":"10.0.1.2:8080","admin_address":"10.0.1.2:9000","local_data_path":"/var/lib/miles","pack_bucket":"example","pack_kms_key_id":"alias/example"}`
+	if _, e := LoadStartup(strings.NewReader(valid)); e != nil {
+		t.Fatal(e)
+	}
+	for _, change := range [][2]string{{`"cloud-a"`, `""`}, {`10.0.1.2:8080`, `0.0.0.0:8080`}, {`10.0.1.2:9000`, `8.8.8.8:9000`}, {`10.0.1.2:9100`, `10.0.1.2:9000`}, {`169.254.169.123`, `127.0.0.1`}, {`/var/lib/miles`, `relative`}, {`"mode":"runtime"`, `"mode":"dev"`}, {`"profile":"cloud"`, `"profile":"edge"`}, {`"pack_kms_key_id":"alias/example"`, `"pack_kms_key_id":"alias/example","pack_endpoint":"https://attacker.example"`}} {
+		if _, e := LoadStartup(strings.NewReader(strings.Replace(valid, change[0], change[1], 1))); e == nil {
+			t.Fatal("unsafe runtime config accepted", change)
+		}
+	}
+	edge := strings.ReplaceAll(strings.Replace(valid, `"profile":"cloud"`, `"profile":"edge","aws_config_file":"/etc/miles/aws-config"`, 1), "10.0.1.2", "127.0.0.1")
+	if _, e := LoadStartup(strings.NewReader(edge)); e != nil {
+		t.Fatal(e)
+	}
+}
