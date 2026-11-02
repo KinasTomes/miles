@@ -52,9 +52,10 @@ thật (`internal/object`); router + handler + AWS SDK Go v2 trên service giả
 - Takeover quá `expires_at` gặp lỗi đã biết (hook trả `ErrQuotaExceeded` ở commit): reopen
   bị từ chối vì upload hết hạn, upload Aborted, `Reserved = Staged = ActiveUploads = 0`
   một lần; recovery lặp lại không đổi counters.
-- Prepare dài 75 giây clock metadata (hook trước dispatch, 5 bước 15 giây; clock service
-  điều khiển heartbeat): lease được gia hạn 5 lần, attempt đầu commit, GET đúng, quota một
-  lần. Tắt heartbeat thì cùng test fail (0 lần gia hạn, prepare mất fence).
+- Prepare dài 75 giây clock metadata (hook bên trong callback backend, 5 bước 15 giây;
+  clock service điều khiển heartbeat): completion lease được gia hạn 5 lần và heartbeat
+  R1 tiếp tục chạy; attempt đầu commit, GET đúng, quota một lần. Giữ khóa trạng thái R1
+  suốt callback như trước bản sửa thì test fail dù completion lease đã gia hạn đủ 5 lần.
 - Commit bị từ chối quyền (hook trả `ErrAccessDenied`): attempt của client → Active,
   quota giữ; attempt takeover → Aborted, release một lần.
 - Router + SDK: Active tới service với input đã chuẩn hóa (ETag bỏ ngoặc, chữ thường),
@@ -70,6 +71,13 @@ WSL); Python `scripts/tests` pass. Trên Windows các package `internal/object`,
 `internal/multipart`, `internal/engine/write`, `internal/metadata/badger`,
 `internal/api/s3` pass; `internal/app`, `cmd/miles`, `cmd/dsgctl` chỉ fail vì kiểm quyền
 file 0600/0700 của Windows như trước thay đổi này.
+
+Kiểm chứng bổ sung ngày 2026-11-02 trên Linux: `make check` pass; race suites của
+`internal/coordination`, `internal/engine/write`, `internal/object`, `internal/multipart`
+và `internal/readpath` pass. Regression callback 75 giây, heartbeat R1, closure, lost ACK
+và panic pass 5 lần với `-race -count=5`. Native race suites của DynamoDB, Badger và
+storage contract pass với DynamoDB Local 3.3.0 loopback, `MILES_DDB_LOCAL_REQUIRED=1`
+và endpoint explicit; không dùng AWS thật.
 
 ## Smoke tiến trình thật (local mode)
 
@@ -92,10 +100,12 @@ Client: AWS CLI 2.36.41 (bản pin, Windows) và boto3 1.43.122 không awscrt.
   service giao `object.Service.RecoverUpload` cho một upload. Admission của recovery dùng
   credential lưu trong upload: credential bị thu hồi thì local authority từ chối admit,
   upload giữ Completing cho recovery authority sau này.
-- `PrepareCompletion` vẫn dispatch qua `Writer.Do`, giữ lock registry R1 suốt lúc backend
-  prepare đọc part pages và ghi manifest pages; heartbeat R1 lease của writer chờ trong lúc
-  đó. Prepare bị chặn bởi 100 GiB/`MaxPages`; prepare thật dài hơn lease R1 60 giây chưa
-  được đo.
+- `Writer.Do` giữ khóa dispatch qua callback nhưng nhả mutex trạng thái để heartbeat R1
+  gia hạn trong lúc backend prepare đọc/ghi pages. Close/release/invalidate vẫn chờ callback
+  hoàn tất; callback và ACK đang chạy hoặc outcome chưa rõ vẫn giữ protection. Regression
+  `TestR1WriterHeartbeatDuringCallback` kiểm tra heartbeat 75 giây với cả ACK thành công và
+  unknown outcome; các test closure, lost ACK và panic tiếp tục kiểm tra quiescence.
+  Thời lượng prepare trên AWS thật chưa được đo.
 - Takeover luôn snapshot/prepare lại (part không đổi khi Completing), không dùng lại
   manifest đã prepare của attempt cũ; manifest đó chờ GC.
 - Quyền bị thu hồi thật được chứng minh ở contract store (commit/renew kiểm initiator); test
