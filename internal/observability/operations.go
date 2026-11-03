@@ -15,9 +15,12 @@ type Metric struct {
 	Labels  map[string]string
 }
 type Operations struct {
-	mu      sync.Mutex
-	updates map[string]uint64
+	mu               sync.Mutex
+	updates          map[string]uint64
+	dispatchFailures uint64
 }
+
+func (o *Operations) DispatchFailure() { o.mu.Lock(); defer o.mu.Unlock(); o.dispatchFailures++ }
 
 func (o *Operations) JobUpdate(t jobs.Type, s jobs.State) {
 	if o == nil || !t.Valid() || !s.Valid() {
@@ -37,7 +40,7 @@ func (o *Operations) Snapshot() []Metric {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	out := []Metric{}
+	out := []Metric{{Name: "miles_job_dispatch_failures_total", Value: float64(o.dispatchFailures), Counter: true}}
 	for _, t := range jobs.Types() {
 		for _, s := range jobs.States() {
 			k := string(t) + "/" + string(s)
@@ -67,6 +70,8 @@ func validMetric(m Metric) bool {
 		return false
 	}
 	switch m.Name {
+	case "miles_job_dispatch_failures_total":
+		return m.Counter && m.Value >= 0 && len(m.Labels) == 0
 	case "miles_process_start_time_seconds", "miles_goroutines", "miles_draining", "miles_dependency_probe_age_seconds", "miles_active_requests":
 		return !m.Counter && len(m.Labels) == 0
 	case "miles_dependency_probe_failures_total":

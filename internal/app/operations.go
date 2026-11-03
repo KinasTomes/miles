@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/observability"
@@ -15,6 +16,8 @@ type Operational struct {
 	Registry   *jobs.Registry
 	Metrics    *observability.Operations
 	CloudWatch *observability.CloudWatch
+	Cluster    *jobs.Cluster
+	OnDrain    func(context.Context) error
 }
 
 func (o *Operational) validate() error {
@@ -34,19 +37,36 @@ func (o *Operational) run(ctx context.Context, h *observability.Health, a *Admis
 	parent := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	count := 1
-	result := make(chan error, 2)
-	go func() {
-		result <- o.Registry.Run(ctx, a, func() jobs.NodeStatus {
+	workers := []func() error{func() error {
+		return o.Registry.Run(ctx, a, func() jobs.NodeStatus {
 			return jobs.NodeStatus{Ready: h.Ready(), AppliedPolicyRevision: o.Registry.Identity.AppliedPolicyRevision}
 		})
-	}()
+	}}
+	if o.Cluster != nil {
+		workers = append(workers, func() error { return o.Cluster.Runner.Run(ctx) })
+	}
+	if o.OnDrain != nil {
+		workers = append(workers, func() error {
+			for ctx.Err() == nil {
+				if a.Draining() {
+					return o.OnDrain(ctx)
+				}
+				if e := o.Registry.Clock.Sleep(ctx, time.Second); e != nil {
+					return e
+				}
+			}
+			return ctx.Err()
+		})
+	}
 	if o.CloudWatch != nil {
-		count++
-		go func() { result <- o.CloudWatch.Run(ctx, o.Registry.Clock, h.Snapshot) }()
+		workers = append(workers, func() error { return o.CloudWatch.Run(ctx, o.Registry.Clock, h.Snapshot) })
+	}
+	result := make(chan error, len(workers))
+	for _, work := range workers {
+		go func(run func() error) { result <- run() }(work)
 	}
 	var out error
-	for range count {
+	for range workers {
 		e := <-result
 		if e != nil && !errors.Is(e, context.Canceled) && !(parent.Err() != nil && errors.Is(e, parent.Err())) {
 			out = errors.Join(out, e)

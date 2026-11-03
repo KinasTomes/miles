@@ -156,7 +156,25 @@ func (w Worker) CloseAndSeal(ctx context.Context, r s.RecoveryCutRequest) (Attac
 // Run is a supervised worker for an already acquired recovery-kind R1 lease.
 // The runtime/job owner supplies that lease and joins Run before releasing it.
 // Dispatch never derives authority from this cadence or from job timestamps.
-func (w Worker) Run(ctx context.Context) error {
+func (w Worker) Run(ctx context.Context) error { return w.run(ctx, true) }
+
+// RunCuts keeps the durable hourly cut supervisor while a shared Jobs worker
+// owns periodic journal export. Closing a cut still exports its exact members.
+func (w Worker) RunCuts(ctx context.Context) error { return w.run(ctx, false) }
+
+// FlushSupervised renews recovery authority while one flush runs. The caller
+// bounds the operation and retains responsibility for closing the lease.
+func (w Worker) FlushSupervised(ctx context.Context) error {
+	return w.supervise(ctx, func(ctx context.Context) error {
+		err := w.Flush(ctx)
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		return err
+	})
+}
+
+func (w Worker) supervise(ctx context.Context, work func(context.Context) error) error {
 	if err := w.validate(); err != nil {
 		return err
 	}
@@ -187,44 +205,52 @@ func (w Worker) Run(ctx context.Context) error {
 		}
 	}()
 	defer func() { cancel(nil); <-heartbeats }()
-	for {
-		if err := w.Flush(ctx); err != nil {
-			if ctx.Err() != nil {
-				return context.Cause(ctx)
-			}
-			w.observe("export_error")
-		} else {
-			w.observe("export_ok")
-		}
-		epoch, due, err := w.Store.RecoveryCutDue(ctx, w.Catalog.History, w.Fence)
-		if err != nil {
-			return err
-		}
-		gate, err := w.Store.GetR1Gate(ctx)
-		if err != nil {
-			return err
-		}
-		if due || gate.State == "RecoveryCut" {
-			id := gate.RecoveryCutID
-			if gate.State == "RecoveryCut" {
-				epoch = gate.Epoch
-			}
-			if id == "" {
-				id, err = s.NewBucketID()
-				if err != nil {
-					return err
+	return work(ctx)
+}
+
+func (w Worker) run(ctx context.Context, export bool) error {
+	return w.supervise(ctx, func(ctx context.Context) error {
+		for {
+			if export {
+				if err := w.Flush(ctx); err != nil {
+					if ctx.Err() != nil {
+						return context.Cause(ctx)
+					}
+					w.observe("export_error")
+				} else {
+					w.observe("export_ok")
 				}
 			}
-			_, err = w.CloseAndSeal(ctx, s.RecoveryCutRequest{HistoryID: w.Catalog.History, Epoch: epoch, CloseID: id, Worker: w.Fence})
+			epoch, due, err := w.Store.RecoveryCutDue(ctx, w.Catalog.History, w.Fence)
 			if err != nil {
-				if ctx.Err() != nil {
-					return context.Cause(ctx)
+				return err
+			}
+			gate, err := w.Store.GetR1Gate(ctx)
+			if err != nil {
+				return err
+			}
+			if due || gate.State == "RecoveryCut" {
+				id := gate.RecoveryCutID
+				if gate.State == "RecoveryCut" {
+					epoch = gate.Epoch
 				}
-				w.observe("close_error")
+				if id == "" {
+					id, err = s.NewBucketID()
+					if err != nil {
+						return err
+					}
+				}
+				_, err = w.CloseAndSeal(ctx, s.RecoveryCutRequest{HistoryID: w.Catalog.History, Epoch: epoch, CloseID: id, Worker: w.Fence})
+				if err != nil {
+					if ctx.Err() != nil {
+						return context.Cause(ctx)
+					}
+					w.observe("close_error")
+				}
+			}
+			if err = w.Clock.Sleep(ctx, ExportInterval); err != nil {
+				return err
 			}
 		}
-		if err = w.Clock.Sleep(ctx, ExportInterval); err != nil {
-			return err
-		}
-	}
+	})
 }

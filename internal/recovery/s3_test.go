@@ -75,6 +75,9 @@ func TestS3ConditionalStandardAndLostACK(t *testing.T) {
 		t.Fatal("immutable object changed")
 	}
 	api.readFail = true
+	if err = o.Create(ctx, "journal/a.json", b); !errors.Is(err, crash) {
+		t.Fatal("conditional replay hid its readback failure", err)
+	}
 	if err = o.Create(ctx, "journal/b.json", b); err == nil {
 		t.Fatal("unknown accepted")
 	}

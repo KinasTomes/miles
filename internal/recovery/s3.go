@@ -77,7 +77,7 @@ func (o *S3Objects) Create(ctx context.Context, key string, b []byte) error {
 	got, readErr := o.Read(ctx, key)
 	if readErr != nil {
 		if err != nil {
-			return err
+			return errors.Join(err, readErr)
 		}
 		return readErr
 	}

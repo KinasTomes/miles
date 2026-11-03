@@ -2,9 +2,9 @@
 
 Local durable mode có cache node hai tầng: memory64MiB và disk1GiB tại
 `<local_data_path>/cache`, node ID `local`. Cache là disposable, không là nguồn
-recovery. Nếu process bị kill để lại `cache/owner.lock`, chỉ bỏ marker sau khi
-xác nhận process cũ đã dừng; không xóa metadata/credentials. Stats/purge hook
-có scope node; Admin cluster job vẫn thuộc W05. Xem
+recovery. Kernel lock `cache/owner.flock` tự nhả khi process thoát hoặc bị kill.
+Marker `cache/owner.lock` của bản cũ vẫn cần xác nhận process cũ đã dừng trước
+khi operator bỏ marker. Stats/purge hook có scope node. Xem
 [cache node validation](../testing/cache-node-validation.md) cho limits,
 admit-on-write, methodology và evidence.
 

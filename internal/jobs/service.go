@@ -15,6 +15,9 @@ import (
 type PolicyReader interface {
 	GetPolicy(context.Context, uint64) (storage.PolicySnapshot, error)
 }
+
+var ErrUnsupported = errors.New("job executor is not installed")
+
 type Service struct {
 	Store    Store
 	Policies PolicyReader
@@ -53,15 +56,40 @@ func (s Service) Create(ctx context.Context, request Create) (Job, error) {
 	if _, e = rand.Read(id[:]); e != nil {
 		return Job{}, e
 	}
+	return s.create(ctx, request, "job_"+hex.EncodeToString(id[:]), p.Revision())
+}
+
+// CreateNamed is for trusted schedulers/child commands. HTTP clients cannot
+// supply an ID. A caller must reconcile ErrConflict against the exact record.
+func (s Service) CreateNamed(ctx context.Context, request Create, id string) (Job, error) {
+	if !ValidID(id) || !request.Type.Valid() || s.Store == nil || s.Policies == nil {
+		return Job{}, storage.ErrInvalid
+	}
+	v, e := config.NewPolicyValidator(config.DSGPolicyLimits())
+	if e != nil {
+		return Job{}, e
+	}
+	r, e := s.Policies.GetPolicy(ctx, request.PolicyRevision)
+	p, e := v.ResolveGlobal(request.PolicyRevision, r, e)
+	if e != nil {
+		return Job{}, e
+	}
+	if len(request.Params) == 0 {
+		request.Params = json.RawMessage(`{}`)
+	}
+	return s.create(ctx, request, id, p.Revision())
+}
+
+func (s Service) create(ctx context.Context, request Create, id string, revision uint64) (Job, error) {
 	now := time.Now().UTC()
 	if s.Now != nil {
 		now = s.Now().UTC()
 	}
-	j := Job{ID: "job_" + hex.EncodeToString(id[:]), Type: request.Type, State: Queued, DryRun: request.DryRun, Params: append(json.RawMessage(nil), request.Params...), PolicyRevision: p.Revision(), Revision: 1, CreatedAt: now, Progress: map[string]uint64{}}
-	if e = j.Validate(); e != nil {
+	j := Job{ID: id, Type: request.Type, State: Queued, DryRun: request.DryRun, Params: append(json.RawMessage(nil), request.Params...), PolicyRevision: revision, Revision: 1, CreatedAt: now, Progress: map[string]uint64{}}
+	if e := j.Validate(); e != nil {
 		return Job{}, e
 	}
-	if e = s.Store.CreateJob(ctx, j); e != nil {
+	if e := s.Store.CreateJob(ctx, j); e != nil {
 		// A backend error may follow commit. Retain the generated identity so
 		// callers can reconcile this job rather than creating another blindly.
 		return j, e

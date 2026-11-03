@@ -37,8 +37,18 @@ func closeDependencies(d Dependencies, err error) error {
 	return err
 }
 
+func shutdownDependencies(ctx context.Context, d Dependencies, err error) error {
+	if d.closeWithContext != nil {
+		return errors.Join(err, d.closeWithContext(ctx))
+	}
+	return closeDependencies(d, err)
+}
+
 func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencies, admission *Admission, output io.Writer) error {
 	defer ln.Close()
+	if d.Operations != nil && d.Operations.Cluster != nil {
+		d.Operations.Cluster.Gate = admission
+	}
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	h := observability.NewHealth(d.Probe, admission.Draining, c.Mode != "runtime")
 	var operationalReady func() bool
@@ -182,7 +192,7 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	}
 	// A failed operational marker is not evidence of active storage users.
 	// Once all workers quiesce, still flush/close storage and retain the error.
-	closedErr := closeDependencies(d, errors.Join(serveErr, operationsErr))
+	closedErr := shutdownDependencies(shutdown, d, errors.Join(serveErr, operationsErr))
 	if drainErr != nil {
 		err := errors.Join(closedErr, drainErr)
 		logger.Error("incomplete shutdown", "error", err.Error())

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"github.com/KinasTomes/miles/internal/config"
 	"io"
 	"net"
@@ -9,6 +10,38 @@ import (
 	"testing"
 	"time"
 )
+
+func TestShutdownPassesRemainingBudgetToRuntimeClose(t *testing.T) {
+	c := config.DefaultStartup()
+	c.Mode = "dev"
+	c.ShutdownSeconds = 1
+	d, err := Bootstrap(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close = func() error { return errors.New("runtime close lost its shutdown context") }
+	budget := make(chan time.Duration, 1)
+	d.closeWithContext = func(ctx context.Context) error {
+		deadline, ok := ctx.Deadline()
+		if !ok || ctx.Err() != nil {
+			return errors.New("missing live shutdown deadline")
+		}
+		budget <- time.Until(deadline)
+		return nil
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := serve(ctx, ln, c, d, new(Admission), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if remaining := <-budget; remaining <= 0 || remaining > time.Second {
+		t.Fatal("runtime cleanup extended the process shutdown budget", remaining)
+	}
+}
 
 func TestHealthServerBootstrap(t *testing.T) {
 	for _, mode := range []string{"dev", "runtime"} {
