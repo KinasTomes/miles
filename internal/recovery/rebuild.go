@@ -338,12 +338,31 @@ func (w Checkpointer) Rebuild(ctx context.Context, root AttachmentReference) (Re
 	if _, ok := records["policy-current/"]; !ok {
 		return zero, fmt.Errorf("%w: missing current global policy", s.ErrInvalid)
 	}
+	attachmentSeen := map[string]string{}
+	attachmentBytes, manifestReferences := 0, 0
 	for _, dep := range image.Dependencies {
 		if e := walkAttachment(ctx, w.Objects, dep.Root, dep.Event, func(kind byte, owner string, n uint32, raw []byte) error {
+			key := s.IndexRecordKey(strconv.Itoa(int(kind)), []string{owner, strconv.FormatUint(uint64(n), 10)})
+			sum := digest(raw)
+			if previous, ok := attachmentSeen[key]; ok {
+				if previous != sum {
+					return s.ErrConflict
+				}
+				return nil
+			}
+			attachmentBytes += len(raw)
+			if attachmentBytes > 64<<20 {
+				return s.ErrUnavailable
+			}
+			attachmentSeen[key] = sum
 			if kind == 1 {
 				p, e := manifest.Decode(raw, 1, owner, n)
 				if e != nil {
 					return e
+				}
+				manifestReferences += len(p.Chunks)
+				if manifestReferences > 8*MaxCheckpointRows {
+					return s.ErrUnavailable
 				}
 				for _, prior := range out.Manifests[owner] {
 					if prior.Number == n {
