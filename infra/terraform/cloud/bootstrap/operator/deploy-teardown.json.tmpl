@@ -12,17 +12,18 @@
         "ec2:DeleteSecurityGroup"
       ],
       "Resource": [
-        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:natgateway/*",
-        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:elastic-ip/*",
-        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:route-table/*",
-        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:vpc-endpoint/*",
-        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:security-group/*"
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:natgateway/*",
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:elastic-ip/*",
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:route-table/*",
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:vpc-endpoint/*",
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:security-group/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestedRegion": "{{REGION}}",
           "aws:ResourceTag/Project": "Miles",
-          "aws:ResourceTag/Environment": "dev"
+          "aws:ResourceTag/Environment": "{{ENVIRONMENT}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
         }
       }
     },
@@ -36,13 +37,13 @@
         "elasticloadbalancing:DescribeTags"
       ],
       "Resource": [
-        "arn:aws:elasticloadbalancing:ap-southeast-1:ACCOUNT_ID:loadbalancer/app/miles-dev/*",
-        "arn:aws:elasticloadbalancing:ap-southeast-1:ACCOUNT_ID:targetgroup/miles-dev-s3/*",
-        "arn:aws:elasticloadbalancing:ap-southeast-1:ACCOUNT_ID:listener/app/miles-dev/*/*"
+        "arn:aws:elasticloadbalancing:{{REGION}}:{{ACCOUNT_ID}}:loadbalancer/app/{{INSTALLATION_NAME}}/*",
+        "arn:aws:elasticloadbalancing:{{REGION}}:{{ACCOUNT_ID}}:targetgroup/{{INSTALLATION_NAME}}-s3/*",
+        "arn:aws:elasticloadbalancing:{{REGION}}:{{ACCOUNT_ID}}:listener/app/{{INSTALLATION_NAME}}/*/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1"
+          "aws:RequestedRegion": "{{REGION}}"
         }
       }
     }

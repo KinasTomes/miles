@@ -11,19 +11,19 @@
       "Sid": "ManageOwnPasswordAndEnrollMFA",
       "Effect": "Allow",
       "Action": ["iam:GetUser", "iam:ChangePassword", "iam:EnableMFADevice", "iam:GetMFADevice", "iam:ListMFADevices", "iam:ResyncMFADevice"],
-      "Resource": "arn:aws:iam::ACCOUNT_ID:user/miles/operators/hung-deploy"
+      "Resource": "{{OPERATOR_USER_ARN}}"
     },
     {
       "Sid": "CreateOwnVirtualMFA",
       "Effect": "Allow",
       "Action": ["iam:CreateVirtualMFADevice", "iam:TagMFADevice"],
-      "Resource": "arn:aws:iam::ACCOUNT_ID:mfa/hung-deploy"
+      "Resource": "{{OPERATOR_MFA_ARN}}"
     },
     {
       "Sid": "AssumeDevDeployWithMFA",
       "Effect": "Allow",
       "Action": "sts:AssumeRole",
-      "Resource": "arn:aws:iam::ACCOUNT_ID:role/miles/bootstrap/miles-dev-deploy",
+      "Resource": "{{DEPLOY_ROLE_ARN}}",
       "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}}
     },
     {

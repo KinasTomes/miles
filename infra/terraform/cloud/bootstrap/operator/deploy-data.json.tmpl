@@ -8,32 +8,33 @@
         "dynamodb:CreateTable"
       ],
       "Resource": [
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-AdminTokens",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-BucketGrants",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Buckets",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Chunks",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-CompletionPages",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Credentials",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Jobs",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Leases",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-ManifestPages",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Nodes",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Objects",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Outbox",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Packs",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-QuotaReservations",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-RecoveryEpochs",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-SystemConfig",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-UploadPartPages",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-UploadParts",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Uploads",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Users"
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-AdminTokens",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-BucketGrants",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Buckets",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Chunks",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-CompletionPages",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Credentials",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Jobs",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Leases",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-ManifestPages",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Nodes",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Objects",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Outbox",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Packs",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-QuotaReservations",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-RecoveryEpochs",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-SystemConfig",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-UploadPartPages",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-UploadParts",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Uploads",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Users"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestedRegion": "{{REGION}}",
           "aws:RequestTag/Project": "Miles",
-          "aws:RequestTag/Environment": "dev"
+          "aws:RequestTag/Environment": "{{ENVIRONMENT}}",
+          "aws:RequestTag/Installation": "{{INSTALLATION_NAME}}"
         }
       }
     },
@@ -51,32 +52,33 @@
         "dynamodb:GetResourcePolicy"
       ],
       "Resource": [
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-AdminTokens",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-BucketGrants",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Buckets",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Chunks",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-CompletionPages",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Credentials",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Jobs",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Leases",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-ManifestPages",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Nodes",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Objects",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Outbox",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Packs",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-QuotaReservations",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-RecoveryEpochs",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-SystemConfig",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-UploadPartPages",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-UploadParts",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Uploads",
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-Users"
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-AdminTokens",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-BucketGrants",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Buckets",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Chunks",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-CompletionPages",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Credentials",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Jobs",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Leases",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-ManifestPages",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Nodes",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Objects",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Outbox",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Packs",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-QuotaReservations",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-RecoveryEpochs",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-SystemConfig",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-UploadPartPages",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-UploadParts",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Uploads",
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-Users"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestedRegion": "{{REGION}}",
           "aws:ResourceTag/Project": "Miles",
-          "aws:ResourceTag/Environment": "dev"
+          "aws:ResourceTag/Environment": "{{ENVIRONMENT}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
         }
       }
     },
@@ -109,7 +111,7 @@
         "s3:PutEncryptionConfiguration"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1"
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}"
       ]
     }
   ]

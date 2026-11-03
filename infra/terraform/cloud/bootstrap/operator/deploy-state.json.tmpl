@@ -28,7 +28,7 @@
         "s3:PutEncryptionConfiguration"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-tfstate-ACCOUNT_ID-ap-southeast-1"
+        "arn:aws:s3:::{{STATE_BUCKET}}"
       ]
     },
     {
@@ -39,8 +39,8 @@
         "s3:PutObject"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-tfstate-ACCOUNT_ID-ap-southeast-1/cloud/dev/terraform.tfstate",
-        "arn:aws:s3:::miles-dev-tfstate-ACCOUNT_ID-ap-southeast-1/cloud/dev/terraform.tfstate.tflock"
+        "arn:aws:s3:::{{STATE_BUCKET}}/{{STATE_KEY}}",
+        "arn:aws:s3:::{{STATE_BUCKET}}/{{STATE_KEY}}.tflock"
       ]
     },
     {
@@ -50,7 +50,7 @@
         "s3:DeleteObject"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-tfstate-ACCOUNT_ID-ap-southeast-1/cloud/dev/terraform.tfstate.tflock"
+        "arn:aws:s3:::{{STATE_BUCKET}}/{{STATE_KEY}}.tflock"
       ]
     }
   ]
