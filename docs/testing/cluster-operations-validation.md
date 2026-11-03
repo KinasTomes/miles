@@ -16,6 +16,10 @@ The focused regression suite covers:
   Cloud/Cloud/Edge compositions; purge and per-node partial results; cancellation
   from another gateway; target-gate acknowledgement; Edge gate-only completion;
   Cloud incomplete drain never reporting a completed physical flush.
+- Upload discovery with empty native pages, purge expiry boundary and open
+  publisher closure, repeated cleanup without duplicate quota release, frozen
+  completion preserved for recovery, and composed Cloud/Edge dry-run/real purge
+  jobs on DynamoDB Local and S3/Moto.
 - Lifecycle-controller process/ALB proof, manual drain adopting ASG heartbeats,
   private invocation-bound markers, timeout/failure withholding completion and
   node-result reconciliation after an UpdateItem acknowledgement is lost.

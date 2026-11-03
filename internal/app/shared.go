@@ -229,6 +229,9 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 		return jobs.Step{Settled: true, Done: true, Result: json.RawMessage(`{"exported":true}`)}, nil
 	}}
 	runner.Executors["drain"] = cluster.DrainExecutor()
+	uploads := uploadJobs{store: m, objects: objects, utc: utc}
+	runner.Executors["purge_uploads"] = uploads.executor("purge_uploads")
+	runner.Executors["recover_uploads"] = uploads.executor("recover_uploads")
 	a.Operations = cluster
 	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Cluster: cluster}
 	if clients.metrics != nil {

@@ -12,12 +12,12 @@ server. Job views exclude fences, internal parameters and checkpoints.
 | `cache_purge` | Local cache primitive, or a parent coordinating immutable target-specific child commands |
 | `drain` | Acknowledged target admission gate; Edge reports gate-only, Cloud waits for native shutdown/ALB proof |
 | `journal_flush` | Immutable journal export, scheduled once per minute under shared scheduler authority; also callable manually |
+| `purge_uploads` | Fenced recovery closes expired Active or Aborting uploads and releases staging once |
+| `recover_uploads` | Resumes stale Completing uploads from frozen input after lease expiry plus grace |
 | Other declared types | HTTP 501 `job_type_unavailable` before enqueueing |
 
 Declaring a type in `jobs.Types()` does not install an executor. GC/compaction,
-tiering, scrub, checkpoint, upload purge and upload-recovery job adapters remain
-separate integration work. Existing object upload-recovery methods are not a
-complete background-job adapter or a bounded periodic discovery process.
+tiering, scrub and checkpoint job adapters remain separate integration work.
 
 In particular, destructive maintenance requires authority compatible with its
 R1 maintenance gate. Registering it as an ordinary control-lease executor would
@@ -38,8 +38,7 @@ that gate or claim GC support by registering an empty step.
 The existing `dsgctl job ls/show/run/cancel` and `node ls/drain` commands use these
 routes. Cache job parameters accept `{"scope":"node","node_id":"..."}` or
 `{"scope":"cluster"}`. Node scope defaults to the receiving gateway when its
-ID is omitted. Drain jobs require an explicit node ID. Journal export accepts
-empty parameters. `dry_run` does not purge, close admission or export data.
+ID is omitted. Drain jobs require an explicit node ID. Journal export and both upload sweeps accept empty parameters. `dry_run` does not purge, close admission or export data.
 
 ## Worker and fan-out ownership
 
@@ -49,7 +48,18 @@ bounded step runs; they cannot extend the hard lease deadline. Heartbeat failure
 cancels and joins the step before any result is published. Unknown outcomes retain
 the pending marker. Physical jobs cannot take over unsettled work merely because
 a heartbeat expired. Cache eviction, sticky drain and immutable journal export
-can safely revisit their same step after an authority transfer.
+can safely revisit their same step after an authority transfer. Upload sweeps
+use the same bounded replay rule through transactional upload fences and receipts.
+
+Upload sweeps have a type-specific periodic owner every 60 seconds. Each step
+scans up to 32 native pages, retaining empty filtered-page continuation keys and
+checkpointing progress. The 10,000-page run cap reports `scan_limit` with its
+checkpoint. Eligibility uses the trusted UTC lower bound and is rechecked by
+the operation transaction. Purge closes expired Active/Aborting uploads through
+the recovery port, including open publishers, before releasing quota. A Completing
+upload follows frozen-input recovery even after its upload expiry. Dry-run
+reports examined/skipped counts and preserves data. Outcome errors retain the
+pending step until durable upload state proves it settled.
 
 Periodic creation holds a type-specific scheduler lease and checks shared active
 records before enqueueing. Slot IDs reconcile duplicate creation and lost ACKs.

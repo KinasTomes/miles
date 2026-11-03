@@ -206,7 +206,7 @@ func Apply(old Job, c Change, now time.Time) (Job, error) {
 			// Cache eviction, sticky drain and immutable journal export can
 			// retry the same step after authority transfer. Physical GC/tiering
 			// steps retain the reconciliation barrier for unknown outcomes.
-			if j.PendingStep != "" && j.Type != "cache_purge" && j.Type != "drain" && j.Type != "journal_flush" {
+			if j.PendingStep != "" && j.Type != "cache_purge" && j.Type != "drain" && j.Type != "journal_flush" && j.Type != "purge_uploads" && j.Type != "recover_uploads" {
 				return Job{}, ErrReconciliation
 			}
 			if c.Fence == j.Worker && c.NodeID == j.WorkerNodeID && c.NodeIncarnation == j.WorkerNodeIncarnation {
@@ -223,7 +223,7 @@ func Apply(old Job, c Change, now time.Time) (Job, error) {
 		if j.State == Queued {
 			j.State = Running
 			j.StartedAt = now.UTC()
-			if j.Type == "cache_purge" || j.Type == "drain" || j.Type == "journal_flush" {
+			if j.Type == "cache_purge" || j.Type == "drain" || j.Type == "journal_flush" || j.Type == "purge_uploads" || j.Type == "recover_uploads" {
 				j.Checkpoint = json.RawMessage(`{}`)
 			}
 		}
