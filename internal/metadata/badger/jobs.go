@@ -6,17 +6,32 @@ import (
 	"strings"
 
 	"github.com/KinasTomes/miles/internal/jobs"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
 	s "github.com/KinasTomes/miles/internal/storage"
 	db "github.com/dgraph-io/badger/v4"
 )
 
 var _ jobs.Store = (*Store)(nil)
 
+func (m *Store) jobAdmin(t *db.Txn, ctx context.Context) error {
+	actor, ok := jobs.AdminActorFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	if err := m.fence(t, actor.Writer); err != nil {
+		return err
+	}
+	return operations.SystemActor(multipartTx{m: m, t: t, ctx: ctx}, m.now(), "", actor.TokenID)
+}
+
 func (m *Store) CreateJob(ctx context.Context, j jobs.Job) error {
 	if j.Validate() != nil || j.State != jobs.Queued || j.Revision != 1 {
 		return s.ErrInvalid
 	}
 	return m.update(ctx, func(t *db.Txn) error {
+		if err := m.jobAdmin(t, ctx); err != nil {
+			return err
+		}
 		if creator, ok := jobs.CreationFence(ctx); ok {
 			if e := m.fence(t, creator); e != nil {
 				return e
@@ -54,6 +69,9 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 		return out, s.ErrInvalid
 	}
 	e := m.update(ctx, func(t *db.Txn) error {
+		if err := m.jobAdmin(t, ctx); err != nil {
+			return err
+		}
 		old, e := get[jobs.Job](t, key("jobs", c.JobID))
 		if e != nil {
 			return e
@@ -106,6 +124,9 @@ func (m *Store) PutNode(ctx context.Context, expected uint64, n jobs.Node) (jobs
 		return jobs.Node{}, s.ErrInvalid
 	}
 	e := m.update(ctx, func(t *db.Txn) error {
+		if err := m.jobAdmin(t, ctx); err != nil {
+			return err
+		}
 		old, e := get[jobs.Node](t, key("nodes", n.ID))
 		if e != nil && !errors.Is(e, s.ErrNotFound) {
 			return e

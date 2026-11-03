@@ -137,7 +137,11 @@ func (r *Registry) RequestDrain(ctx context.Context, id string, gate Gate) (Node
 		if gate == nil {
 			return Node{}, storage.ErrInvalid
 		}
-		gate.Drain()
+		// Process shutdown fails closed even when persistence is unavailable.
+		// An HTTP request must first pass the transactional actor check.
+		if _, adminRequest := AdminActorFromContext(ctx); !adminRequest {
+			gate.Drain()
+		}
 	}
 	for range 4 {
 		n, e := r.Store.GetNode(ctx, id)
@@ -145,6 +149,9 @@ func (r *Registry) RequestDrain(ctx context.Context, id string, gate Gate) (Node
 			return Node{}, e
 		}
 		if n.Draining {
+			if id == r.Identity.ID {
+				gate.Drain()
+			}
 			return n, nil
 		}
 		n.Draining = true
@@ -152,6 +159,9 @@ func (r *Registry) RequestDrain(ctx context.Context, id string, gate Gate) (Node
 		out, e := r.Store.PutNode(ctx, n.Revision, n)
 		if errors.Is(e, storage.ErrConflict) {
 			continue
+		}
+		if e == nil && id == r.Identity.ID {
+			gate.Drain()
 		}
 		return out, e
 	}

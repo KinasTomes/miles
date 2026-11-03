@@ -1,12 +1,21 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/storage"
 )
+
+func (s *server) operationalMutation(c *call) (context.Context, error) {
+	ctx, mutation, err := s.admit(c)
+	if err != nil {
+		return nil, err
+	}
+	return jobs.WithAdminActor(ctx, jobs.AdminActor{TokenID: c.p.TokenID, Writer: mutation.Writer}), nil
+}
 
 func (s *server) operational(c *call) error {
 	if err := c.admin(); err != nil {
@@ -74,7 +83,11 @@ func (s *server) createJob(c *call) error {
 			return err
 		}
 	}
-	j, err := s.Operations.Create(c.r.Context(), jobs.Create{Type: jobs.Type(t), DryRun: dry, Params: params, PolicyRevision: revision})
+	ctx, err := s.operationalMutation(c)
+	if err != nil {
+		return err
+	}
+	j, err := s.Operations.Create(ctx, jobs.Create{Type: jobs.Type(t), DryRun: dry, Params: params, PolicyRevision: revision})
 	if err != nil {
 		if errors.Is(err, jobs.ErrUnsupported) {
 			return &apiError{http.StatusNotImplemented, "job_type_unavailable", "job executor is not installed"}
@@ -108,7 +121,11 @@ func (s *server) job(c *call, cancel bool) error {
 	}
 	var j jobs.Job
 	if cancel {
-		j, err = s.Operations.Cancel(c.r.Context(), id)
+		ctx, admissionErr := s.operationalMutation(c)
+		if admissionErr != nil {
+			return admissionErr
+		}
+		j, err = s.Operations.Cancel(ctx, id)
 	} else {
 		j, err = s.Operations.GetJob(c.r.Context(), id)
 	}
@@ -148,7 +165,11 @@ func (s *server) drainNode(c *call) error {
 	if _, err = decodeObject(c.w, c.r); err != nil {
 		return err
 	}
-	j, err := s.Operations.Drain(c.r.Context(), id)
+	ctx, err := s.operationalMutation(c)
+	if err != nil {
+		return err
+	}
+	j, err := s.Operations.Drain(ctx, id)
 	if j.ID != "" {
 		c.w.Header().Set("Location", "/admin/v1/jobs/"+j.ID)
 	}

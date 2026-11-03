@@ -9,9 +9,67 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/jobs"
+	opstest "github.com/KinasTomes/miles/internal/jobs/contracttest"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/storage"
 )
+
+type beforeOperationalWrite struct {
+	jobs.Store
+	before func()
+}
+
+func (s beforeOperationalWrite) CreateJob(ctx context.Context, j jobs.Job) error {
+	s.before()
+	return s.Store.CreateJob(ctx, j)
+}
+func (s beforeOperationalWrite) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) {
+	s.before()
+	return s.Store.ChangeJob(ctx, c)
+}
+
+func TestOperationalMutationsRecheckActorAfterAdmission(t *testing.T) {
+	for _, actorChange := range []string{"revoke", "disable_user"} {
+		for _, action := range []string{"create", "cancel", "drain"} {
+			t.Run(actorChange+"/"+action, func(t *testing.T) {
+				w := newWorld(t, badger.Bootstrap{})
+				actor := w.mintToken("user-writer", true)
+				svc := jobs.Service{Store: w.store, Policies: w.store}
+				job, err := svc.Create(t.Context(), jobs.Create{Type: "cache_purge"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = w.store.PutNode(t.Context(), 0, opstest.Node("node-a")); err != nil {
+					t.Fatal(err)
+				}
+				svc.Store = beforeOperationalWrite{Store: w.store, before: func() {
+					if actorChange == "revoke" {
+						w.must(w.do("DELETE", "/admin/v1/admin-tokens/"+tokenID(actor), w.root, ""), 204)
+					} else {
+						w.must(w.do("PATCH", "/admin/v1/users/user-writer", w.root, `{"status":"disabled","expected_revision":1}`), 200)
+					}
+				}}
+				w.opts.Operations = testOperations{w.store, svc}
+				w.h, err = NewServer(w.opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				method, path, body := "POST", "/admin/v1/jobs", `{"type":"cache_purge"}`
+				switch action {
+				case "cancel":
+					method, path, body = "DELETE", "/admin/v1/jobs/"+job.ID, ""
+				case "drain":
+					path, body = "/admin/v1/cluster/nodes/node-a/drain", "{}"
+				}
+				w.expect(w.do(method, path, actor, body), 401, "unauthorized")
+				page, err := w.store.ListJobs(t.Context(), jobs.PageRequest{Limit: 100})
+				if err != nil || len(page.Jobs) != 1 || page.Jobs[0].State != jobs.Queued {
+					t.Fatal("denied actor changed jobs", page, err)
+				}
+			})
+		}
+	}
+}
 
 type testOperations struct {
 	jobs.Store

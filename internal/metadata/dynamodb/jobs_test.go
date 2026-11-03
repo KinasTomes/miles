@@ -3,6 +3,7 @@ package dynamodb
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,17 +16,111 @@ import (
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
-type closeJobLeaseBeforeCommit struct {
-	API
-	table string
-	close func()
-	once  sync.Once
+func TestLocalOperationalWritesRecheckActorAtCommit(t *testing.T) {
+	f := contracttest.NewFixture()
+	f.Now = opstest.Now
+	m, client := fixtureStore(t, f)
+	ctx := t.Context()
+	token := s.AdminToken{ID: strings.Repeat("a", 32), UserID: "operator", Scope: s.TokenScopeSystem, Hash: make([]byte, 32), Active: true, IssuedAt: f.Now, ExpiresAt: f.Now.Add(time.Hour)}
+	policy := opstest.Policy(1)
+	policy.Revision = 0
+	if err := m.BootstrapAdmin(ctx, s.AdminBootstrap{Token: token, Policy: policy, QuotaLimit: 1024}); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := New(Options{API: client, Tables: m.tables, Now: m.now, Authority: m.authority})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := s.WriterFence{LeaseID: "api-actor", Epoch: 1, ServiceIncarnation: "history-1"}
+	setJobLease(t, m, s.WriterLease{Fence: writer, ExpiresAt: f.Now.Add(time.Hour)})
+	actor := jobs.WithAdminActor(ctx, jobs.AdminActor{TokenID: token.ID, Writer: writer})
+	for _, change := range []string{"revoke", "disable_user", "expire", "remove_admin_scope"} {
+		for _, action := range []string{"create", "cancel", "node"} {
+			t.Run(change+"/"+action, func(t *testing.T) {
+				m.api = client
+				user, err := peer.GetUser(ctx, token.UserID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				user.Active = true
+				if err := peer.update(ctx, func(tx *transaction) error {
+					if err := put(tx, key("users", user.ID), user); err != nil {
+						return err
+					}
+					return put(tx, key("admin-tokens", token.ID), token)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				svc := jobs.Service{Store: m, Policies: m}
+				job, err := svc.Create(ctx, jobs.Create{Type: "cache_purge"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				node, err := m.PutNode(ctx, 0, opstest.Node("node_"+change+"_"+action))
+				if err != nil {
+					t.Fatal(err)
+				}
+				table := m.tables["Jobs"]
+				if action == "node" {
+					table = m.tables["Nodes"]
+				}
+				m.api = &beforeJobCommit{API: client, table: table, before: func() {
+					changed := token
+					switch change {
+					case "revoke":
+						changed.Active = false
+					case "disable_user":
+						user.Active = false
+					case "expire":
+						changed.ExpiresAt = f.Now
+					case "remove_admin_scope":
+						changed.Scope = s.TokenScopeUser
+					}
+					if err := peer.update(ctx, func(tx *transaction) error {
+						if err := put(tx, key("users", user.ID), user); err != nil {
+							return err
+						}
+						return put(tx, key("admin-tokens", token.ID), changed)
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}}
+				switch action {
+				case "create":
+					_, err = svc.Create(actor, jobs.Create{Type: "cache_purge"})
+				case "cancel":
+					_, err = svc.Cancel(actor, job.ID)
+				case "node":
+					node.Draining, node.Ready = true, false
+					_, err = m.PutNode(actor, node.Revision, node)
+				}
+				if !errors.Is(err, s.ErrAccessDenied) {
+					t.Fatal("actor change did not fence the transaction", err)
+				}
+				got, err := peer.GetJob(ctx, job.ID)
+				if err != nil || got.State != jobs.Queued {
+					t.Fatal("denied cancellation changed job", got, err)
+				}
+				gotNode, err := peer.GetNode(ctx, node.ID)
+				if err != nil || gotNode.Draining {
+					t.Fatal("denied drain changed node", gotNode, err)
+				}
+			})
+		}
+	}
 }
 
-func (a *closeJobLeaseBeforeCommit) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, options ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
+type beforeJobCommit struct {
+	API
+	table  string
+	before func()
+	once   sync.Once
+}
+
+func (a *beforeJobCommit) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, options ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
 	for _, item := range in.TransactItems {
 		if item.Put != nil && aws.ToString(item.Put.TableName) == a.table {
-			a.once.Do(a.close)
+			a.once.Do(a.before)
 			break
 		}
 	}
@@ -78,7 +173,7 @@ func TestLocalJobClaimCannotPublishAfterFenceClosure(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	m.api = &closeJobLeaseBeforeCommit{API: client, table: m.tables["Jobs"], close: func() {
+	m.api = &beforeJobCommit{API: client, table: m.tables["Jobs"], before: func() {
 		next := fence
 		next.Epoch++
 		setJobLease(t, peer, s.WriterLease{Fence: next, ExpiresAt: opstest.Now.Add(time.Minute)})
@@ -157,7 +252,7 @@ func TestLocalManagedJobCreateIsFencedInItsTransaction(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	m.api = &closeJobLeaseBeforeCommit{API: client, table: m.tables["Jobs"], close: func() {
+	m.api = &beforeJobCommit{API: client, table: m.tables["Jobs"], before: func() {
 		next := fence
 		next.Epoch++
 		setJobLease(t, peer, s.WriterLease{Fence: next, ExpiresAt: opstest.Now.Add(time.Minute)})
