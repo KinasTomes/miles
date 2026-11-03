@@ -1,0 +1,455 @@
+# Dựng Miles trên AWS account cá nhân để kiểm thử
+
+Dành cho member triển khai bằng account AWS và máy operator riêng. Toàn bộ runtime kiểm thử, gồm Cloud và Edge, đặt trên AWS. Máy operator giữ source, công cụ quản trị và evidence.
+
+Tài liệu mô tả quy trình chung, đối chiếu repo ngày 03/11/2026. Khi thực hiện, pin commit cần kiểm thử và đọc các runbook tại chính commit đó. Mỗi lượt có account, state, IAM, ngân sách và thời hạn cleanup riêng.
+
+## 1. Chọn phạm vi trước khi dựng
+
+| Nhu cầu | Môi trường | Bằng chứng thu được |
+| --- | --- | --- |
+| Sửa logic, kiểm tra hồi quy | Unit/race, Badger | Hành vi phần mềm trong test |
+| Kiểm tra shared backend và composition | DynamoDB Local + Moto trên máy dev | Transaction, fencing, object path và nhiều composition dùng chung backend |
+| Kiểm tra triển khai | AWS thật | IAM, network, TLS, ALB/ASG, credential refresh, CloudWatch và drain trên VM thật |
+
+Chạy `make check` và kiểm thử liên quan trước lượt AWS. Repo có `make test-local` cho fixture local. Các suite native có hướng dẫn riêng trong [shared runtime validation](shared-runtime-validation.md). Ghi cả các test bị SKIP.
+
+Fixture local dùng credential giả, endpoint loopback và dữ liệu tự tạo/xóa. Giữ chúng trong môi trường local. Nghiệm thu AWS chạy qua runtime đã provision với dữ liệu synthetic riêng.
+
+Trước lượt AWS, ghi một bản kế hoạch ngắn gồm các mục sau.
+
+- Commit/PR và tiêu chí cần chứng minh, kèm danh sách ca kiểm thử.
+- Account ID, Region, người sở hữu và người thực hiện cleanup.
+- Topology, loại máy/RAM/kiến trúc, số VM tối đa khi replacement, đĩa và network.
+- Mức chi được duyệt, giờ bắt đầu và hạn hoàn tất cả cleanup theo UTC.
+- Dữ liệu được tạo, dữ liệu được xóa, phần cần backup và phần giữ sau lượt chạy.
+- IAM cần gắn tạm, thời điểm hết hiệu lực và cách thu hồi.
+
+Người sở hữu account duyệt kế hoạch trước khi gắn quyền hoặc tạo tài nguyên tính phí. Dự toán cần tính cả ALB, endpoints/NAT, EBS, DynamoDB/PITR, S3, KMS, Secrets Manager, logs và data transfer. Kiểm giá, quota và điều kiện Free Tier của account tại thời điểm chạy. Ghi số tiền là envelope dự kiến, cùng cách theo dõi chi phí và thời điểm dừng lượt test. Billing có độ trễ, nên theo dõi thêm resource inventory và thời gian active để chủ động cleanup.
+
+## 2. Chuẩn bị source và thư mục riêng
+
+### Công cụ
+
+- Linux hoặc WSL2 cho máy operator, Git, Bash, Python 3.12+, Make, curl, unzip.
+- Go theo `go.mod` và toolchain của commit được chọn. Repo tại thời điểm viết dùng Go 1.27.2. Race test cần C compiler.
+- Docker Engine + Compose v2 nếu chạy fixture local.
+- AWS CLI v2 từ 2.32.0 để dùng `aws login`.
+- Terraform và provider đúng lockfile. Repo tại thời điểm viết pin Terraform 1.15.2, AWS provider 6.21.0.
+- Host chạy Miles cần systemd và chrony hợp lệ. Host Edge cần thêm Nginx và helper IAM Roles Anywhere đã pin/verify.
+
+Kiểm phiên bản AWS CLI trước khi đăng nhập. [AWS CLI sign-in](https://docs.aws.amazon.com/signin/latest/userguide/command-line-sign-in.html)
+
+Các lệnh mẫu dưới dùng Bash trên máy operator. Thay giá trị `REPLACE_...` trước khi chạy.
+
+```bash
+umask 077
+export MILES_WORK="$HOME/miles-aws-test"
+export MILES_REPO="$MILES_WORK/repo"
+export MILES_PRIVATE="$MILES_WORK/private"
+export MILES_EVIDENCE="$MILES_WORK/evidence"
+export MILES_COMMIT="REPLACE_WITH_FULL_COMMIT_SHA"
+export MILES_ACCOUNT_ID="REPLACE_WITH_12_DIGIT_ACCOUNT_ID"
+export MILES_REGION="ap-southeast-1"
+
+mkdir -p "$MILES_PRIVATE" "$MILES_EVIDENCE"
+chmod 700 "$MILES_PRIVATE" "$MILES_EVIDENCE"
+git clone https://github.com/KinasTomes/miles.git "$MILES_REPO"
+cd "$MILES_REPO"
+git fetch origin
+# Nếu commit thuộc PR chưa merge, fetch thêm refs/pull/<số-PR>/head.
+git checkout --detach "$MILES_COMMIT"
+git rev-parse HEAD
+go mod download
+make check
+```
+
+Chọn thư mục mới nếu đường dẫn đã có công việc cần giữ. Ghi SHA đầy đủ và kết quả test vào evidence. Dùng checkout sạch đã commit để build release.
+
+Private directory chứa login code, tfvars, plan/state, certificate/key và token. Giữ ngoài Git, file 0600. Evidence đưa vào PR cần được rà và che secret trước khi upload.
+
+## 3. Bootstrap IAM cho account của member
+
+Account mới cần hoàn thành bước này một lần trước đăng nhập deploy. Account đã có Miles cần đối chiếu IAM và state hiện hữu trước khi tái sử dụng.
+
+### Tách danh tính
+
+| Danh tính | Phạm vi |
+| --- | --- |
+| Quản trị account, có MFA | Bootstrap và review/cập nhật/thu hồi IAM |
+| IAM user `member-deploy`, có MFA | Đăng nhập Console và Switch role |
+| Role `/miles/bootstrap/miles-dev-deploy` | Plan/apply workload và cleanup trong phạm vi đã duyệt |
+| Gateway runtime role | Cloud lấy credential tạm qua IMDSv2 |
+| Edge runtime role | Edge lấy credential tạm qua Roles Anywhere |
+| User/token/credential của Miles | Gọi Admin/S3 API của Miles |
+
+Dùng credential tạm cho người vận hành và runtime, bật MFA cho danh tính quản trị. [IAM security practices](https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html)
+
+### Trình tự bootstrap
+
+1. Đăng nhập Console account của member bằng danh tính quản trị đã có. Với account mới, chủ account có thể dùng root + MFA cho bước bootstrap IAM được giới hạn cụ thể.
+2. Chuẩn bị bản render riêng từ [operator templates](../../infra/terraform/cloud/bootstrap/operator/README.md). Thay `ACCOUNT_ID`, AMI và các placeholder theo account này.
+3. Chọn operator `member-deploy`, path `/miles/operators/`, MFA device `member-deploy`. Sửa đồng bộ tên `hung-deploy` trong `user-policy.json.tmpl` và `trust-policy.json.tmpl` khi render. Đối chiếu ARN user/MFA/path sau tạo.
+4. Tạo IAM user có Console password. Chủ account giao mật khẩu bằng kênh riêng, user đổi mật khẩu khi đăng nhập lần đầu, enroll MFA rồi đăng xuất/đăng nhập lại bằng MFA.
+5. Tạo role `miles-dev-deploy`, path `/miles/bootstrap/`, trust đúng user vừa tạo và yêu cầu MFA. Baseline repo giới hạn phiên role 3.600 giây.
+6. Gắn user policy đã render. Gắn managed policy AWS `SignInLocalDevelopmentAccess` cho cả user và deploy role để dùng CLI login. [Quyền CLI sign-in](https://docs.aws.amazon.com/signin/latest/userguide/command-line-sign-in.html)
+7. Chuẩn bị runtime permissions boundary và các deploy policy từ template. Review JSON, Access Analyzer và simulation trước khi gắn. Giữ deploy role tách khỏi quyền sửa chính role/operator/boundary bootstrap.
+8. Lưu ARN/policy version ban đầu và mọi grant tạm vào private inventory. Đăng xuất phiên quản trị khi hoàn tất IAM.
+
+Console tạo policy/role phải giữ đúng IAM path trong template. Agent có thể tạo bằng IAM API sau khi người sở hữu duyệt bản JSON và phạm vi thao tác. Luồng xác thực quản trị riêng ở mục 4.4 phục vụ trường hợp này.
+
+Tên operator có thể đổi. Các tên role/boundary/backend còn được ràng buộc trong policy và validation của repo, nên giữ theo contract hiện tại hoặc review thay đổi đồng bộ trước khi dựng.
+
+**Template là baseline cần review theo plan thực tế.** Fleet/ALB/launch template/custom AutoScaling service-linked role, Edge Roles Anywhere, release publisher, bootstrap metadata, CloudWatch và cleanup có thể cần quyền bổ sung. Dùng [quy trình sinh và kiểm policy](../../infra/terraform/cloud/bootstrap/operator/README.md), đối chiếu đúng action/resource và hạn dùng. AccessDenied cần được chẩn đoán theo API bị từ chối, policy, boundary và key policy.
+
+## 4. Đăng nhập bằng link và lưu authorization code
+
+### 4.1. Khởi tạo phiên ở phía operator/agent
+
+Đặt profile riêng cho account này và kiểm các biến credential còn trong shell trước khi dùng.
+
+```bash
+export MILES_LOGIN_PROFILE="miles-member-login"
+export MILES_TF_PROFILE="miles-member-terraform"
+export MILES_DEPLOY_ROLE_ARN="arn:aws:iam::${MILES_ACCOUNT_ID}:role/miles/bootstrap/miles-dev-deploy"
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_SECURITY_TOKEN
+export AWS_REGION="$MILES_REGION"
+export AWS_DEFAULT_REGION="$MILES_REGION"
+export AWS_PAGER=""
+
+aws configure set region "$MILES_REGION" --profile "$MILES_LOGIN_PROFILE"
+aws login --profile "$MILES_LOGIN_PROFILE" --region "$MILES_REGION" --remote
+```
+
+CLI sinh URL và chờ authorization code trên stdin. Giữ nguyên process đang chờ. Operator/agent gửi URL vừa sinh thành **link bấm được** cho member. URL gắn với phiên login đó, cần lấy mới mỗi lần. [Lệnh AWS login remote](https://docs.aws.amazon.com/cli/latest/reference/login/)
+
+Khi agent chạy hộ, chuẩn bị file `$MILES_PRIVATE/cli-login-code.txt` rỗng, quyền 0600 và gửi đường dẫn tuyệt đối cho member mở. Sau khi member lưu code và báo xong, agent đọc file trong process mà không in nội dung, đưa code vào stdin của đúng phiên CLI đang chờ, rồi xóa nội dung file. Giữ code khỏi chat, command line và log.
+
+Nếu tự thao tác terminal, member dán code trực tiếp vào prompt của CLI. Hai cách dùng cùng luồng remote login.
+
+### 4.2. Member thao tác trên trình duyệt
+
+1. Đăng nhập AWS Console bằng account ID/alias của mình, user `member-deploy`, password và MFA.
+2. Bấm tên danh tính ở góc phải → **Switch role**. Với giao diện multi-session, mở **Add session → Switch role**.
+3. Điền Account ID của mình, Role `miles/bootstrap/miles-dev-deploy`, Display name `MilesDevDeploy`. Bấm **Switch Role**, kiểm tên góc phải.
+4. Bấm **link đăng nhập CLI mới nhất** do agent gửi. Trên màn hình cấp quyền, chọn danh tính `miles-dev-deploy` / `MilesDevDeploy` thuộc account của mình.
+5. Copy authorization code AWS trả về, lưu vào file `cli-login-code.txt` agent đã chỉ. Báo “đã lưu code”.
+6. Agent hoàn tất CLI login và kiểm STS. Chỉ tiếp tục khi Account và assumed role đúng dự kiến.
+
+Switch role cần đầy đủ path. Phiên Console gốc cũng giới hạn thời gian còn lại của phiên role. [AWS Console role switching](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_switch-role-console.html)
+
+Mẫu yêu cầu agent gửi cho member, thay các chỗ trong ngoặc bằng giá trị thực của lượt đăng nhập.
+
+> Anh/chị đăng nhập Console bằng `member-deploy` + MFA, rồi Switch role sang `MilesDevDeploy` trong account của mình. Bấm link CLI tôi vừa tạo, chọn `miles-dev-deploy`, lưu code vào file private tôi đã gửi đường dẫn và báo xong. Giữ password/MFA/code trong kênh đăng nhập và file private.
+
+### 4.3. Kiểm danh tính và nối Terraform với CLI login
+
+```bash
+aws sts get-caller-identity --profile "$MILES_LOGIN_PROFILE"
+```
+
+`Account` phải bằng `$MILES_ACCOUNT_ID`. ARN STS có dạng `arn:aws:sts::<account>:assumed-role/miles-dev-deploy/<session>`. ARN STS bỏ IAM path, script gate trong repo đã xử lý trường hợp này.
+
+Provider Terraform được pin trong repo dùng profile phụ `credential_process` để đọc credential tạm qua CLI. Cấu hình bên dưới ghi lệnh provider vào AWS config.
+
+```bash
+export MILES_AWS_CLI="$(command -v aws)"
+aws configure set credential_process \
+  "\"$MILES_AWS_CLI\" configure export-credentials --profile $MILES_LOGIN_PROFILE --format process --region $MILES_REGION" \
+  --profile "$MILES_TF_PROFILE"
+aws configure set region "$MILES_REGION" --profile "$MILES_TF_PROFILE"
+export AWS_PROFILE="$MILES_TF_PROFILE"
+
+python3 "$MILES_REPO/infra/terraform/cloud/scripts/check-deploy-identity.py" \
+  --role-arn "$MILES_DEPLOY_ROLE_ARN"
+```
+
+Profile phụ trỏ tới profile login nguồn. Backend và provider dùng cùng profile phụ. Giữ `deploy_role_arn=null` trong tfvars vì CLI đã là phiên deploy role. [AWS process credentials](https://docs.aws.amazon.com/cli/latest/reference/configure/export-credentials.html)
+
+### 4.4. Khi cần agent thao tác IAM bằng phiên quản trị
+
+Chủ account duyệt rõ policy/action/ARN và thời hạn trước khi kích hoạt. Tạo profile riêng, ví dụ `miles-member-iam`, bằng `aws login --profile miles-member-iam --region ap-southeast-1 --remote`.
+
+- Agent gửi **link IAM mới**, đường dẫn `iam-login-code.txt` riêng và phạm vi thao tác đã duyệt.
+- Member mở cửa sổ trình duyệt riêng, đăng nhập danh tính quản trị + MFA. Nếu đã duyệt dùng root, chọn root trong luồng này.
+- Member lưu code IAM vào file riêng. Agent hoàn tất login, kiểm đúng account/danh tính, chỉ thực hiện phần IAM được duyệt rồi logout profile quản trị.
+- Các bước Terraform/runtime tiếp tục dùng deploy profile đã qua identity gate.
+
+### 4.5. Các lỗi đăng nhập thường gặp
+
+| Hiện tượng | Cách xử lý |
+| --- | --- |
+| Bấm link gặp 400 | Agent gửi lại nguyên URL do CLI sinh, giữ nguyên query. Nếu link chat bị biến đổi, dùng file URL private làm phương án dự phòng. Nếu process chờ đã mất/hết hạn, tạo phiên và link mới |
+| Chỉ thấy `member-deploy` trên màn hình cấp quyền | Quay lại Console, Switch role thành công rồi mở link của phiên đang chờ và chọn role |
+| STS trả user/root hoặc account khác | Lấy code mới cho đúng danh tính, kiểm lại STS và identity gate |
+| Code đã dùng hoặc không khớp phiên | Tạo link mới, lấy code mới cho đúng process CLI đó |
+| Login xong vẫn `ExpiredToken` hoặc gần hết giờ | Switch back, đăng xuất/đăng nhập user bằng MFA, Switch role mới rồi tạo CLI login mới |
+| Credential cũ ghi đè profile | Kiểm biến AWS credential, file credentials và cấu hình profile. Loại override đã xác định rồi kiểm lại STS |
+| `AccessDenied` sau STS đúng | Đối chiếu action/resource và IAM. Tạo bản thay đổi quyền để review nếu cần |
+
+Lên lịch refresh trước test dài và dành thời gian cho cleanup. Runtime dùng danh tính riêng của node, còn thao tác quản trị cần phiên operator hợp lệ. [Thời hạn và refresh CLI session](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html)
+
+## 5. Chuẩn bị topology, TLS và cấu hình account
+
+Topology đầy đủ thường gồm hai Cloud node private ở hai AZ sau ALB và một EC2 riêng chạy profile Edge. Các node dùng chung S3/DynamoDB/history/secret trong account của member. Giới hạn số VM phải tính thêm node tạm khi rolling replacement và máy test client nếu cần.
+
+| Cần chuẩn bị | Yêu cầu |
+| --- | --- |
+| Region/AZ | Stack hiện pin Singapore `ap-southeast-1`, hai AZ hợp lệ trong account |
+| AMI/type | Amazon Linux 2023 đã pin, kiến trúc khớp binary và loại máy, có dependency cần dùng |
+| Boundary | `arn:aws:iam::<account>:policy/miles/bootstrap/MilesDevRuntimeBoundary` |
+| Cloud TLS | ACM certificate `ISSUED`, cùng account/Region, khớp hostname truy cập |
+| Edge TLS | Nginx certificate/key khớp hostname Edge và trust của test client |
+| Roles Anywhere | CA riêng, Edge leaf CN `miles-edge`, key riêng, trust anchor/profile/role của account này |
+| Allowlist | Public IPv4/CIDR thật của test client và đường quản trị được duyệt |
+| Clock | Chrony với nguồn IPv4 được chọn, `utc_reference` khớp observation trên từng host |
+| Quản trị private | SSM hoặc private SSH/tunnel có IAM/document/host key đã kiểm tra |
+
+Nếu có domain, cấp certificate và cấu hình DNS cho ALB/Edge trước smoke. Nếu chưa có domain, chuẩn bị CA test, import Cloud leaf vào ACM, cài Edge leaf và cấu hình resolver/trust trên test client. Giữ hostname ký SigV4, HTTP Host và TLS SNI nhất quán. Ghi phạm vi kiểm thử của resolver/CA private vào evidence.
+
+Fleet cần interface endpoints ở hai AZ, hoặc NAT mỗi AZ. Với interface-only, AMI cần sẵn dependency. Edge dùng private DNS endpoints trong cùng VPC phải có đường 443 và SG cho phép tới endpoint ENI. Nếu dùng EC2 làm Edge, runtime vẫn dùng profile `edge` và Roles Anywhere để kiểm chứng đúng credential path.
+
+Tên stack hiện cố định `miles-dev`, prefix bảng `miles-dev-`, bucket chứa account ID. Terraform workspace riêng vẫn dùng các tên này. Account đã có installation Miles cần xác nhận state sở hữu tài nguyên trước plan. Dùng installation/backend chung cho cả hai Cloud và Edge của lượt test.
+
+Tag `Owner` ở provider và bootstrap state hiện ghi `Hung`. Điều chỉnh trong cấu hình triển khai của member và review diff trước plan. Các tag `Project=Miles`, `Environment=dev` còn được dùng trong IAM conditions, cần giữ khớp policy.
+
+## 6. Foundation và bootstrap runtime
+
+Mỗi apply dưới đây cần đúng account/role, saved plan đã review và nằm trong phạm vi người sở hữu duyệt. Plan thay đổi hoặc state stale cần review lại.
+
+### 6.1. Tạo state backend lần đầu
+
+Chỉ thực hiện khi account chưa có state backend được quản lý. Giữ bootstrap local state lâu dài trong private directory.
+
+```bash
+mkdir "$MILES_PRIVATE/bootstrap-state"
+cp "$MILES_REPO"/infra/terraform/cloud/bootstrap/state/*.tf \
+  "$MILES_PRIVATE/bootstrap-state/"
+cp "$MILES_REPO"/infra/terraform/cloud/bootstrap/state/.terraform.lock.hcl \
+  "$MILES_PRIVATE/bootstrap-state/"
+# Review account, Owner tag và bootstrap config trước plan.
+terraform -chdir="$MILES_PRIVATE/bootstrap-state" init -lockfile=readonly
+terraform -chdir="$MILES_PRIVATE/bootstrap-state" plan \
+  -var="account_id=$MILES_ACCOUNT_ID" -out="$MILES_PRIVATE/state.tfplan"
+terraform -chdir="$MILES_PRIVATE/bootstrap-state" show "$MILES_PRIVATE/state.tfplan"
+python3 "$MILES_REPO/infra/terraform/cloud/scripts/check-deploy-identity.py" \
+  --role-arn "$MILES_DEPLOY_ROLE_ARN"
+terraform -chdir="$MILES_PRIVATE/bootstrap-state" apply "$MILES_PRIVATE/state.tfplan"
+```
+
+### 6.2. Foundation với runtime chưa bật
+
+Copy [backend example](../../infra/terraform/cloud/environments/dev/backend.hcl.example) ra `$MILES_PRIVATE/backend.hcl`. Điền bucket `miles-dev-tfstate-<account>-ap-southeast-1`, key `cloud/dev/terraform.tfstate` và profile `$MILES_TF_PROFILE` bằng giá trị thật. Giữ encryption/native lockfile.
+
+Tạo `$MILES_PRIVATE/foundation.tfvars` với account/boundary của member và các giá trị ban đầu sau.
+
+```hcl
+account_id                       = "REPLACE_WITH_12_DIGIT_ACCOUNT_ID"
+runtime_permissions_boundary_arn = "arn:aws:iam::REPLACE_WITH_12_DIGIT_ACCOUNT_ID:policy/miles/bootstrap/MilesDevRuntimeBoundary"
+deploy_role_arn                   = null
+paused                           = true
+enable_compute                   = false
+enable_asg                       = false
+enable_alb                       = false
+egress_mode                      = "interface"
+```
+
+```bash
+export MILES_STACK="$MILES_REPO/infra/terraform/cloud/environments/dev"
+export MILES_DEV_VARS="$MILES_PRIVATE/foundation.tfvars"
+terraform -chdir="$MILES_STACK" init -reconfigure -lockfile=readonly \
+  -backend-config="$MILES_PRIVATE/backend.hcl"
+terraform -chdir="$MILES_STACK" validate
+terraform -chdir="$MILES_STACK" plan -input=false -lock-timeout=60s \
+  -var-file="$MILES_DEV_VARS" -out="$MILES_PRIVATE/foundation.tfplan"
+terraform -chdir="$MILES_STACK" show "$MILES_PRIVATE/foundation.tfplan"
+python3 "$MILES_REPO/infra/terraform/cloud/scripts/check-deploy-identity.py" \
+  --role-arn "$MILES_DEPLOY_ROLE_ARN"
+terraform -chdir="$MILES_STACK" apply "$MILES_PRIVATE/foundation.tfplan"
+terraform -chdir="$MILES_STACK" output -json runtime_inventory \
+  > "$MILES_PRIVATE/runtime.json"
+```
+
+Foundation tạo datastore/KMS/secret metadata dù đang paused, có chi phí giữ tài nguyên. Lấy `data_bucket_name`, `kms_key_arn`, `secret_metadata_arn` và inventory 20 bảng từ output mới, lưu thành các biến private dùng ở bước sau.
+
+### 6.3. Provision secret và metadata đúng một lần
+
+Theo [shared runtime provisioning](../development/shared-runtime.md).
+
+1. Tạo JSON secret với `key_id`, `seal_key`, `cursor_key`. Hai key độc lập, mỗi key là 32 byte ngẫu nhiên mã hóa base64, lưu file private 0600.
+2. Dùng quyền publisher/provisioning đã duyệt để `secretsmanager put-secret-value` vào đúng ARN từ inventory, qua `file://<đường-dẫn-private>`. Giữ secret value ngoài Terraform/user-data/release/log.
+3. Chuẩn bị operator startup JSON từ [shared Edge example](../../configs/shared-edge.example.json). Điền backend thật, đường dẫn data mới 0700, node label riêng, nguồn chrony hợp lệ và AWS config riêng.
+4. AWS config operator dùng section `profile miles-runtime` với `credential_process` gọi CLI export-credentials từ deploy login. Điền đường dẫn AWS CLI tuyệt đối. Đây là provider provisioning, cần thay sang Roles Anywhere trên Edge phục vụ client.
+5. Giữ mọi gateway dừng, xác nhận 20 bảng của installation mới rỗng. Chạy bootstrap trên host Linux có chrony hợp lệ.
+
+```bash
+cd "$MILES_REPO"
+./bin/dsgctl admin-token bootstrap \
+  --runtime-config "$MILES_PRIVATE/operator-startup.json" \
+  --user operator --token-file "$MILES_PRIVATE/system-admin-token"
+```
+
+Nếu máy operator thiếu chrony phù hợp, dùng EC2 provisioning host đã đưa vào plan và inventory. Bootstrap tạo user/token/policy, R1 history và immutable genesis/catalog. Khi lỗi hoặc mất ACK, giữ token/log và reconcile trạng thái đã ghi trước khi retry. Giữ nguyên sealing key của installation có credential đã seal cho tới khi có quy trình migration được review.
+
+## 7. Build release, bật Cloud và dựng Edge
+
+### 7.1. Build một release chung
+
+```bash
+cd "$MILES_REPO"
+git status --short
+export MILES_ARCH="arm64"
+export MILES_ARCHIVE="$MILES_PRIVATE/miles-linux-${MILES_ARCH}.tar.gz"
+python3 -B deploy/build-release.py --arch "$MILES_ARCH" --out "$MILES_ARCHIVE" \
+  > "$MILES_PRIVATE/release-build.json"
+export MILES_RELEASE_SHA="$(sha256sum "$MILES_ARCHIVE" | cut -d ' ' -f 1)"
+```
+
+Gán `$MILES_DATA_BUCKET`, `$MILES_KMS_ARN` từ `runtime.json` sau khi đối chiếu đúng account. Upload bằng quyền publisher đã duyệt.
+
+```bash
+aws s3api put-object --region "$MILES_REGION" \
+  --bucket "$MILES_DATA_BUCKET" \
+  --key "releases/$MILES_RELEASE_SHA/miles-linux-${MILES_ARCH}.tar.gz" \
+  --body "$MILES_ARCHIVE" \
+  --server-side-encryption aws:kms --ssekms-key-id "$MILES_KMS_ARN" \
+  > "$MILES_PRIVATE/release-upload.json"
+```
+
+Lấy VersionId thực từ kết quả upload, kiểm khác `null`. Pin SHA archive, S3 VersionId và kiến trúc cho mọi node. Đối chiếu manifest/source SHA khi thu evidence.
+
+### 7.2. Bật Cloud fleet
+
+Copy [fleet tfvars example](../../infra/terraform/cloud/environments/dev/cloud-fleet.tfvars.example) ra `$MILES_PRIVATE/fleet.tfvars`. Điền đầy đủ account, boundary, AMI/type/architecture, certificate, client CIDR, release SHA/VersionId, `edge_ca_pem` public CA nếu dùng Edge, và cấu hình network đã duyệt.
+
+Đặt `paused=false`, `enable_asg=true`, `enable_compute=false`, `enable_alb=true`. Dùng **cùng stack và state foundation**. File fleet cần chứa đầy đủ cấu hình persistent đã chọn, gồm `runtime_secret_name` nếu đã đặt riêng.
+
+```bash
+export MILES_DEV_VARS="$MILES_PRIVATE/fleet.tfvars"
+terraform -chdir="$MILES_STACK" plan -input=false -lock-timeout=60s \
+  -var-file="$MILES_DEV_VARS" -out="$MILES_PRIVATE/fleet.tfplan"
+terraform -chdir="$MILES_STACK" show "$MILES_PRIVATE/fleet.tfplan"
+# Review resource actions, IAM delta, quota và chi phí trước apply.
+python3 "$MILES_REPO/infra/terraform/cloud/scripts/check-deploy-identity.py" \
+  --role-arn "$MILES_DEPLOY_ROLE_ARN"
+terraform -chdir="$MILES_STACK" apply "$MILES_PRIVATE/fleet.tfplan"
+terraform -chdir="$MILES_STACK" output -json runtime_inventory \
+  > "$MILES_PRIVATE/runtime-active.json"
+terraform -chdir="$MILES_STACK" output -json edge_provider \
+  > "$MILES_PRIVATE/edge-provider.json"
+```
+
+Đợi hai node `/healthz=200`, `/readyz=200` và ALB targets healthy. Chẩn đoán lỗi readiness từ config/backend/policy/history/clock/credential. Giữ readiness fail-closed khi thiếu điều kiện.
+
+### 7.3. Dựng Edge trên EC2 riêng
+
+Dev stack hiện tạo Cloud fleet và Edge IAM provider. **VM Edge cần cấu hình triển khai riêng** cùng inventory/state của nó. Review plan EC2/SG/disk/management trước khi tạo.
+
+- Chọn Linux systemd, kiến trúc khớp release, encrypted disposable root disk và policy xóa đĩa đã duyệt.
+- Cài Nginx, chrony và helper Roles Anywhere đã pin/verify. Tạo `miles` user, data directory 0700 thuộc user này.
+- Cài cùng archive theo [Edge runbook](../../deploy/edge/README.md), verify SHA trước giải nén/installer.
+- Điền `shared-edge.example.json` với backend/secret chung. AWS config chỉ dùng `miles-runtime` credential_process của `aws_signing_helper`, ARN lấy từ `edge_provider` mới.
+- Đặt Roles Anywhere certificate/key theo quyền đọc trong runbook, bật chặn fallback IMDS cho process Miles. EC2 management role nếu có phải được tách khỏi provider của Edge runtime.
+- Cấu hình TLS Nginx và DNS/resolver của test client. Giữ Host/path và streaming theo `deploy/edge/nginx.conf`, kiểm `nginx -t` trước reload.
+- Bind S3 8080, Admin 9000 và health/metrics 9100 trên loopback theo Edge config. Public ingress chỉ 443 từ allowlist được duyệt.
+- Start Miles, kiểm health/readiness rồi đưa Nginx vào phục vụ. Chỉ Cloud chạy lifecycle controller ASG.
+
+TLS front door và certificate Roles Anywhere có mục đích, key và vòng đời riêng. Khi Edge ở VPC dùng interface private DNS, kiểm cả route/SG tới endpoint trước test provider refresh.
+
+## 8. Nghiệm thu và thu evidence
+
+Đầu tiên thiết lập đường quản trị private tới Admin loopback. SSM shell, SSM port forwarding và SSH forwarding cần đúng document/quyền cho từng cơ chế. Pin SSH host key qua kênh tin cậy. Xem [owner forwarding](../development/shared-runtime.md).
+
+Qua Admin, tạo user/credential S3 thử nghiệm của Miles bằng `dsgctl`. Giữ deploy credential phục vụ AWS control plane và backend. Client gọi gateway dùng credential do Miles cấp, profile client riêng và path-style addressing. Sau CreateBucket, đọc cache policy qua Admin để materialize revision đầu trước payload I/O theo contract hiện tại.
+
+| Nhóm test | Bằng chứng tối thiểu |
+| --- | --- |
+| Startup | SHA/build thống nhất, health/readiness và ALB targets healthy trên đúng node |
+| Dữ liệu | Signed PUT/GET/HEAD/Range/LIST/multipart qua Cloud và Edge, đối chiếu hash/byte |
+| HTTPS/SigV4 | TLS verify, Host/SNI/path đúng, Unicode/`%`/`+`/double slash và presigned nếu thuộc scope |
+| Shared metadata | Ghi qua node A, đọc qua B/Edge, cursor/policy/history đồng nhất |
+| Jobs/Nodes nếu có | Dùng node ID thực gồm incarnation, kiểm fan-out, partial result, takeover và cancel |
+| Credentials | Edge refresh qua hạn session trong cùng process, helper lỗi bị từ chối đúng contract |
+| Metrics | CloudWatch ingestion thực, exporter phục hồi sau lỗi, scrape hoạt động |
+| Drain/replacement | Request đang chạy và hash, admission mới đóng, worker settle, Cloud shutdown proof đúng invocation và ALB unused |
+| Regressions của thay đổi | Kịch bản, điều kiện kích hoạt, assertion và trạng thái hậu kiểm cụ thể |
+
+Ma trận cần bám scope task/PR. Khi một executor nghiệp vụ chưa được tích hợp, ghi đúng capability hiện có và kết quả API, bàn giao cho task sở hữu executor. Với race/cut/takeover cần barrier hoặc instrumentation, ghi SHA bản test và chứng minh điều kiện overlap thực sự xảy ra.
+
+Mỗi kết quả cần có SHA source/archive, thời gian UTC, môi trường, command, exit code, PASS/FAIL/SKIP, expected/actual và log đã lọc. Evidence local và AWS ghi riêng theo release thực chạy. Nếu cần chứng minh public Internet ingress, đặt probe ở mạng ngoài host đích và ghi nguồn probe.
+
+## 9. Kết thúc lượt và cleanup
+
+Cleanup nằm trong thời gian/ngân sách đã duyệt, cần giữ phiên deploy hợp lệ tới lúc xác minh xong. Khi còn lỗi test, vẫn ưu tiên thu evidence cần thiết rồi dọn đúng phạm vi trước deadline.
+
+### 9.1. Drain rồi pause
+
+1. Dừng nguồn request mới, lưu evidence và kiểm dữ liệu cần giữ.
+2. Drain Cloud/Edge đúng runbook, chờ worker/request và journal export settle. Kiểm shutdown proof và trạng thái target trước khi chấp nhận drain hoàn tất.
+3. Tạo saved pause plan từ cùng state, đầy đủ fleet vars/release pin, chỉ đổi `paused=true`.
+
+```bash
+terraform -chdir="$MILES_STACK" plan -input=false -lock-timeout=60s \
+  -var-file="$MILES_DEV_VARS" -var=paused=true -out="$MILES_PRIVATE/pause.tfplan"
+terraform -chdir="$MILES_STACK" show "$MILES_PRIVATE/pause.tfplan"
+# Review toàn bộ actions và thứ tự drain/delete của fleet.
+python3 "$MILES_REPO/infra/terraform/cloud/scripts/check-deploy-identity.py" \
+  --role-arn "$MILES_DEPLOY_ROLE_ARN"
+terraform -chdir="$MILES_STACK" apply "$MILES_PRIVATE/pause.tfplan"
+```
+
+`check-session-plan.py` ở revision đối chiếu chỉ allowlist tài nguyên single-node/network/ALB. Plan tạo/xóa ASG/launch template sẽ bị chặn và cần review fleet riêng như trên. Gate single-node vẫn áp dụng cho đúng phạm vi của nó. Pause fleet giữ IAM/SLR phục vụ lifecycle trong lúc drain.
+
+4. Dọn Edge VM và đĩa của nó theo inventory/state riêng, cùng các host provisioning/test client đã tạo.
+5. Kiểm API AWS độc lập với output Terraform. Rà EC2, EBS, ALB/TG, NAT, EIP, endpoints và các tài nguyên apply dở. Lưu các resource còn giữ và chi phí duy trì dự kiến.
+
+Pause giữ datastore/key/secret/state và một số IAM/network/logs. Tiếp tục theo dõi chi phí các phần giữ lại.
+
+### 9.2. Full teardown khi dữ liệu được phép xóa
+
+Thực hiện [full teardown runbook](../../infra/terraform/cloud/full-teardown.md) với inventory và quyền cleanup được duyệt cho account của member.
+
+- Review dữ liệu/backup/retention và danh sách ARN sẽ xóa. Backup cần đọc lại được, có key còn sử dụng được sau teardown.
+- Lưu state backup private. Chuẩn bị cleanup config riêng, review việc gỡ protection và saved plans từ cùng remote backend.
+- Dọn S3 đầy đủ versions, delete markers và multipart trong danh sách được duyệt. Kiểm từng lỗi API.
+- Apply unprotect rồi lập/review saved destroy plan mới. State thay đổi hoặc apply dở cần inventory và plan mới.
+- Kiểm 20 bảng, EBS và root volumes, runtime IAM/instance profiles, custom/service-linked roles thuộc lượt, network và tài nguyên ngoài state.
+- Ghi SYSTEM backups/PITR, KMS/secret scheduled deletion và thời điểm xóa thực tế. Giữ bootstrap/state/evidence theo kế hoạch đã duyệt.
+- Gỡ grant tạm và khôi phục policy version đã lưu, kiểm hiệu lực thu hồi.
+
+Cuối lượt logout các profile login/quản trị đã dùng. Cache của profile login nguồn là phần cần thu hồi khi Terraform dùng profile phụ. [AWS CLI logout](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html)
+
+```bash
+aws logout --profile "$MILES_LOGIN_PROFILE"
+# Nếu đã tạo phiên quản trị trong lượt này.
+aws logout --profile miles-member-iam
+```
+
+Thu hồi credential/certificate/token test theo phạm vi đã tạo, dọn file code/private key không còn cần giữ. Báo rõ tài nguyên đã xóa, đang chờ xóa và tiếp tục giữ. Chốt lượt sau khi kiểm orphan và ghi chi phí còn lại.
+
+## 10. Mẫu giao việc cho agent của member
+
+Điền nội dung trong ngoặc rồi gửi cùng tài liệu này. Các bước tạo tài nguyên chờ gói plan/IAM/chi phí được chủ account duyệt.
+
+```text
+Dựng Miles để kiểm thử commit [SHA] trong AWS account cá nhân [account ID].
+Region ap-southeast-1. Cloud và Edge đều chạy trên AWS.
+Máy hiện tại chỉ dùng làm operator.
+
+Tiêu chí cần nghiệm thu [danh sách].
+Ngân sách dự kiến [USD], số VM tối đa [số], deadline gồm cleanup [UTC].
+Dữ liệu synthetic được tạo/xóa [phạm vi], phần cần backup/giữ [danh sách].
+
+Đối chiếu source và IAM/state của account trước khi làm.
+Account hiện [chưa bootstrap / đã có operator, role, backend tại ...].
+Domain/TLS hiện [thông tin].
+
+Tạo phiên aws login --remote, gửi link bấm được cho tôi.
+Tôi sẽ đăng nhập Console + MFA, Switch role và lưu authorization code vào
+file private do bạn chỉ đường dẫn. Mỗi phiên dùng link/code mới.
+Tách deploy profile và IAM admin profile, kiểm STS và identity gate.
+
+Trước khi gắn IAM hoặc apply, đưa policy diff, saved plan, dự toán và
+phương án cleanup để tôi duyệt. Sau nghiệm thu, cleanup trong phạm vi
+được duyệt, kiểm orphan, thu hồi grant và báo phần giữ/chờ xóa.
+```
