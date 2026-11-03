@@ -738,3 +738,51 @@ func TestLocalLifecycleMissingIntentDoesNotProveQuiescence(t *testing.T) {
 		t.Fatal(lease, e)
 	}
 }
+
+type lifeLateCASAPI struct {
+	API
+	table  string
+	before func()
+	fired  bool
+}
+
+func (a *lifeLateCASAPI) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, opts ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
+	for _, item := range in.TransactItems {
+		if !a.fired && item.Put != nil && item.Put.TableName != nil && *item.Put.TableName == a.table {
+			a.fired = true
+			a.before()
+			break
+		}
+	}
+	return a.API.TransactWriteItems(ctx, in, opts...)
+}
+func TestLocalLifecycleNodeClosureWinsLateCanonicalCAS(t *testing.T) {
+	m, w, j, policy, utc, _, chunk := lifeFixture(t, "pack_promote", s.GlacierIR)
+	peer, e := New(Options{API: m.api, Tables: m.tables, Authority: m.authority, Now: utc.Now})
+	if e != nil {
+		t.Fatal(e)
+	}
+	seam := &lifeLateCASAPI{API: m.api, table: m.tables["Chunks"], before: func() {
+		if e := peer.update(t.Context(), func(tx *transaction) error {
+			n, e := get[jobs.Node](tx, key("nodes", j.WorkerNodeID))
+			if e != nil {
+				return e
+			}
+			n.Draining = true
+			n.Ready = false
+			n.Revision++
+			return put(tx, key("nodes", n.ID), n)
+		}); e != nil {
+			t.Fatal(e)
+		}
+	}}
+	m.api = seam
+	out, e := w.Step(t.Context(), j, policy)
+	if e == nil || out.Settled || !seam.fired {
+		t.Fatal(out, e, seam.fired)
+	}
+	rows, e := peer.GetChunks(t.Context(), []s.ChunkKey{chunk.Key}, true)
+	if e != nil || rows[chunk.Key] != chunk {
+		t.Fatal("drained worker published a late canonical location", rows, e)
+	}
+}
