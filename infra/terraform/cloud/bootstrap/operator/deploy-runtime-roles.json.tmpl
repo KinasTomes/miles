@@ -62,6 +62,17 @@
       ]
     },
     {
+      "Sid": "DeleteRuntimeProfiles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:DeleteInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs"
+      ]
+    },
+    {
       "Sid": "PassOnlyRuntimeRoles",
       "Effect": "Allow",
       "Action": [

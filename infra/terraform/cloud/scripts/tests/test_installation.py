@@ -1,5 +1,6 @@
 """Installation inputs must scope every generated artifact to the same identity."""
 import copy
+from fnmatch import fnmatchcase
 import importlib.util
 import json
 import os
@@ -19,6 +20,22 @@ def fixture():
 
 
 class InstallationTests(unittest.TestCase):
+    def test_profile_cleanup_is_scoped_to_the_installation_profiles(self):
+        config = fixture()
+        policy = installation.render(config)["iam/deploy-runtime-roles.json"]
+        allowed_resources = [resource for statement in policy["Statement"]
+                             if statement["Effect"] == "Allow"
+                             and "iam:DeleteInstanceProfile" in statement["Action"]
+                             for resource in statement["Resource"]]
+        prefix = "arn:aws:iam::123456789012:instance-profile/miles/member/"
+        self.assertEqual(set(allowed_resources), {prefix + "miles-member-test-gateway",
+                                                  prefix + "miles-member-test-jobs"})
+        for denied in (prefix + "another-installation-gateway",
+                       prefix + "miles-member-test-edge",
+                       prefix.replace("123456789012", "210987654321") + "miles-member-test-gateway",
+                       config["operator"]["deploy_role_arn"]):
+            self.assertFalse(any(fnmatchcase(denied, resource) for resource in allowed_resources))
+
     def test_two_accounts_regions_and_prefixes_stay_independent(self):
         for account, region, name in [("123456789012", "ap-southeast-1", "miles-member-test"),
                                       ("210987654321", "ap-southeast-2", "miles-hai-test")]:
