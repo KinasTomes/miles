@@ -2,147 +2,142 @@
 
 ## Result
 
-The Singapore acceptance run on 2026-11-02 established a working shared deployment,
-but did **not** complete live acceptance. A retained unknown commit blocked the
-hourly recovery cut and subsequent writes. The local correction below reproduces
-and fixes that failure. Keep the change in draft until the corrected runtime
-passes the remaining AWS scenarios.
+The AWS-only Singapore run on 2026-11-02 passed the native functional acceptance
+checks. Two private ARM64 `t4g.small` Cloud nodes served from separate AZs behind
+HTTPS ALB; a separate AWS EC2 host ran the Edge profile with Roles Anywhere.
+All shared one S3 bucket, 20 DynamoDB tables, history and runtime secret. Oracle
+held only source, CLI clients and evidence during this run.
 
-Two private ARM64 `t4g.small` Cloud nodes ran in separate AZs behind HTTPS ALB,
-with shared S3, 20 DynamoDB tables and private AWS endpoints. Edge ran on the
-existing Oracle host for this run. The approved two-GiB fallback establishes only
-bounded sequential functionality, not production sizing or concurrent capacity.
-Future runs must place Edge on a separately budgeted AWS host too.
+The approved two-GiB instances establish bounded sequential functionality. This
+run does not establish production sizing, concurrent capacity or throughput.
+Clients explicitly trusted a dedicated test CA; public domain/certificate
+provisioning remains a deployment prerequisite for production use.
 
-## Release and checks
+## Release and native checks
 
-The corrected runtime release was built from commit
-`be8981ca88f4de1027265fca7c5a3af688277f16`. All three running nodes reported binary
-SHA256 `5b8d11b762ddd869216b39b6f918ea5fe5a2a22ed79d856efd9c9c80b561604b`.
-The pinned archive SHA256 was
-`65519b15358a222dce35b724084ea944c17115f5d11be7e30aa2c1843e496e7a`.
-The later infrastructure-only change `2a0133f` raises the fleet table request
-ceiling; it does not change that runtime binary.
+All four gateway processes, including the replacement Cloud node, ran source
+commit `b35820182a4d479d4c1cf382b3a64a0d45082f53` from the same archive:
 
-| Check | Native result and limit |
+- Archive SHA256: `0a8e2aa9fde15137f8e9b941254b797fc0ca96e3f86d0d9f9e0264e7cf37e007`.
+- Binary SHA256: `9a8a6557b6aa21f195d3635168c06250c47abd049c8d88cf8e3dd6bf6c0b0377`.
+
+| Check | Native evidence |
 | --- | --- |
-| Two-AZ fleet | Two healthy ALB targets, private addresses, SSM online, no NAT. |
-| Shared data path | Signed PUT/GET/HEAD/Range with exact byte comparisons across Cloud and Edge passed. Full copy/delete/multipart sequence did not finish. |
-| TLS and SigV4 path | Explicit signed `Host:443`, Unicode, literal percent/plus, encoded slash, double slash, dot segments and underscored metadata passed through the tested paths. A dedicated test CA was trusted only by test clients. |
-| LIST continuation | Cloud-to-Edge continuation passed after using the shared runtime key. The original process-random key failed across nodes. |
-| Edge credentials | Actual Roles Anywhere sessions refreshed twice in the same process. A write succeeded after the first session expired. Making the helper key unreadable caused startup failure with no ready listener or credential fallback. |
-| Owner access | A separate owner token read its own usage through pinned SSH forwarding to loopback Admin. Moving the tunnel between healthy nodes after controlled process stops passed. Physical instance replacement was not tested. |
-| Edge Internet ingress | Strict HTTPS through the local proxy passed. An independent Internet client reaching Edge port 443 was not established. SSH access alone does not prove this route. |
-| Final shutdown | Edge and one Cloud node emitted invocation-specific `shutdown complete`. The other Cloud node exited with a pending-reconciliation error and no clean-shutdown proof. A slow in-flight request drain was not tested. |
+| Two-AZ Cloud fleet | Two healthy private ALB targets in different AZs before and after physical replacement; shared storage and private AWS endpoints, no NAT. |
+| Shared object path | Signed PUT/GET/HEAD/Range/LIST, overwrite, copy/delete and multipart completion/read-back passed across Cloud and Edge with exact byte comparisons. |
+| TLS and SigV4 | Strict HTTPS with signed `Host:443`, Unicode, literal percent/plus, encoded slash, double slash, dot segments and underscored metadata passed. |
+| Edge Internet ingress | The Oracle CLI reached the separate AWS Edge HTTPS endpoint over the Internet with certificate verification enabled. This does not rely on reaching a host through its own public address. |
+| Management isolation | External TCP probes to Admin 9000 and metrics 9100 failed for both front doors. HTTPS Admin paths returned S3 errors; `/metrics` returned the S3 ListObjectsV1-not-implemented response and no Prometheus data. |
+| Edge credentials | Fifteen-minute Roles Anywhere credentials refreshed in the same process and systemd invocation. A write after the original session expired was readable through Cloud. A fresh bootstrap using a failing helper refused startup before listeners, with no ambient/static/IMDS fallback; the serving process stayed unchanged. |
+| Owner access | A separate owner token read its scoped usage through pinned SSH forwarding to loopback Admin. The tunnel moved from the draining node to the surviving Cloud node during physical replacement. |
+| In-flight drain | A held 16-MiB PUT was attributed to the node selected for termination. Native metrics showed `draining=1` and `active_requests=1` together. After releasing the body, PUT returned 200 and the surviving node returned all bytes with the expected checksum. |
+| Physical replacement | ASG termination kept desired capacity unchanged. A new instance became healthy in the vacated AZ; the old instance terminated. CloudTrail attributed lifecycle completion to the gateway runtime role. No operator forced completion. |
+| Durable hourly cut | The persisted cut was initialized at 16:03:26 UTC, due at 17:03:26 and observed running at 17:03:51. Epoch zero closed and was Sealed at 17:04:12 with 21 producers. The existing S3-only `VerifyCut` passed; a subsequent write/read passed. No history, gate or deadline was reset. |
+| Final shutdown | All four gateway invocations exited successfully and emitted their own `shutdown complete` proof. After shutdown, R1 had zero active/resolving work and no pending actions. |
 
-## Failures and corrections
+## Corrections and local proof
 
-Three deployment fixes were committed separately:
+The earlier run did not complete acceptance: an unknown commit retained at the
+hourly cut blocked further writes and one clean shutdown. Its failure evidence
+and cleanup record remain separate; the later passing run does not change that
+earlier outcome.
 
-- Inject the shared cursor key into S3 LIST handlers instead of generating a
-  process-local signing key. Tests cover independent handlers, restart, key
-  copying and rejection of a foreign key.
-- Probe the owner's `/usage` route through the tunnel. The user-detail route
-  requires system-admin privileges and rejected the deliberately restricted
-  owner token.
-- Raise fleet on-demand read/write ceilings from 10 to 128 units per table.
-  Native DynamoDB returned `ThrottlingException` during shared R1 operations at
-  the old ceiling. The new value is a request ceiling, not provisioned capacity
-  or a hard billing cap. It was applied, but the full functional sequence could
-  not be rerun after the recovery gate closed.
+The runtime now reconciles a closed writer's original operation before producer
+settlement. `ReconcileR1` CAS-closes the original attempt and settles the producer
+receipt atomically. An absent result alone never proves that a commit failed.
+Standalone reserved quota is released only after authoritative proof; multipart
+staging remains owned by multipart recovery, and physical roots/pins are retained.
+Epoch closure revisits reconciled producer receipts. Registry retries occur only
+after local work has joined; unresolved physical I/O still prevents clean exit.
+See [the reconciliation contract](../contracts/closed-writer-reconciliation.md).
 
-The remaining blocker is separate from those fixes. Strong reads showed a
-writer lease closed with a pending commit, and the corresponding original
-operation retained in `Dispatching` with a pending request and no retained
-result. The hourly gate was in `RecoveryCut`; new writes were fenced. Cloud
-shutdown reported `reconcile original operation before release or takeover`.
+Native DynamoDB Local tests cover unsent commits, committed transactions with
+lost responses, a second Store instance, delayed original transactions, lost
+closure acknowledgements, idempotent quota accounting, multipart ownership,
+retained roots, crash/expiry across the durable hourly cut and Closed/Sealed
+progress. Registry tests retain committed results after release and reject false
+clean shutdown while work or reconciliation remains unresolved.
 
-No result row is not proof that a commit did not happen. The run did not clear
-the pending marker, reset history, forge a closure proof or force the gate open.
-The metadata backend had a fenced close-attempt primitive, but this observed
-operation was not reconciled by the composed runtime. The local correction below
-does not retrospectively turn the interrupted AWS sequence into a passing run.
+`make check` and the scoped metadata/app/coordination/object/write/recovery/readpath
+race suites passed with DynamoDB Local and S3/Moto fixtures. The deployment suite
+also passed all 14 tests, including installation under umask 077. CI passed all
+five checks on the deployed source commit.
 
-Checkpoint/rebuild and retention/GC consume closed, sealed epochs. They must not
-treat the blocked cut as a valid seal or infer success from an absent result.
-This finding blocks the live deployment acceptance; it does not replace those
-consumers' independent tests.
+Two deployment corrections were proved in the new run:
 
-## Evidence and follow-up
+- Edge's security group needs private TCP 443 access to interface endpoints when
+  VPC private DNS is enabled. One internal rule was added; Admin/metrics remained
+  private. The active stack had 99 managed resources, including this rule.
+- The installer creates missing public package/configuration directories with
+  readable permissions under umask 077. Existing private directories retain their
+  mode. The rebuilt archive was installed on every gateway process.
 
-Private evidence retains saved-plan hashes, native inventories, credential
-refresh timestamps, TLS/client assertions, authoritative pending-operation
-reads and shutdown logs. Credentials, private keys and signed requests must not
-be published with this record.
+Earlier shared LIST cursor-key injection, owner usage probing and the fleet's
+128-unit table request ceilings were exercised by the passing sequence. These
+ceilings are request limits, not provisioned capacity or a billing hard cap.
 
-Prepare a new AWS-only Cloud/Edge plan with an explicit Edge host cost, then
-repeat full CRUD/copy/delete/multipart, external Edge HTTPS and an in-flight
-drain. Existing emulator/CI success does not close those native checks.
+## Observation requiring separate characterization
 
-## Reconciliation correction: local proof
+An optional early 17-MiB upload fixture paused for about 90 seconds and received
+one `InternalError`. The root cause was not established. A repeated 17-MiB PUT
+succeeded, but that fixture's 16-MiB read limit then caused a comparison failure.
+Both attempts are excluded from the passing drain evidence above. The corrected
+16-MiB held request proved drain overlap, successful completion and exact read-back.
 
-`ReconcileR1` now CAS-closes the original commit attempt and settles the producer
-receipt atomically. It releases standalone reserved quota only after that proof,
-keeps multipart-owned staging intact and retains the closed lease's physical
-roots/pins. Epoch closure revisits the producer receipt rather than skipping it.
-The process registry retries release only after its local work has joined.
+Long-stalled client behavior needs a controlled reproduction before making a
+timeout or reliability claim. No speculative runtime change was made from this
+single observation. Checkpoint/rebuild, retention/GC, load and performance remain
+separate validation work; this run proves their sealed-epoch input, not those
+consumers' behavior.
 
-Native DynamoDB tests reproduce both an unsent final transaction and a committed
-transaction with a lost response. They cover a second Store instance, rejection
-of a delayed original transaction, lost closure acknowledgements and idempotent
-quota accounting, expired/crashed authority past the durable one-hour cut,
-Closed/Sealed progress, retained roots and rejection of unknown physical I/O.
-Registry tests verify that live work or unavailable reconciliation cannot report
-clean shutdown, and that a retained committed result remains readable after release.
+## Cleanup and evidence
 
-`make check` and race suites for DynamoDB, app composition, coordination, object,
-managed writes, recovery and readpath passed with scoped DynamoDB Local/Moto
-fixtures. Existing multipart settlement and short-lease hourly scheduling
-regressions also passed. Each fixture's containers/data were removed on exit.
-These results require a new AWS run for deployment acceptance.
+Workload teardown completed on 2026-11-03 at about 00:56 UTC. Independent AWS
+reads confirmed no run EC2 remained, all four disposable 20-GiB root disks were
+absent, and the bucket, 20 tables, ALB/ASG, endpoints, network interfaces and VPC
+were gone. The stack state contained zero resources. The temporary ACM
+certificate, SSM document, runtime roles/profiles and Roles Anywhere resources
+were removed. Original managed-policy defaults were restored at 00:57 UTC;
+temporary versions and the cleanup grant were removed. Thirteen local private
+key/token/secret files and two temporary public keys were deleted.
 
-## Cleanup
+The ELB service-linked role remains pending: AWS initially refused its deletion,
+reporting the recently deleted ALB in its usage list. The independent ALB API
+returned NotFound. The custom ASG and default Roles Anywhere service-linked roles
+were deleted. Keep this exception explicit until an IAM retry proves absence.
 
-The reviewed teardown completed. Independent AWS reads confirmed both EC2s
-terminated, both disposable root volumes absent, and no run-owned ALB, ASG,
-interface/gateway endpoints, network interfaces, VPC, data bucket or metadata
-tables. The stack state contains zero resources. The imported ACM certificate,
-temporary SSM document, runtime roles/profiles, Roles Anywhere provider and all
-three service-linked roles created for the run were also removed.
+All gateway processes had stopped cleanly, but the deploy token expired during
+the ASG deletion waiter at about 17:45 UTC on 2026-11-02. Terraform saved its
+recovery state locally after the backend write also failed. The 18:20 UTC cleanup
+target was missed while renewed authentication was pending. A separately
+approved 60-minute cleanup grant resumed deletion without launching workloads.
+The recovery state matched the backend lineage and the exited apply's lock;
+native state serial checks were retained before releasing that owned stale lock.
+No history, R1 gate or workload deadline was reset. Cleanup also encountered a
+missing IAM instance-profile read for the Edge role; the IAM-only session removed
+the identity after verifying its exact ID and absence of profiles/policies, and
+the deploy role reconciled the resulting native NotFound in a fresh plan.
 
-The synthetic inventory contained 147 object versions (62,028,242 physical bytes,
-including two release archives), no multipart uploads and 599 metadata items.
-All versions were deleted with per-object error checks before bucket destruction.
-Authoritative failure evidence was retained before deleting the tables.
+The quiescent inventory contained 156 object versions, 62,080,193 physical bytes
+including two release archives, no multipart uploads and 386 metadata items.
+All versions were deleted with per-object error checks after inventory comparison.
+Bootstrap/state and earlier retained resources were excluded from destructive
+plans. The following remain outside the empty workload state:
 
-The application stopped at about 12:18 UTC, EC2/ALB teardown completed by 12:56,
-and the native API confirmed interface endpoints absent at 13:02. Final state and
-permission reconciliation finished later. Cleanup crossed the 13:01 target while
-handling source-role expiry and delete/waiter IAM permissions; no new serving
-resources were launched to extend the run. This is not evidence of a strict
-two-hour cleanup deadline or an exact billed total.
+- Twenty SYSTEM backups from this run, identified by the original table IDs.
+  Native summaries report expiry on 2026-11-04 around 00:52 UTC. Twenty older
+  SYSTEM backups are separate, with expiry on 2026-11-03 around 13:14 UTC.
+- This run's KMS key in PendingDeletion, due 2026-12-03 around 00:52 UTC.
+- This run's secret scheduled for 2026-12-03 at 00:52:15 UTC. CloudTrail confirms
+  a 30-day recovery window; DescribeSecret's DeletedDate alone was not used as
+  proof of the scheduled deletion date.
+- Existing bootstrap/state and earlier deletion windows.
 
-The following remain deliberately outside the empty workload state:
-
-- Twenty DynamoDB `SYSTEM` backups. The native inventory reports expiry on
-  2026-11-03 at approximately 13:14 UTC; do not substitute the service maximum
-  retention period for these observed expiry timestamps.
-- The run's KMS key in `PendingDeletion`, due 2026-12-02 at 13:16 UTC.
-- The run's secret scheduled for 2026-12-02 at 13:14 UTC. CloudTrail confirms
-  `recoveryWindowInDays: 30` and that deletion date. Its `DescribeSecret`
-  `DeletedDate` field showed the request time, so that field alone was not used
-  as proof of the recovery window.
-- Existing bootstrap/state and pre-existing deletion windows. They were excluded
-  from the run's destructive plans.
-
-Temporary IAM grants were removed, original managed-policy defaults restored,
-temporary policy versions deleted and the root CLI login cache cleared. A final
-read-only CloudTrail audit grant was also removed immediately after verification.
-Oracle's temporary gateway/proxy/time services, service user, firewall rule,
-signing helper, ten private key/token/secret files and disposable build/provider
-caches were removed; the original Apache and time synchronization were restored.
-Source, release archives and private audit evidence remain.
-
-The USD 5 envelope was an authorization limit, not a billing hard cap. Billing has
-not been reconciled; retained backups, deletion windows and bootstrap storage must
-not be described as zero-cost merely because the workload state is empty.
+Private evidence retains saved-plan digests, resource identities, table IDs,
+release hashes, signed-client assertions, credential refresh timestamps,
+invocation-specific shutdown logs, the immutable seal and S3-only verification.
+Keep credentials, private keys, tokens and raw signed requests out of the public
+repository. The USD 5 envelope was an authorization limit, not a billing hard cap.
+Cleanup did not meet its original deadline; the actual billed total has not been
+reconciled. Retained backups, deletion windows and bootstrap storage must not be
+described as zero-cost merely because the workload state is empty.

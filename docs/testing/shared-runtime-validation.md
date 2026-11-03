@@ -35,12 +35,16 @@ validate a real certificate, IAM grant, host, AMI or network route.
 
 ## Live evidence
 
-The [native run record](cloud-edge-live-validation.md) reports partial AWS results
-and an unknown-commit recovery blocker. Live acceptance remains incomplete.
-Use the [live acceptance plan](../../deploy/shared-acceptance-plan.md) for a rerun.
-No emulator result above proves real ALB path/Host preservation, physical Edge
-deployment, Internet reachability, Roles Anywhere issuance/refresh, owner SSH
-access or cleanup on AWS.
+The [native run record](cloud-edge-live-validation.md) records the earlier
+unknown-commit blocker, its correction and the passing AWS-only functional rerun.
+It includes ALB path/Host preservation, a separate AWS Edge, Internet HTTPS,
+same-process Roles Anywhere refresh, owner SSH failover, physical ASG replacement,
+in-flight drain and the durable hourly seal. Its cleanup section is the authority
+for teardown status and retained resources. It also records an unresolved stalled
+upload observation; the two-GiB fleet does not establish sizing or performance.
+Use the [live acceptance plan](../../deploy/shared-acceptance-plan.md) for future
+runs with fresh resource, IAM and cost approval. Emulator results above do not
+substitute for that separate native evidence.
 The existing native TLS proxy test covers transport/SigV4 with synthetic handlers;
 it is complementary to native storage tests and is not combined live evidence.
 

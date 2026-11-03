@@ -57,6 +57,11 @@ resource inventory. Use the existing bootstrap/backend; inspect live state first
    roles before first use. Scope custom ASG role tag/read/delete/PassRole and
    RunInstances on the owned launch template as well as its referenced resources;
    simulator success alone does not establish these native dependencies.
+   Validate cleanup reads as well as mutations: this provider queries
+   `iam:ListInstanceProfilesForRole` before deleting even a certificate-only Edge
+   role. Budget source-role refresh before a long drain. If token expiry prevents
+   a backend write, preserve Terraform's local recovery state and reconcile its
+   lineage, serial and owned lock before another apply.
    If an old secret name is reserved by scheduled deletion, use a fresh
    `runtime_secret_name` inside the approved prefix. Do not restore, overwrite or
    force-delete the old secret to reuse its name; preserve its recovery window.
