@@ -97,3 +97,9 @@ The run-created Roles Anywhere and ELB service-linked roles were deleted too.
 ELB initially refused deletion while its usage inventory still referenced the
 already deleted load balancer. A later IAM-only retry succeeded at 08:41 UTC.
 Run private keys, client credentials and Admin tokens were removed locally.
+
+Subsequent review corrections add transactional Admin actor checks, retirement
+of superseded worker leases and upload sweep coordination that permits epoch
+closure. Their HTTP/race and DynamoDB Local/S3-Moto proofs are recorded in the
+[regression suite](cluster-operations-validation.md#review-regressions). The AWS
+results in this document identify the historical releases they exercised.

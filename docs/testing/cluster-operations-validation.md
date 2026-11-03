@@ -24,6 +24,19 @@ The focused regression suite covers:
   private invocation-bound markers, timeout/failure withholding completion and
   node-result reconciliation after an UpdateItem acknowledgement is lost.
 
+## Review regressions
+
+- HTTP job create/cancel/drain rechecks token revocation and user disable after
+  admission. Native DynamoDB transaction races also cover token expiry and lost
+  system scope immediately before CAS. Denied writes preserve job/node state.
+- A resumed worker retires its stale lease after a successor takes ownership,
+  executes two more ticks and completes a new job. Successor authority stays live.
+- The composed native runtime pauses both upload sweeps immediately before writer
+  admission, starts a recovery cut and resumes the sweep against the closed gate.
+  The cut reaches Closed and seals while the sweep keeps its progress lease.
+  Retrying the pending step aborts the expired upload or completes frozen input.
+  Restoring a control dispatch lease reproduces `ErrR1Busy` in both cases.
+
 Run focused checks with:
 
 ```bash

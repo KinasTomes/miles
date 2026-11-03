@@ -5,6 +5,11 @@ gateway does not create a separate job namespace. System-admin authorization,
 strict request parsing and caller/resource-bound cursors use the existing Admin
 server. Job views exclude fences, internal parameters and checkpoints.
 
+Job creation, cancellation and HTTP drain markers carry the admitted Admin actor.
+Each backend checks the current token, active user and system scope inside the
+same write transaction, together with the caller admission fence. Internal
+scheduler/worker contexts retain their own authority.
+
 ## Runtime capabilities
 
 | Job | Current execution |
@@ -66,6 +71,12 @@ the recovery port, including open publishers, before releasing quota. A Completi
 upload follows frozen-input recovery even after its upload expiry. Dry-run
 reports examined/skipped counts and preserves data. Outcome errors retain the
 pending step until durable upload state proves it settled.
+
+Upload sweep dispatch holds recovery-kind authority for job progress. Physical
+cleanup or completion acquires its own writer admission. A recovery cut can
+close and seal while a sweep waits for that admission, then the same pending
+step resumes in the next epoch. The progress lease cannot authorize physical
+write dispatch.
 
 Periodic creation holds a type-specific scheduler lease and checks shared active
 records before enqueueing. Slot IDs reconcile duplicate creation and lost ACKs.
