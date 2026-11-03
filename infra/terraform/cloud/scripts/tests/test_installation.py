@@ -29,7 +29,8 @@ class InstallationTests(unittest.TestCase):
                              for resource in statement["Resource"]]
         prefix = "arn:aws:iam::123456789012:instance-profile/miles/member/"
         self.assertEqual(set(allowed_resources), {prefix + "miles-member-test-gateway",
-                                                  prefix + "miles-member-test-jobs"})
+                                                  prefix + "miles-member-test-jobs",
+                                                  prefix + "miles-member-test-edge-bootstrap"})
         for denied in (prefix + "another-installation-gateway",
                        prefix + "miles-member-test-edge",
                        prefix.replace("123456789012", "210987654321") + "miles-member-test-gateway",

@@ -10,7 +10,8 @@
       "Resource": [
         "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
         "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
-        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge"
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
       ],
       "Condition": {
         "StringEquals": {
@@ -33,12 +34,14 @@
         "iam:ListRoleTags",
         "iam:PutRolePolicy",
         "iam:TagRole",
-        "iam:UntagRole"
+        "iam:UntagRole",
+        "iam:UpdateAssumeRolePolicy"
       ],
       "Resource": [
         "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
         "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
-        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge"
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
       ]
     },
     {
@@ -58,7 +61,9 @@
         "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
         "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
         "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
-        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs"
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap",
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
       ]
     },
     {
@@ -69,7 +74,8 @@
       ],
       "Resource": [
         "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
-        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs"
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
       ]
     },
     {
@@ -80,7 +86,8 @@
       ],
       "Resource": [
         "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
-        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs"
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
       ],
       "Condition": {
         "StringEquals": {

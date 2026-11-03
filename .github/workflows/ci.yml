@@ -103,12 +103,15 @@ jobs:
       - name: Format, initialize and validate
         run: |
           terraform fmt -check -recursive infra/terraform/cloud
+          terraform -chdir=infra/terraform/cloud/bootstrap/operator init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=infra/terraform/cloud/bootstrap/operator validate
           terraform -chdir=infra/terraform/cloud/bootstrap/state init -backend=false -input=false -lockfile=readonly
           terraform -chdir=infra/terraform/cloud/bootstrap/state validate
           terraform -chdir=infra/terraform/cloud/environments/dev init -backend=false -input=false -lockfile=readonly
           terraform -chdir=infra/terraform/cloud/environments/dev validate
       - name: Test installation and lifecycle with mock AWS (no AWS API calls)
         run: |
+          terraform -chdir=infra/terraform/cloud/bootstrap/operator test
           terraform -chdir=infra/terraform/cloud/bootstrap/state test
           terraform -chdir=infra/terraform/cloud/environments/dev test
 

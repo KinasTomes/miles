@@ -219,6 +219,22 @@
           "aws:RequestedRegion": "{{REGION}}"
         }
       }
+    },
+    {
+      "Sid": "EdgeBootstrapMaterial",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": "arn:aws:secretsmanager:{{REGION}}:{{ACCOUNT_ID}}:secret:{{INSTALLATION_NAME}}/edge-bootstrap-*"
+    },
+    {
+      "Sid": "ReadPinnedHelper",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObjectVersion"
+      ],
+      "Resource": "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/deployment/helper/*"
     }
   ]
 }

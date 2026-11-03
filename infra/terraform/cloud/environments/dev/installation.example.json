@@ -6,7 +6,10 @@
   "owner": "member",
   "runtime_iam_path": "/miles/member/",
   "runtime_permissions_boundary_arn": "arn:aws:iam::123456789012:policy/miles/member/RuntimeBoundary",
-  "availability_zones": ["ap-southeast-1a", "ap-southeast-1b"],
+  "availability_zones": [
+    "ap-southeast-1a",
+    "ap-southeast-1b"
+  ],
   "ami_id": "ami-0123456789abcdef0",
   "instance_type": "t4g.small",
   "release_architecture": "arm64",
@@ -20,6 +23,19 @@
     "user_arn": "arn:aws:iam::123456789012:user/miles/operators/member-deploy",
     "mfa_arn": "arn:aws:iam::123456789012:mfa/member-deploy",
     "deploy_role_arn": "arn:aws:iam::123456789012:role/miles/bootstrap/miles-member-deploy",
-    "terraform_profile": "miles-member-terraform"
+    "terraform_profile": "miles-member-terraform",
+    "login_profile": "miles-member",
+    "admin_profile": "miles-member-iam",
+    "utc_reference": "REPLACE_WITH_CHRONY_SOURCE_IP"
+  },
+  "client_cidrs": [
+    "203.0.113.5/32"
+  ],
+  "edge_instance_type": "t4g.small",
+  "fleet_instance_type": "t4g.small",
+  "enable_edge": false,
+  "deployment": {
+    "max_cost_usd": 5,
+    "max_active_minutes": 150
   }
 }

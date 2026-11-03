@@ -27,7 +27,7 @@ variable "environment" {
 
 variable "owner" {
   type    = string
-  default = "Hung"
+  default = "operator"
   validation {
     condition     = length(trimspace(var.owner)) > 0 && length(var.owner) <= 128
     error_message = "Supply an owner tag of 1..128 characters."
