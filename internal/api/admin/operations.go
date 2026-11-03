@@ -146,6 +146,9 @@ func (s *server) drainNode(c *call) error {
 		return err
 	}
 	j, err := s.Operations.Drain(c.r.Context(), id)
+	if j.ID != "" {
+		c.w.Header().Set("Location", "/admin/v1/jobs/"+j.ID)
+	}
 	if errors.Is(err, storage.ErrNotFound) {
 		return notFound("node_not_found", "node does not exist")
 	}

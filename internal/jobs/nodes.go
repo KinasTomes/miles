@@ -78,6 +78,11 @@ func (r *Registry) tick(ctx context.Context, gate Gate, status NodeStatus) error
 		n.HeartbeatAt = r.Clock.Now().WallUTC
 		n.ActiveRequests = active
 		n.Draining = draining || status.Draining || old.Draining
+		n.DrainApplied = draining
+		n.DrainState = old.DrainState
+		if draining && n.DrainState == "" {
+			n.DrainState = "gated"
+		}
 		n.Ready = status.Ready && !n.Draining
 		n.AppliedPolicyRevision = status.AppliedPolicyRevision
 		_, e = r.Store.PutNode(ctx, old.Revision, n)
@@ -88,13 +93,37 @@ func (r *Registry) tick(ctx context.Context, gate Gate, status NodeStatus) error
 	}
 	return storage.ErrConflict
 }
+
+// ObserveDrain closes the local gate before publishing the target's ACK.
+func (r *Registry) ObserveDrain(ctx context.Context, gate Gate) error {
+	n, e := r.Store.GetNode(ctx, r.Identity.ID)
+	if e != nil {
+		return e
+	}
+	if n.Incarnation != r.Identity.Incarnation {
+		return storage.ErrFenced
+	}
+	if !n.Draining {
+		return nil
+	}
+	gate.Drain()
+	return r.Tick(ctx, gate, NodeStatus{Draining: true, AppliedPolicyRevision: n.AppliedPolicyRevision})
+}
 func (r *Registry) Run(ctx context.Context, gate Gate, status func() NodeStatus) error {
 	if r == nil || r.Clock == nil || status == nil {
 		return storage.ErrInvalid
 	}
 	for ctx.Err() == nil {
-		_ = r.Tick(ctx, gate, status()) // A failed heartbeat closes readiness via Healthy.
-		if e := r.Clock.Sleep(ctx, HeartbeatInterval); e != nil {
+		r.mu.RLock()
+		last, has := r.last, r.hasLast
+		r.mu.RUnlock()
+		age, e := r.Clock.Now().Instant.Sub(last)
+		if !has || e != nil || age >= HeartbeatInterval {
+			_ = r.Tick(ctx, gate, status())
+		} else {
+			_ = r.ObserveDrain(ctx, gate)
+		}
+		if e := r.Clock.Sleep(ctx, time.Second); e != nil {
 			return e
 		}
 	}

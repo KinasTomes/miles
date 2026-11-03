@@ -162,7 +162,12 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 		if e = os.Chmod(c.LocalDataPath, 0700); e != nil {
 			t.Fatal(e)
 		}
-		d, e := composeShared(ctx, c, clients, clock.NewReal(), nativeUTC{}, "cluster-v1", bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32))
+		// Real gateways own independent transports. Sharing one here lets one
+		// node's CloseIdleConnections interfere with another node's cleanup.
+		nodeTransport := transport.Clone()
+		nodeHTTP := &http.Client{Transport: nodeTransport}
+		nodeClients := runtimeClients{metadata: ddb.New(ddb.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(dEndpoint), Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(sEndpoint), UsePathStyle: true, Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), transport: nodeTransport}
+		d, e := composeShared(ctx, c, nodeClients, clock.NewReal(), nativeUTC{}, "cluster-v1", bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32))
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -298,4 +303,6 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 	if e != nil || len(q.Events) < 5 {
 		t.Fatal("native producer events missing", q, e)
 	}
+	nativeClusterOperations(t, ctx, nodes, tokenID+"."+tokenSecret)
+
 }

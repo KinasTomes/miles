@@ -39,6 +39,9 @@ func closeDependencies(d Dependencies, err error) error {
 
 func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencies, admission *Admission, output io.Writer) error {
 	defer ln.Close()
+	if d.Operations != nil && d.Operations.Cluster != nil {
+		d.Operations.Cluster.Gate = admission
+	}
 	logger := slog.New(slog.NewJSONHandler(output, nil))
 	h := observability.NewHealth(d.Probe, admission.Draining, c.Mode != "runtime")
 	var operationalReady func() bool

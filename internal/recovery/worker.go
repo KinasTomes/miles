@@ -156,7 +156,13 @@ func (w Worker) CloseAndSeal(ctx context.Context, r s.RecoveryCutRequest) (Attac
 // Run is a supervised worker for an already acquired recovery-kind R1 lease.
 // The runtime/job owner supplies that lease and joins Run before releasing it.
 // Dispatch never derives authority from this cadence or from job timestamps.
-func (w Worker) Run(ctx context.Context) error {
+func (w Worker) Run(ctx context.Context) error { return w.run(ctx, true) }
+
+// RunCuts keeps the durable hourly cut supervisor while a shared Jobs worker
+// owns periodic journal export. Closing a cut still exports its exact members.
+func (w Worker) RunCuts(ctx context.Context) error { return w.run(ctx, false) }
+
+func (w Worker) run(ctx context.Context, export bool) error {
 	if err := w.validate(); err != nil {
 		return err
 	}
@@ -188,13 +194,15 @@ func (w Worker) Run(ctx context.Context) error {
 	}()
 	defer func() { cancel(nil); <-heartbeats }()
 	for {
-		if err := w.Flush(ctx); err != nil {
-			if ctx.Err() != nil {
-				return context.Cause(ctx)
+		if export {
+			if err := w.Flush(ctx); err != nil {
+				if ctx.Err() != nil {
+					return context.Cause(ctx)
+				}
+				w.observe("export_error")
+			} else {
+				w.observe("export_ok")
 			}
-			w.observe("export_error")
-		} else {
-			w.observe("export_ok")
 		}
 		epoch, due, err := w.Store.RecoveryCutDue(ctx, w.Catalog.History, w.Fence)
 		if err != nil {
