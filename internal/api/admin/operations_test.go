@@ -11,6 +11,7 @@ import (
 
 	"github.com/KinasTomes/miles/internal/jobs"
 	opstest "github.com/KinasTomes/miles/internal/jobs/contracttest"
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/storage"
 )
@@ -31,9 +32,9 @@ func (s beforeOperationalWrite) ChangeJob(ctx context.Context, c jobs.Change) (j
 
 func TestOperationalMutationsRecheckActorAfterAdmission(t *testing.T) {
 	for _, actorChange := range []string{"revoke", "disable_user"} {
-		for _, action := range []string{"create", "cancel", "drain", "cache-purge"} {
+		for _, action := range []string{"create", "cancel", "drain", "cache-purge", "pack-restore"} {
 			t.Run(actorChange+"/"+action, func(t *testing.T) {
-				w := newWorld(t, badger.Bootstrap{})
+				w := newWorld(t, badger.Bootstrap{Packs: []storage.PackInfo{{Version: 1, Ref: storage.PackRef{ID: "pack-a", Generation: "generation-1"}, Size: 100, Class: storage.Glacier, State: "Cold", StateRevision: 1}}})
 				actor := w.mintToken("user-writer", true)
 				svc := jobs.Service{Store: w.store, Policies: w.store}
 				job, err := svc.Create(t.Context(), jobs.Create{Type: "cache_purge"})
@@ -51,12 +52,18 @@ func TestOperationalMutationsRecheckActorAfterAdmission(t *testing.T) {
 					}
 				}}
 				w.opts.Operations = testOperations{w.store, svc}
+				if action == "pack-restore" {
+					w.opts.Operations = packOperations{testOperations{w.store, svc}}
+					w.opts.PackInventory = &lifecycle.Catalog{Store: w.store, Now: func() time.Time { return w.clk.Now().WallUTC }, MaxRecords: 100, MaxReferences: 100}
+				}
 				w.h, err = NewServer(w.opts)
 				if err != nil {
 					t.Fatal(err)
 				}
 				method, path, body := "POST", "/admin/v1/jobs", `{"type":"cache_purge"}`
 				switch action {
+				case "pack-restore":
+					path, body = "/admin/v1/packs/pack-a/generation-1/restore", `{"days":1,"tier":"Standard"}`
 				case "cache-purge":
 					path, body = "/admin/v1/cache/purge", `{"scope":"node","node_id":"node-a"}`
 				case "cancel":

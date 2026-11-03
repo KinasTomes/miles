@@ -937,6 +937,29 @@ Shared được xác định bằng refcount occurrences đã đối soát trừ
 
 Đây là mô hình chi phí quản trị, không quota/hóa đơn người dùng. Giá nhân byte-thời-gian, không chỉ dung lượng cuối kỳ. Cloud cache không làm giảm logical Internet bytes; Edge cache có thể giảm S3 → Edge download theo đo thực.
 
+**Pack administration**: `GET /admin/v1/packs` accepts `state`,
+`storage_class`, decimal `live_ratio_lt` (0..1), `limit` and signed `cursor`.
+`GET /admin/v1/packs/{id}` pages all generations of that ID; both return
+`items`/`next_cursor`. Fields include `pack_id`, `generation`, `state`,
+`storage_class`, `state_revision`, `bytes`, `live_bytes`, `live_ratio`,
+`protected_until`, `min_retention_until`, `restored_until`, observational
+`readable`, `as_of` and `consistency`. Head-live bytes count unique canonical
+stored blobs reached by current object heads; they exclude staging/historical
+roots and are not GC eligibility or an atomic snapshot. IR is readable in Cold.
+
+`POST /admin/v1/packs/{id}/{generation}/restore` accepts
+`{"days":1,"tier":"Standard"}` (1..30 days; Standard/Bulk/Expedited).
+`/promote` accepts `{}`. System admin only, transactional actor recheck,
+exact-generation 404 `pack_not_found`, and 202 job detail/Location. Job types are
+`pack_restore`, `pack_promote`; explicit `tiering` jobs take
+`{"pack_id":"...","generation":"..."}` params and pin policy revision.
+Restore acceptance is not readiness; job/pack states track observed completion.
+Promotion writes a new verified Warm generation, conditionally moves the frozen
+head-live plan, keeps concurrent winners and retains source bytes. It does not
+promise to delete or atomically move the whole generation. Ambiguous mutable
+COPY remains protected until trusted terminal/isolation reconciliation; no public
+force-complete route exists. Live Cold acceptance remains a separate gate.
+
 **POST /admin/v1/cache/purge**:
 
 ```json

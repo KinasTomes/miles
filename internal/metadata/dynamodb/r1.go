@@ -7,6 +7,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	s "github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -14,9 +15,10 @@ import (
 // publication serializes with incarnation changes and explicit lease closure.
 // Expiry is dispatch permission, not a condition on the DynamoDB server clock.
 type SharedAuthority struct {
-	Time        s.R1TimeSource
-	Lifetime    time.Duration
-	Maintenance R1MaintenanceGuard
+	LifecycleTerminal LifecycleTerminalGuard
+	Time              s.R1TimeSource
+	Lifetime          time.Duration
+	Maintenance       R1MaintenanceGuard
 }
 
 func r1GateKey() Key { return stringKey("SystemConfig", "config_id", "coordination/r1/current") }
@@ -542,6 +544,11 @@ func (m *Store) SettleR1Action(ctx context.Context, f s.WriterFence, id string) 
 var _ s.R1Store = (*Store)(nil)
 
 func (t *transaction) revalidateR1() error {
+	if j, ok := lifecycle.JobFromContext(t.ctx); ok {
+		if e := t.store.lifecycleJob(t, j, true); e != nil {
+			return e
+		}
+	}
 	a, ok := t.store.authority.(*SharedAuthority)
 	if !ok {
 		return nil
