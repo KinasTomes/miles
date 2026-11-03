@@ -29,6 +29,7 @@ type Store interface {
 	GetBucket(context.Context, string) (storage.Bucket, error)
 	GetCredential(context.Context, string) (storage.Credential, error)
 	GetQuota(context.Context, string) (storage.LogicalQuota, error)
+	GetPacks(context.Context, []storage.PackRef) (map[storage.PackRef]storage.PackInfo, error)
 	GetPolicy(context.Context, uint64) (storage.PolicySnapshot, error)
 	PutPolicy(context.Context, storage.PolicyUpdate) (storage.PolicySnapshot, error)
 	MutateControl(context.Context, storage.ControlMutation) (storage.MutationResult, error)

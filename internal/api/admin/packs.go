@@ -6,7 +6,7 @@ import (
 	"errors"
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/lifecycle"
-	s "github.com/KinasTomes/miles/internal/storage"
+	"github.com/KinasTomes/miles/internal/storage"
 	"math/big"
 	"net/http"
 	"regexp"
@@ -14,14 +14,14 @@ import (
 )
 
 type PackInventory interface {
-	Collect(context.Context) ([]lifecycle.Pack, map[s.PackRef][]s.Chunk, error)
+	Collect(context.Context) ([]lifecycle.Pack, map[storage.PackRef][]storage.Chunk, error)
 }
 
 var liveRatioPattern = regexp.MustCompile(`^(0(\.[0-9]{1,18})?|1(\.0{1,18})?)$`)
 
 func packID(c *call) (string, error) {
 	id := c.r.PathValue("id")
-	if (s.PackRef{ID: id, Generation: "validate"}).Validate() != nil {
+	if (storage.PackRef{ID: id, Generation: "validate"}).Validate() != nil {
 		return "", invalid("invalid pack identifier")
 	}
 	return id, nil
@@ -98,7 +98,7 @@ func (s *server) packs(c *call, show bool) error {
 	c.w.Header().Set("Cache-Control", "no-store")
 	return s.list(c, "", q, items, next)
 }
-func sclass(v string) s.StorageClass        { return s.StorageClass(v) }
+func sclass(v string) storage.StorageClass  { return storage.StorageClass(v) }
 func (s *server) restorePack(c *call) error { return s.packJob(c, "pack_restore") }
 func (s *server) promotePack(c *call) error { return s.packJob(c, "pack_promote") }
 func (s *server) packJob(c *call, kind jobs.Type) error {
@@ -136,20 +136,11 @@ func (s *server) packJob(c *call, kind jobs.Type) error {
 			return e
 		}
 	}
-	if s.PackInventory == nil {
-		return sUnavailable()
-	}
-	rows, _, e := s.PackInventory.Collect(c.r.Context())
+	rows, e := s.Store.GetPacks(c.r.Context(), []storage.PackRef{ref})
 	if e != nil {
 		return e
 	}
-	found := false
-	for _, row := range rows {
-		if row.PackID == ref.ID && row.Generation == ref.Generation {
-			found = true
-		}
-	}
-	if !found {
+	if _, found := rows[ref]; !found {
 		return notFound("pack_not_found", "pack generation does not exist")
 	}
 	if e = p.Validate(kind); e != nil {
@@ -173,4 +164,4 @@ func (s *server) packJob(c *call, kind jobs.Type) error {
 	c.json(http.StatusAccepted, j.View())
 	return nil
 }
-func sref(id, g string) s.PackRef { return s.PackRef{ID: id, Generation: g} }
+func sref(id, g string) storage.PackRef { return storage.PackRef{ID: id, Generation: g} }

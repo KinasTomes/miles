@@ -12,7 +12,8 @@ W04-PHONG-02, W04-PHONG-03, W05-HUNG-01 and W05-HUNG-02 are Hard Done.
    This bounded non-atomic head-live projection is explicitly NOT GC/R2 proof.
 2. Shared runtime installs explicit `tiering`, `pack_restore`, `pack_promote`
    executors into the existing Jobs runner. Restore/promote HTTP actions require
-   the exact generation; other gateways read the same durable job. Pinned global
+   an exact generation through a targeted metadata lookup, independent of global
+   inventory availability or scan budgets; other gateways read the same durable job. Pinned global
    policy selects tiering through the existing pure evaluator. Automatic periodic
    cold movement is not enabled. GLACIER_IR remains readable while state=Cold.
 3. Native job/node/gate/fence predicates accompany publication, with a fresh UTC
@@ -22,6 +23,11 @@ W04-PHONG-02, W04-PHONG-03, W05-HUNG-01 and W05-HUNG-02 are Hard Done.
    Known pre-closure physical work can settle truthfully; unknowns retain protection.
 
 ## Durable states and safety
+
+`TestPackActionsDoNotDependOnClusterInventory` covers restore/promote admission
+with unavailable, over-budget and absent inventory collectors. Exact generations
+still create jobs; missing generations remain 404 and create no job. Workers keep
+their bounded head-live collection when lifecycle planning needs it.
 
 Intent: Prepared -> Ready -> one-shot Dispatched -> Applied/Unknown -> Done.
 The Ready registration and send claim are separate. A lost claim ACK never grants
