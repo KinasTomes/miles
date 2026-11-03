@@ -210,6 +210,32 @@ a closed writer and a changed owner. This correction has not been deployed to
 AWS; the live results above remain results for `438ed46`.
 
 Acceptance stays open pending sustained-latency Complete on the corrected
-release and investigation of the shutdown failure. Cleanup evidence and
-the final retained-resource inventory will be recorded after the authorized
-teardown completes.
+release and investigation of the shutdown failure.
+
+## Verified cleanup
+
+The [cleanup record](evidence/presigned-live/cleanup.json) confirms deletion of
+all three instances and their 20 GiB root disks without backup, the workload
+bucket and its 1,637 versions, all 20 metadata tables, ALB, network/endpoints,
+Edge credential provider, test certificate and audited session document.
+The workload Terraform state is empty. The synthetic table inventory contained
+5,886 items before deletion.
+
+Temporary IAM permissions were removed and the previous managed-policy versions
+restored. All three run-created service-linked roles were deleted. ELB initially
+refused deletion of its role while still reporting the deleted ALB as in use;
+the eighth retry succeeded and native IAM confirmed role absence. Edge role
+cleanup required the approved IAM administrator because the deploy grant lacked
+`iam:ListInstanceProfilesForRole`; its exact native identity was verified before
+deletion, and Terraform state was reconciled only after native absence proof.
+Three operator tunnels and twelve temporary key/credential files were removed,
+and both AWS CLI login sessions were cleared.
+
+Bootstrap and remote state remain. The runtime KMS key is pending deletion on
+2026-12-03. The secret is scheduled for deletion with its Terraform recovery
+window configured to 30 days; the evidence preserves its returned `DeletedDate`
+separately from that configuration. Twenty DynamoDB SYSTEM backups created at table
+deletion expire on 2026-11-04; forty pre-existing backups remain untouched.
+The evidence records completion before the approved cleanup deadline. It does
+not claim verification of the final AWS billing statement or live acceptance
+of the corrected release.

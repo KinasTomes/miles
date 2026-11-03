@@ -48,5 +48,16 @@
     "clean_shutdown_proven": false
   },
   "acceptance_complete": false,
-  "cleanup_status": "in progress; waiting for renewed deploy session"
+  "cleanup_status": "workload deletion and temporary IAM restoration verified; see cleanup.json",
+  "manifest_verification_correction": {
+    "source_commit": "49c2d8d",
+    "ci_checks_passed": 5,
+    "native_dynamodb_regressions_passed": [
+      "heartbeat renewal",
+      "gate membership change",
+      "closed writer rejection",
+      "changed owner rejection"
+    ],
+    "aws_retested": false
+  }
 }
