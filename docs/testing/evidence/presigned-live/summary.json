@@ -1,0 +1,52 @@
+{
+  "source_commit": "438ed46a5ec6f449fb540ef28259ba1b0dcf96ab",
+  "archive_sha256": "9aed953f6d1d74fc79741da4b4bcdb133e22e2b11fe323d6115c5fa0420ea1f9",
+  "binary_sha256": "7b763e4d3236094909093ba2f06c409c67ba18fee0c4c4bf740d14802849cefc",
+  "region": "ap-southeast-1",
+  "topology": {
+    "cloud_nodes": 2,
+    "edge_nodes": 1,
+    "instance_type": "t4g.small",
+    "edge_host": "AWS"
+  },
+  "regular_matrix": {
+    "passed": true,
+    "observations": 116,
+    "per_profile": 58
+  },
+  "slow_get": {
+    "passed": true,
+    "cloud_first_byte_ms": 70739,
+    "edge_first_byte_ms": 68669,
+    "readback_bytes_per_profile": 367001600,
+    "sha256": "275d2b9684072f4e26588eae0ff54d49a1cc335861ac9a9300f9da2aec550bd0"
+  },
+  "slow_complete": {
+    "cloud_status": 200,
+    "cloud_first_byte_ms": 71767,
+    "edge_status": 409,
+    "edge_first_byte_ms": 67011,
+    "edge_retry_with_latency_status": 409,
+    "edge_retry_without_latency_status": 200,
+    "edge_upload_after_rejected_attempt": "Active with parts retained"
+  },
+  "fault_injection": {
+    "dynamodb_egress_delay_ms": 80,
+    "s3_egress_delay_ms": 900,
+    "protocol": "IPv4 TCP destination port 443, AWS Singapore service prefixes",
+    "automatic_clear_seconds": 600,
+    "rules_cleared": true
+  },
+  "diagnostics": {
+    "edge_alternate_builds": "temporary logging overlays after production preflight completed",
+    "included_in_acceptance_results": false,
+    "production_overlay_changes": 0
+  },
+  "shutdown": {
+    "edge_exit_status": 1,
+    "edge_error": "R1 admission or maintenance gate busy",
+    "clean_shutdown_proven": false
+  },
+  "acceptance_complete": false,
+  "cleanup_status": "in progress; waiting for renewed deploy session"
+}

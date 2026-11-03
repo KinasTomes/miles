@@ -172,9 +172,30 @@ Private slow state supports the three explicit phases. A failed or incomplete
 prepare requires inspection and a fresh isolated fixture. Retain those files for
 the approved teardown, then remove credentials, tokens and private test keys.
 
-## Acceptance status
+## AWS acceptance results
 
-Local validation passed before the live work. The live harness and infrastructure
-plans prepare a new AWS run. Its results, deployed hashes, latency observations,
-cleanup inventory and IAM restoration must be recorded before closing live
-acceptance. The earlier deployment evidence belongs to its recorded releases.
+The ARM64 release at `438ed46` ran on two Cloud nodes behind an ALB and one
+AWS Edge node. All three used the same binary SHA-256
+`7b763e4d3236094909093ba2f06c409c67ba18fee0c4c4bf740d14802849cefc`.
+The [sanitized evidence](evidence/presigned-live/summary.json) records the release,
+latency experiment, response timings, byte counts and body digests.
+
+- The regular matrix passed 58 observations on each front door, 116 total.
+- GET preflight passed with 70.739 seconds to the first byte through ALB and
+  68.669 seconds through Edge. Both streamed exactly 367,001,600 bytes with
+  SHA-256 `275d2b9684072f4e26588eae0ff54d49a1cc335861ac9a9300f9da2aec550bd0`.
+  Latency was removed during the remaining body transfer before the client timeout.
+- Cloud Complete returned its real receipt after 71.767 seconds. Edge Complete
+  returned HTTP 409 after 67.011 seconds, and a second attempt under sustained
+  latency also returned 409. Its upload reopened Active with all parts retained.
+  Replaying the same input after removing latency returned 200 in 2.197 seconds.
+- Temporary Edge builds with added diagnostic logging reproduced the commit-stage
+  conflict. Their results are diagnostic observations. Acceptance timings above
+  come from the recorded production release.
+- The final diagnostic Edge process exited with status 1 during shutdown journal
+  flush, reporting `R1 admission or maintenance gate busy`.
+
+The remaining investigation must identify the native metadata condition that
+rejects sustained-latency Complete and explain the shutdown flush failure.
+Acceptance stays open. Cleanup evidence and the final retained-resource inventory
+will be recorded after the authorized teardown completes.

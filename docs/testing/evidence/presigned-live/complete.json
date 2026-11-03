@@ -1,0 +1,27 @@
+{
+  "resource_prefix": "acceptance-c473f846a739",
+  "passed": false,
+  "timeout_seconds": 180,
+  "cases": [
+    {
+      "case": "slow CompleteMultipartUpload",
+      "endpoint": "cloud",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 71767,
+      "first_byte_ms": 71767,
+      "bytes": 415,
+      "sha256": "06e527577c5f4181a7832857063929f4f7b94eaa5da10b0e92b1078daf526f61"
+    },
+    {
+      "case": "slow CompleteMultipartUpload",
+      "endpoint": "edge",
+      "method": "POST",
+      "status": 409,
+      "elapsed_ms": 67011,
+      "first_byte_ms": 67011,
+      "bytes": 290,
+      "sha256": "b424ba40c62a3b7581064a7e87c2829a93196b2bae7efc04504e3c6b74821865"
+    }
+  ]
+}
