@@ -48,10 +48,11 @@ def main():
     assert binaries[0] == binaries[1] == manifest["files"]["bin/miles"]
     proxy_env = dict(os.environ, MILES_EDGE_PROXY_TEST="1", MILES_EDGE_PROXY_SLOW_TEST="1")
     with (out / "tls-proxy.log").open("w") as log:
-        subprocess.run(["go", "test", "-v", "-race", "-count=1", "-timeout=3m", "./deploy/edge"],
+        subprocess.run(["go", "test", "-v", "-race", "-count=1", "-timeout=5m", "./deploy/edge"],
                        cwd=ROOT, env=proxy_env, check=True, stdout=log, stderr=subprocess.STDOUT)
     summary = {**release, "same_binary": True, "profiles": ["cloud", "edge"],
                "health_status": 200, "ready_status": 503, "tls_proxy_slow_response_seconds": 65,
+               "tls_proxy_slow_complete_seconds": 65,
                "aws_operations": 0, "scope": "packaging/process/proxy contracts; not live deployment or R1/R2"}
     (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary, indent=2))

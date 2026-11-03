@@ -45,6 +45,10 @@ jobs:
           echo "MILES_RECOVERY_S3_REQUIRED=1" >> "$GITHUB_ENV"
       - name: Run shared contracts and fault tests against native DynamoDB
         run: go test -v -race -count=1 -timeout=10m ./internal/metadata/dynamodb ./internal/metadata/badger ./internal/storage/contracttest ./internal/readpath ./internal/app
+      - name: Presigned Cloud and Edge local composition with real object services
+        env:
+          MILES_PRESIGNED_LOCAL_REQUIRED: "1"
+        run: go test -v -race -count=1 -timeout=3m ./cmd/miles -run '^TestPresignedLocalProfiles$'
       - name: Remove only this job's ephemeral fixtures
         if: always()
         run: docker compose -f deploy/local/compose.yaml -p miles-metadata-contract down --volumes --remove-orphans

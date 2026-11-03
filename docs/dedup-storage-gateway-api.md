@@ -116,6 +116,7 @@ Hợp đồng của parser/xác thực S3. `tests/fixtures/s3/transport.json` gi
 **Presigned (query)**
 
 - Tham số `X-Amz-Algorithm=AWS4-HMAC-SHA256`, `X-Amz-Credential`, `X-Amz-Date`, `X-Amz-Expires`, `X-Amz-SignedHeaders` (có `host`), `X-Amz-Signature`. Thiếu tham số hoặc `X-Amz-Expires` ngoài 1..604800 trả `InvalidArgument` (S3 dùng `AuthorizationQueryParametersError`, ngoài bảng 2.4). URL hợp lệ khi now ≤ X-Amz-Date + X-Amz-Expires; quá hạn trả `AccessDenied`.
+- Header `x-amz-*` nằm trong query đã ký vẫn giữ ngữ nghĩa của header: checksum đi qua decoder, metadata được lưu, copy-source chọn CopyObject và vẫn cần read nguồn. Sau khi xác thực byte request gốc, router materialize các header này trên bản sao request rồi resolve/kiểm header lại; không chuyển các tham số xác thực thành operation header. Giá trị query/header khác nhau hoặc nhiều query key chỉ khác hoa/thường trả `InvalidArgument`; không chọn tùy ý một giá trị. Feature không hỗ trợ vẫn trả lỗi như khi gửi bằng header. Xem [kiểm thử presigned](testing/presigned-compatibility-validation.md).
 - Không hỗ trợ SigV2 (`AWSAccessKeyId`/`Signature`/`Expires`): router trả `NotImplemented`. boto3 1.43.114 mặc định presign bằng SigV2, client phải đặt `Config(signature_version="s3v4")`; `aws s3 presign` đã dùng SigV4.
 
 **aws-chunked**
