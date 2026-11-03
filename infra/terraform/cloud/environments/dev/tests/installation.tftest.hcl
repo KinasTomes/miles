@@ -28,6 +28,8 @@ run "member_installation" {
     edge_certificate_common_name     = "phong-edge"
     runtime_permissions_boundary_arn = "arn:aws:iam::210987654321:policy/miles/phong/RuntimeBoundary"
     enable_compute                   = true
+    paused                           = false
+    egress_mode                      = "interface"
     instance_type                    = "m6i.large"
     release_architecture             = "amd64"
     ami_id                           = "ami-0123456789abcdef0"

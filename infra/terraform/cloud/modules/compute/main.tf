@@ -50,7 +50,7 @@ resource "aws_instance" "runtime" {
     instance_metadata_tags      = "disabled"
   }
   dynamic "credit_specification" {
-    for_each = startswith(var.instance_type, "t") ? [true] : []
+    for_each = can(regex("^t[0-9]+[a-z]*\\.", var.instance_type)) ? [true] : []
     content { cpu_credits = "standard" }
   }
   root_block_device {
