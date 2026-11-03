@@ -8,3 +8,20 @@ variable "security_group_id" { type = string }
 variable "instance_profile" { type = string }
 variable "kms_key_arn" { type = string }
 variable "log_group_name" { type = string }
+
+variable "instance_type" {
+  type    = string
+  default = "t4g.small"
+}
+variable "architecture" {
+  type    = string
+  default = "arm64"
+}
+variable "environment" {
+  type    = string
+  default = "dev"
+}
+variable "owner" {
+  type    = string
+  default = "Hung"
+}

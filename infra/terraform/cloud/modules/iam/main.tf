@@ -8,7 +8,7 @@ locals {
 resource "aws_iam_role" "runtime" {
   for_each             = local.roles
   name                 = "${var.name}-${each.key}"
-  path                 = "/miles/dev/"
+  path                 = var.runtime_iam_path
   permissions_boundary = var.permissions_boundary_arn
   assume_role_policy = each.key == "edge" ? jsonencode({
     Version = "2012-10-17"
@@ -17,7 +17,7 @@ resource "aws_iam_role" "runtime" {
       Principal = { Service = "rolesanywhere.amazonaws.com" },
       Condition = {
         ArnEquals    = { "aws:SourceArn" = aws_rolesanywhere_trust_anchor.edge[0].arn },
-        StringEquals = { "aws:SourceAccount" = var.account_id, "aws:PrincipalTag/x509Subject/CN" = "miles-edge" }
+        StringEquals = { "aws:SourceAccount" = var.account_id, "aws:PrincipalTag/x509Subject/CN" = var.edge_certificate_common_name }
       }
     }]
     }) : jsonencode({
@@ -28,7 +28,7 @@ resource "aws_iam_role" "runtime" {
 resource "aws_iam_instance_profile" "runtime" {
   for_each = toset(["gateway", "jobs"])
   name     = "${var.name}-${each.key}"
-  path     = "/miles/dev/"
+  path     = var.runtime_iam_path
   role     = aws_iam_role.runtime[each.key].name
 }
 resource "aws_rolesanywhere_trust_anchor" "edge" {
@@ -89,7 +89,7 @@ output "edge_provider" {
     trust_anchor_arn        = aws_rolesanywhere_trust_anchor.edge[0].arn
     profile_arn             = aws_rolesanywhere_profile.edge[0].arn
     role_arn                = aws_iam_role.runtime["edge"].arn
-    certificate_common_name = "miles-edge"
+    certificate_common_name = var.edge_certificate_common_name
     duration_seconds        = 900
   }
 }

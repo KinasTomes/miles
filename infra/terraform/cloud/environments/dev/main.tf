@@ -1,13 +1,14 @@
 locals {
-  name             = "miles-dev"
-  data_bucket_name = "miles-dev-data-${var.account_id}-${var.region}"
+  name             = var.installation_name
+  zones            = coalesce(var.availability_zones, ["${var.region}a", "${var.region}b"])
+  data_bucket_name = "${local.name}-data-${var.account_id}-${var.region}"
   egress_mode      = var.paused ? "isolated" : var.egress_mode
 }
 module "network" {
   source          = "../../modules/network"
   name            = local.name
   cidr            = var.vpc_cidr
-  zones           = var.availability_zones
+  zones           = local.zones
   egress_mode     = local.egress_mode
   nat_per_az      = var.nat_per_az
   client_cidrs    = var.client_cidrs
@@ -43,20 +44,22 @@ module "data" {
   max_request_units = var.enable_asg ? 128 : 10
 }
 module "iam" {
-  source                   = "../../modules/iam"
-  name                     = local.name
-  region                   = var.region
-  account_id               = var.account_id
-  data_bucket_name         = local.data_bucket_name
-  table_arns               = module.data.table_arns
-  kms_key_arn              = module.security.kms_key_arn
-  secret_arn               = module.security.secret_arn
-  parameter_arn            = module.security.parameter_arn
-  log_group_arn            = module.security.log_group_arn
-  permissions_boundary_arn = var.runtime_permissions_boundary_arn
-  fleet_enabled            = var.enable_asg
-  release_sha256           = var.release_sha256
-  edge_ca_pem              = var.edge_ca_pem
+  source                       = "../../modules/iam"
+  name                         = local.name
+  region                       = var.region
+  account_id                   = var.account_id
+  data_bucket_name             = local.data_bucket_name
+  table_arns                   = module.data.table_arns
+  kms_key_arn                  = module.security.kms_key_arn
+  secret_arn                   = module.security.secret_arn
+  parameter_arn                = module.security.parameter_arn
+  log_group_arn                = module.security.log_group_arn
+  permissions_boundary_arn     = var.runtime_permissions_boundary_arn
+  runtime_iam_path             = var.runtime_iam_path
+  edge_certificate_common_name = var.edge_certificate_common_name
+  fleet_enabled                = var.enable_asg
+  release_sha256               = var.release_sha256
+  edge_ca_pem                  = var.edge_ca_pem
 }
 module "compute" {
   source            = "../../modules/compute"
@@ -64,12 +67,16 @@ module "compute" {
   enabled           = var.enable_compute
   paused            = var.paused
   ami_id            = var.ami_id
-  zone              = var.availability_zones[0]
-  subnet_id         = module.network.private_subnets[var.availability_zones[0]]
+  zone              = local.zones[0]
+  subnet_id         = module.network.private_subnets[local.zones[0]]
   security_group_id = module.network.security_groups.gateway
   instance_profile  = module.iam.instance_profile_names.gateway
   kms_key_arn       = module.security.kms_key_arn
   log_group_name    = module.security.log_group_name
+  environment       = var.environment
+  owner             = var.owner
+  instance_type     = var.instance_type
+  architecture      = var.release_architecture
 }
 module "alb" {
   source            = "../../modules/alb"
@@ -110,4 +117,6 @@ module "fleet" {
   release_version_id      = var.release_version_id
   runtime_secret_arn      = module.security.secret_arn
   owner_ssh_public_key    = var.owner_ssh_public_key
+  environment             = var.environment
+  owner                   = var.owner
 }

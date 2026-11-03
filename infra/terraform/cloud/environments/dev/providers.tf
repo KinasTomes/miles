@@ -5,5 +5,5 @@ provider "aws" {
     for_each = var.deploy_role_arn == null ? [] : [var.deploy_role_arn]
     content { role_arn = assume_role.value }
   }
-  default_tags { tags = { Project = "Miles", Environment = "dev", Owner = "Hung", ManagedBy = "Terraform" } }
+  default_tags { tags = { Project = "Miles", Installation = var.installation_name, Environment = var.environment, Owner = var.owner, ManagedBy = "Terraform" } }
 }

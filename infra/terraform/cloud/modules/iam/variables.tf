@@ -24,3 +24,12 @@ variable "edge_ca_pem" {
   default     = null
   description = "Public CA certificate only. Private CA and leaf keys stay outside Terraform."
 }
+
+variable "runtime_iam_path" {
+  type    = string
+  default = "/miles/dev/"
+}
+variable "edge_certificate_common_name" {
+  type    = string
+  default = "miles-edge"
+}

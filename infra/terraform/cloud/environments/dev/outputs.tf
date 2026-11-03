@@ -35,11 +35,24 @@ output "edge_provider" { value = module.iam.edge_provider }
 output "session_configuration" {
   description = "Retain the reviewed session settings while paused; resume must not change them."
   value = {
-    enable_compute  = var.enable_compute
-    ami_id          = var.ami_id
-    egress_mode     = var.egress_mode
-    nat_per_az      = var.nat_per_az
-    enable_alb      = var.enable_alb
-    certificate_arn = var.certificate_arn
+    installation_name                = var.installation_name
+    region                           = var.region
+    environment                      = var.environment
+    owner                            = var.owner
+    runtime_iam_path                 = var.runtime_iam_path
+    runtime_permissions_boundary_arn = var.runtime_permissions_boundary_arn
+    edge_certificate_common_name     = var.edge_certificate_common_name
+    instance_type                    = var.instance_type
+    release_architecture             = var.release_architecture
+    enable_asg                       = var.enable_asg
+    fleet_instance_type              = var.fleet_instance_type
+    release_sha256                   = var.release_sha256
+    release_version_id               = var.release_version_id
+    enable_compute                   = var.enable_compute
+    ami_id                           = var.ami_id
+    egress_mode                      = var.egress_mode
+    nat_per_az                       = var.nat_per_az
+    enable_alb                       = var.enable_alb
+    certificate_arn                  = var.certificate_arn
   }
 }

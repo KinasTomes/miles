@@ -8,11 +8,11 @@ data "aws_ami" "runtime" {
   }
   filter {
     name   = "name"
-    values = ["al2023-ami-2023.*-arm64"]
+    values = ["al2023-ami-2023.*-${var.architecture == "amd64" ? "x86_64" : "arm64"}"]
   }
   filter {
     name   = "architecture"
-    values = ["arm64"]
+    values = [var.architecture == "amd64" ? "x86_64" : "arm64"]
   }
   filter {
     name   = "root-device-type"
@@ -36,20 +36,23 @@ resource "aws_ebs_volume" "data" {
 resource "aws_instance" "runtime" {
   count                       = var.enabled && !var.paused ? 1 : 0
   ami                         = data.aws_ami.runtime[0].id
-  instance_type               = "t4g.small"
+  instance_type               = var.instance_type
   subnet_id                   = var.subnet_id
   vpc_security_group_ids      = [var.security_group_id]
   associate_public_ip_address = false
   iam_instance_profile        = var.instance_profile
   monitoring                  = false
-  volume_tags                 = { Project = "Miles", Environment = "dev", Name = "${var.name}-root" }
+  volume_tags                 = { Project = "Miles", Installation = var.name, Environment = var.environment, Owner = var.owner, Name = "${var.name}-root" }
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
     http_put_response_hop_limit = 1
     instance_metadata_tags      = "disabled"
   }
-  credit_specification { cpu_credits = "standard" }
+  dynamic "credit_specification" {
+    for_each = startswith(var.instance_type, "t") ? [true] : []
+    content { cpu_credits = "standard" }
+  }
   root_block_device {
     volume_type           = "gp3"
     volume_size           = 8
@@ -99,7 +102,7 @@ output "inventory" {
     instance_id      = try(aws_instance.runtime[0].id, null)
     data_volume_id   = try(aws_ebs_volume.data[0].id, null)
     session_document = try(aws_ssm_document.shell[0].name, null)
-    instance_type    = "t4g.small"
+    instance_type    = var.instance_type
     persistent_gib   = var.enabled ? 20 : 0
   }
 }
