@@ -38,15 +38,16 @@ type Store interface {
 type Admit func(ctx context.Context, tokenID string) (storage.MutationContext, error)
 
 type Options struct {
-	Operations Operations
-	Statistics Statistics
-	Store      Store
-	Admit      Admit
-	Finish     func(context.Context, storage.MutationContext) // after the handler's synchronous metadata work
-	Sealer     Sealer
-	Cursors    Keyring
-	Clock      clock.Clock
-	Logger     *slog.Logger // audit log; never bearer/secret/hash
+	CacheStatistics CacheStatistics
+	Operations      Operations
+	Statistics      Statistics
+	Store           Store
+	Admit           Admit
+	Finish          func(context.Context, storage.MutationContext) // after the handler's synchronous metadata work
+	Sealer          Sealer
+	Cursors         Keyring
+	Clock           clock.Clock
+	Logger          *slog.Logger // audit log; never bearer/secret/hash
 }
 
 // Operations is the shared operational service, independent of the gateway
@@ -122,6 +123,8 @@ func NewServer(o Options) (http.Handler, error) {
 		h        func(*call) error
 	}{
 		{"GET /admin/v1/jobs", false, s.listJobs},
+		{"GET /admin/v1/cache/stats", false, s.cacheStats},
+		{"POST /admin/v1/cache/purge", true, s.purgeCache},
 		{"POST /admin/v1/jobs", true, s.createJob},
 		{"GET /admin/v1/jobs/{id}", false, s.getJob},
 		{"DELETE /admin/v1/jobs/{id}", true, s.cancelJob},

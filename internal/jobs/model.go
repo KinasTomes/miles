@@ -294,22 +294,26 @@ func Apply(old Job, c Change, now time.Time) (Job, error) {
 }
 
 type Node struct {
-	ID                    string    `json:"node_id"`
-	Incarnation           string    `json:"incarnation"`
-	ServiceIncarnation    string    `json:"service_incarnation"`
-	Revision              uint64    `json:"revision"`
-	Profile               string    `json:"profile"`
-	Address               string    `json:"address"`
-	HeartbeatAt           time.Time `json:"heartbeat_at"`
-	Ready                 bool      `json:"ready"`
-	Draining              bool      `json:"draining"`
-	DrainApplied          bool      `json:"drain_applied"`
-	DrainState            string    `json:"drain_state"`
-	ActiveRequests        int64     `json:"active_requests"`
-	AppliedPolicyRevision uint64    `json:"applied_policy_revision"`
+	Cache                 CacheSample `json:"cache,omitzero"`
+	ID                    string      `json:"node_id"`
+	Incarnation           string      `json:"incarnation"`
+	ServiceIncarnation    string      `json:"service_incarnation"`
+	Revision              uint64      `json:"revision"`
+	Profile               string      `json:"profile"`
+	Address               string      `json:"address"`
+	HeartbeatAt           time.Time   `json:"heartbeat_at"`
+	Ready                 bool        `json:"ready"`
+	Draining              bool        `json:"draining"`
+	DrainApplied          bool        `json:"drain_applied"`
+	DrainState            string      `json:"drain_state"`
+	ActiveRequests        int64       `json:"active_requests"`
+	AppliedPolicyRevision uint64      `json:"applied_policy_revision"`
 }
 
 func (n Node) Validate() error {
+	if !n.Cache.SampledAt.IsZero() && (n.Cache.Validate() != nil || n.Cache.SampledAt.After(n.HeartbeatAt)) {
+		return storage.ErrInvalid
+	}
 	a, e := netip.ParseAddrPort(n.Address)
 	if n.DrainState != "" && n.DrainState != "gated" && n.DrainState != "complete" && n.DrainState != "incomplete" {
 		return storage.ErrInvalid
