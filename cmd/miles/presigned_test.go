@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -87,7 +88,7 @@ func TestPresignedLocalProfiles(t *testing.T) {
 			c := config.DefaultStartup()
 			c.Profile = profile
 			c.Mode = "local"
-			c.LocalDataPath = t.TempDir()
+			c.LocalDataPath = filepath.Join(t.TempDir(), "local")
 			c.PackEndpoint = endpoint
 			c.PackBucket = physical
 			d, err := app.Bootstrap(c)
