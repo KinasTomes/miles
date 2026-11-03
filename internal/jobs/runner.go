@@ -126,6 +126,12 @@ func (r *Runner) Tick(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if old.Worker != f {
+			// Takeover already retired this generation. Closing by its old
+			// identity would fence cleanup and stall every subsequent tick.
+			delete(r.leases, id)
+			continue
+		}
 		if old.State.Terminal() {
 			if err = r.Authority.Close(ctx, f); err != nil {
 				return err
@@ -148,6 +154,10 @@ func (r *Runner) Tick(ctx context.Context) error {
 	for _, j := range records {
 		if j.State.Terminal() {
 			if f, ok := r.leases[j.ID]; ok {
+				if j.Worker != f {
+					delete(r.leases, j.ID)
+					continue
+				}
 				if e = r.Authority.Close(ctx, f); e != nil {
 					return e
 				}
@@ -339,7 +349,10 @@ func (r *Runner) execute(ctx context.Context, j Job, exec Executor, policy confi
 func (r *Runner) Close(ctx context.Context) error {
 	var out error
 	for id, f := range r.leases {
-		e := r.Authority.Close(ctx, f)
+		j, e := r.Service.Store.GetJob(ctx, id)
+		if e == nil && j.Worker == f {
+			e = r.Authority.Close(ctx, f)
+		}
 		out = errors.Join(out, e)
 		if e == nil {
 			delete(r.leases, id)

@@ -161,6 +161,77 @@ func TestRunnerTakeoverAtSafePointAndPreservesUnknownWork(t *testing.T) {
 		})
 	}
 }
+func TestRunnerRetiresTakenOverLeaseAndAcceptsNewWork(t *testing.T) {
+	for _, successorDone := range []bool{false, true} {
+		t.Run(map[bool]string{false: "running_successor", true: "terminal_successor"}[successorDone], func(t *testing.T) {
+			m, leases, a, b := newRunnerFixture(t)
+			ctx := t.Context()
+			calls := 0
+			step := func(_ context.Context, j jobs.Job, _ config.GlobalSnapshot) (jobs.Step, error) {
+				calls++
+				return jobs.Step{Settled: true, Done: calls > 1 && successorDone, Checkpoint: json.RawMessage(`{"page":1}`)}, nil
+			}
+			a.Executors["cache_purge"] = jobs.Executor{Step: step}
+			b.Executors["cache_purge"] = jobs.Executor{Step: step}
+			first, err := a.Create(ctx, jobs.Create{Type: "cache_purge"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = a.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			old, err := m.GetJob(ctx, first.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = leases.Close(ctx, old.Worker); err != nil {
+				t.Fatal(err)
+			}
+			if err = b.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			successor, err := m.GetJob(ctx, first.ID)
+			if err != nil || successor.WorkerNodeID != b.Node.ID {
+				t.Fatal(successor, err)
+			}
+			if !successorDone {
+				if err := a.Close(ctx); err != nil {
+					t.Fatal("shutdown tried to close successor authority", err)
+				}
+			}
+			// The old process resumes while the successor owns the authoritative fence.
+			for range 2 {
+				if err = a.Tick(ctx); err != nil {
+					t.Fatal("old fence wedged resumed worker", err)
+				}
+			}
+			a.Executors["gc"] = jobs.Executor{Step: func(context.Context, jobs.Job, config.GlobalSnapshot) (jobs.Step, error) {
+				return jobs.Step{Settled: true, Done: true}, nil
+			}}
+			next, err := a.Create(ctx, jobs.Create{Type: "gc"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = a.Tick(ctx); err != nil {
+				t.Fatal(err)
+			}
+			got, err := m.GetJob(ctx, next.ID)
+			if err != nil || got.State != jobs.Succeeded || got.WorkerNodeID != a.Node.ID {
+				t.Fatal("resumed worker did not handle fresh work", got, err)
+			}
+			leases.Lock()
+			live := leases.live[first.ID]
+			leases.Unlock()
+			if !live {
+				t.Fatal("old worker closed successor authority")
+			}
+			if err = a.Close(ctx); err != nil {
+				t.Fatal("stale authority poisoned shutdown", err)
+			}
+		})
+	}
+}
+
 func TestRunnerPeriodicCreationIsExclusiveAcrossGateways(t *testing.T) {
 	m, _, a, b := newRunnerFixture(t)
 	ctx := context.Background()
