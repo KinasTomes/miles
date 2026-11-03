@@ -33,7 +33,7 @@ const (
 )
 
 func Types() []Type {
-	return []Type{"tiering", "gc", "compaction", "scrub", "purge_uploads", "recover_uploads", "journal_flush", "recovery_checkpoint", "cache_purge", "drain"}
+	return []Type{"tiering", "pack_restore", "pack_promote", "gc", "compaction", "scrub", "purge_uploads", "recover_uploads", "journal_flush", "recovery_checkpoint", "cache_purge", "drain"}
 }
 func States() []State          { return []State{Queued, Running, Cancelling, Succeeded, Failed, Cancelled} }
 func (s State) Terminal() bool { return s == Succeeded || s == Failed || s == Cancelled }

@@ -38,6 +38,7 @@ type Store interface {
 type Admit func(ctx context.Context, tokenID string) (storage.MutationContext, error)
 
 type Options struct {
+	PackInventory   PackInventory
 	CacheStatistics CacheStatistics
 	Operations      Operations
 	Statistics      Statistics
@@ -122,6 +123,10 @@ func NewServer(o Options) (http.Handler, error) {
 		mutation bool
 		h        func(*call) error
 	}{
+		{"GET /admin/v1/packs", false, s.listPacks},
+		{"GET /admin/v1/packs/{id}", false, s.showPack},
+		{"POST /admin/v1/packs/{id}/{generation}/restore", true, s.restorePack},
+		{"POST /admin/v1/packs/{id}/{generation}/promote", true, s.promotePack},
 		{"GET /admin/v1/jobs", false, s.listJobs},
 		{"GET /admin/v1/cache/stats", false, s.cacheStats},
 		{"POST /admin/v1/cache/purge", true, s.purgeCache},
