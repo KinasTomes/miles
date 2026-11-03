@@ -4,6 +4,8 @@ Dành cho member triển khai bằng account AWS và máy operator riêng. Toàn
 
 Tài liệu mô tả quy trình chung, đối chiếu repo ngày 03/11/2026. Khi thực hiện, pin commit cần kiểm thử và đọc các runbook tại chính commit đó. Mỗi lượt có account, state, IAM, ngân sách và thời hạn cleanup riêng.
 
+Bộ công cụ trong repo sinh cấu hình và IAM baseline cho từng installation. Trước deploy đầy đủ, cần hoàn thành IAM delta từ plan thật, cấu hình VM Edge/TLS/network riêng và nghiệm thu trên account đích. Các bước này còn cần operator thực hiện, bằng chứng hiện tại gồm mock/local/CI.
+
 ## 1. Chọn phạm vi trước khi dựng
 
 | Nhu cầu | Môi trường | Bằng chứng thu được |
@@ -316,7 +318,7 @@ Nếu máy operator thiếu chrony phù hợp, dùng EC2 provisioning host đã 
 ```bash
 cd "$MILES_REPO"
 git status --short
-export MILES_ARCH="arm64"
+export MILES_ARCH="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("release_architecture", "arm64"))' "$MILES_PRIVATE/rendered/installation.tfvars.json")"
 export MILES_ARCHIVE="$MILES_PRIVATE/miles-linux-${MILES_ARCH}.tar.gz"
 python3 -B deploy/build-release.py --arch "$MILES_ARCH" --out "$MILES_ARCHIVE" \
   > "$MILES_PRIVATE/release-build.json"
@@ -335,6 +337,8 @@ aws s3api put-object --region "$MILES_REGION" \
 ```
 
 Lấy VersionId thực từ kết quả upload, kiểm khác `null`. Pin SHA archive, S3 VersionId và kiến trúc cho mọi node. Đối chiếu manifest/source SHA khi thu evidence.
+
+Giữ `release_architecture` của fleet khớp archive vừa build. Nếu đổi kiến trúc, build/upload release mới rồi cập nhật SHA/VersionId trước khi lập plan.
 
 ### 7.2. Bật Cloud fleet
 
@@ -375,6 +379,10 @@ Dev stack hiện tạo Cloud fleet và Edge IAM provider. **VM Edge cần cấu 
 - Start Miles, kiểm health/readiness rồi đưa Nginx vào phục vụ. Chỉ Cloud chạy lifecycle controller ASG.
 
 TLS front door và certificate Roles Anywhere có mục đích, key và vòng đời riêng. Khi Edge ở VPC dùng interface private DNS, kiểm cả route/SG tới endpoint trước test provider refresh.
+
+Nếu Edge nằm trong private subnet có interface endpoints và không có NAT, cần tạo thêm endpoint `com.amazonaws.<region>.rolesanywhere` với private DNS. Module endpoints hiện tạo chín dịch vụ cho Cloud, danh sách chưa có Roles Anywhere và ingress SG hiện chỉ cho gateway/jobs. Cấu hình Edge phải cho phép HTTPS egress, đồng thời thêm ingress TCP 443 từ SG Edge vào SG của các interface endpoints cần dùng, gồm Roles Anywhere. SG Edge và SG endpoint phải thuộc topology đã review. Kiểm cả DNS resolution và credential helper trước khi start Miles. [Roles Anywhere PrivateLink](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/vpc-interface-endpoints.html)
+
+Nếu chọn Edge public subnet có Internet route hoặc private subnet có NAT, kiểm đường ra Roles Anywhere. Khi private DNS của các endpoint S3/DynamoDB/Secrets Manager/KMS/CloudWatch đã bật trong VPC, vẫn kiểm SG tới từng endpoint có liên quan. Ghi riêng các tài nguyên Edge/network được tạo ngoài dev stack vào inventory và phương án cleanup.
 
 ## 8. Nghiệm thu và thu evidence
 
