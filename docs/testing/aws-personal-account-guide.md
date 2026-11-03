@@ -382,7 +382,7 @@ TLS front door và certificate Roles Anywhere có mục đích, key và vòng đ
 
 Nếu Edge nằm trong private subnet có interface endpoints và không có NAT, cần tạo thêm endpoint `com.amazonaws.<region>.rolesanywhere` với private DNS. Module endpoints hiện tạo chín dịch vụ cho Cloud, danh sách chưa có Roles Anywhere và ingress SG hiện chỉ cho gateway/jobs. Cấu hình Edge phải cho phép HTTPS egress, đồng thời thêm ingress TCP 443 từ SG Edge vào SG của các interface endpoints cần dùng, gồm Roles Anywhere. SG Edge và SG endpoint phải thuộc topology đã review. Kiểm cả DNS resolution và credential helper trước khi start Miles. [Roles Anywhere PrivateLink](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/vpc-interface-endpoints.html)
 
-Nếu chọn Edge public subnet có Internet route hoặc private subnet có NAT, kiểm đường ra Roles Anywhere. Khi private DNS của các endpoint S3/DynamoDB/Secrets Manager/KMS/CloudWatch đã bật trong VPC, vẫn kiểm SG tới từng endpoint có liên quan. Ghi riêng các tài nguyên Edge/network được tạo ngoài dev stack vào inventory và phương án cleanup.
+Nếu chọn Edge public subnet có Internet route hoặc private subnet có NAT, kiểm đường ra Roles Anywhere. Khi private DNS của các interface endpoints như Secrets Manager/KMS/CloudWatch đã bật trong VPC, vẫn kiểm SG tới từng endpoint có liên quan. Nếu Edge dùng gateway endpoints S3/DynamoDB, kiểm liên kết route table của subnet và endpoint policy. Ghi riêng các tài nguyên Edge/network được tạo ngoài dev stack vào inventory và phương án cleanup.
 
 ## 8. Nghiệm thu và thu evidence
 
