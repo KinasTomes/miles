@@ -76,6 +76,30 @@ Earlier shared LIST cursor-key injection, owner usage probing and the fleet's
 128-unit table request ceilings were exercised by the passing sequence. These
 ceilings are request limits, not provisioned capacity or a billing hard cap.
 
+## Regression checks after review
+
+The successful deployment sequence did not exercise three failure paths found
+afterward. Each was reproduced before its correction:
+
+- Multipart takeover now closes the old commit and settles its recovery producer
+  in the same native transaction as reservation transfer. DynamoDB Local race
+  tests cover active/closed owners, before-send failure, lost acknowledgement,
+  retained unknown physical I/O and successful epoch sealing after takeover.
+- A rejected completion keeps its writer live through reopening. The composed
+  Cloud/Edge fixture rejects a wrong ETag with InvalidPart, checks Active state
+  and unchanged staging quota, then completes successfully with the correct ETag.
+- Owner probes wait for SSH's forwarding acknowledgement, use a private Unix
+  socket and do not follow redirects. Tests reproduce an unrelated listener
+  receiving the old probe's dummy bearer. The corrected tests cover bind failure,
+  redirects, owner authorization and failover; a native OpenSSH loopback probe
+  also verified pinned keys, acknowledged forwarding and occupied-port rejection.
+
+`make check`, the full DynamoDB Local race suite, completion/recovery race tests
+and the composed Cloud/Edge regression passed. These checks use disposable
+fixtures and test credentials; they are separate from the AWS deployment above.
+The corrected code has not been redeployed to AWS, and the live release hashes
+in this record still identify the earlier deployment.
+
 ## Observation requiring separate characterization
 
 An optional early 17-MiB upload fixture paused for about 90 seconds and received
