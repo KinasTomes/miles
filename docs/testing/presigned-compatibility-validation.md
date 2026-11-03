@@ -79,19 +79,102 @@ The profile test skips when no fixture endpoint is supplied; setting
 CI runs it against the job's disposable Moto endpoint. The deployment smoke
 runner enables both slow TLS cases and records both 65-s thresholds.
 
-## Remaining live acceptance
+## Live fixture and staged acceptance
 
-Local validation is separate from the previous AWS release and from the task's
-ALB/Edge acceptance. The user selected code/local tests first. No AWS credentials
-or live endpoints were supplied and no cloud resources were provisioned.
+The live fixture in `tests/live` uses the pinned Go SDK signer against deployed
+Cloud and Edge front doors. It creates fresh `acceptance-<random>` users and
+logical buckets through the normal Admin and S3 APIs. Supply the system Admin
+token through an existing operator-owned loopback tunnel. The fixture verifies
+TLS with the reviewed CA, preserves an explicit Host port 443, disables proxies
+and refuses redirects. AWS provider credentials stay with the deployment tools.
 
-Before live acceptance, identify the deployed commit/binary on both front doors,
-approved test bucket/users/grants, strict TLS trust, client versions, request
-timeouts and cleanup scope. Replay the S3/multipart/copy/delete sequence through
-both ALB and Edge, including presigned GET/PUT with explicit Host :443 and special
-paths, credential/grant/token revocation, write-only/cross-user multipart and
-HTTP errors/HEAD. Hold actual preflight and Complete for more than 60 s and prove
-read-back, not just an open connection. Record results against that release,
-without credentials, bearers or signed URLs. Costs and destructive cleanup need
-a specific approved scope. Do not mark the live checklist complete from local
-fixture results or from the earlier deployment's evidence.
+Prepare a private 0700 directory outside the checkout and a 0600 JSON config.
+The token file must also be a regular 0600 file. Replace the endpoint and file
+placeholders using the deployed inventory and pinned SSH tunnels.
+
+```json
+{
+  "region": "ap-southeast-1",
+  "ca_file": "/private/presigned/tls-ca.pem",
+  "token_file": "/private/presigned/system-admin-token",
+  "result_file": "/private/presigned/regular-result.json",
+  "slow_state_directory": "/private/presigned/slow-state",
+  "endpoints": [
+    {
+      "name": "cloud",
+      "url": "https://cloud.installation.test:443",
+      "connect": "REPLACE_ALB_DNS:443",
+      "admin": "http://127.0.0.1:9001"
+    },
+    {
+      "name": "edge",
+      "url": "https://edge.installation.test:443",
+      "connect": "REPLACE_EDGE_IP:443",
+      "admin": "http://127.0.0.1:9003"
+    }
+  ]
+}
+```
+
+Run the regular matrix after approval and deployment.
+
+```sh
+MILES_PRESIGNED_LIVE_CONFIG=/private/presigned/regular.json \
+  go test -v -count=1 -timeout=30m ./tests/live -run '^TestPresignedLiveFrontDoors$'
+```
+
+Each front door covers seven-day presigned PUT/GET, special paths, underscore
+metadata, HEAD, Range, checksum rejection without publication, copy, both delete
+APIs, multipart completion/read-back and abort. Identical GET/PUT URLs are replayed
+after credential revoke, grant revoke and user disable, waiting 5.1 seconds for
+auth snapshots to expire. Write-only multipart, cross-user rejection, revoked
+bearer grant mutation and empty HEAD error bodies are also checked. Per-request
+timeout is 180 seconds. Each result records status, elapsed time, time to first
+response byte, body length and SHA-256. Signed URLs and credentials stay out of
+the evidence. Record the deployed release hashes and client module versions
+alongside these results.
+
+### Slow engine operations
+
+Use three additional configs with the same endpoints and slow-state directory,
+and a fresh `result_file` for each phase. Prepare synthetic multipart data with
+backend latency disabled. The `prepare` phase uploads 70 distinct 5 MiB parts per
+front door and persists the upload bindings, credentials, ETags and expected
+full-object hash in private 0600 files. This phase requires its own approved
+synthetic data and cleanup scope.
+
+```sh
+MILES_PRESIGNED_LIVE_CONFIG=/private/presigned/prepare.json \
+MILES_PRESIGNED_LIVE_PHASE=prepare \
+  go test -v -count=1 -timeout=60m ./tests/live -run '^TestPresignedLiveFrontDoors$'
+
+# Apply the reviewed, bounded latency experiment to DynamoDB traffic on the
+# disposable AWS nodes, retaining lease renewal and per-call transport timeouts.
+MILES_PRESIGNED_LIVE_CONFIG=/private/presigned/complete.json \
+MILES_PRESIGNED_LIVE_PHASE=complete \
+  go test -v -count=1 -timeout=10m ./tests/live -run '^TestPresignedLiveFrontDoors$'
+
+# Remove that experiment, then apply the reviewed latency experiment only to
+# physical S3 traffic. Keep a timer that removes the traffic-control rules.
+MILES_PRESIGNED_LIVE_CONFIG=/private/presigned/preflight.json \
+MILES_PRESIGNED_LIVE_PHASE=preflight \
+  go test -v -count=1 -timeout=10m ./tests/live -run '^TestPresignedLiveFrontDoors$'
+```
+
+Complete must return its real receipt after more than 60 seconds before the first
+response byte. GET must spend more than 60 seconds before its first response,
+then stream all 350 MiB with the expected SHA-256. Inspect the object layout and
+backend observations to establish that preflight covered distinct physical packs.
+Calibrate the experiment within the 120-second ALB idle timeout and 180-second
+client timeout. Remove latency rules before recovery, drain or cleanup.
+
+Private slow state supports the three explicit phases. A failed or incomplete
+prepare requires inspection and a fresh isolated fixture. Retain those files for
+the approved teardown, then remove credentials, tokens and private test keys.
+
+## Acceptance status
+
+Local validation passed before the live work. The live harness and infrastructure
+plans prepare a new AWS run. Its results, deployed hashes, latency observations,
+cleanup inventory and IAM restoration must be recorded before closing live
+acceptance. The earlier deployment evidence belongs to its recorded releases.
