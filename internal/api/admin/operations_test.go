@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -74,6 +75,42 @@ func TestOperationalMutationsRecheckActorAfterAdmission(t *testing.T) {
 type testOperations struct {
 	jobs.Store
 	service jobs.Service
+}
+
+func TestClusterFanoutTargetLimit(t *testing.T) {
+	w := newWorld(t, badger.Bootstrap{})
+	identity := opstest.Node("node-a")
+	c := &jobs.Cluster{
+		Runner:   &jobs.Runner{Service: jobs.Service{Store: w.store, Policies: w.store}},
+		Registry: &jobs.Registry{Store: w.store, Clock: w.clk, Identity: identity},
+	}
+	c.Runner.Executors = map[jobs.Type]jobs.Executor{"cache_purge": c.CacheExecutor(nil)}
+	w.opts.Operations = c
+	var err error
+	w.h, err = NewServer(w.opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 65 {
+		n := identity
+		n.ID = fmt.Sprintf("node-%02d", i)
+		n.HeartbeatAt = w.clk.Now().WallUTC
+		if _, err = w.store.PutNode(t.Context(), 0, n); err != nil {
+			t.Fatal(err)
+		}
+		if i == 63 {
+			w.must(w.do("POST", "/admin/v1/jobs", w.root, `{"type":"cache_purge","params":{"scope":"cluster"}}`), 202)
+		}
+	}
+	r := w.do("POST", "/admin/v1/jobs", w.root, `{"type":"cache_purge","params":{"scope":"cluster"}}`)
+	w.expect(r, 400, "too_many_targets")
+	if !strings.Contains(r.Body.String(), "at most 64 active targets") {
+		t.Fatal(r.Body)
+	}
+	page, err := w.store.ListJobs(t.Context(), jobs.PageRequest{Limit: 100})
+	if err != nil || len(page.Jobs) != 1 {
+		t.Fatal("oversized fan-out enqueued a job", page, err)
+	}
 }
 
 func (o testOperations) Create(ctx context.Context, r jobs.Create) (jobs.Job, error) {

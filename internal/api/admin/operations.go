@@ -95,6 +95,9 @@ func (s *server) createJob(c *call) error {
 		if errors.Is(err, jobs.ErrNodeNotFound) {
 			return notFound("node_not_found", "node does not exist")
 		}
+		if errors.Is(err, jobs.ErrTooManyTargets) {
+			return &apiError{http.StatusBadRequest, "too_many_targets", "cluster fan-out supports at most 64 active targets"}
+		}
 		// Preserve the generated identity even if a lost ACK made create uncertain.
 		if j.ID != "" {
 			c.w.Header().Set("Location", "/admin/v1/jobs/"+j.ID)

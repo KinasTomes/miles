@@ -17,6 +17,7 @@ import (
 )
 
 var ErrNodeNotFound = fmt.Errorf("%w: target node does not exist", storage.ErrNotFound)
+var ErrTooManyTargets = fmt.Errorf("%w: cluster fan-out supports at most 64 active targets", storage.ErrInvalid)
 
 type target struct {
 	ID          string `json:"node_id"`
@@ -120,7 +121,7 @@ func (c *Cluster) Create(ctx context.Context, q Create) (Job, error) {
 				p.Targets = append(p.Targets, target{n.ID, n.Incarnation})
 			}
 			if len(p.Targets) > 64 {
-				return Job{}, storage.ErrInvalid
+				return Job{}, ErrTooManyTargets
 			}
 			if page.Next == "" {
 				break
