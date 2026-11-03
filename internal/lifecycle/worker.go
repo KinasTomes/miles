@@ -96,7 +96,19 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 			report["destination"] = map[string]string{"pack_id": a.Destination.ID, "generation": a.Destination.Generation}
 		}
 		body, _ := json.Marshal(report)
-		return jobs.Step{Settled: true, Done: done, ErrorCode: func() string {
+		progress := map[string]uint64{}
+		if a.Kind == "pack_restore" {
+			if a.State == "Waiting" {
+				progress["restore_accepted"] = 1
+			}
+			if a.State == "Done" {
+				progress["restore_ready"] = 1
+			}
+			if a.State == "Skipped" {
+				progress["restore_not_required"] = 1
+			}
+		}
+		return jobs.Step{Settled: true, Done: done, Progress: progress, ErrorCode: func() string {
 			if a.State == "NotApplied" {
 				return "transition_not_applied"
 			}
@@ -112,7 +124,7 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 		return jobs.Step{Settled: true}, s.ErrNotFound
 	}
 	if j.DryRun {
-		body, _ := json.Marshal(map[string]any{"dry_run": true, "pack": source, "physical_dispatch": false})
+		body, _ := json.Marshal(map[string]any{"dry_run": true, "pack_id": source.Ref.ID, "generation": source.Ref.Generation, "state": source.State, "storage_class": source.Class, "physical_dispatch": false})
 		return jobs.Step{Settled: true, Done: true, Result: body}, nil
 	}
 	a, e := w.Store.GetLifecycle(ctx, j.ID)

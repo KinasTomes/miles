@@ -150,6 +150,10 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 				return s.ErrConflict
 			}
 			if old.Fence != j.Worker {
+				if old.State == "Done" || old.State == "Skipped" || old.State == "NotApplied" {
+					out = old
+					return nil
+				}
 				if old.State != "Waiting" && old.State != "Prepared" {
 					return s.ErrFenced
 				}

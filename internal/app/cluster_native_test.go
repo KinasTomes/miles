@@ -11,6 +11,7 @@ import (
 
 	"github.com/KinasTomes/miles/internal/api/admin"
 	"github.com/KinasTomes/miles/internal/jobs"
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -85,6 +86,39 @@ func nativeClusterOperations(t *testing.T, ctx context.Context, nodes []Dependen
 		j, _ := nodes[0].Operations.Cluster.GetJob(ctx, id)
 		t.Fatalf("job did not settle: %+v", j)
 		return j
+	}
+	// Exercise the public pack projection and promotion through the actual
+	// runtime executor and AWS S3 adapter, not the native metadata-only seam.
+	packResponse := call(1, "GET", "/admin/v1/packs", "")
+	var inventory struct {
+		Items []lifecycle.Pack `json:"items"`
+	}
+	if packResponse.Code != 200 || json.Unmarshal(packResponse.Body.Bytes(), &inventory) != nil {
+		t.Fatal(packResponse.Code, packResponse.Body)
+	}
+	chosen := lifecycle.Pack{}
+	for _, candidate := range inventory.Items {
+		if candidate.Readable && candidate.LiveBytes > 0 {
+			chosen = candidate
+			break
+		}
+	}
+	if chosen.PackID == "" {
+		t.Fatal("native pack inventory has no live generation")
+	}
+	if r := call(0, "GET", "/admin/v1/packs/"+chosen.PackID, ""); r.Code != 200 {
+		t.Fatal(r.Code, r.Body)
+	}
+	promotion := call(2, "POST", "/admin/v1/packs/"+chosen.PackID+"/"+chosen.Generation+"/promote", `{}`)
+	var promotionJob jobs.Detail
+	if promotion.Code != 202 || json.Unmarshal(promotion.Body.Bytes(), &promotionJob) != nil {
+		t.Fatal(promotion.Code, promotion.Body)
+	}
+	if out := wait(promotionJob.ID); out.State != jobs.Succeeded {
+		t.Fatal("native runtime promotion", out)
+	}
+	if r := call(1, "GET", "/admin/v1/jobs/"+promotionJob.ID, ""); r.Code != 200 || !strings.Contains(r.Body.String(), `"source_retained":true`) {
+		t.Fatal(r.Code, r.Body)
 	}
 	key := storage.CacheKey{Pack: storage.PackRef{ID: "native-cache", Generation: "generation-1"}, Range: storage.ByteRange{Length: 4}}
 	historical := nodes[0].Operations.Registry.Identity
