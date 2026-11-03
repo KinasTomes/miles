@@ -101,10 +101,12 @@ were removed. Original managed-policy defaults were restored at 00:57 UTC;
 temporary versions and the cleanup grant were removed. Thirteen local private
 key/token/secret files and two temporary public keys were deleted.
 
-The ELB service-linked role remains pending: AWS initially refused its deletion,
-reporting the recently deleted ALB in its usage list. The independent ALB API
-returned NotFound. The custom ASG and default Roles Anywhere service-linked roles
-were deleted. Keep this exception explicit until an IAM retry proves absence.
+AWS initially refused deletion of the ELB service-linked role, reporting the
+recently deleted ALB in its usage list while the independent ALB API returned
+NotFound. An IAM-only retry succeeded on 2026-11-03 at 02:05 UTC. Final IAM reads
+confirmed all three run-created service-linked roles and the runtime roles were
+absent, original managed-policy defaults were restored and temporary grants and
+versions were gone. The root CLI login cache was cleared after verification.
 
 All gateway processes had stopped cleanly, but the deploy token expired during
 the ASG deletion waiter at about 17:45 UTC on 2026-11-02. Terraform saved its
