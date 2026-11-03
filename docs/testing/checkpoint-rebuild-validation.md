@@ -102,7 +102,9 @@ Missing/corrupt remaining artifacts are integrity failures, never normal expiry.
 Snapshot state: at most 256 pages, 128 rows per page and 256 KiB per artifact.
 Dependency indexes use 64 entries/page, up to 256 pages. Replay holds at most
 32,768 distinct rows and 262,144 distinct entity revisions per epoch; overflow
-fails closed. Binary manifests retain their existing FORMAT limits. Immutable
+fails closed. Rebuild materializes at most 64 MiB of unique attachment pages and
+262,144 manifest references; repeated identical pages do not consume that budget
+again. Binary manifests retain their existing FORMAT limits. Immutable
 support discovery follows at most 10,000 slots per invocation. Recovery ancestry
 is bounded to 16 histories; unsupported depth requires an audited new anchor.
 No collector silently truncates a supported cut or drops roots to fit a limit.
@@ -128,3 +130,13 @@ Only disposable local fixtures are used. Modeled isolation/UTC/PITR seams do not
 attest live AWS PITR equivalence, fleet isolation, terminal S3 outcomes, archive
 restore latency or KMS availability. Those real-environment drills remain
 downstream acceptance; no billable AWS operation is performed by this validation.
+
+Recorded results:
+
+- `17b90cf`: clean clone `make check` passed with both local endpoints mandatory;
+  full affected race suites passed. Native DynamoDB race package took 297 seconds.
+- `a55b2b8` / `0dbbc8f`: final readiness/identity regressions and targeted native
+  recovery/storage race suites passed; `go vet ./...` and `go build ./cmd/...` passed.
+- `9095f16`: recovery race suite and recovery vet passed after the attachment
+  materialization bound. New native install tests use modeled persistent isolation
+  and an S3 service seam; separate existing runtime tests use the real SDK on Moto.
