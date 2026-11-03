@@ -192,10 +192,24 @@ latency experiment, response timings, byte counts and body digests.
 - Temporary Edge builds with added diagnostic logging reproduced the commit-stage
   conflict. Their results are diagnostic observations. Acceptance timings above
   come from the recorded production release.
-- The final diagnostic Edge process exited with status 1 during shutdown journal
-  flush, reporting `R1 admission or maintenance gate busy`.
+- A diagnostic Edge process exited with status 1 during shutdown, reporting
+  `R1 admission or maintenance gate busy`. The combined cleanup error does not
+  establish whether writer reconciliation or journal flush produced that error.
 
-The remaining investigation must identify the native metadata condition that
-rejects sustained-latency Complete and explain the shutdown flush failure.
-Acceptance stays open. Cleanup evidence and the final retained-resource inventory
-will be recorded after the authorized teardown completes.
+The diagnostic stack identified a stale transaction in DynamoDB manifest
+preparation: page/chunk verification retained the earlier R1 observations until
+the Verified-owner CAS. A legitimate heartbeat or change in gate membership
+invalidated those observations during slow verification. Preparation now keeps
+the frozen owner, then rechecks current writer authority and that exact owner
+in a fresh bounded transaction before publishing Verified. It does not repeat
+the manifest scan or relax writer fencing.
+
+The correction at `49c2d8d` passed all five CI checks. Native DynamoDB Local
+regressions explicitly pass renewal and peer membership changes while rejecting
+a closed writer and a changed owner. This correction has not been deployed to
+AWS; the live results above remain results for `438ed46`.
+
+Acceptance stays open pending sustained-latency Complete on the corrected
+release and investigation of the shutdown failure. Cleanup evidence and
+the final retained-resource inventory will be recorded after the authorized
+teardown completes.
