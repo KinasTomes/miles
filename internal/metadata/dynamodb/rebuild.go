@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"reflect"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/config"
@@ -123,7 +122,7 @@ func (m *Store) StageIndexRecord(ctx context.Context, r s.IndexInstall, record s
 		if state.Request != r || state.State != "Installing" && state.State != "Ready" {
 			return s.ErrFenced
 		}
-		key := record.Kind + "/" + strings.Join(record.IDs, "\x00")
+		key := s.IndexRecordKey(record.Kind, record.IDs)
 		single, e := s.IndexRecordDigest("", record)
 		if e != nil {
 			return e

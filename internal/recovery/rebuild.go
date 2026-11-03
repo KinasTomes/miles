@@ -89,7 +89,7 @@ func (w Checkpointer) Rebuild(ctx context.Context, root AttachmentReference) (Re
 		if e != nil {
 			return e
 		}
-		key := kind + "/" + strings.Join(ids, "\x00")
+		key := s.IndexRecordKey(kind, ids)
 		if old, ok := records[key]; ok && !bytes.Equal(old.Body, b) {
 			return s.ErrConflict
 		}

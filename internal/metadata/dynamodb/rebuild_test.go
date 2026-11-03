@@ -87,7 +87,7 @@ func installFixture(t *testing.T) (s.IndexInstall, []s.IndexRecord) {
 	add("policies", []string{"0000000000000001"}, policy)
 	add("policy-current", nil, uint64(1))
 	sort.Slice(records, func(i, j int) bool {
-		return records[i].Kind+"/"+strings.Join(records[i].IDs, "\x00") < records[j].Kind+"/"+strings.Join(records[j].IDs, "\x00")
+		return s.IndexRecordKey(records[i].Kind, records[i].IDs) < s.IndexRecordKey(records[j].Kind, records[j].IDs)
 	})
 	chain := ""
 	for _, r := range records {
@@ -350,7 +350,7 @@ func TestLocalRebuiltIndexCanonicalManifestAndReceiptProjections(t *testing.T) {
 	add("upload-record", []string{"upload"}, s.MultipartUpload{Version: 1, ID: "upload", Object: head.Object, State: "Completed", Revision: 3})
 	add("uploads", []string{"upload"}, s.Completion{UploadID: "upload", BucketID: head.Object.BucketID, Key: head.Object.Key, State: "Completed", Revision: 3})
 	sort.Slice(records, func(i, j int) bool {
-		return records[i].Kind+"/"+strings.Join(records[i].IDs, "\x00") < records[j].Kind+"/"+strings.Join(records[j].IDs, "\x00")
+		return s.IndexRecordKey(records[i].Kind, records[i].IDs) < s.IndexRecordKey(records[j].Kind, records[j].IDs)
 	})
 	chain := ""
 	for _, r := range records {

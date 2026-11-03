@@ -14,6 +14,17 @@ type IndexRecord struct {
 	IDs  []string
 	Body []byte
 }
+
+// IndexRecordKey frames IDs without delimiter ambiguity (object keys may
+// contain control characters). All installation producers use this byte order.
+func IndexRecordKey(kind string, ids []string) string {
+	if len(ids) == 0 {
+		return kind + "/"
+	}
+	body, _ := json.Marshal(ids)
+	return kind + "/" + hex.EncodeToString(body)
+}
+
 type IndexInstall struct {
 	SourceHistory, SourceIncarnation, TargetSHA256 string
 	History, Incarnation, GenesisSHA256            string
