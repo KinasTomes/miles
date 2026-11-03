@@ -15,6 +15,7 @@ import (
 	"github.com/KinasTomes/miles/internal/auth"
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/stats"
 	"github.com/KinasTomes/miles/internal/storage"
 )
@@ -37,6 +38,7 @@ type Store interface {
 type Admit func(ctx context.Context, tokenID string) (storage.MutationContext, error)
 
 type Options struct {
+	Operations Operations
 	Statistics Statistics
 	Store      Store
 	Admit      Admit
@@ -45,6 +47,17 @@ type Options struct {
 	Cursors    Keyring
 	Clock      clock.Clock
 	Logger     *slog.Logger // audit log; never bearer/secret/hash
+}
+
+// Operations is the shared operational service, independent of the gateway
+// that receives an authenticated request. Its create path checks capabilities.
+type Operations interface {
+	Create(context.Context, jobs.Create) (jobs.Job, error)
+	GetJob(context.Context, string) (jobs.Job, error)
+	ListJobs(context.Context, jobs.PageRequest) (jobs.JobPage, error)
+	Cancel(context.Context, string) (jobs.Job, error)
+	ListNodes(context.Context, jobs.PageRequest) (jobs.NodePage, error)
+	Drain(context.Context, string) (jobs.Job, error)
 }
 
 // Statistics is a read-only report consumer. Auth precedes every method call;
@@ -108,6 +121,12 @@ func NewServer(o Options) (http.Handler, error) {
 		mutation bool
 		h        func(*call) error
 	}{
+		{"GET /admin/v1/jobs", false, s.listJobs},
+		{"POST /admin/v1/jobs", true, s.createJob},
+		{"GET /admin/v1/jobs/{id}", false, s.getJob},
+		{"DELETE /admin/v1/jobs/{id}", true, s.cancelJob},
+		{"GET /admin/v1/cluster/nodes", false, s.listNodes},
+		{"POST /admin/v1/cluster/nodes/{id}/drain", true, s.drainNode},
 		{"GET /admin/v1/stats", false, s.stats},
 		{"GET /admin/v1/buckets/{b}/stats", false, s.bucketStats},
 		{"GET /admin/v1/objects/layout", false, s.layout},

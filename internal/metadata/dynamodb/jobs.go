@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 
 	"github.com/KinasTomes/miles/internal/jobs"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -14,11 +16,33 @@ import (
 
 var _ jobs.Store = (*Store)(nil)
 
+func (m *Store) jobAdmin(t *transaction, ctx context.Context) error {
+	actor, ok := jobs.AdminActorFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	if err := m.fence(t, actor.Writer); err != nil {
+		return err
+	}
+	return operations.SystemActor(multipartTx{t}, m.now(), "", actor.TokenID)
+}
+
 func (m *Store) CreateJob(ctx context.Context, j jobs.Job) error {
 	if j.Validate() != nil || j.State != jobs.Queued || j.Revision != 1 {
 		return s.ErrInvalid
 	}
 	return m.update(ctx, func(t *transaction) error {
+		if err := m.jobAdmin(t, ctx); err != nil {
+			return err
+		}
+		if creator, ok := jobs.CreationFence(ctx); ok {
+			if e := m.jobFence(t, j.Type, creator); e != nil {
+				return e
+			}
+		} else if strings.HasPrefix(j.ID, "periodic_") || strings.HasPrefix(j.ID, "child_") {
+			return s.ErrFenced
+		}
+
 		if _, e := get[s.PolicySnapshot](t, policyKey(j.PolicyRevision)); e != nil {
 			return e
 		}
@@ -48,6 +72,9 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 		return out, s.ErrInvalid
 	}
 	e := m.update(ctx, func(t *transaction) error {
+		if err := m.jobAdmin(t, ctx); err != nil {
+			return err
+		}
 		old, e := get[jobs.Job](t, key("jobs", c.JobID))
 		if e != nil {
 			return e
@@ -63,7 +90,7 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 			if n.Incarnation != c.NodeIncarnation || n.ServiceIncarnation != c.Fence.ServiceIncarnation {
 				return s.ErrFenced
 			}
-			if (c.Kind == "claim" && !n.Ready) || ((c.Kind == "claim" || c.Kind == "begin_step") && n.Draining) {
+			if old.Type != "drain" && old.State != jobs.Cancelling && ((c.Kind == "claim" && !n.Ready) || ((c.Kind == "claim" || c.Kind == "begin_step") && n.Draining)) {
 				return s.ErrConflict
 			}
 			if _, e = get[s.PolicySnapshot](t, policyKey(old.PolicyRevision)); e != nil {
@@ -83,7 +110,7 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 }
 
 func (m *Store) jobFence(t *transaction, kind jobs.Type, f s.WriterFence) error {
-	if _, shared := m.authority.(*SharedAuthority); shared && kind == "journal_flush" {
+	if _, shared := m.authority.(*SharedAuthority); shared && (kind == "journal_flush" || kind == "purge_uploads" || kind == "recover_uploads") {
 		l, err := r1Read[s.R1Lease](t, r1LeaseKey(f.LeaseID))
 		if err != nil {
 			return err
@@ -113,6 +140,9 @@ func (m *Store) PutNode(ctx context.Context, expected uint64, n jobs.Node) (jobs
 		return jobs.Node{}, s.ErrInvalid
 	}
 	e := m.update(ctx, func(t *transaction) error {
+		if err := m.jobAdmin(t, ctx); err != nil {
+			return err
+		}
 		old, e := get[jobs.Node](t, key("nodes", n.ID))
 		if e != nil && !errors.Is(e, s.ErrNotFound) {
 			return e
@@ -141,6 +171,14 @@ func listOperational[T any](m *Store, ctx context.Context, table, pk string, p j
 		return nil, "", e
 	}
 	input := &ddb.ScanInput{TableName: aws.String(m.tables[table]), ConsistentRead: aws.Bool(true), Limit: aws.Int32(int32(p.Limit))}
+	if p.ActiveOnly {
+		if table != "Jobs" {
+			return nil, "", s.ErrInvalid
+		}
+		input.FilterExpression = aws.String("#state IN (:queued,:running,:cancelling)")
+		input.ExpressionAttributeNames = map[string]string{"#state": "state"}
+		input.ExpressionAttributeValues = Item{":queued": text("queued"), ":running": text("running"), ":cancelling": text("cancelling")}
+	}
 	if p.Cursor != "" {
 		input.ExclusiveStartKey = Item{pk: text(p.Cursor)}
 	}
@@ -177,6 +215,13 @@ func listOperational[T any](m *Store, ctx context.Context, table, pk string, p j
 		out = append(out, v)
 	}
 	next := ""
+	if p.ActiveOnly && len(page.LastEvaluatedKey) > 0 {
+		last, ok := page.LastEvaluatedKey[pk].(*types.AttributeValueMemberS)
+		if !ok || !jobs.ValidID(last.Value) {
+			return nil, "", s.ErrUnavailable
+		}
+		return out, last.Value, nil // filtered native pages may be empty and still have a continuation
+	}
 	if len(page.LastEvaluatedKey) > 0 {
 		input.ExclusiveStartKey = page.LastEvaluatedKey
 		input.Limit = aws.Int32(1)

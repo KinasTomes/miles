@@ -1,0 +1,70 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/KinasTomes/miles/internal/storage"
+)
+
+// sharedJobAuthority uses the same R1 table and UTC proof as object/control
+// mutations. No lease is released while pins or unknown I/O remain.
+type sharedJobAuthority struct{ metadata *sharedMetadata }
+
+func (a sharedJobAuthority) Acquire(ctx context.Context, id, kind string) (storage.WriterFence, error) {
+	m := a.metadata
+	g, err := m.GetR1Gate(ctx)
+	if err != nil {
+		return storage.WriterFence{}, err
+	}
+	f := storage.WriterFence{LeaseID: id, ServiceIncarnation: g.Incarnation, Epoch: 1}
+	old, err := m.GetR1Lease(ctx, id)
+	if err == nil {
+		if old.Fence.ServiceIncarnation != g.Incarnation || old.Fence.Epoch >= storage.MaxPolicyRevision {
+			return f, storage.ErrFenced
+		}
+		if old.State != "Released" {
+			if err = m.ReclaimR1(ctx, old.Fence, 5*time.Second); err != nil {
+				return f, err
+			}
+			if err = m.ReconcileR1(ctx, old.Fence); err != nil {
+				return f, err
+			}
+			if err = m.ReleaseR1(ctx, old.Fence); err != nil {
+				return f, err
+			}
+		}
+		f.Epoch = old.Fence.Epoch + 1
+	} else if !errors.Is(err, storage.ErrNotFound) {
+		return f, err
+	}
+	b, err := m.utc.Bounds(ctx)
+	if err != nil {
+		return f, err
+	}
+	_, err = m.AcquireR1(ctx, storage.R1Acquire{Fence: f, Owner: m.owner, Kind: kind, Deadline: minTime(b.Upper.Add(9*time.Minute), b.Horizon)})
+	return f, err
+}
+func (a sharedJobAuthority) Renew(ctx context.Context, f storage.WriterFence) error {
+	_, err := a.metadata.RenewR1(ctx, f)
+	return err
+}
+func (a sharedJobAuthority) Close(ctx context.Context, f storage.WriterFence) error {
+	err := a.metadata.CloseR1(ctx, f)
+	if err == nil {
+		err = a.metadata.ReleaseR1(ctx, f)
+	}
+	if err != nil {
+		a.metadata.mu.Lock()
+		a.metadata.incomplete = true
+		a.metadata.mu.Unlock()
+	}
+	return err
+}
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}

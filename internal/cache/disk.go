@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 
 	"github.com/KinasTomes/miles/internal/storage"
 )
@@ -23,12 +24,12 @@ type diskEntry struct {
 }
 
 // Disk is disposable, single-process storage in a dedicated directory. The
-// exclusive owner marker deliberately fails closed after a crash; recovery must
-// remove that marker only after proving the previous process is stopped.
+// kernel owner lock is released when the process exits, including after a crash.
 // Entries are never trusted as authoritative data and are discarded on reopen.
 type Disk struct {
 	mu        sync.Mutex
 	root      string
+	lock      *os.File
 	limits    Limits
 	entries   map[storage.CacheKey]*list.Element
 	order     list.List
@@ -55,14 +56,21 @@ func NewDisk(root string, limits Limits) (*Disk, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, storage.ErrInvalid
 	}
-	lock, err := os.OpenFile(filepath.Join(root, "owner.lock"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	lock, err := os.OpenFile(filepath.Join(root, "owner.flock"), os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return nil, err
 	}
-	if err = lock.Close(); err != nil {
-		return nil, err
+	fail := func(err error) (*Disk, error) { return nil, errors.Join(err, lock.Close()) }
+	info, err = lock.Stat()
+	if err != nil {
+		return fail(err)
 	}
-	fail := func(err error) (*Disk, error) { _ = os.Remove(filepath.Join(root, "owner.lock")); return nil, err }
+	if !info.Mode().IsRegular() {
+		return fail(storage.ErrInvalid)
+	}
+	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fail(err)
+	}
 	files, err := os.ReadDir(root)
 	if err != nil {
 		return fail(err)
@@ -70,8 +78,13 @@ func NewDisk(root string, limits Limits) (*Disk, error) {
 	// Validate the complete directory before deleting anything. It must contain
 	// only our owner marker and hashed disposable entries, never user files.
 	for _, f := range files {
-		if f.Name() == "owner.lock" {
+		if f.Name() == "owner.flock" {
 			continue
+		}
+		// Older releases did not hold a kernel lock. Their marker still needs
+		// operator proof that the old process stopped before it can be removed.
+		if f.Name() == "owner.lock" {
+			return fail(os.ErrExist)
 		}
 		name := f.Name()
 		if len(name) != 69 || filepath.Ext(name) != ".blob" || f.Type()&os.ModeSymlink != 0 || f.IsDir() {
@@ -82,13 +95,13 @@ func NewDisk(root string, limits Limits) (*Disk, error) {
 		}
 	}
 	for _, f := range files {
-		if f.Name() != "owner.lock" {
+		if f.Name() != "owner.flock" {
 			if err = os.Remove(filepath.Join(root, f.Name())); err != nil {
 				return fail(err)
 			}
 		}
 	}
-	return &Disk{root: root, limits: limits, entries: map[storage.CacheKey]*list.Element{}}, nil
+	return &Disk{root: root, lock: lock, limits: limits, entries: map[storage.CacheKey]*list.Element{}}, nil
 }
 func (d *Disk) path(k storage.CacheKey) string {
 	b, _ := json.Marshal(k)
@@ -280,9 +293,8 @@ func (d *Disk) Close() error {
 	if err := d.purge(); err != nil {
 		return err
 	}
-	if err := os.Remove(filepath.Join(d.root, "owner.lock")); err != nil {
-		return err
-	}
 	d.closed = true
-	return nil
+	// Keep the inode stable so another process cannot acquire a different lock
+	// while a contender still has this file open.
+	return d.lock.Close()
 }

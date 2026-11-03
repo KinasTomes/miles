@@ -16,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds"
 	"github.com/aws/aws-sdk-go-v2/credentials/processcreds"
 	"github.com/aws/aws-sdk-go-v2/feature/ec2/imds"
+	cw "github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	sm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -54,6 +55,7 @@ func (p temporaryCredentials) Retrieve(ctx context.Context) (aws.Credentials, er
 
 type runtimeClients struct {
 	metadata  *ddb.Client
+	metrics   *cw.Client
 	packs     *s3.Client
 	secrets   *sm.Client
 	transport *http.Transport
@@ -70,7 +72,7 @@ func newRuntimeClients(ctx context.Context, c config.Startup) (runtimeClients, e
 		t.CloseIdleConnections()
 		return runtimeClients{}, err
 	}
-	return runtimeClients{metadata: ddb.New(ddb.Options{Region: c.Region, Credentials: p, HTTPClient: h, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: c.Region, Credentials: p, HTTPClient: h, RetryMaxAttempts: 1}), secrets: sm.New(sm.Options{Region: c.Region, Credentials: p, HTTPClient: h, RetryMaxAttempts: 1}), transport: t}, nil
+	return runtimeClients{metrics: cw.New(cw.Options{Region: c.Region, Credentials: p, HTTPClient: h, RetryMaxAttempts: 1}), metadata: ddb.New(ddb.Options{Region: c.Region, Credentials: p, HTTPClient: h, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: c.Region, Credentials: p, HTTPClient: h, RetryMaxAttempts: 1}), secrets: sm.New(sm.Options{Region: c.Region, Credentials: p, HTTPClient: h, RetryMaxAttempts: 1}), transport: t}, nil
 }
 
 type runtimeKeys struct {

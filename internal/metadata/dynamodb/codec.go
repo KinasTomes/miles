@@ -3,6 +3,7 @@ package dynamodb
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/KinasTomes/miles/internal/jobs"
 	"reflect"
 	"strconv"
 	"strings"
@@ -219,6 +220,11 @@ func unmarshalNative(a types.AttributeValue, v reflect.Value) error {
 		}
 		for i := 0; i < v.NumField(); i++ {
 			name := fieldName(v.Type().Field(i).Name)
+			// Older Nodes records have no drain proof. Missing proof remains
+			// false/empty; only the new controller can acknowledge completion.
+			if v.Type() == reflect.TypeOf(jobs.Node{}) && x.Value[name] == nil && (name == "drain_applied" || name == "drain_state") {
+				continue
+			}
 			if err := unmarshalNative(x.Value[name], v.Field(i)); err != nil {
 				return fmt.Errorf("%w: field %s", err, name)
 			}

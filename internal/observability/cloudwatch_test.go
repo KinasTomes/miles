@@ -143,6 +143,7 @@ func TestCloudWatchNativeSDKLoopbackBatch(t *testing.T) {
 func TestCloudWatchFullMetricInventoryFitsOneBatch(t *testing.T) {
 	h := NewHealth(func(context.Context) error { return errors.New("dependency unavailable") }, nil, false)
 	o := new(Operations)
+	o.DispatchFailure()
 	h.AttachOperations(o, func() int64 { return 2 }, nil)
 	h.refresh(context.Background()) // Give the dependency-failure counter a nonzero delta too.
 	for _, kind := range jobs.Types() {
@@ -182,7 +183,7 @@ func TestOperationsCardinalityAndNoBackendFromScrape(t *testing.T) {
 			t.Fatal(r.Body.String())
 		}
 	}
-	if probes != 0 || len(o.Snapshot()) != len(jobs.Types())*len(jobs.States()) {
+	if probes != 0 || len(o.Snapshot()) != 1+len(jobs.Types())*len(jobs.States()) {
 		t.Fatal("unbounded labels or scrape did I/O")
 	}
 }
