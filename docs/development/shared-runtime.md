@@ -120,3 +120,7 @@ The tunnel authenticates the owner's own usage read and moves to the next pinned
 alias when the process/endpoint becomes unhealthy. A token expiry also fails the
 probe; replace the token file through the ordinary token lifecycle. The script
 never opens management ports or copies a token to a remote shell command.
+Before probing, OpenSSH must acknowledge binding both the loopback port and a
+Unix socket inside a private temporary directory. Authenticated probes use only
+that socket and reject redirects, so an unrelated localhost listener never
+receives the owner token. The command-line endpoint remains loopback TCP.

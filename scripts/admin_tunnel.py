@@ -2,18 +2,17 @@
 """Keep an authenticated owner Admin tunnel on one of the explicitly trusted SSH aliases."""
 import argparse
 import base64
+from http.client import HTTPConnection, HTTPException
 import os
 from pathlib import Path
 import re
 import signal
+import socket
 import stat
 import subprocess
+import tempfile
 import time
 from urllib.parse import quote
-from urllib.request import Request, ProxyHandler, build_opener
-
-
-HTTP = build_opener(ProxyHandler({}))
 
 
 def token_file(path):
@@ -33,21 +32,44 @@ def token_file(path):
         os.close(fd)
 
 
-def command(config, alias, port):
+def command(config, alias, control_path):
     return ["ssh", "-F", str(config), "-N", "-T", "-o", "BatchMode=yes",
             "-o", "ExitOnForwardFailure=yes", "-o", "StrictHostKeyChecking=yes",
             "-o", "ConnectTimeout=5", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=2",
-            "-L", f"127.0.0.1:{port}:127.0.0.1:9000", "--", alias]
+            "-M", "-S", str(control_path), "-o", "ControlPersist=no",
+            "-o", "ForkAfterAuthentication=no", "-o", "ClearAllForwardings=yes", "--", alias]
 
 
-def healthy(port, user, token):
+def control(path, alias, operation, forwards=()):
+    cmd = ["ssh", "-F", "none", "-S", str(path), "-O", operation]
+    for address in forwards:
+        cmd.extend(["-L", address])
     try:
-        request = Request(f"http://127.0.0.1:{port}/admin/v1/users/{quote(user, safe='')}/usage",
-                          headers={"Authorization": "Bearer " + token})
-        with HTTP.open(request, timeout=2) as response:
-            return response.status == 200
-    except (OSError, ValueError):
+        return subprocess.run(cmd + ["--", alias], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=2).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def healthy(path, user, token):
+    # A localhost TCP listener can outlive or predate SSH. The private socket
+    # cannot be replaced by another user between the ownership check and send.
+    if not isinstance(path, Path):
+        return False
+    connection = HTTPConnection("localhost", timeout=2)
+    try:
+        connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.sock.settimeout(2)
+        connection.sock.connect(str(path))
+        connection.request("GET", f"/admin/v1/users/{quote(user, safe='')}/usage",
+                           headers={"Authorization": "Bearer " + token})
+        # HTTPConnection returns redirects as responses; it never follows them.
+        return connection.getresponse().status == 200
+    except (OSError, ValueError, HTTPException):
+        return False
+    finally:
+        connection.close()
 
 
 def stop(process):
@@ -85,24 +107,35 @@ def main():
         for alias in args.target:
             if not running:
                 break
-            # The SSH config and its host keys are operator-trusted inputs.
-            process = subprocess.Popen(command(args.ssh_config, alias, args.local_port),
-                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-            try:
-                deadline = time.monotonic() + 15
-                good = False
-                while running and process.poll() is None and time.monotonic() < deadline:
-                    good = healthy(args.local_port, args.user_id, token_file(args.token_file))
+            with tempfile.TemporaryDirectory(prefix="miles-admin-") as directory:
+                control_path, probe = Path(directory) / "control", Path(directory) / "probe"
+                # The SSH config and its host keys are operator-trusted inputs.
+                process = subprocess.Popen(command(args.ssh_config, alias, control_path),
+                                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+                try:
+                    deadline = time.monotonic() + 15
+                    good = bound = False
+                    while running and process.poll() is None and time.monotonic() < deadline:
+                        if not bound:
+                            if not control(control_path, alias, "check"):
+                                time.sleep(0.25)
+                                continue
+                            forwards = (f"127.0.0.1:{args.local_port}:127.0.0.1:9000",
+                                        f"{probe}:127.0.0.1:9000")
+                            if not control(control_path, alias, "forward", forwards):
+                                break
+                            bound = True  # SSH acknowledged both listener binds.
+                        good = healthy(probe, args.user_id, token_file(args.token_file))
+                        if good:
+                            break
+                        time.sleep(0.25)
                     if good:
-                        break
-                    time.sleep(0.25)
-                if good:
-                    print("Admin tunnel ready: " + alias, flush=True)
-                while good and running and process.poll() is None:
-                    time.sleep(2)
-                    good = healthy(args.local_port, args.user_id, token_file(args.token_file))
-            finally:
-                stop(process)
+                        print("Admin tunnel ready: " + alias, flush=True)
+                    while good and running and process.poll() is None:
+                        time.sleep(2)
+                        good = healthy(probe, args.user_id, token_file(args.token_file))
+                finally:
+                    stop(process)
         if running:
             time.sleep(2)
 
