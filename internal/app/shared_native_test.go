@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
@@ -258,6 +259,29 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 		t.Fatal(e)
 	}
 	in := core.Input{V: 1, BucketID: bucket.ID, Key: u.Object.Key, ChecksumAlgorithm: u.ChecksumAlgorithm, ChecksumType: u.ChecksumType, Parts: []core.Part{{PartNumber: 1, ETag: part.ETag, Checksum: &part.ChecksumValue}}}
+	quota, e := m.GetQuota(ctx, bucket.OwnerID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	invalid := in
+	invalid.Parts = append([]core.Part(nil), in.Parts...)
+	invalid.Parts[0].ETag = strings.Repeat("0", 32)
+	if _, e = edge.CompleteUpload(ctx, object.CompleteRequest{Upload: u, Input: invalid, UserID: "owner", CredentialID: "RUNTIMEKEY00000000001"}); e == nil {
+		t.Fatal("invalid ETag completed")
+	} else {
+		var validation *core.ValidationError
+		if !errors.As(e, &validation) || validation.Code != "InvalidPart" {
+			t.Fatal("invalid ETag returned wrong error", e)
+		}
+	}
+	u, e = m.GetUpload(ctx, u.ID)
+	if e != nil || u.State != "Active" || u.CompletionOp == "" {
+		t.Fatal("validation did not reopen shared upload", u.State, e)
+	}
+	after, e := m.GetQuota(ctx, bucket.OwnerID)
+	if e != nil || after != quota {
+		t.Fatal("validation changed staging quota", after, quota, e)
+	}
 	if _, e = edge.CompleteUpload(ctx, object.CompleteRequest{Upload: u, Input: in, UserID: "owner", CredentialID: "RUNTIMEKEY00000000001"}); e != nil {
 		t.Fatal("shared CompleteMultipartUpload", e)
 	}
