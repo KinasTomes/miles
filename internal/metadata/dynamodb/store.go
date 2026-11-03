@@ -31,6 +31,7 @@ type WriterAuthority interface {
 	Check(context.Context, s.WriterFence, Observe) error
 }
 type Options struct {
+	OfflineRecovery  OfflineRecoveryGuard
 	API              API
 	Tables           map[string]string
 	Now              func() time.Time
@@ -39,6 +40,7 @@ type Options struct {
 	RequireProducers bool
 }
 type Store struct {
+	offlineRecovery                        OfflineRecoveryGuard
 	api                                    API
 	tables                                 map[string]string
 	now                                    func() time.Time
@@ -79,7 +81,7 @@ func New(options Options) (*Store, error) {
 			return nil, s.ErrInvalid
 		}
 	}
-	return &Store{api: options.API, tables: tables, now: options.Now, authority: options.Authority, maxAttempts: options.MaxAttempts, requireProducers: options.RequireProducers}, nil
+	return &Store{offlineRecovery: options.OfflineRecovery, api: options.API, tables: tables, now: options.Now, authority: options.Authority, maxAttempts: options.MaxAttempts, requireProducers: options.RequireProducers}, nil
 }
 
 type outcome struct {
