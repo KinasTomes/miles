@@ -305,6 +305,19 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 	}
 	nativeUploadJobs(t, ctx, nodes, clients, c.DDBTablePrefix, bucket)
 	nativeSweepDuringCut(t, ctx, nodes, clients, c.DDBTablePrefix, bucket)
+	beforePurgeQuota, e := m.GetQuota(ctx, bucket.OwnerID)
+	if e != nil {
+		t.Fatal(e)
+	}
 	nativeClusterOperations(t, ctx, nodes, tokenID+"."+tokenSecret)
+	afterPurgeQuota, e := m.GetQuota(ctx, bucket.OwnerID)
+	if e != nil || afterPurgeQuota != beforePurgeQuota {
+		t.Fatal("cache purge changed durable quota", e)
+	}
+	got.Reset()
+	_, e = cloud.GetObject(ctx, object.GetRequest{Bucket: bucket.Name, BucketID: bucket.ID, Key: u.Object.Key, CredentialID: "RUNTIMEKEY00000000001", Range: &storage.ByteRange{Offset: 7, Length: 51}, Emit: func(_ context.Context, p []byte) error { _, e := got.Write(p); return e }})
+	if e != nil || !bytes.Equal(got.Bytes(), partData[7:58]) {
+		t.Fatal("cache purge changed durable object or prevented refill", e)
+	}
 
 }
