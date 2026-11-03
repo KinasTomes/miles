@@ -264,6 +264,10 @@ func (f *fixture) signed(c credential, method, key, query string, body []byte, h
 	}
 	creds := aws.Credentials{AccessKeyID: c.ID, SecretAccessKey: c.Secret}
 	signer := v4.NewSigner(func(o *v4.SignerOptions) { o.DisableURIPathEscaping = true })
+	// The SDK strips :443 for an HTTPS signing input. Scheme is absent from
+	// SigV4, so sign as HTTP to retain :443, then use HTTPS for transmission.
+	scheme := r.URL.Scheme
+	r.URL.Scheme = "http"
 	if presigned {
 		q := r.URL.Query()
 		q.Set("X-Amz-Expires", "604800")
@@ -285,6 +289,7 @@ func (f *fixture) signed(c credential, method, key, query string, body []byte, h
 			f.t.Fatal("cannot sign S3 fixture request")
 		}
 	}
+	r.URL.Scheme = scheme
 	return r
 }
 
