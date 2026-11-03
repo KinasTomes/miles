@@ -63,6 +63,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(json.loads(config.read_text())["health_address"], "10.0.2.5:9100")
         self.assertFalse((edge / "etc/miles/private-key.pem").exists())
 
+    def test_restrictive_umask_keeps_release_readable_without_opening_staging_root(self):
+        root = self.base / "private-stage"
+        root.mkdir(mode=0o700)
+        previous = os.umask(0o077)
+        try:
+            installer.install(self.bundle, root, "edge", "127.0.0.1")
+        finally:
+            os.umask(previous)
+        self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+        for directory in [root / "opt", root / "etc", *root.rglob("*")]:
+            if directory.is_dir() and not directory.is_symlink():
+                self.assertEqual(directory.stat().st_mode & 0o777, 0o755, str(directory))
+        self.assertEqual((root / "opt/miles/current/bin/miles").stat().st_mode & 0o777, 0o755)
+
     def test_tamper_path_architecture_and_public_bind_rejected(self):
         (self.bundle / "bin/miles").write_bytes(b"corrupt")
         with self.assertRaisesRegex(ValueError, "checksum"):

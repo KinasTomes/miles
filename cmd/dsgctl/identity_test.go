@@ -243,6 +243,22 @@ type outcomeStore struct {
 
 func (s outcomeStore) BootstrapAdmin(context.Context, storage.AdminBootstrap) error { return s.err }
 
+func TestSharedBootstrapRetainsTokenOnCompoundFailure(t *testing.T) {
+	dir := t.TempDir()
+	configFile := filepath.Join(dir, "startup.json")
+	if err := os.WriteFile(configFile, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	tokenFile := filepath.Join(dir, "system-token")
+	err := run(context.Background(), []string{"admin-token", "bootstrap", "--runtime-config", configFile, "--user", "ops", "--token-file", tokenFile}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "outcome unknown") {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tokenFile); err != nil {
+		t.Fatal("compound provisioning failure deleted the durable token", err)
+	}
+}
+
 func TestBootstrapKeepsTokenFileWhenOutcomeUnknown(t *testing.T) {
 	original := openBootstrapStore
 	defer func() { openBootstrapStore = original }()

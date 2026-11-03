@@ -12,7 +12,7 @@ import (
 	"github.com/KinasTomes/miles/internal/engine/write"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/object"
-	"github.com/KinasTomes/miles/internal/readpath"
+
 	"github.com/KinasTomes/miles/internal/storage"
 	packs3 "github.com/KinasTomes/miles/internal/storage/s3"
 )
@@ -72,19 +72,6 @@ func localObjects(m *badger.Store, packs *packs3.Store, resident storage.Cache, 
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	// Explicit development budgets, separate from resident LRU and process RSS.
-	node := readpath.Budget{
-		Capacity: readpath.Cost{ChunkSlots: 64, StoredBytes: 256 << 20, IOSlots: 64, IOBytes: 256 << 20, RawBytes: 256 << 20, WorkspaceBytes: 512 << 20, CopyBytes: 512 << 20},
-		Prefetch: readpath.Cost{ChunkSlots: 32, StoredBytes: 128 << 20, IOSlots: 32, IOBytes: 128 << 20, RawBytes: 128 << 20, WorkspaceBytes: 256 << 20, CopyBytes: 256 << 20},
-	}
-	request := readpath.Budget{
-		Capacity: readpath.Cost{ChunkSlots: 8, StoredBytes: 32 << 20, IOSlots: 8, IOBytes: 32 << 20, RawBytes: 32 << 20, WorkspaceBytes: 128 << 20, CopyBytes: 128 << 20},
-		Prefetch: readpath.Cost{ChunkSlots: 4, StoredBytes: 16 << 20, IOSlots: 4, IOBytes: 16 << 20, RawBytes: 16 << 20, WorkspaceBytes: 64 << 20, CopyBytes: 64 << 20},
-	}
-	admission, err := readpath.NewAdmission(readpath.Limits{Node: readpath.ScopeLimits{ActiveRequests: 64, Budget: node}, Bucket: readpath.ScopeLimits{ActiveRequests: 64, Budget: node}})
-	if err != nil {
-		return nil, nil, nil, err
-	}
 	validator, err := config.NewPolicyValidator(config.DSGPolicyLimits())
 	if err != nil {
 		return nil, nil, nil, err
@@ -95,20 +82,11 @@ func localObjects(m *badger.Store, packs *packs3.Store, resident storage.Cache, 
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	reader, err := readpath.NewWarmReader(readpath.WarmOptions{
-		Metadata: m, Packs: packs, Cache: resident, Admission: admission, Gate: gate, Clock: clk, Global: global, Metrics: &readpath.WarmMetrics{},
-		// net/http read/write, TLS record and SDK stream buffers; no custom buffering.
-		// Resident connection pools and runtime/RSS headroom are outside this budget.
-		TransportBytes: 128 << 10, MaxManifestPages: 1024, MaxManifestChunks: 65536,
-	})
-	if err != nil {
-		return nil, nil, nil, err
-	}
 	ratio, ok := new(big.Rat).SetString(policy.Compression.MinSavingRatio.String())
 	if !ok {
 		return nil, nil, nil, storage.ErrInvalid
 	}
-	service, err := object.New(object.Options{
+	service, err := objectRuntime(object.Options{
 		Metadata: m, Packs: coordination.ProtectPackStore(packs), Cache: resident, Registry: registry, Clock: clk,
 		AdmitWriter: func(ctx context.Context, r object.WriterRequest) (object.AdmittedWriter, error) {
 			c, err := authority.Admit(ctx, r.CredentialID, r.Object, r.OpID, r.WallDeadline)
@@ -119,12 +97,12 @@ func localObjects(m *badger.Store, packs *packs3.Store, resident storage.Cache, 
 		},
 		Chunking:    engine.ChunkingParams{Min: int(policy.Chunking.MinBytes), Avg: int(policy.Chunking.AvgBytes), Max: int(policy.Chunking.MaxBytes)},
 		Compression: engine.CompressionPolicy{Enabled: policy.Compression.Enabled, Codec: policy.Compression.Codec, Level: int(policy.Compression.Level), MinSavingRatio: ratio},
-		Events:      object.MetadataEvents{}, Reader: reader,
+		Events:      object.MetadataEvents{},
 		BucketPolicy: func(id string) (config.BucketSnapshot, error) {
 			return validator.NewBucketSnapshot(id, 1, cachePolicy)
 		},
-		Budget: request, MaxOutstanding: 4, RequestTimeout: 30 * time.Minute, Uploads: m,
-	})
+		Uploads: m,
+	}, m, packs, gate, global, nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}

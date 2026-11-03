@@ -1,9 +1,11 @@
-# Edge skeleton
+# Edge deployment
 
 Dùng cùng release/engine như Cloud, profile `edge`, local cache trên `/var/lib/miles`;
 không tạo backend riêng, không dùng credentials Cloud/EC2 cho host ngoài AWS.
-Production composition chưa nối xong; **chỉ stage cấu hình** cho W5. Không start
-Nginx/Miles để phục vụ client cho tới khi runtime ready và các port được wire đúng.
+Runtime dùng shared DynamoDB/R1/S3 theo [cấu hình đầy đủ](../../docs/development/shared-runtime.md).
+Installer mặc định vẫn stage skeleton unready; điền `shared-edge.example.json` và
+provision backend/secret/history trước khi start. Chỉ phục vụ client sau khi
+provider, chrony và backend thật đã kiểm tra thành công.
 
 Host cần Linux systemd, Python 3.12+, Nginx có TLS, kiến trúc phù hợp release và
 `aws_signing_helper` được pin/verify theo [hướng dẫn AWS](https://docs.aws.amazon.com/rolesanywhere/latest/userguide/credential-helper.html).
@@ -44,7 +46,7 @@ underscores headers, không buffer request/response và không retry write sang
 upstream khác. Timeout proxy150s; không thêm body-size limit phá PUT lớn. Source:
 [Nginx proxy_pass](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_pass).
 
-## Start/stop trong W5
+## Start/stop và nghiệm thu
 
 Sau runtime integration: start Miles trước, kiểm private `/healthz`200 và `/readyz`200,
 config/credentials/backend/clock; rồi mới start Nginx. Test signed PUT/GET/HEAD/Range,

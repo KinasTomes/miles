@@ -45,6 +45,26 @@ subprocess.run(['install', '-d', '-m', '0700', '-o', 'miles', '-g', 'miles', '/v
 subprocess.run(['install', '-d', '-m', '0700', '/var/lib/miles-lifecycle'], check=True)
 subprocess.run(['python3', str(bundle / 'deploy/install.py'), '--bundle', str(bundle),
     '--profile', 'cloud', '--address', address], check=True)
+startup = dict(profile='cloud', mode='runtime', shutdown_seconds=1800,
+    health_address=address + ':9100', s3_address=address + ':8080', admin_address='127.0.0.1:9000',
+    runtime_node_id=identity['instanceId'], ddb_table_prefix=c['table_prefix'],
+    runtime_secret_arn=c['runtime_secret_arn'], region=c['region'], utc_reference='169.254.169.123',
+    local_data_path='/var/lib/miles', pack_bucket=c['bucket'], pack_kms_key_id=c['kms_key_arn'])
+(pathlib.Path('/etc/miles') / 'startup.json').write_text(json.dumps(startup))
+if c['owner_ssh_public_key']:
+    subprocess.run(['useradd', '--create-home', '--shell', '/bin/bash', 'miles-owner'], check=True)
+    ssh = pathlib.Path('/home/miles-owner/.ssh')
+    ssh.mkdir(mode=0o700)
+    authorized = ssh / 'authorized_keys'
+    authorized.write_text('restrict,port-forwarding,permitopen="127.0.0.1:9000" ' + c['owner_ssh_public_key'] + '\n')
+    authorized.chmod(0o600)
+    subprocess.run(['chown', '-R', 'miles-owner:miles-owner', str(ssh)], check=True)
+    pathlib.Path('/etc/ssh/sshd_config.d/50-miles-owner.conf').write_text(
+        'Match User miles-owner\n    AllowTcpForwarding local\n    PermitOpen 127.0.0.1:9000\n'
+        '    ForceCommand /usr/bin/false\n    PermitTTY no\n    AllowAgentForwarding no\n'
+        '    X11Forwarding no\n    GatewayPorts no\nMatch all\n')
+    subprocess.run(['sshd', '-t'], check=True)
+    subprocess.run(['systemctl', 'reload', 'sshd'], check=True)
 (pathlib.Path('/etc/miles') / 'lifecycle.json').write_text(json.dumps({
     key:c[key] for key in ['account_id','region','asg_name','hook_name','target_group_arn']}))
 subprocess.run(['systemctl', 'daemon-reload'], check=True)

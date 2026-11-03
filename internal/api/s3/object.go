@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -41,14 +42,22 @@ type ObjectLister interface {
 // CopyObject, GetObject, HeadObject, DeleteObject, DeleteObjects and
 // ListObjectsV2.
 type Objects struct {
-	Writer ObjectWriter
-	Reader ObjectReader
-	Lister ObjectLister
+	Writer       ObjectWriter
+	Reader       ObjectReader
+	Lister       ObjectLister
+	listTokenKey []byte
 }
 
-// NewObjectHandlers wires the object handlers into a Router's Handlers map.
-func NewObjectHandlers(writer ObjectWriter, reader ObjectReader, lister ObjectLister) map[Operation]Handler {
-	o := &Objects{Writer: writer, Reader: reader, Lister: lister}
+// NewObjectHandlers wires the object handlers with a cluster-shared LIST MAC key.
+// A nil key retains process-local tokens for development profiles.
+func NewObjectHandlers(writer ObjectWriter, reader ObjectReader, lister ObjectLister, tokenKey []byte) map[Operation]Handler {
+	if tokenKey == nil {
+		tokenKey = listTokenKey
+	}
+	if len(tokenKey) != 32 {
+		panic("S3 LIST token key must contain 32 bytes")
+	}
+	o := &Objects{Writer: writer, Reader: reader, Lister: lister, listTokenKey: bytes.Clone(tokenKey)}
 	return map[Operation]Handler{
 		PutObject: o.PutObject, CopyObject: o.CopyObject, GetObject: o.GetObject, HeadObject: o.HeadObject,
 		DeleteObject: o.DeleteObject, DeleteObjects: o.DeleteObjects, ListObjectsV2: o.ListObjectsV2,

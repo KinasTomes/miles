@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/api/admin"
+	"github.com/KinasTomes/miles/internal/app"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	ddbstore "github.com/KinasTomes/miles/internal/metadata/dynamodb"
@@ -26,6 +27,7 @@ import (
 
 type bootstrapOptions struct {
 	user, tokenFile, dataPath, prefix, region, endpoint string
+	runtimeConfig                                       string
 	ttl                                                 time.Duration
 }
 
@@ -41,6 +43,7 @@ func parseBootstrap(args []string) (bootstrapOptions, error) {
 	f.StringVar(&o.prefix, "ddb-table-prefix", "", "DynamoDB table name prefix")
 	f.StringVar(&o.region, "region", "", "DynamoDB region")
 	f.StringVar(&o.endpoint, "ddb-endpoint", "", "loopback HTTP DynamoDB endpoint (DynamoDB Local)")
+	f.StringVar(&o.runtimeConfig, "runtime-config", "", "offline first install of empty shared runtime (operator credential_process)")
 	recover := f.Bool("recover", false, "R2 recovery")
 	if _, ok := parse(f, args); !ok {
 		return o, errors.New("invalid admin-token bootstrap flags; use -help")
@@ -52,6 +55,12 @@ func parseBootstrap(args []string) (bootstrapOptions, error) {
 		return o, errors.New("bootstrap needs --user, --token-file and --ttl 5m..168h in whole seconds")
 	}
 	ddb := o.prefix != "" || o.region != "" || o.endpoint != ""
+	if o.runtimeConfig != "" {
+		if ddb || o.dataPath != "" {
+			return o, errors.New("--runtime-config cannot be combined with local/DynamoDB bootstrap flags")
+		}
+		return o, nil
+	}
 	if (o.dataPath == "") == !ddb {
 		return o, errors.New("bootstrap needs exactly one of --local-data-path or --ddb-table-prefix with --region")
 	}
@@ -81,9 +90,26 @@ func bootstrap(ctx context.Context, args []string, stdout io.Writer) (err error)
 	if err != nil {
 		return err
 	}
-	store, closeStore, err := openBootstrapStore(o)
-	if err != nil {
-		return err
+	var commit func(context.Context, storage.AdminBootstrap) error
+	closeStore := func() error { return nil }
+	if o.runtimeConfig != "" {
+		f, e := os.Open(o.runtimeConfig)
+		if e != nil {
+			return e
+		}
+		c, e := config.LoadStartup(f)
+		closeErr := f.Close()
+		if e != nil || closeErr != nil {
+			return errors.Join(e, closeErr)
+		}
+		commit = func(ctx context.Context, b storage.AdminBootstrap) error { return app.ProvisionShared(ctx, c, b) }
+	} else {
+		store, closeFn, e := openBootstrapStore(o)
+		if e != nil {
+			return e
+		}
+		closeStore = closeFn
+		commit = store.BootstrapAdmin
 	}
 	defer func() { err = errors.Join(err, closeStore()) }()
 	validator, err := config.NewPolicyValidator(config.DSGPolicyLimits())
@@ -114,10 +140,10 @@ func bootstrap(ctx context.Context, args []string, stdout io.Writer) (err error)
 		_ = os.Remove(o.tokenFile)
 		return errors.New("cannot persist token file")
 	}
-	err = store.BootstrapAdmin(ctx, storage.AdminBootstrap{Token: record, QuotaLimit: 1 << 40, Policy: policy})
+	err = commit(ctx, storage.AdminBootstrap{Token: record, QuotaLimit: 1 << 40, Policy: policy})
 	if err != nil {
 		// Only conflict/invalid prove nothing committed; otherwise the token may be live.
-		if !errors.Is(err, storage.ErrConflict) && !errors.Is(err, storage.ErrInvalid) {
+		if o.runtimeConfig != "" || !errors.Is(err, storage.ErrConflict) && !errors.Is(err, storage.ErrInvalid) {
 			return fmt.Errorf("bootstrap outcome unknown (%w); token file %s kept; check the installation marker before retrying", err, o.tokenFile)
 		}
 		_ = os.Remove(o.tokenFile)

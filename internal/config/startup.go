@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/netip"
 	"net/url"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -25,6 +27,11 @@ type Startup struct {
 	PackBucket          string
 	PackCredentialsFile string
 	PackKMSKeyID        string
+	RuntimeNodeID       string
+	DDBTablePrefix      string
+	RuntimeSecretARN    string
+	AWSConfigFile       string
+	UTCReference        string
 }
 
 func DefaultStartup() Startup {
@@ -83,6 +90,16 @@ func LoadStartup(r io.Reader) (Startup, error) {
 			target = &c.PackKMSKeyID
 		case "shutdown_seconds":
 			target = &c.ShutdownSeconds
+		case "runtime_node_id":
+			target = &c.RuntimeNodeID
+		case "ddb_table_prefix":
+			target = &c.DDBTablePrefix
+		case "runtime_secret_arn":
+			target = &c.RuntimeSecretARN
+		case "aws_config_file":
+			target = &c.AWSConfigFile
+		case "utc_reference":
+			target = &c.UTCReference
 		default:
 			return c, fmt.Errorf("unknown startup field %q", name)
 		}
@@ -126,21 +143,21 @@ func (c Startup) Validate() error {
 		return fmt.Errorf("%s mode must bind loopback", c.Mode)
 	}
 	if c.S3Address != "" {
-		if c.Mode == "runtime" {
+		if c.Mode == "runtime" && c.RuntimeNodeID == "" {
 			return fmt.Errorf("s3_address requires mode dev, local or benchmark")
 		}
 		a, err := netip.ParseAddrPort(c.S3Address)
-		if err != nil || !a.Addr().Unmap().IsLoopback() {
+		if err != nil || !(a.Addr().Unmap().IsLoopback() || c.Mode == "runtime" && c.Profile == "cloud" && a.Addr().Unmap().IsPrivate()) {
 			return fmt.Errorf("MVP s3_address must bind literal loopback")
 		}
 	}
 	if c.AdminAddress != "" {
 		// Admin needs an IdentityStore; only the Badger-backed modes provide one.
-		if c.Mode != "local" && c.Mode != "benchmark" {
+		if c.Mode != "local" && c.Mode != "benchmark" && !(c.Mode == "runtime" && c.RuntimeNodeID != "") {
 			return fmt.Errorf("admin_address requires mode local or benchmark")
 		}
 		a, err := netip.ParseAddrPort(c.AdminAddress)
-		if err != nil || !a.Addr().Unmap().IsLoopback() {
+		if err != nil || !(a.Addr().Unmap().IsLoopback() || c.Mode == "runtime" && c.Profile == "cloud" && a.Addr().Unmap().IsPrivate()) {
 			return fmt.Errorf("MVP admin_address must bind literal loopback")
 		}
 	}
@@ -163,11 +180,49 @@ func (c Startup) Validate() error {
 		} else if u.Scheme != "https" || c.PackCredentialsFile == "" || c.PackKMSKeyID == "" {
 			return fmt.Errorf("benchmark mode requires HTTPS pack_endpoint, pack_credentials_file and pack_kms_key_id")
 		}
+	} else if c.Mode == "runtime" && c.RuntimeNodeID != "" {
+		if err := c.validateShared(); err != nil {
+			return err
+		}
 	} else if c.LocalDataPath != "" || c.PackEndpoint != "" || c.PackBucket != "" || c.PackCredentialsFile != "" || c.PackKMSKeyID != "" {
 		return fmt.Errorf("storage configuration requires mode local or benchmark")
 	}
+	if c.RuntimeNodeID == "" || c.Mode != "runtime" {
+		if c.DDBTablePrefix != "" || c.RuntimeSecretARN != "" || c.AWSConfigFile != "" || c.UTCReference != "" || c.RuntimeNodeID != "" {
+			return fmt.Errorf("shared configuration requires runtime mode and runtime_node_id")
+		}
+	}
 	if c.ShutdownSeconds < 1 || c.ShutdownSeconds > 1800 {
 		return fmt.Errorf("shutdown_seconds must be 1..1800")
+	}
+	return nil
+}
+
+func (c Startup) validateShared() error {
+	if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,48}$`).MatchString(c.RuntimeNodeID) || !regexp.MustCompile(`^[A-Za-z0-9_.-]{1,200}$`).MatchString(c.DDBTablePrefix) {
+		return fmt.Errorf("invalid runtime_node_id or ddb_table_prefix")
+	}
+	ref, err := netip.ParseAddr(c.UTCReference)
+	if err != nil || !ref.Is4() || ref.IsUnspecified() || ref.IsLoopback() {
+		return fmt.Errorf("utc_reference must identify the approved IPv4 chrony source")
+	}
+	if c.S3Address == "" || c.AdminAddress == "" || !filepath.IsAbs(c.LocalDataPath) || c.PackBucket == "" || c.PackKMSKeyID == "" || c.PackEndpoint != "" || c.PackCredentialsFile != "" {
+		return fmt.Errorf("shared runtime requires listeners, absolute local_data_path, pack_bucket and pack_kms_key_id; endpoint/static credential overrides are forbidden")
+	}
+	for _, s := range []struct {
+		value string
+		port  uint16
+	}{{c.S3Address, 8080}, {c.AdminAddress, 9000}, {c.HealthAddress, 9100}} {
+		a, err := netip.ParseAddrPort(s.value)
+		if err != nil || a.Port() != s.port || c.Profile == "edge" && !a.Addr().Unmap().IsLoopback() {
+			return fmt.Errorf("runtime listeners require S3 8080, Admin 9000, health 9100; Edge binds loopback")
+		}
+	}
+	if !strings.HasPrefix(c.RuntimeSecretARN, "arn:aws:secretsmanager:"+c.Region+":") || strings.ContainsAny(c.RuntimeSecretARN, " \t\r\n") {
+		return fmt.Errorf("runtime_secret_arn must name a regional Secrets Manager secret")
+	}
+	if c.Profile == "edge" && !filepath.IsAbs(c.AWSConfigFile) || c.Profile == "cloud" && c.AWSConfigFile != "" {
+		return fmt.Errorf("Edge requires aws_config_file; Cloud uses only its instance profile")
 	}
 	return nil
 }

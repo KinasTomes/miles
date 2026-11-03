@@ -23,10 +23,7 @@ const maxListKeys = 1000
 // listTokenTTL bounds how long a continuation token is accepted.
 const listTokenTTL = time.Hour
 
-// listTokenKey MACs continuation tokens.
-// ponytail: per-process key, so tokens die with the process and are not shared
-// between nodes; move to a configured shared keyring when the cluster profile
-// (W05) serves LIST from more than one node.
+// listTokenKey is only the development fallback; shared runtimes inject their secret key.
 var listTokenKey = func() []byte {
 	key := make([]byte, 32)
 	if _, err := rand.Read(key); err != nil {
@@ -102,7 +99,7 @@ func (o *Objects) ListObjectsV2(w http.ResponseWriter, r *Request) error {
 	}
 	token, hasToken := q["continuation-token"]
 	if hasToken {
-		cursor, ok := openListToken(token[0], request, time.Now())
+		cursor, ok := openListToken(token[0], request, time.Now(), o.listTokenKey)
 		if !ok {
 			return invalid("The continuation token provided is incorrect")
 		}
@@ -129,7 +126,7 @@ func (o *Objects) ListObjectsV2(w http.ResponseWriter, r *Request) error {
 		out.ContinuationToken = token[0]
 	}
 	if page.Next != nil {
-		out.NextContinuationToken = sealListToken(*page.Next, time.Now())
+		out.NextContinuationToken = sealListToken(*page.Next, time.Now(), o.listTokenKey)
 	}
 	var owner *listOwner
 	if fetchOwner {
@@ -175,32 +172,32 @@ type listTokenPosition struct {
 	Expires int64  `json:"e"`
 }
 
-func listTokenTag(c storage.ObjectListCursor, payload string) []byte {
+func listTokenTag(c storage.ObjectListCursor, payload string, key []byte) []byte {
 	binding, _ := json.Marshal([]string{"dsg-s3-list-v1", c.PrincipalID, c.Bucket, c.BucketID, c.Prefix, c.Delimiter, payload})
-	m := hmac.New(sha256.New, listTokenKey)
+	m := hmac.New(sha256.New, key)
 	m.Write(binding)
 	return m.Sum(nil)
 }
 
 // sealListToken issues "<payload>.<tag>", both unpadded base64url, for the
 // cursor of the next page, expiring listTokenTTL after now.
-func sealListToken(c storage.ObjectListCursor, now time.Time) string {
+func sealListToken(c storage.ObjectListCursor, now time.Time, key []byte) string {
 	raw, _ := json.Marshal(listTokenPosition{Key: c.LastScannedKey, Prefix: c.LastCommonPrefix, Expires: now.Add(listTokenTTL).Unix()})
 	payload := base64.RawURLEncoding.EncodeToString(raw)
-	return payload + "." + base64.RawURLEncoding.EncodeToString(listTokenTag(c, payload))
+	return payload + "." + base64.RawURLEncoding.EncodeToString(listTokenTag(c, payload, key))
 }
 
 // openListToken verifies token against the request it continues and returns
 // the store cursor. Format, MAC, expiry and binding failures are not told
 // apart: each is InvalidArgument (API v2 4.2).
-func openListToken(token string, r storage.ListObjectsRequest, now time.Time) (storage.ObjectListCursor, bool) {
+func openListToken(token string, r storage.ListObjectsRequest, now time.Time, key []byte) (storage.ObjectListCursor, bool) {
 	c := storage.ObjectListCursor{PrincipalID: r.PrincipalID, Bucket: r.Bucket, BucketID: r.BucketID, Prefix: r.Prefix, Delimiter: r.Delimiter}
 	payload, tag, ok := strings.Cut(token, ".")
 	if !ok {
 		return c, false
 	}
 	got, err := base64.RawURLEncoding.Strict().DecodeString(tag)
-	if err != nil || !hmac.Equal(got, listTokenTag(c, payload)) {
+	if err != nil || !hmac.Equal(got, listTokenTag(c, payload, key)) {
 		return c, false
 	}
 	raw, err := base64.RawURLEncoding.Strict().DecodeString(payload)

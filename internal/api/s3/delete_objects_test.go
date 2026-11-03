@@ -62,7 +62,7 @@ func TestDeleteObjectsPerKeyResults(t *testing.T) {
 	for _, quiet := range []bool{false, true} {
 		w := newBucketWorld(t)
 		writer := &batchWriter{fail: map[string]error{"locked": storage.ErrQuotaExceeded, "gone": storage.ErrBucketNotFound}}
-		w.router.Handlers = NewObjectHandlers(writer, nil, nil)
+		w.router.Handlers = NewObjectHandlers(writer, nil, nil, nil)
 		body := deleteDoc(quiet, "<Key>a</Key>", "<Key>locked</Key>", "<Key>missing</Key>", "<Key>gone</Key>", "<Key>a &amp; b</Key>")
 		out, e := w.deleteObjects(t, "writer", body, contentMD5(body))
 		if e != nil {
@@ -110,7 +110,7 @@ func TestDeleteObjectsRejectsBeforeAnyDelete(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := newBucketWorld(t)
 			writer := &batchWriter{}
-			w.router.Handlers = NewObjectHandlers(writer, nil, nil)
+			w.router.Handlers = NewObjectHandlers(writer, nil, nil, nil)
 			headers := tc.headers
 			if headers == nil && tc.code != ErrInvalidRequest {
 				headers = contentMD5(tc.body)
@@ -127,7 +127,7 @@ func TestDeleteObjectsRejectsBeforeAnyDelete(t *testing.T) {
 func TestDeleteObjectsAcceptsChecksumHeader(t *testing.T) {
 	w := newBucketWorld(t)
 	writer := &batchWriter{}
-	w.router.Handlers = NewObjectHandlers(writer, nil, nil)
+	w.router.Handlers = NewObjectHandlers(writer, nil, nil, nil)
 	body := deleteDoc(false, "<Key>a</Key>")
 	sum, _ := ChecksumHash("CRC32")
 	sum.Write([]byte(body))

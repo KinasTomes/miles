@@ -38,7 +38,7 @@ func newCopyWorld(t *testing.T) (*bucketWorld, *fakeObjectWriter) {
 	t.Helper()
 	w := newBucketWorld(t)
 	writer := &fakeObjectWriter{result: object.PutResult{ETag: `"source-etag"`}}
-	w.router.Handlers = NewObjectHandlers(writer, nil, nil)
+	w.router.Handlers = NewObjectHandlers(writer, nil, nil, nil)
 	return w, writer
 }
 
@@ -141,7 +141,7 @@ func TestCopyObjectMetadataReadsBack(t *testing.T) {
 	objects := &metadataObjects{stored: map[string]map[string]string{
 		"a": {"content-type": "text/plain", "content-language": "en", "x-amz-meta-k": "v"},
 	}}
-	w.router.Handlers = NewObjectHandlers(objects, objects, nil)
+	w.router.Handlers = NewObjectHandlers(objects, objects, nil, nil)
 	if _, e := w.sendHeaders(t, http.MethodPut, "/demo/b", "owner", "", map[string]string{"X-Amz-Copy-Source": "demo/a"}); e != nil {
 		t.Fatal(e)
 	}

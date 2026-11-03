@@ -10,6 +10,16 @@ import platform
 import shutil
 
 
+def _readable_directory(path):
+    missing = []
+    while not path.exists():
+        missing.append(path)
+        path = path.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=0o755)
+        directory.chmod(0o755)  # Service users must traverse releases even with umask 077.
+
+
 def install(bundle, root, profile, address):
     manifest_bytes = (bundle / "manifest.json").read_bytes()
     manifest = json.loads(manifest_bytes)
@@ -33,10 +43,10 @@ def install(bundle, root, profile, address):
     release_id = hashlib.sha256(manifest_bytes).hexdigest()
     prefix, config = root / "opt/miles", root / "etc/miles"
     release = prefix / "releases" / release_id
-    release.mkdir(parents=True, exist_ok=True)
+    _readable_directory(release)
     for name in [*files, "manifest.json"]:
         target = release / name
-        target.parent.mkdir(parents=True, exist_ok=True)
+        _readable_directory(target.parent)
         data = (bundle / name).read_bytes()
         if target.exists():
             if target.is_symlink() or target.read_bytes() != data:
@@ -45,7 +55,7 @@ def install(bundle, root, profile, address):
             with target.open("xb") as stream:
                 stream.write(data)
             target.chmod(0o755 if name.startswith("bin/") else 0o644)
-    config.mkdir(parents=True, exist_ok=True)
+    _readable_directory(config)
     startup = json.loads((release / ("configs/" + profile + ".example.json")).read_text())
     startup["health_address"] = address + ":9100"
     initial = {
@@ -65,7 +75,7 @@ def install(bundle, root, profile, address):
     if actual.get("profile") != profile or actual.get("mode") != "runtime" or actual.get("shutdown_seconds") != 1800:
         raise ValueError("operator config must retain the runtime profile and 1800-second drain")
     units = root / "etc/systemd/system"
-    units.mkdir(parents=True, exist_ok=True)
+    _readable_directory(units)
     for name in ("miles.service", "miles-lifecycle.service"):
         target = units / name
         if target.is_symlink():

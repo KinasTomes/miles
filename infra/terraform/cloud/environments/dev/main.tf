@@ -32,12 +32,15 @@ module "security" {
   region               = var.region
   account_id           = var.account_id
   autoscaling_role_arn = try(aws_iam_service_linked_role.autoscaling[0].arn, null)
+  runtime_secret_name  = var.runtime_secret_name
 }
 module "data" {
   source      = "../../modules/data"
   name        = local.name
   bucket_name = local.data_bucket_name
   kms_key_arn = module.security.kms_key_arn
+  # Shared R1 fences and three node supervisors exceed the single-node dev ceiling.
+  max_request_units = var.enable_asg ? 128 : 10
 }
 module "iam" {
   source                   = "../../modules/iam"
@@ -53,6 +56,7 @@ module "iam" {
   permissions_boundary_arn = var.runtime_permissions_boundary_arn
   fleet_enabled            = var.enable_asg
   release_sha256           = var.release_sha256
+  edge_ca_pem              = var.edge_ca_pem
 }
 module "compute" {
   source            = "../../modules/compute"
@@ -104,4 +108,6 @@ module "fleet" {
   data_bucket_name        = local.data_bucket_name
   release_sha256          = var.release_sha256
   release_version_id      = var.release_version_id
+  runtime_secret_arn      = module.security.secret_arn
+  owner_ssh_public_key    = var.owner_ssh_public_key
 }

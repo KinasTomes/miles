@@ -1,0 +1,17 @@
+{
+  "profile": "edge",
+  "mode": "runtime",
+  "runtime_node_id": "edge-node",
+  "region": "ap-southeast-1",
+  "health_address": "127.0.0.1:9100",
+  "s3_address": "127.0.0.1:8080",
+  "admin_address": "127.0.0.1:9000",
+  "shutdown_seconds": 1800,
+  "local_data_path": "/var/lib/miles",
+  "ddb_table_prefix": "miles-dev-",
+  "pack_bucket": "REPLACE_WITH_PRIVATE_BUCKET",
+  "pack_kms_key_id": "REPLACE_WITH_KMS_KEY_ARN",
+  "runtime_secret_arn": "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:REPLACE",
+  "aws_config_file": "/etc/miles/aws-config",
+  "utc_reference": "REPLACE_WITH_APPROVED_NTP_IPV4"
+}

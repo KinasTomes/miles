@@ -31,6 +31,7 @@ output "runtime_inventory" {
 }
 output "alb_contract" { value = module.alb.contract }
 output "fleet_contract" { value = module.fleet.contract }
+output "edge_provider" { value = module.iam.edge_provider }
 output "session_configuration" {
   description = "Retain the reviewed session settings while paused; resume must not change them."
   value = {

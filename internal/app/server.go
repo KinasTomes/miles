@@ -59,7 +59,7 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 		if l.address == "" {
 			continue
 		}
-		if l.handler == nil || c.Mode == "runtime" {
+		if l.handler == nil || c.Mode == "runtime" && c.RuntimeNodeID == "" {
 			return closeDependencies(d, ErrRuntimeUnavailable)
 		}
 		listener, err := net.Listen("tcp", l.address)
@@ -84,6 +84,11 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	if d.Operations != nil {
 		operationsDone = make(chan error, 1)
 		go func() { operationsDone <- d.Operations.run(probeCtx, h, admission) }()
+	}
+	var journalDone chan error
+	if d.Journal != nil {
+		journalDone = make(chan error, 1)
+		go func() { journalDone <- d.Journal.run(probeCtx) }()
 	}
 	done := make(chan error, len(servers))
 	for i, s := range servers {
@@ -156,6 +161,16 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 		select {
 		case err := <-operationsDone:
 			operationsErr = err
+		case <-shutdown.Done():
+			probeErr = errors.Join(probeErr, shutdown.Err())
+		}
+	}
+	if journalDone != nil {
+		select {
+		case e := <-journalDone:
+			if e != nil && !errors.Is(e, context.Canceled) {
+				probeErr = errors.Join(probeErr, e)
+			}
 		case <-shutdown.Done():
 			probeErr = errors.Join(probeErr, shutdown.Err())
 		}

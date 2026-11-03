@@ -27,7 +27,7 @@ func TestObjectMissingBucketAndKeyErrors(t *testing.T) {
 			t.Run(method+"/"+tc.name, func(t *testing.T) {
 				w := newBucketWorld(t)
 				reader := &fakeObjectReader{statErr: tc.err, getErr: tc.err}
-				w.router.Handlers = NewObjectHandlers(&fakeObjectWriter{err: tc.err}, reader, nil)
+				w.router.Handlers = NewObjectHandlers(&fakeObjectWriter{err: tc.err}, reader, nil, nil)
 				r := httptest.NewRequest(method, "/demo/k", nil)
 				sign(r, accessKey("owner"), "secret-owner")
 				rec := httptest.NewRecorder()
@@ -56,7 +56,7 @@ func TestObjectMissingBucketAndKeyErrors(t *testing.T) {
 
 func TestSharedR1GateBusyMapsTo503(t *testing.T) {
 	w := newBucketWorld(t)
-	w.router.Handlers = NewObjectHandlers(&fakeObjectWriter{err: storage.ErrR1Busy}, &fakeObjectReader{}, nil)
+	w.router.Handlers = NewObjectHandlers(&fakeObjectWriter{err: storage.ErrR1Busy}, &fakeObjectReader{}, nil, nil)
 	r := httptest.NewRequest(http.MethodPut, "/demo/k", nil)
 	sign(r, accessKey("owner"), "secret-owner")
 	rec := httptest.NewRecorder()

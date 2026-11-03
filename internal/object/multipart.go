@@ -85,8 +85,12 @@ func (s *Service) CreateUpload(ctx context.Context, r CreateUploadRequest) (stor
 	if err != nil {
 		return storage.MultipartUpload{}, err
 	}
-	ctx, a, err := s.admit(ctx, object, r.CredentialID, "")
+	ctx, session, opID, fence, _, err := s.begin(ctx, object, r.CredentialID, "")
 	if err != nil {
+		return storage.MultipartUpload{}, err
+	}
+	defer session.Close()
+	if err = session.BindRoot(id); err != nil {
 		return storage.MultipartUpload{}, err
 	}
 	metadata := make(map[string]string, len(r.Metadata)+1)
@@ -95,8 +99,8 @@ func (s *Service) CreateUpload(ctx context.Context, r CreateUploadRequest) (stor
 	}
 	metadata[commitTimeKey] = s.o.Clock.Now().WallUTC.UTC().Format(time.RFC3339Nano)
 	return s.o.Uploads.CreateUpload(ctx, storage.CreateUploadRequest{
-		Request: storage.MultipartRequest{UploadID: id, Credential: r.CredentialID, OpID: a.opID, Writer: a.fence},
-		Upload: storage.MultipartUpload{ID: id, Object: object, ReservationID: "reservation-" + a.opID,
+		Request: storage.MultipartRequest{UploadID: id, Credential: r.CredentialID, OpID: opID, Writer: fence},
+		Upload: storage.MultipartUpload{ID: id, Object: object, ReservationID: "reservation-" + opID,
 			ChecksumAlgorithm: r.ChecksumAlgorithm, ChecksumType: r.ChecksumType, Metadata: metadata},
 	})
 }
@@ -150,6 +154,9 @@ func (s *Service) UploadPart(ctx context.Context, r PartRequest) (PartResult, er
 		return PartResult{}, err
 	}
 	defer session.Close()
+	if err = session.BindRoot(u.ID); err != nil {
+		return PartResult{}, err
+	}
 	req := storage.MultipartRequest{UploadID: u.ID, Credential: r.CredentialID, OpID: opID, Writer: fence}
 	deadline := wallDeadline
 	if u.ExpiresAt.Before(deadline) {
@@ -268,11 +275,15 @@ func (s *Service) AbortUpload(ctx context.Context, r AbortRequest) error {
 	if s.o.Uploads == nil || ctx == nil || r.CredentialID == "" || u.ID == "" {
 		return storage.ErrInvalid
 	}
-	ctx, a, err := s.admit(ctx, u.Object, r.CredentialID, "")
+	ctx, session, opID, fence, _, err := s.begin(ctx, u.Object, r.CredentialID, "")
 	if err != nil {
 		return err
 	}
-	req := storage.MultipartRequest{UploadID: u.ID, Credential: r.CredentialID, OpID: a.opID, Writer: a.fence}
+	defer session.Close()
+	if err = session.BindRoot(u.ID); err != nil {
+		return err
+	}
+	req := storage.MultipartRequest{UploadID: u.ID, Credential: r.CredentialID, OpID: opID, Writer: fence}
 	for attempt := 1; ; attempt++ {
 		req.ExpectedRevision = u.Revision
 		out, err := s.o.Uploads.AbortUpload(ctx, req)

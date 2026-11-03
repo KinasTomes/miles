@@ -1,4 +1,4 @@
-# Cloud fleet — chuẩn bị cho W5
+# Cloud fleet
 
 ASG là opt-in của stack dev hiện có: `enable_asg=true`, `enable_compute=false`.
 Không tạo stack/VPC/datastore thứ hai. Mẫu ở
@@ -17,9 +17,10 @@ role `AWSServiceRoleForAutoScaling_miles-dev`; KMS grant chỉ role đó, điề
 
 ## Trước lần chạy thật
 
-1. Hoàn tất runtime composition W05-HUNG-01 và các handoff; không sửa readiness thành
-   200 để vượt health check. S3 phải bind private IP:8080, health private IP:9100,
-   Admin private IP:9000 khi handler/auth đã sẵn sàng.
+1. Provision backend/history/secret theo [shared runtime](../../docs/development/shared-runtime.md).
+   Fleet user-data sinh cấu hình native DynamoDB/R1/S3; S3 bind private IP:8080,
+   health private IP:9100, Admin loopback:9000. Không sửa readiness thành 200 để
+   vượt health check; thiếu catalog/policy/clock/secret phải fail closed.
 2. Chọn AMI AL2023 standard có Python3, AWS CLI v2, systemd; xác nhận instance type
    khớp `arm64`/`amd64`. AMI data lookup kiểm owner/name/arch/root EBS; không chứng
    minh image đã boot hay mọi dependency đã chạy. Không `dnf install` lúc bootstrap

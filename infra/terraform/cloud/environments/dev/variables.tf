@@ -161,3 +161,18 @@ variable "admin_ssh_cidrs" {
     error_message = "Bastion SSH must use restricted IPv4 CIDRs."
   }
 }
+variable "owner_ssh_public_key" {
+  type        = string
+  default     = null
+  description = "Public ed25519 key for restricted owner forwarding through an approved private SSH/SSM route."
+}
+variable "edge_ca_pem" {
+  type        = string
+  default     = null
+  description = "Public PEM CA certificate enables the separate Roles Anywhere Edge runtime role."
+}
+variable "runtime_secret_name" {
+  type        = string
+  default     = null
+  description = "Fresh installation secret name; null preserves the original installation name."
+}

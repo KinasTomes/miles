@@ -71,6 +71,71 @@ func cleanupContext() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 10*time.Second)
 }
 
+// AdmitProducer binds recovery identity to the exact shared lease admission.
+// Registering before returning also lets a failed session release this lease;
+// BeginOperation subsequently claims execution once, without sampling a new epoch.
+func (r *WriterRegistry) AdmitProducer(ctx context.Context, object storage.ObjectKey, opID string, deadline clock.Instant) (storage.MutationContext, *Writer, error) {
+	if r == nil || r.gate.shared == nil || object.Validate() != nil || opID == "" {
+		return storage.MutationContext{}, nil, storage.ErrInvalid
+	}
+	g := r.gate
+	id, err := storage.NewBucketID()
+	if err != nil {
+		return storage.MutationContext{}, nil, err
+	}
+	wall, err := g.sharedDeadline(ctx, deadline)
+	if err != nil {
+		return storage.MutationContext{}, nil, err
+	}
+	f := storage.WriterFence{LeaseID: id, Epoch: 1, ServiceIncarnation: g.incarnation}
+	l, err := g.shared.AcquireR1(ctx, storage.R1Acquire{Fence: f, Owner: g.owner, Kind: "writer", OpID: opID, Object: object, Deadline: wall})
+	if err != nil {
+		return storage.MutationContext{}, nil, err
+	}
+	w, err := r.Register(ctx, f, deadline)
+	if err != nil {
+		cleanup, cancel := cleanupContext()
+		defer cancel()
+		if g.shared.CloseR1(cleanup, f) == nil {
+			_ = g.shared.ReleaseR1(cleanup, f)
+		}
+		return storage.MutationContext{}, nil, err
+	}
+	r.mu.Lock()
+	w.state.shared = true
+	w.state.sharedDeadline = l.Deadline
+	r.mu.Unlock()
+	m := storage.MutationContext{HistoryID: l.HistoryID, Epoch: l.RecoveryEpoch, LogicalOpID: opID, MutationID: opID, Object: object, Writer: f}
+	return m, w, m.Validate()
+}
+
+// Quiescent is checked only after the process has joined all request workers.
+// Only authoritative commit reconciliation can clear an unknown result. Other
+// unknown I/O retains shared protection and blocks a clean exit.
+func (r *WriterRegistry) Quiescent() error {
+	if r == nil {
+		return storage.ErrInvalid
+	}
+	r.mu.Lock()
+	var writers []*Writer
+	for _, s := range r.writers {
+		if !s.released {
+			if s.work != 0 || s.inflight != 0 {
+				r.mu.Unlock()
+				return ErrWorkPending
+			}
+			writers = append(writers, &Writer{owner: r, state: s})
+		}
+	}
+	r.mu.Unlock()
+	for _, writer := range writers {
+		if err := writer.Release(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // BindRoot binds logical preparation before native page/canonical publication.
 // Multipart callers bind upload/candidate IDs with the same admitted writer.
 func (w *Writer) BindRoot(ctx context.Context, object storage.ObjectKey, id string) error {

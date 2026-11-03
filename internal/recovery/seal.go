@@ -94,6 +94,20 @@ func verifyCatalog(ctx context.Context, objects ImmutableStore, c Catalog, activ
 	return nil
 }
 
+// LoadCatalog verifies the selected catalog and immutable genesis before any
+// online exporter starts; metadata alone does not establish a recovery base.
+func LoadCatalog(ctx context.Context, objects ImmutableStore) (Catalog, error) {
+	var c Catalog
+	body, err := objects.Read(ctx, "recovery/active-history.json")
+	if err != nil {
+		return c, err
+	}
+	if err = Decode(body, &c); err != nil {
+		return c, err
+	}
+	return c, verifyCatalog(ctx, objects, c, true)
+}
+
 type Sealer struct {
 	Exporter
 	Store   s.RecoveryStore

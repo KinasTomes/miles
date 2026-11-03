@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"encoding/xml"
 	"fmt"
@@ -54,7 +55,7 @@ func newListWorld(t *testing.T, keys ...string) (*bucketWorld, *fakeLister, *fak
 	w := newBucketWorld(t)
 	lister := &fakeLister{keys: keys}
 	writer := &fakeObjectWriter{}
-	w.router.Handlers = NewObjectHandlers(writer, nil, lister)
+	w.router.Handlers = NewObjectHandlers(writer, nil, lister, nil)
 	return w, lister, writer
 }
 
@@ -186,18 +187,18 @@ func TestListObjectsV2ContinuationToken(t *testing.T) {
 	// A fresh token for the cursor after p/2.
 	r := lister.got[0]
 	cursor := storage.ObjectListCursor{PrincipalID: r.PrincipalID, Bucket: r.Bucket, BucketID: r.BucketID, Prefix: r.Prefix, LastScannedKey: "p/2"}
-	valid := sealListToken(cursor, time.Now())
+	valid := sealListToken(cursor, time.Now(), listTokenKey)
 	payload, tag, _ := strings.Cut(valid, ".")
 	other := cursor
 	other.LastScannedKey = "p/4"
-	otherPayload, _, _ := strings.Cut(sealListToken(other, time.Now()), ".")
+	otherPayload, _, _ := strings.Cut(sealListToken(other, time.Now(), listTokenKey), ".")
 	for name, tc := range map[string]struct{ principal, query string }{
 		"other prefix":    {"owner", "&prefix=p&continuation-token=" + url.QueryEscape(valid)},
 		"other delimiter": {"owner", "&prefix=p%2F&delimiter=%2F&continuation-token=" + url.QueryEscape(valid)},
 		"other principal": {"reader", "&prefix=p%2F&continuation-token=" + url.QueryEscape(valid)},
 		"moved position":  {"owner", "&prefix=p%2F&continuation-token=" + url.QueryEscape(otherPayload+"."+tag)},
 		"no tag":          {"owner", "&prefix=p%2F&continuation-token=" + url.QueryEscape(payload)},
-		"expired":         {"owner", "&prefix=p%2F&continuation-token=" + url.QueryEscape(sealListToken(cursor, time.Now().Add(-listTokenTTL)))},
+		"expired":         {"owner", "&prefix=p%2F&continuation-token=" + url.QueryEscape(sealListToken(cursor, time.Now().Add(-listTokenTTL), listTokenKey))},
 	} {
 		t.Run(name, func(t *testing.T) {
 			before := len(lister.got)
@@ -330,5 +331,36 @@ func TestDeleteObjectErrors(t *testing.T) {
 		if _, e := w.send(t, http.MethodDelete, "/demo/k", "owner", ""); e == nil || e.Code != want {
 			t.Fatalf("service %v: error %v, want %s", err, e, want)
 		}
+	}
+}
+
+func TestListTokenAcrossIndependentHandlers(t *testing.T) {
+	key := bytes.Repeat([]byte{1}, 32)
+	node := func(k []byte) (*bucketWorld, *fakeLister) {
+		w, lister, writer := newListWorld(t, "p/1", "p/2", "p/3")
+		w.router.Handlers = NewObjectHandlers(writer, nil, lister, k)
+		return w, lister
+	}
+	first, _ := node(key)
+	second, _ := node(key)
+	page, err := first.list(t, "owner", "&max-keys=1")
+	if err != nil || page.NextContinuationToken == "" {
+		t.Fatal(page, err)
+	}
+	query := "&continuation-token=" + url.QueryEscape(page.NextContinuationToken)
+	key[0] = 9 // Caller mutation must not alter a running handler's key.
+	for _, w := range []*bucketWorld{first, second} {
+		next, e := w.list(t, "owner", query)
+		if e != nil || len(next.Contents) != 2 || next.Contents[0].Key != "p/2" {
+			t.Fatal(next, e)
+		}
+	}
+	restarted, _ := node(bytes.Repeat([]byte{1}, 32))
+	if _, err := restarted.list(t, "owner", query); err != nil {
+		t.Fatal("same installation after restart", err)
+	}
+	foreign, lister := node(bytes.Repeat([]byte{2}, 32))
+	if _, err := foreign.list(t, "owner", query); err == nil || err.Code != ErrInvalidArgument || len(lister.got) != 0 {
+		t.Fatal("foreign installation token accepted", err)
 	}
 }

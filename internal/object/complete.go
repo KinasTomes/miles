@@ -86,7 +86,7 @@ const renewEvery = 15 * time.Second
 type completion struct {
 	s                *Service
 	ctx              context.Context
-	session          *write.WriteSession
+	session          *admittedSession
 	mu               sync.Mutex
 	u                storage.MultipartUpload
 	op               string
@@ -130,6 +130,10 @@ func (s *Service) complete(ctx context.Context, u storage.MultipartUpload, in co
 		return storage.ObjectHead{}, err
 	}
 	c := &completion{s: s, ctx: ctx, session: session, u: u, op: op, fence: fence, user: userID, credential: credentialID, takeover: takeover}
+	if err = session.BindRoot(u.ID); err != nil {
+		_ = session.Close()
+		return storage.ObjectHead{}, err
+	}
 	if takeover {
 		err = c.claim()
 	} else {
@@ -152,6 +156,9 @@ func (s *Service) complete(ctx context.Context, u storage.MultipartUpload, in co
 func (c *completion) freeze(in core.Input) error {
 	owner, err := write.NewManifestID()
 	if err != nil {
+		return err
+	}
+	if err = c.session.BindRoot(owner); err != nil {
 		return err
 	}
 	d, err := manifest.WriteCompletionStream(manifest.CompletionInput, owner, bytes.NewReader(in.Canonical()), func(n uint32, b []byte) error {
@@ -320,6 +327,9 @@ func (c *completion) snapshot(in core.Input) (storage.StreamDescriptor, error) {
 	if err != nil {
 		return storage.StreamDescriptor{}, err
 	}
+	if err = c.session.BindRoot(owner); err != nil {
+		return storage.StreamDescriptor{}, err
+	}
 	return manifest.WriteCompletionStream(manifest.CompletionSnapshot, owner, bytes.NewReader(body), func(n uint32, b []byte) error {
 		return c.s.o.Uploads.WriteCompletionPage(c.ctx, manifest.CompletionSnapshot, owner, n, b, c.fence)
 	})
@@ -391,10 +401,25 @@ func (c *completion) commit() (storage.ObjectHead, error) {
 // initiator's right aborts. Reopen and abort both close the completion op
 // first, so a late commit of this attempt can no longer land.
 func (c *completion) fail(err error) (storage.ObjectHead, error) {
+	transitionCtx, stopTransition := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
+	defer stopTransition()
+	var invalid *core.ValidationError
+	switch {
+	case c.takeover && errors.Is(err, storage.ErrAccessDenied):
+		c.abandonWith(transitionCtx)
+	case errors.As(err, &invalid), errors.Is(err, storage.ErrQuotaExceeded), errors.Is(err, storage.ErrAccessDenied), errors.Is(err, storage.ErrConflict):
+		if _, e := c.s.o.Uploads.ReopenUpload(transitionCtx, c.request()); errors.Is(e, storage.ErrFenced) {
+			// Reopen refuses an expired upload: abort it instead.
+			c.abandonWith(transitionCtx)
+		}
+	}
+	stopTransition()
+	// Reopen/abort needs live authority and atomically closes the commit attempt.
+	// Reconciliation below instead requires joined work and a closed writer.
 	_ = c.session.Close()
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
-	defer cancel()
 	if unknownOutcome(err) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
+		defer cancel()
 		out, e := c.session.Reconcile(ctx)
 		if e == nil && out.Head.Revision > 0 {
 			return out.Head, nil
@@ -404,16 +429,6 @@ func (c *completion) fail(err error) (storage.ObjectHead, error) {
 		}
 		if !errors.Is(e, storage.ErrNotFound) {
 			return storage.ObjectHead{}, err
-		}
-	}
-	var invalid *core.ValidationError
-	switch {
-	case c.takeover && errors.Is(err, storage.ErrAccessDenied):
-		c.abandonWith(ctx)
-	case errors.As(err, &invalid), errors.Is(err, storage.ErrQuotaExceeded), errors.Is(err, storage.ErrAccessDenied), errors.Is(err, storage.ErrConflict):
-		if _, e := c.s.o.Uploads.ReopenUpload(ctx, c.request()); errors.Is(e, storage.ErrFenced) {
-			// Reopen refuses an expired upload: abort it instead.
-			c.abandonWith(ctx)
 		}
 	}
 	return storage.ObjectHead{}, err

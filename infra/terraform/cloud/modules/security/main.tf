@@ -32,7 +32,7 @@ resource "aws_kms_alias" "runtime" {
 }
 # Metadata only: no aws_secretsmanager_secret_version, bearer, key or hash in Terraform.
 resource "aws_secretsmanager_secret" "runtime" {
-  name                    = "${var.name}/runtime-secrets"
+  name                    = coalesce(var.runtime_secret_name, "${var.name}/runtime-secrets")
   description             = "Provision secret material separately; Terraform manages metadata only"
   kms_key_id              = aws_kms_key.runtime.arn
   recovery_window_in_days = 30

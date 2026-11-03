@@ -22,19 +22,22 @@ import (
 // Dependencies use the existing storage ports. Probe is supplied by their wiring,
 // including validated clock readiness; health handlers never invent clock proof.
 type Dependencies struct {
-	Statistics *stats.Service
-	Metadata   storage.MetadataStore
-	Packs      storage.PackStore
-	Cache      storage.Cache
-	Objects    *object.Service // real Warm service in local/benchmark mode; absent in fixture/runtime modes
-	Probe      func(context.Context) error
-	Close      func() error
-	S3Handler  func(*Admission) http.Handler
+	Statistics        *stats.Service
+	Metadata          storage.MetadataStore
+	Packs             storage.PackStore
+	Cache             storage.Cache
+	Objects           *object.Service // real Warm service in local/benchmark mode; absent in fixture/runtime modes
+	ObjectsForRequest func(context.Context, string) (*object.Service, error)
+	S3ListTokenKey    []byte // Shared runtime cursor key; nil only in process-local profiles.
+	Probe             func(context.Context) error
+	Close             func() error
+	S3Handler         func(*Admission) http.Handler
 	// AdminHandler serves admin_address; Admin holds the local/benchmark
 	// server options (Logger left for the process to set), nil elsewhere.
 	AdminHandler func(*Admission) http.Handler
 	Admin        *admin.Options
 	Operations   *Operational
+	Journal      *journalRuntime
 	// DevCredentials are the SigV4 test credentials dev provisioning minted
 	// into the selected development store (API v2 3.5 format, bound to DevUser,
 	// no admin rights). Dev/local only; runtime leaves it empty.
@@ -51,6 +54,9 @@ func Bootstrap(c config.Startup) (Dependencies, error) {
 	}
 	if c.Mode == "local" || c.Mode == "benchmark" {
 		return bootstrapLocal(c)
+	}
+	if c.Mode == "runtime" && c.RuntimeNodeID != "" {
+		return bootstrapShared(c)
 	}
 	if c.Mode != "dev" {
 		return Dependencies{Probe: func(context.Context) error { return ErrRuntimeUnavailable }}, nil
