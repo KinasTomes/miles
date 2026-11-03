@@ -165,6 +165,10 @@ func validateAttachmentPage(index attachmentIndex, n uint32, body []byte) error 
 // the live metadata source and therefore proves the serialized page dependency
 // survives loss of that source. One binary page plus one bounded group is held.
 func VerifyAttachment(ctx context.Context, objects ImmutableStore, root AttachmentReference, event s.OutboxEvent) error {
+	return walkAttachment(ctx, objects, root, event, nil)
+}
+
+func walkAttachment(ctx context.Context, objects ImmutableStore, root AttachmentReference, event s.OutboxEvent, visit func(byte, string, uint32, []byte) error) error {
 	if !strings.HasSuffix(root.Key, "/index.json") {
 		return s.ErrInvalid
 	}
@@ -235,6 +239,11 @@ func VerifyAttachment(ctx context.Context, objects ImmutableStore, root Attachme
 						return s.ErrInvalid
 					}
 					objectOffset += r.RawBytes
+				}
+			}
+			if visit != nil {
+				if err := visit(index.Kind, index.Owner, pageNo, data); err != nil {
+					return err
 				}
 			}
 			if index.Kind == 3 || index.Kind == 4 {

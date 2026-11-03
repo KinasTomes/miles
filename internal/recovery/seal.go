@@ -40,6 +40,7 @@ func genesisKey(c Catalog) string {
 func catalogKey(c Catalog, b []byte) string {
 	return "recovery/histories/" + c.History + "/catalog-" + digest(b) + ".json"
 }
+func selectedCatalogKey(c Catalog) string { return "recovery/active/" + c.Incarnation + ".json" }
 
 // ProvisionHistory is an explicit initial-history provisioning operation. The
 // caller supplies an audited base; it is never inferred from live-table scans.
@@ -61,6 +62,9 @@ func ProvisionHistory(ctx context.Context, m s.RecoveryStore, objects ImmutableS
 	if err = putVerified(ctx, objects, "recovery/active-history.json", body); err != nil {
 		return err
 	}
+	if err = putVerified(ctx, objects, selectedCatalogKey(c), body); err != nil {
+		return err
+	}
 	return m.InitializeRecovery(ctx, s.RecoveryState{Version: 1, HistoryID: c.History, Incarnation: c.Incarnation, GenesisSHA256: c.Genesis.SHA256, GenesisLength: c.Genesis.Length, Revision: 1})
 }
 func verifyCatalog(ctx context.Context, objects ImmutableStore, c Catalog, active bool) error {
@@ -73,7 +77,16 @@ func verifyCatalog(ctx context.Context, objects ImmutableStore, c Catalog, activ
 	}
 	keys := []string{catalogKey(c, expected)}
 	if active {
-		keys = append(keys, "recovery/active-history.json")
+		// Older provisioned histories only have the original immutable selector.
+		// New histories use an incarnation-specific selector; selection is bound
+		// by the metadata gate, never a mutable latest/timestamp choice.
+		if body, err := objects.Read(ctx, selectedCatalogKey(c)); err == nil {
+			if !bytes.Equal(body, expected) {
+				return s.ErrConflict
+			}
+		} else {
+			keys = append(keys, "recovery/active-history.json")
+		}
 	}
 	for _, key := range keys {
 		body, err := objects.Read(ctx, key)
@@ -92,6 +105,29 @@ func verifyCatalog(ctx context.Context, objects ImmutableStore, c Catalog, activ
 		return s.ErrInvalid
 	}
 	return nil
+}
+
+func LoadSelectedCatalog(ctx context.Context, objects ImmutableStore, history, incarnation string) (Catalog, error) {
+	var c Catalog
+	if !isHex(history, 32) || !isHex(incarnation, 32) {
+		return c, s.ErrInvalid
+	}
+	body, err := objects.Read(ctx, "recovery/active/"+incarnation+".json")
+	if err != nil {
+		c, err = LoadCatalog(ctx, objects)
+	} else {
+		err = Decode(body, &c)
+		if err == nil {
+			err = verifyCatalog(ctx, objects, c, false)
+		}
+	}
+	if err != nil {
+		return Catalog{}, err
+	}
+	if c.History != history || c.Incarnation != incarnation {
+		return Catalog{}, s.ErrFenced
+	}
+	return c, nil
 }
 
 // LoadCatalog verifies the selected catalog and immutable genesis before any
