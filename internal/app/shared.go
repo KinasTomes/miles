@@ -243,15 +243,17 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	if c.Profile == "cloud" {
 		operational.OnDrain = func(ctx context.Context) error { return requestCloudDrain(ctx, c.LocalDataPath, identity) }
 	}
+	closeRuntime := func(ctx context.Context) error {
+		e := registry.Quiescent()
+		flushErr := journal.flush(ctx)
+		registry.Invalidate()
+		clients.transport.CloseIdleConnections()
+		return errors.Join(e, flushErr, metadata.closeError(), resident.Close())
+	}
 	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
-		Operations: operational,
-		Close: func() error {
-			e := registry.Quiescent()
-			flushErr := journal.flush()
-			registry.Invalidate()
-			clients.transport.CloseIdleConnections()
-			return errors.Join(e, flushErr, metadata.closeError(), resident.Close())
-		}}, nil
+		Operations:       operational,
+		closeWithContext: closeRuntime,
+		Close:            func() error { return closeRuntime(context.Background()) }}, nil
 }
 
 func maxTime(a, b time.Time) time.Time {

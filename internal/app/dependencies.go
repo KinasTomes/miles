@@ -31,6 +31,7 @@ type Dependencies struct {
 	S3ListTokenKey    []byte // Shared runtime cursor key; nil only in process-local profiles.
 	Probe             func(context.Context) error
 	Close             func() error
+	closeWithContext  func(context.Context) error
 	S3Handler         func(*Admission) http.Handler
 	// AdminHandler serves admin_address; Admin holds the local/benchmark
 	// server options (Logger left for the process to set), nil elsewhere.

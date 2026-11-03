@@ -43,7 +43,7 @@ func (j *journalRuntime) once(ctx context.Context, flush bool) (err error) {
 	}()
 	w := recovery.Worker{Store: j.store, Payloads: j.store, Objects: j.objects, Catalog: j.catalog, Clock: j.clock, Fence: f}
 	if flush {
-		return w.Flush(ctx)
+		return w.FlushSupervised(ctx)
 	}
 	return w.RunCuts(ctx)
 }
@@ -58,8 +58,8 @@ func (j *journalRuntime) run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (j *journalRuntime) flush() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (j *journalRuntime) flush(parent context.Context) error {
+	ctx, cancel := context.WithTimeout(parent, 8*time.Minute)
 	defer cancel()
 	return j.once(ctx, true)
 }
