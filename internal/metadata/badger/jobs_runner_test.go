@@ -175,7 +175,8 @@ func TestRunnerPeriodicCreationIsExclusiveAcrossGateways(t *testing.T) {
 		go func(r *jobs.Runner) { defer group.Done(); _ = r.Tick(ctx) }(r)
 	}
 	group.Wait()
-	list, e := jobs.Inventory(ctx, m)
+	page, e := m.ListJobs(ctx, jobs.PageRequest{Limit: 1000})
+	list := page.Jobs
 	if e != nil || len(list) != 1 {
 		t.Fatal(len(list), e)
 	}
@@ -185,8 +186,92 @@ func TestRunnerPeriodicCreationIsExclusiveAcrossGateways(t *testing.T) {
 	if e = b.Tick(ctx); e != nil {
 		t.Fatal(e)
 	}
-	list, e = jobs.Inventory(ctx, m)
+	page, e = m.ListJobs(ctx, jobs.PageRequest{Limit: 1000})
+	list = page.Jobs
 	if e != nil || len(list) != 1 || list[0].State != jobs.Succeeded {
 		t.Fatal(list, e)
+	}
+}
+
+type heartbeatTestClock struct {
+	clock.Clock
+	waiting chan struct{}
+	due     chan struct{}
+}
+
+func (c heartbeatTestClock) Sleep(ctx context.Context, _ time.Duration) error {
+	select {
+	case c.waiting <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-c.due:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+type stopRenewal struct {
+	jobs.Authority
+	calls   int
+	renewed chan struct{}
+}
+
+func (a *stopRenewal) Renew(ctx context.Context, f s.WriterFence) error {
+	a.calls++
+	if a.calls > 1 {
+		close(a.renewed)
+		return s.ErrFenced
+	}
+	return a.Authority.Renew(ctx, f)
+}
+func TestRunnerHeartbeatFailureCancelsAndJoinsTheActiveStep(t *testing.T) {
+	m, _, r, _ := newRunnerFixture(t)
+	ctx := context.Background()
+	c := heartbeatTestClock{Clock: r.Clock, waiting: make(chan struct{}, 1), due: make(chan struct{}, 1)}
+	r.Clock = c
+	authority := &stopRenewal{Authority: r.Authority, renewed: make(chan struct{})}
+	r.Authority = authority
+	stopped := make(chan struct{})
+	r.Executors["gc"] = jobs.Executor{Step: func(ctx context.Context, _ jobs.Job, _ config.GlobalSnapshot) (jobs.Step, error) {
+		<-ctx.Done()
+		close(stopped)
+		return jobs.Step{}, ctx.Err()
+	}}
+	j, e := r.Create(ctx, jobs.Create{Type: "gc"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- r.Tick(ctx) }()
+	select {
+	case <-c.waiting:
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat never started")
+	}
+	c.due <- struct{}{}
+	select {
+	case <-authority.renewed:
+	case <-time.After(time.Second):
+		t.Fatal("long step was not renewed")
+	}
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not join cancelled step")
+	}
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("step still active after worker returned")
+	}
+	out, e := m.GetJob(ctx, j.ID)
+	if e != nil || out.State != jobs.Running || out.PendingStep == "" {
+		t.Fatal("lost authority incorrectly checkpointed unknown work", out, e)
+	}
+	if e = r.Close(ctx); e != nil {
+		t.Fatal(e)
 	}
 }
