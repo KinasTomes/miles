@@ -759,3 +759,28 @@ func (o lifeRestoreOwner) Validate() error {
 	}
 	return nil
 }
+
+// LifecycleQuiescent is consumed before job authority attempts expiry cleanup.
+// A missing action is not proof that preflight I/O or an old step has joined.
+func (m *Store) LifecycleQuiescent(ctx context.Context, id string, f s.WriterFence) error {
+	return m.view(ctx, func(t *transaction) error {
+		a, e := r1Read[lifecycle.Action](t, lifecycleKey(id))
+		if errors.Is(e, s.ErrNotFound) {
+			return jobs.ErrReconciliation
+		}
+		if e != nil {
+			return e
+		}
+		if a.Fence != f || a.State != "Done" && a.State != "Skipped" && a.State != "NotApplied" && a.State != "Waiting" {
+			return jobs.ErrReconciliation
+		}
+		lease, e := r1Read[s.R1Lease](t, r1LeaseKey(id))
+		if e != nil {
+			return e
+		}
+		if lease.Fence != f || len(lease.Pending) != 0 {
+			return jobs.ErrReconciliation
+		}
+		return nil
+	})
+}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -27,6 +28,16 @@ func (a sharedJobAuthority) Acquire(ctx context.Context, id, kind string) (stora
 			return f, storage.ErrFenced
 		}
 		if old.State != "Released" {
+			job, readErr := m.GetJob(ctx, id)
+			if readErr != nil && !errors.Is(readErr, storage.ErrNotFound) {
+				return f, readErr
+			}
+			if readErr == nil && job.PendingStep != "" && (job.Type == "tiering" || job.Type == "pack_restore" || job.Type == "pack_promote") {
+				if err = m.LifecycleQuiescent(ctx, id, old.Fence); err != nil {
+					return f, errors.Join(jobs.ErrReconciliation, err)
+				}
+			}
+
 			if err = m.ReclaimR1(ctx, old.Fence, 5*time.Second); err != nil {
 				return f, err
 			}

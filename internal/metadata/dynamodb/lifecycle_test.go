@@ -695,6 +695,9 @@ func TestLocalLifecycleTerminalOutcomeAllowsJobTakeover(t *testing.T) {
 	if e != nil || !out.Done {
 		t.Fatal(out, e)
 	}
+	if e = m.LifecycleQuiescent(ctx, j.ID, j.Worker); e != nil {
+		t.Fatal(e)
+	}
 	// Crash after durable lifecycle outcome, before the Jobs checkpoint ACK.
 	lease, e := m.GetR1Lease(ctx, j.ID)
 	if e != nil {
@@ -722,5 +725,16 @@ func TestLocalLifecycleTerminalOutcomeAllowsJobTakeover(t *testing.T) {
 	out, e = w.Step(ctx, j, policy)
 	if e != nil || !out.Settled || !out.Done || physical.calls != 1 {
 		t.Fatal("retained outcome redispatched", out, e, physical.calls)
+	}
+}
+
+func TestLocalLifecycleMissingIntentDoesNotProveQuiescence(t *testing.T) {
+	m, _, j, _, _, _, _ := lifeFixture(t, "pack_promote", s.GlacierIR)
+	if e := m.LifecycleQuiescent(t.Context(), j.ID, j.Worker); !errors.Is(e, jobs.ErrReconciliation) {
+		t.Fatal("absence granted expiry cleanup", e)
+	}
+	lease, e := m.GetR1Lease(t.Context(), j.ID)
+	if e != nil || lease.State != "Active" {
+		t.Fatal(lease, e)
 	}
 }
