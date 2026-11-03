@@ -60,7 +60,7 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 			if n.Incarnation != c.NodeIncarnation || n.ServiceIncarnation != c.Fence.ServiceIncarnation {
 				return s.ErrFenced
 			}
-			if (c.Kind == "claim" && !n.Ready) || ((c.Kind == "claim" || c.Kind == "begin_step") && n.Draining) {
+			if old.Type != "drain" && old.State != jobs.Cancelling && ((c.Kind == "claim" && !n.Ready) || ((c.Kind == "claim" || c.Kind == "begin_step") && n.Draining)) {
 				return s.ErrConflict
 			}
 			if _, e = get[s.PolicySnapshot](t, policyKey(old.PolicyRevision)); e != nil {
@@ -156,6 +156,9 @@ func listOperational[T any](m *Store, ctx context.Context, kind string, p jobs.P
 				if x.Validate() != nil {
 					return s.ErrUnavailable
 				}
+				if p.ActiveOnly && x.State.Terminal() {
+					continue
+				}
 				last = x.ID
 			case jobs.Node:
 				if x.Validate() != nil {
@@ -174,6 +177,9 @@ func (m *Store) ListJobs(ctx context.Context, p jobs.PageRequest) (jobs.JobPage,
 	return jobs.JobPage{Jobs: v, Next: n}, e
 }
 func (m *Store) ListNodes(ctx context.Context, p jobs.PageRequest) (jobs.NodePage, error) {
+	if p.ActiveOnly {
+		return jobs.NodePage{}, s.ErrInvalid
+	}
 	v, n, e := listOperational[jobs.Node](m, ctx, "nodes", p)
 	return jobs.NodePage{Nodes: v, Next: n}, e
 }

@@ -63,7 +63,7 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 			if n.Incarnation != c.NodeIncarnation || n.ServiceIncarnation != c.Fence.ServiceIncarnation {
 				return s.ErrFenced
 			}
-			if (c.Kind == "claim" && !n.Ready) || ((c.Kind == "claim" || c.Kind == "begin_step") && n.Draining) {
+			if old.Type != "drain" && old.State != jobs.Cancelling && ((c.Kind == "claim" && !n.Ready) || ((c.Kind == "claim" || c.Kind == "begin_step") && n.Draining)) {
 				return s.ErrConflict
 			}
 			if _, e = get[s.PolicySnapshot](t, policyKey(old.PolicyRevision)); e != nil {
@@ -141,6 +141,14 @@ func listOperational[T any](m *Store, ctx context.Context, table, pk string, p j
 		return nil, "", e
 	}
 	input := &ddb.ScanInput{TableName: aws.String(m.tables[table]), ConsistentRead: aws.Bool(true), Limit: aws.Int32(int32(p.Limit))}
+	if p.ActiveOnly {
+		if table != "Jobs" {
+			return nil, "", s.ErrInvalid
+		}
+		input.FilterExpression = aws.String("#state IN (:queued,:running,:cancelling)")
+		input.ExpressionAttributeNames = map[string]string{"#state": "state"}
+		input.ExpressionAttributeValues = Item{":queued": text("queued"), ":running": text("running"), ":cancelling": text("cancelling")}
+	}
 	if p.Cursor != "" {
 		input.ExclusiveStartKey = Item{pk: text(p.Cursor)}
 	}
@@ -177,6 +185,13 @@ func listOperational[T any](m *Store, ctx context.Context, table, pk string, p j
 		out = append(out, v)
 	}
 	next := ""
+	if p.ActiveOnly && len(page.LastEvaluatedKey) > 0 {
+		last, ok := page.LastEvaluatedKey[pk].(*types.AttributeValueMemberS)
+		if !ok || !jobs.ValidID(last.Value) {
+			return nil, "", s.ErrUnavailable
+		}
+		return out, last.Value, nil // filtered native pages may be empty and still have a continuation
+	}
 	if len(page.LastEvaluatedKey) > 0 {
 		input.ExclusiveStartKey = page.LastEvaluatedKey
 		input.Limit = aws.Int32(1)

@@ -8,6 +8,13 @@ import (
 )
 
 func TestNodeClusterResultAndRecordBounds(t *testing.T) {
+	empty := Result{Scope: "cluster", Nodes: []NodeResult{{NodeID: "offline", State: "unavailable", ErrorCode: "node_unavailable", Result: json.RawMessage{}}}}
+	if e := empty.Validate(); e != nil {
+		t.Fatal("native empty result rejected", e)
+	}
+	if b, e := json.Marshal(empty); e != nil || !strings.Contains(string(b), `"result":null`) {
+		t.Fatal(string(b), e)
+	}
 	r := Result{Scope: "cluster", Nodes: []NodeResult{{NodeID: "cloud-1", State: "succeeded", Result: json.RawMessage(`{"removed":3}`)}, {NodeID: "edge-1", State: "unavailable", ErrorCode: "heartbeat_stale"}}}
 	if e := r.Validate(); e != nil {
 		t.Fatal(e)
