@@ -23,7 +23,7 @@ func (m *Store) GetRecoveryCatalog(ctx context.Context, history string) (out s.R
 	return
 }
 func (m *Store) CompareRecoveryCatalog(ctx context.Context, old, next s.RecoveryCatalogHead, worker s.WriterFence) error {
-	if next.Version != 1 || !mutationID.MatchString(next.History) || next.Incarnation != worker.ServiceIncarnation || next.Revision != old.Revision+1 || next.Revision > s.MaxPolicyRevision || next.Length <= 0 || next.Length > 256<<10 || next.Key == "" || len(next.SHA256) != 64 {
+	if next.Version != 1 || !mutationID.MatchString(next.History) || next.Incarnation != worker.ServiceIncarnation || next.Revision != old.Revision+1 || next.Revision > s.MaxPolicyRevision || next.Length <= 0 || next.Length > 256<<10 || next.Key == "" || !validRecoveryDigest(next.SHA256) {
 		return s.ErrInvalid
 	}
 	return m.update(ctx, func(t *transaction) error {

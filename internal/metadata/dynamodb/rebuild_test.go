@@ -75,6 +75,17 @@ func installFixture(t *testing.T) (s.IndexInstall, []s.IndexRecord) {
 	add("quotas", []string{"owner"}, s.LogicalQuota{OwnerID: "owner", Limit: 100, Used: 4})
 	add("buckets", []string{"bucket"}, s.Bucket{Name: "bucket", ID: strings.Repeat("4", 32), OwnerID: "owner", Domain: "default", Revision: 1, Active: true})
 	add("bucket-namespace", []string{"bucket"}, s.BucketNamespace{Version: 1, LiveObjects: 1})
+	validator, _ := config.NewPolicyValidator(config.DSGPolicyLimits())
+	snapshot, e := validator.NewGlobalSnapshot(1, config.DefaultGlobalPolicy())
+	if e != nil {
+		t.Fatal(e)
+	}
+	policy, e := snapshot.StorageSnapshot()
+	if e != nil {
+		t.Fatal(e)
+	}
+	add("policies", []string{"0000000000000001"}, policy)
+	add("policy-current", nil, uint64(1))
 	sort.Slice(records, func(i, j int) bool {
 		return records[i].Kind+"/"+strings.Join(records[i].IDs, "\x00") < records[j].Kind+"/"+strings.Join(records[j].IDs, "\x00")
 	})
@@ -168,6 +179,20 @@ func TestLocalRebuiltIndexOfflineProofResumeAndDisabledCredentials(t *testing.T)
 	}
 	if proof.calls < 3 {
 		t.Fatal("missing final proof")
+	}
+	if e = m.update(t.Context(), func(tx *transaction) error {
+		g, e := r1Read[s.R1Gate](tx, r1GateKey())
+		if e != nil {
+			return e
+		}
+		g.Incarnation = strings.Repeat("9", 32)
+		g.Revision++
+		return r1Put(tx, r1GateKey(), g)
+	}); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.FinishIndexInstall(t.Context(), request); !errors.Is(e, s.ErrFenced) {
+		t.Fatal("stale install reported ready", e)
 	}
 }
 func TestLocalRebuiltIndexRejectsPartialWrongDigestAndOldAuthority(t *testing.T) {

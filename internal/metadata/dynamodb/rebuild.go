@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/manifest"
 	s "github.com/KinasTomes/miles/internal/storage"
@@ -50,7 +51,10 @@ func (m *Store) offlineProof(t *transaction, r s.IndexInstall) error {
 	})
 }
 func validInstall(r s.IndexInstall) bool {
-	return mutationID.MatchString(r.SourceHistory) && mutationID.MatchString(r.History) && mutationID.MatchString(r.Incarnation) && r.History != r.SourceHistory && r.Incarnation != r.SourceIncarnation && r.SourceIncarnation != "" && len(r.TargetSHA256) == 64 && len(r.GenesisSHA256) == 64 && r.GenesisLength > 0 && r.GenesisLength <= 256<<10 && (r.RecordsSHA256 == "" || len(r.RecordsSHA256) == 64)
+	return mutationID.MatchString(r.SourceHistory) && mutationID.MatchString(r.History) && mutationID.MatchString(r.Incarnation) && r.History != r.SourceHistory && r.Incarnation != r.SourceIncarnation && r.SourceIncarnation != "" && validRecoveryDigest(r.TargetSHA256) && validRecoveryDigest(r.GenesisSHA256) && r.GenesisLength > 0 && r.GenesisLength <= 256<<10 && validRecoveryDigest(r.RecordsSHA256)
+}
+func validRecoveryDigest(v string) bool {
+	return len(v) == 64 && mutationID.MatchString(v[:32]) && mutationID.MatchString(v[32:])
 }
 
 // Begin requires a dedicated empty table inventory. This is an offline empty-
@@ -308,6 +312,9 @@ func (m *Store) stageRecoveryRecord(t *transaction, r s.IndexRecord) error {
 	return put(t, address, reflect.ValueOf(value).Elem().Interface())
 }
 func (m *Store) FinishIndexInstall(ctx context.Context, r s.IndexInstall) error {
+	if !validInstall(r) {
+		return s.ErrInvalid
+	}
 	return m.update(ctx, func(t *transaction) error {
 		state, e := r1Read[indexInstallState](t, indexInstallKey())
 		if e != nil {
@@ -317,6 +324,13 @@ func (m *Store) FinishIndexInstall(ctx context.Context, r s.IndexInstall) error 
 			return s.ErrConflict
 		}
 		if state.State == "Ready" {
+			g, e := r1Read[s.R1Gate](t, r1GateKey())
+			if e != nil {
+				return e
+			}
+			if g.HistoryID != r.History || g.Incarnation != r.Incarnation || g.State != "Open" {
+				return s.ErrFenced
+			}
 			return nil
 		}
 		if state.State != "Installing" {
@@ -331,6 +345,18 @@ func (m *Store) FinishIndexInstall(ctx context.Context, r s.IndexInstall) error 
 		}
 		if g.State != "Closing" || g.Incarnation != r.Incarnation || g.HistoryID != r.History || g.Revision != 1 {
 			return s.ErrFenced
+		}
+		revision, e := get[uint64](t, "policy-current")
+		if e != nil || revision == 0 {
+			return s.ErrInvalid
+		}
+		policy, e := get[s.PolicySnapshot](t, policyKey(revision))
+		if e != nil {
+			return e
+		}
+		validator, _ := config.NewPolicyValidator(config.DSGPolicyLimits())
+		if _, e = validator.DecodeGlobal(policy); e != nil {
+			return s.ErrInvalid
 		}
 		g.State = "Open"
 		g.Revision++
