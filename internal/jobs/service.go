@@ -15,6 +15,9 @@ import (
 type PolicyReader interface {
 	GetPolicy(context.Context, uint64) (storage.PolicySnapshot, error)
 }
+
+var ErrUnsupported = errors.New("job executor is not installed")
+
 type Service struct {
 	Store    Store
 	Policies PolicyReader
