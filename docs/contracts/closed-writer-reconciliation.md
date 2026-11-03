@@ -17,6 +17,13 @@ I/O and other action kinds return busy and keep protection. Multipart reservatio
 remain owned by the multipart recovery protocol: fencing their commit attempt
 does not consume upload/staging accounting or claim that an upload was aborted.
 
+Multipart takeover records the old attempt's closure in the same transaction as
+reservation transfer. It settles only that proven commit action, closes the
+former writer's R1 authority and retains its roots, pins and any unknown physical
+I/O. The old producer becomes terminal only after all pending actions are settled;
+it does not depend on the reservation still naming the old writer. An owner
+reopening its own upload keeps authority until that transition commits.
+
 Successful reconciliation retains the closed lease's roots and pins. The owner
 may release them only after joining its CPU, body/backend and acknowledgement
 work. Expiry alone is not quiescence. The recovery cut can reclaim publication

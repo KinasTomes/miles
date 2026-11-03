@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/KinasTomes/miles/internal/recovery/format"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/manifest"
@@ -134,10 +135,32 @@ func (t multipartTx) CloseOperation(op, reservation string) error {
 	if row.after != nil && row.after["result"] != nil {
 		return s.ErrConflict
 	}
-	if operationClosed(row.after) {
+	if !operationClosed(row.after) {
+		if err := closeOperation(row, r); err != nil {
+			return err
+		}
+	}
+	if _, shared := t.store.authority.(*SharedAuthority); !shared {
 		return nil
 	}
-	return closeOperation(row, r)
+	l, err := r1Read[s.R1Lease](t.transaction, r1LeaseKey(r.Writer.LeaseID))
+	if err != nil {
+		return err
+	}
+	if l.Fence != r.Writer || l.Kind != "writer" || l.OpID != op || l.Object != r.Object {
+		return s.ErrFenced
+	}
+	// The same CAS must retain the old producer's proof before reservation
+	// ownership moves. Close a former owner without releasing its roots/pins.
+	if !t.r1Fences[r.Writer] && l.State == "Active" {
+		l.State = "Closed"
+	}
+	l.Pending = slices.DeleteFunc(l.Pending, func(id string) bool { return id == "commit/"+op })
+	l.Revision++
+	if err := t.store.recordRecoveryClosure(t.transaction, l); err != nil {
+		return err
+	}
+	return r1Put(t.transaction, r1LeaseKey(r.Writer.LeaseID), l)
 }
 func (t multipartTx) ResetOperation(op, reservation string) error {
 	row, err := t.load(key("outcomes", op))

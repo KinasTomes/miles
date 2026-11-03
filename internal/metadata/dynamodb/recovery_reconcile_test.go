@@ -1,16 +1,151 @@
 package dynamodb
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/coordination"
+	"github.com/KinasTomes/miles/internal/manifest"
+	"github.com/KinasTomes/miles/internal/multipart/core"
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/contracttest"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
+
+func TestLocalMultipartTakeoverSettlesOldRecoveryProducer(t *testing.T) {
+	for _, scenario := range []struct {
+		name                            string
+		closed, before, after, physical bool
+	}{
+		{name: "closed-owner", closed: true}, {name: "live-owner"},
+		{name: "before-send", before: true}, {name: "lost-ack", after: true},
+		{name: "unknown-physical-io", physical: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			multipartTakeoverProducer(t, scenario.closed, scenario.before, scenario.after, scenario.physical)
+		})
+	}
+}
+
+func multipartTakeoverProducer(t *testing.T, closed, before, after, physical bool) {
+	f := newRecoveryFixture(t)
+	ctx := context.Background()
+	object := contracttest.NewFixture().Request("multipart-takeover", 0).Head.Object
+	uploadID, createOp, completeOp := strings.Repeat("a", 32), strings.Repeat("b", 32), strings.Repeat("c", 32)
+	admit := func(id, op string) (context.Context, s.WriterFence) {
+		w := f.acquire(t, id, "writer", op, 1)
+		c := s.WithMutation(ctx, s.MutationContext{HistoryID: f.catalog.History, Epoch: 0, LogicalOpID: op, MutationID: op, Object: object, Writer: w})
+		if err := f.m.BindR1(c, w, s.ObjectHead{Object: object, ManifestID: uploadID}); err != nil {
+			t.Fatal(err)
+		}
+		return c, w
+	}
+	createCtx, creator := admit("multipart-create", createOp)
+	u, err := f.m.CreateUpload(createCtx, s.CreateUploadRequest{Request: s.MultipartRequest{UploadID: uploadID, Credential: "writer-key", OpID: createOp, Writer: creator}, Upload: s.MultipartUpload{ID: uploadID, Object: object, ReservationID: "takeover-reservation", ChecksumAlgorithm: "CRC32C", ChecksumType: "FULL_OBJECT"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.release(t, creator)
+	oldCtx, old := admit("multipart-old", completeOp)
+	in := core.Input{V: 1, BucketID: object.BucketID, Key: object.Key, ChecksumAlgorithm: u.ChecksumAlgorithm, ChecksumType: u.ChecksumType, Parts: []core.Part{{PartNumber: 1, ETag: strings.Repeat("a", 32)}}}
+	owner := strings.Repeat("d", 32)
+	if err := f.m.BindR1(oldCtx, old, s.ObjectHead{Object: object, ManifestID: owner}); err != nil {
+		t.Fatal(err)
+	}
+	d, err := manifest.WriteCompletionStream(manifest.CompletionInput, owner, bytes.NewReader(in.Canonical()), func(n uint32, b []byte) error {
+		return f.m.WriteCompletionPage(oldCtx, manifest.CompletionInput, owner, n, b, old)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err = f.m.FreezeCompletion(oldCtx, s.FreezeRequest{Request: s.MultipartRequest{UploadID: u.ID, Credential: "writer-key", OpID: completeOp, Writer: old, ExpectedRevision: u.Revision}, Input: d})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.m.BeginR1Action(oldCtx, old, "commit/"+completeOp); err != nil {
+		t.Fatal(err)
+	}
+	if physical {
+		if err = f.m.BeginR1Action(oldCtx, old, "data/pack"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if closed {
+		if err = f.m.CloseR1(ctx, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	quota, err := f.m.GetQuota(ctx, "owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.utc.Advance(66 * time.Second)
+	nextCtx, next := admit("multipart-successor", completeOp)
+	request := s.MultipartRequest{UploadID: u.ID, Credential: "writer-key", OpID: completeOp, Writer: next, ExpectedRevision: u.Revision, Fence: u.Fence}
+	original := f.peer.api
+	f.peer.api = &takeoverResponseFault{API: original, before: before, after: after}
+	u, err = f.peer.ClaimCompletion(nextCtx, request)
+	f.peer.api = original
+	if before || after {
+		if !errors.Is(err, s.ErrUnavailable) {
+			t.Fatal("fault not injected", err)
+		}
+		u, err = f.peer.GetUpload(ctx, request.UploadID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lease, e := f.peer.GetR1Lease(ctx, old.LeaseID)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if before {
+			if u.Writer != old || len(lease.Pending) != 1 || lease.State != "Active" {
+				t.Fatal("handoff partially committed", u, lease)
+			}
+			u, err = f.peer.ClaimCompletion(nextCtx, request)
+		} else if u.Writer != next || lease.State != "Closed" || len(lease.Pending) != 0 {
+			t.Fatal("lost ACK hid non-atomic closure", u, lease)
+		}
+	}
+	if err != nil {
+		t.Fatal("takeover", err)
+	}
+	if afterQuota, e := f.peer.GetQuota(ctx, "owner"); e != nil || afterQuota != quota {
+		t.Fatal("handoff changed staging accounting", afterQuota, quota, e)
+	}
+	if e := f.peer.BeginR1Action(ctx, old, "commit/"+completeOp); !errors.Is(e, s.ErrFenced) {
+		t.Fatal("old owner can register another dispatch", e)
+	}
+	if physical {
+		lease, e := f.peer.GetR1Lease(ctx, old.LeaseID)
+		if e != nil || lease.State != "Closed" || len(lease.Pending) != 1 || lease.Pending[0] != "data/pack" || len(lease.Roots) != 2 {
+			t.Fatal("unknown I/O lost protection", lease, e)
+		}
+		if e = f.peer.ReconcileR1(ctx, old); !errors.Is(e, s.ErrR1Busy) {
+			t.Fatal("physical unknown incorrectly settled", e)
+		}
+		return
+	}
+	ledger, err := f.peer.GetReservation(ctx, u.ReservationID)
+	if err != nil || ledger.Writer != next {
+		t.Fatal("reservation not transferred", ledger, err)
+	}
+	if err = f.peer.ReconcileR1(ctx, old); err != nil {
+		t.Fatal("takeover stranded old recovery producer", err)
+	}
+	oldLease, err := f.peer.GetR1Lease(ctx, old.LeaseID)
+	if err != nil || len(oldLease.Pending) != 0 || len(oldLease.Roots) != 2 || oldLease.State != "Closed" {
+		t.Fatal("takeover discarded roots or retained commit", oldLease, err)
+	}
+	f.release(t, next)
+	if _, err = f.service(f.peer, f.worker).CloseAndSeal(ctx, f.request(0)); err != nil {
+		t.Fatal("takeover prevented epoch sealing", err)
+	}
+}
 
 func recoveryCommit(t *testing.T, f *recoveryFixture, label string) s.CommitRequest {
 	t.Helper()
@@ -296,4 +431,23 @@ func TestLocalRegistryQuiescenceReconcilesSharedCommit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The closure and transfer share one native transaction, including a lost ACK.
+type takeoverResponseFault struct {
+	API
+	before, after bool
+}
+
+func (a *takeoverResponseFault) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, opts ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
+	if a.before {
+		a.before = false
+		return nil, errors.New("takeover send failed")
+	}
+	out, err := a.API.TransactWriteItems(ctx, in, opts...)
+	if err == nil && a.after {
+		a.after = false
+		return nil, errors.New("takeover ACK lost")
+	}
+	return out, err
 }
