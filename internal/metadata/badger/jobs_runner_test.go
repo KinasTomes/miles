@@ -275,3 +275,28 @@ func TestRunnerHeartbeatFailureCancelsAndJoinsTheActiveStep(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestRunnerManagedCreationRequiresLiveAuthority(t *testing.T) {
+	m, a, r, _ := newRunnerFixture(t)
+	ctx := context.Background()
+	f, e := a.Acquire(ctx, "schedule_gc", "control")
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = a.Close(ctx, f); e != nil {
+		t.Fatal(e)
+	}
+	for _, id := range []string{"periodic_gc_123", "child_123"} {
+		_, e = r.Service.CreateNamed(jobs.WithCreationFence(ctx, f), jobs.Create{Type: "gc"}, id)
+		if !errors.Is(e, s.ErrFenced) {
+			t.Fatal("closed creator enqueued work", id, e)
+		}
+		_, e = r.Service.CreateNamed(ctx, jobs.Create{Type: "gc"}, id)
+		if !errors.Is(e, s.ErrFenced) {
+			t.Fatal("managed job created without authority", id, e)
+		}
+		if _, e = m.GetJob(ctx, id); !errors.Is(e, s.ErrNotFound) {
+			t.Fatal("failed managed create left a record", id, e)
+		}
+	}
+}

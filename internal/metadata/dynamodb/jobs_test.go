@@ -137,3 +137,36 @@ func TestLocalJobsNodesContract(t *testing.T) {
 		}}
 	})
 }
+
+func TestLocalManagedJobCreateIsFencedInItsTransaction(t *testing.T) {
+	f := contracttest.NewFixture()
+	f.Now = opstest.Now
+	m, client := fixtureStore(t, f)
+	ctx := context.Background()
+	if e := m.update(ctx, func(t *transaction) error {
+		if e := put(t, policyKey(1), opstest.Policy(1)); e != nil {
+			return e
+		}
+		return put(t, "policy-current", uint64(1))
+	}); e != nil {
+		t.Fatal(e)
+	}
+	fence := s.WriterFence{LeaseID: "schedule_gc", ServiceIncarnation: "history-1", Epoch: 1}
+	setJobLease(t, m, s.WriterLease{Fence: fence, ExpiresAt: opstest.Now.Add(time.Minute)})
+	peer, e := New(Options{API: client, Tables: m.tables, Now: m.now, Authority: m.authority})
+	if e != nil {
+		t.Fatal(e)
+	}
+	m.api = &closeJobLeaseBeforeCommit{API: client, table: m.tables["Jobs"], close: func() {
+		next := fence
+		next.Epoch++
+		setJobLease(t, peer, s.WriterLease{Fence: next, ExpiresAt: opstest.Now.Add(time.Minute)})
+	}}
+	_, e = (jobs.Service{Store: m, Policies: m}).CreateNamed(jobs.WithCreationFence(ctx, fence), jobs.Create{Type: "gc"}, "periodic_gc_123")
+	if !errors.Is(e, s.ErrFenced) {
+		t.Fatal("late scheduler enqueued after authority transfer", e)
+	}
+	if _, e = peer.GetJob(ctx, "periodic_gc_123"); !errors.Is(e, s.ErrNotFound) {
+		t.Fatal("late scheduler left a job", e)
+	}
+}

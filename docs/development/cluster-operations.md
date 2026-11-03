@@ -57,6 +57,10 @@ The hourly recovery-cut supervisor has separate shared ownership; it uses the
 existing durable cut deadline, while the Jobs runner owns periodic export.
 
 Cluster cache purge freezes node IDs and boot incarnations in the parent job.
+Membership covers the current service incarnation and heartbeats within two
+minutes of discovery: recently missing peers produce partial results, while
+historical boots are excluded. It is a frozen discovery set, not an atomic
+cluster-membership snapshot or a promise about nodes that join later.
 Targets consume child commands from shared metadata, including Edge with its
 loopback-only Admin listener. There is no peer bearer forwarding or new inbound
 Admin port. A replacement incarnation cannot execute an old command. Membership

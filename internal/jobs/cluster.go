@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"sort"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/storage"
 )
+
+var ErrNodeNotFound = fmt.Errorf("%w: target node does not exist", storage.ErrNotFound)
 
 type target struct {
 	ID          string `json:"node_id"`
@@ -91,10 +94,13 @@ func (c *Cluster) Create(ctx context.Context, q Create) (Job, error) {
 		}
 		n, e := c.Runner.Service.Store.GetNode(ctx, p.NodeID)
 		if e != nil {
+			if errors.Is(e, storage.ErrNotFound) {
+				return Job{}, ErrNodeNotFound
+			}
 			return Job{}, e
 		}
 		p.Incarnation = n.Incarnation
-		p.Child = true
+		p.Targets = []target{{n.ID, n.Incarnation}}
 	case "cluster":
 		if p.NodeID != "" {
 			return Job{}, storage.ErrInvalid
@@ -106,6 +112,11 @@ func (c *Cluster) Create(ctx context.Context, q Create) (Job, error) {
 				return Job{}, e
 			}
 			for _, n := range page.Nodes {
+				// Nodes rows outlive processes. Retain recently missing peers for
+				// partial results, without including every historical boot forever.
+				if n.ServiceIncarnation != c.Registry.Identity.ServiceIncarnation || c.Registry.Clock.Now().WallUTC.Sub(n.HeartbeatAt) > 2*time.Minute {
+					continue
+				}
 				p.Targets = append(p.Targets, target{n.ID, n.Incarnation})
 			}
 			if len(p.Targets) > 64 {
@@ -135,6 +146,9 @@ func (c *Cluster) Drain(ctx context.Context, id string) (Job, error) {
 func (c *Cluster) drain(ctx context.Context, id string, dry bool, revision uint64) (Job, error) {
 	n, e := c.Runner.Service.Store.GetNode(ctx, id)
 	if e != nil {
+		if errors.Is(e, storage.ErrNotFound) {
+			return Job{}, ErrNodeNotFound
+		}
 		return Job{}, e
 	}
 	p, _ := json.Marshal(command{Scope: "node", NodeID: id, Incarnation: n.Incarnation})
@@ -203,10 +217,10 @@ func (c *Cluster) CacheExecutor(purge func(context.Context, string) error) Execu
 	}}
 }
 func (c *Cluster) fanout(ctx context.Context, j Job, p command) (Step, error) {
-	if p.Scope != "cluster" || len(p.Targets) == 0 {
+	if (p.Scope != "cluster" && p.Scope != "node") || len(p.Targets) == 0 {
 		return Step{Settled: true}, storage.ErrInvalid
 	}
-	result := Result{Scope: "cluster", Nodes: []NodeResult{}}
+	result := Result{Scope: p.Scope, Nodes: []NodeResult{}}
 	pending, failed := false, false
 	for _, target := range p.Targets {
 		sum := sha256.Sum256([]byte(j.ID + "/" + target.ID + "/" + target.Incarnation))
@@ -218,7 +232,7 @@ func (c *Cluster) fanout(ctx context.Context, j Job, p command) (Step, error) {
 				result.Nodes = append(result.Nodes, NodeResult{NodeID: target.ID, State: "unavailable", ErrorCode: "cancelled_before_dispatch"})
 				continue
 			}
-			child, e = c.Runner.Service.CreateNamed(ctx, Create{Type: "cache_purge", DryRun: j.DryRun, Params: params, PolicyRevision: j.PolicyRevision}, id)
+			child, e = c.Runner.Service.CreateNamed(WithCreationFence(ctx, j.Worker), Create{Type: "cache_purge", DryRun: j.DryRun, Params: params, PolicyRevision: j.PolicyRevision}, id)
 			if e != nil {
 				child, e = c.GetJob(ctx, id)
 			} // exact read reconciles both conflict and lost ACK

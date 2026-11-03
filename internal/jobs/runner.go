@@ -206,7 +206,7 @@ func (r *Runner) schedule(ctx context.Context, t Type, exec Executor) error {
 		}
 	}
 	id := fmt.Sprintf("%s%d", prefix, slot)
-	_, e = r.Service.CreateNamed(ctx, Create{Type: t}, id)
+	_, e = r.Service.CreateNamed(WithCreationFence(ctx, f), Create{Type: t}, id)
 	if e == nil || errors.Is(e, storage.ErrConflict) {
 		r.slots[t] = slot
 		return nil

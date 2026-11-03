@@ -3,6 +3,7 @@ package badger
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/KinasTomes/miles/internal/jobs"
 	s "github.com/KinasTomes/miles/internal/storage"
@@ -16,6 +17,14 @@ func (m *Store) CreateJob(ctx context.Context, j jobs.Job) error {
 		return s.ErrInvalid
 	}
 	return m.update(ctx, func(t *db.Txn) error {
+		if creator, ok := jobs.CreationFence(ctx); ok {
+			if e := m.fence(t, creator); e != nil {
+				return e
+			}
+		} else if strings.HasPrefix(j.ID, "periodic_") || strings.HasPrefix(j.ID, "child_") {
+			return s.ErrFenced
+		}
+
 		if _, e := get[s.PolicySnapshot](t, policyKey(j.PolicyRevision)); e != nil {
 			return e
 		}

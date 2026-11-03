@@ -57,7 +57,10 @@ func nativeClusterOperations(t *testing.T, ctx context.Context, nodes []Dependen
 	wait := func(id string) jobs.Job {
 		deadline := time.Now().Add(25 * time.Second)
 		for time.Now().Before(deadline) {
-			for _, d := range nodes {
+			for i, d := range nodes {
+				if e := d.Operations.Registry.Tick(ctx, gates[i], jobs.NodeStatus{Ready: !gates[i].Draining(), AppliedPolicyRevision: 1}); e != nil {
+					t.Fatal(e)
+				}
 				if e := d.Operations.Cluster.Runner.Tick(ctx); e != nil {
 					t.Fatal(e)
 				}
@@ -76,10 +79,35 @@ func nativeClusterOperations(t *testing.T, ctx context.Context, nodes []Dependen
 		return j
 	}
 	key := storage.CacheKey{Pack: storage.PackRef{ID: "native-cache", Generation: "generation-1"}, Range: storage.ByteRange{Length: 4}}
+	historical := nodes[0].Operations.Registry.Identity
+	historical.ID = "historical-boot"
+	historical.Incarnation = "old-boot"
+	historical.Revision = 0
+	historical.Ready = false
+	historical.HeartbeatAt = time.Now().Add(-3 * time.Minute)
+	if _, e := nodes[0].Operations.Registry.Store.PutNode(ctx, 0, historical); e != nil {
+		t.Fatal(e)
+	}
 	for _, d := range nodes {
 		if e := d.Cache.Put(ctx, key, []byte("data")); e != nil {
 			t.Fatal(e)
 		}
+	}
+	dry := create(0, `{"type":"cache_purge","dry_run":true,"params":{"scope":"cluster"}}`)
+	if out := wait(dry.ID); out.State != jobs.Succeeded {
+		t.Fatal("dry run failed", out)
+	}
+	for _, d := range nodes {
+		_, hit, e := d.Cache.Get(ctx, key)
+		if e != nil || !hit {
+			t.Fatal("dry run purged data", hit, e)
+		}
+	}
+	if rec := call(0, "POST", "/admin/v1/jobs", `{"type":"cache_purge","params":{"scope":"node","node_id":"missing"}}`); rec.Code != 404 {
+		t.Fatal("missing node is not a server failure", rec.Code, rec.Body)
+	}
+	if rec := call(0, "POST", "/admin/v1/jobs", `{"type":"cache_purge","params":{"scope":"cluster","targets":[{"node_id":"forged","incarnation":"forged"}]}}`); rec.Code != 400 {
+		t.Fatal("caller forged target membership", rec.Code, rec.Body)
 	}
 	j := create(0, `{"type":"cache_purge","params":{"scope":"cluster"}}`)
 	out := wait(j.ID)
@@ -113,6 +141,11 @@ func nativeClusterOperations(t *testing.T, ctx context.Context, nodes []Dependen
 	out = wait(j.ID)
 	if out.State != jobs.Failed || out.ErrorCode != "partial_cluster" || !strings.Contains(string(out.Result), `"state":"unavailable"`) {
 		t.Fatal("partial cluster reported success", out)
+	}
+	j = create(0, `{"type":"cache_purge","params":{"scope":"node","node_id":"offline-node"}}`)
+	out = wait(j.ID)
+	if out.State != jobs.Failed || !strings.Contains(string(out.Result), `"scope":"node"`) || !strings.Contains(string(out.Result), `"state":"unavailable"`) {
+		t.Fatal("unreachable node-scope job remained queued", out)
 	}
 	j = create(0, `{"type":"cache_purge","params":{"scope":"node"}}`)
 	rec = call(1, "DELETE", "/admin/v1/jobs/"+j.ID, "")

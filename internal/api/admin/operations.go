@@ -79,6 +79,9 @@ func (s *server) createJob(c *call) error {
 		if errors.Is(err, jobs.ErrUnsupported) {
 			return &apiError{http.StatusNotImplemented, "job_type_unavailable", "job executor is not installed"}
 		}
+		if errors.Is(err, jobs.ErrNodeNotFound) {
+			return notFound("node_not_found", "node does not exist")
+		}
 		// Preserve the generated identity even if a lost ACK made create uncertain.
 		if j.ID != "" {
 			c.w.Header().Set("Location", "/admin/v1/jobs/"+j.ID)
