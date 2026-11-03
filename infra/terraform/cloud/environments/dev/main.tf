@@ -13,19 +13,24 @@ module "network" {
   nat_per_az      = var.nat_per_az
   client_cidrs    = var.client_cidrs
   admin_ssh_cidrs = var.admin_ssh_cidrs
+  enable_edge     = var.enable_edge
 }
 module "endpoints" {
-  source            = "../../modules/endpoints"
-  name              = local.name
-  region            = var.region
-  vpc_id            = module.network.vpc_id
-  private_subnets   = module.network.private_subnets
-  route_table_ids   = module.network.private_route_table_ids
-  gateway_sg_id     = module.network.security_groups.gateway
-  jobs_sg_id        = module.network.security_groups.jobs
-  enable_interfaces = local.egress_mode == "interface"
-  data_bucket_name  = local.data_bucket_name
-  table_arns        = module.data.table_arns
+  source                       = "../../modules/endpoints"
+  name                         = local.name
+  region                       = var.region
+  vpc_id                       = module.network.vpc_id
+  private_subnets              = module.network.private_subnets
+  route_table_ids              = module.network.private_route_table_ids
+  gateway_sg_id                = module.network.security_groups.gateway
+  jobs_sg_id                   = module.network.security_groups.jobs
+  enable_interfaces            = local.egress_mode == "interface"
+  data_bucket_name             = local.data_bucket_name
+  table_arns                   = module.data.table_arns
+  enable_edge                  = var.enable_edge
+  edge_sg_id                   = try(module.network.security_groups.edge, null)
+  edge_trust_anchor_arn        = try(module.iam.edge_provider.trust_anchor_arn, null)
+  edge_certificate_common_name = var.edge_certificate_common_name
 }
 module "security" {
   source               = "../../modules/security"
@@ -60,6 +65,9 @@ module "iam" {
   fleet_enabled                = var.enable_asg
   release_sha256               = var.release_sha256
   edge_ca_pem                  = var.edge_ca_pem
+  enable_edge                  = var.enable_edge
+  edge_bootstrap_secret_arn    = try(aws_secretsmanager_secret.edge_bootstrap[0].arn, null)
+  edge_helper_sha256           = var.edge_helper_sha256
 }
 module "compute" {
   source            = "../../modules/compute"
@@ -119,4 +127,38 @@ module "fleet" {
   owner_ssh_public_key    = var.owner_ssh_public_key
   environment             = var.environment
   owner                   = var.owner
+}
+
+resource "aws_secretsmanager_secret" "edge_bootstrap" {
+  count                   = var.edge_ca_pem != null ? 1 : 0
+  name                    = "${local.name}/edge-bootstrap"
+  kms_key_id              = module.security.kms_key_arn
+  recovery_window_in_days = 30
+}
+module "edge" {
+  count                = var.enable_edge ? 1 : 0
+  source               = "../../modules/edge"
+  depends_on           = [module.endpoints]
+  enabled              = !var.paused
+  name                 = local.name
+  account_id           = var.account_id
+  region               = var.region
+  environment          = var.environment
+  owner                = var.owner
+  ami_id               = var.ami_id
+  architecture         = var.release_architecture
+  instance_type        = var.edge_instance_type
+  subnet_id            = module.network.public_subnets[local.zones[0]]
+  security_group_id    = module.network.security_groups.edge
+  instance_profile     = module.iam.edge_bootstrap_profile
+  data_bucket_name     = local.data_bucket_name
+  kms_key_arn          = module.security.kms_key_arn
+  runtime_secret_arn   = module.security.secret_arn
+  bootstrap_secret_arn = aws_secretsmanager_secret.edge_bootstrap[0].arn
+  release_sha256       = var.release_sha256
+  release_version_id   = var.release_version_id
+  helper_sha256        = var.edge_helper_sha256
+  helper_version_id    = var.edge_helper_version_id
+  provider_config      = module.iam.edge_provider
+  owner_ssh_public_key = var.owner_ssh_public_key
 }

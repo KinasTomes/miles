@@ -15,11 +15,11 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = [
-    "deploy/install.py", "deploy/cloud/lifecycle.py",
+    "deploy/install.py", "deploy/drain.py", "deploy/cloud/lifecycle.py",
     "deploy/systemd/miles.service", "deploy/systemd/miles-lifecycle.service",
     "deploy/cloud/aws-config.example", "deploy/cloud/runtime.env.example",
     "deploy/edge/aws-config.example", "deploy/edge/runtime.env.example",
-    "deploy/edge/nginx.conf", "configs/cloud.example.json", "configs/edge.example.json",
+    "deploy/edge/nginx.conf", "deploy/edge/bootstrap.py", "configs/cloud.example.json", "configs/edge.example.json",
 ]
 
 

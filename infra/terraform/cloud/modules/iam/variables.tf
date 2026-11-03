@@ -33,3 +33,16 @@ variable "edge_certificate_common_name" {
   type    = string
   default = "miles-edge"
 }
+
+variable "enable_edge" {
+  type    = bool
+  default = false
+}
+variable "edge_bootstrap_secret_arn" {
+  type    = string
+  default = null
+}
+variable "edge_helper_sha256" {
+  type    = string
+  default = null
+}

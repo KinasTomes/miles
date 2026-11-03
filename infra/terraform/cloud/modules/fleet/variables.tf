@@ -30,5 +30,5 @@ variable "environment" {
 }
 variable "owner" {
   type    = string
-  default = "Hung"
+  default = "operator"
 }

@@ -93,3 +93,37 @@ output "edge_provider" {
     duration_seconds        = 900
   }
 }
+
+# EC2 identity installs Edge only. The serving process uses Roles Anywhere.
+resource "aws_iam_role" "edge_bootstrap" {
+  count                = var.enable_edge ? 1 : 0
+  name                 = "${var.name}-edge-bootstrap"
+  path                 = var.runtime_iam_path
+  permissions_boundary = var.permissions_boundary_arn
+  assume_role_policy   = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = "sts:AssumeRole", Principal = { Service = "ec2.amazonaws.com" } }] })
+}
+resource "aws_iam_instance_profile" "edge_bootstrap" {
+  count = var.enable_edge ? 1 : 0
+  name  = "${var.name}-edge-bootstrap"
+  path  = var.runtime_iam_path
+  role  = aws_iam_role.edge_bootstrap[0].name
+}
+resource "aws_iam_role_policy" "edge_bootstrap" {
+  count = var.enable_edge ? 1 : 0
+  name  = "${var.name}-edge-bootstrap"
+  role  = aws_iam_role.edge_bootstrap[0].name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = ["ssm:UpdateInstanceInformation"], Resource = "arn:aws:ec2:${var.region}:${var.account_id}:instance/*", Condition = { StringEquals = { "aws:RequestedRegion" = var.region } } },
+      { Effect = "Allow", Action = ["ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"], Resource = "*", Condition = { StringEquals = { "aws:RequestedRegion" = var.region } } },
+      { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = var.edge_bootstrap_secret_arn },
+      { Effect = "Allow", Action = ["kms:Decrypt"], Resource = var.kms_key_arn },
+      { Effect = "Allow", Action = ["s3:GetObjectVersion"], Resource = ["arn:aws:s3:::${var.data_bucket_name}/releases/${coalesce(var.release_sha256, "unconfigured")}/*", "arn:aws:s3:::${var.data_bucket_name}/deployment/helper/${coalesce(var.edge_helper_sha256, "unconfigured")}/*"] }
+    ]
+  })
+}
+output "edge_bootstrap_profile" {
+  value      = try(aws_iam_instance_profile.edge_bootstrap[0].name, null)
+  depends_on = [aws_iam_role_policy.edge_bootstrap]
+}

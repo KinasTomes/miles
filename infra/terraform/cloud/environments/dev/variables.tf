@@ -195,7 +195,7 @@ variable "environment" {
 }
 variable "owner" {
   type    = string
-  default = "Hung"
+  default = "operator"
   validation {
     condition     = length(trimspace(var.owner)) > 0 && length(var.owner) <= 128
     error_message = "Supply an owner tag of 1..128 characters."
@@ -224,4 +224,29 @@ variable "instance_type" {
     condition     = can(regex("^[a-z0-9-]+\\.[a-z0-9]+$", var.instance_type))
     error_message = "Supply the reviewed single-node EC2 instance type."
   }
+}
+
+variable "enable_edge" {
+  type    = bool
+  default = false
+  validation {
+    condition     = !var.enable_edge || (var.edge_ca_pem != null && var.runtime_permissions_boundary_arn != null && var.ami_id != null && length(var.client_cidrs) > 0 && can(regex("^[a-f0-9]{64}$", var.edge_helper_sha256)) && var.edge_helper_version_id != null && can(regex("^[a-f0-9]{64}$", var.release_sha256)) && var.release_version_id != null)
+    error_message = "Edge needs its public CA, reviewed boundary/AMI/client allowlist and pinned release/helper versions."
+  }
+}
+variable "edge_instance_type" {
+  type    = string
+  default = "t4g.small"
+  validation {
+    condition     = can(regex("^[a-z0-9-]+\\.[a-z0-9]+$", var.edge_instance_type))
+    error_message = "Supply the reviewed Edge instance type."
+  }
+}
+variable "edge_helper_sha256" {
+  type    = string
+  default = null
+}
+variable "edge_helper_version_id" {
+  type    = string
+  default = null
 }

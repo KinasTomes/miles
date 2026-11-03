@@ -16,17 +16,19 @@ output "network_inventory" {
 }
 output "runtime_inventory" {
   value = {
-    iam_roles               = module.iam.role_arns
-    instance_profiles       = module.iam.instance_profile_names
-    data_bucket_name        = local.data_bucket_name
-    expected_tables         = [for t in module.data.inventory.tables : t.name]
-    data                    = module.data.inventory
-    compute                 = module.compute.inventory
-    kms_key_arn             = module.security.kms_key_arn
-    secret_metadata_arn     = module.security.secret_arn
-    bootstrap_parameter_arn = module.security.parameter_arn
-    alb_dns                 = module.alb.dns_name
-    target_group_arn        = module.alb.target_group_arn
+    iam_roles                 = module.iam.role_arns
+    edge                      = try(module.edge[0].inventory, null)
+    instance_profiles         = module.iam.instance_profile_names
+    data_bucket_name          = local.data_bucket_name
+    expected_tables           = [for t in module.data.inventory.tables : t.name]
+    data                      = module.data.inventory
+    compute                   = module.compute.inventory
+    kms_key_arn               = module.security.kms_key_arn
+    secret_metadata_arn       = module.security.secret_arn
+    edge_bootstrap_secret_arn = try(aws_secretsmanager_secret.edge_bootstrap[0].arn, null)
+    bootstrap_parameter_arn   = module.security.parameter_arn
+    alb_dns                   = module.alb.dns_name
+    target_group_arn          = module.alb.target_group_arn
   }
 }
 output "alb_contract" { value = module.alb.contract }
@@ -45,6 +47,10 @@ output "session_configuration" {
     instance_type                    = var.instance_type
     release_architecture             = var.release_architecture
     enable_asg                       = var.enable_asg
+    enable_edge                      = var.enable_edge
+    edge_instance_type               = var.edge_instance_type
+    edge_helper_sha256               = var.edge_helper_sha256
+    edge_helper_version_id           = var.edge_helper_version_id
     fleet_instance_type              = var.fleet_instance_type
     release_sha256                   = var.release_sha256
     release_version_id               = var.release_version_id
