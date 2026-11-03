@@ -50,6 +50,8 @@ mới giải nén/cài. Installer bảo toàn config operator. Systemd chạy Mi
 credential override. Controller root riêng chỉ dùng IMDS, không dùng config Edge.
 Không inject secret vào user-data hay in credential ra log.
 
+Cấu hình controller `table_prefix` phải khớp prefix DynamoDB của gateway: ví dụ `"table_prefix": "miles-dev-"` dùng bảng `miles-dev-Nodes`; chỉ nhận 1–200 ký tự `A–Z`, `a–z`, `0–9`, `_`, `.`, `-`.
+
 Launch template pin **numeric version**, mỗi thay đổi kích hoạt rolling refresh có
 auto rollback. Trước rollout đầu: kiểm hai node ready, IAM/DDB/R1/R2, upload/download
 và signed paths qua ALB thật; sau đó mới thử replacement/pause có active requests.
