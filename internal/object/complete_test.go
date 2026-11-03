@@ -454,6 +454,73 @@ func TestCompleteLostCommitResponse(t *testing.T) {
 	}
 }
 
+type completionReceiptFallback struct{ Metadata }
+
+func (m completionReceiptFallback) GetCommitOutcome(ctx context.Context, _ string) (storage.CommitResult, error) {
+	if err := ctx.Err(); err != nil {
+		return storage.CommitResult{}, err
+	}
+	return storage.CommitResult{}, storage.ErrUnavailable
+}
+
+func TestCompleteLostResponseAfterSlowCleanup(t *testing.T) {
+	for _, receiptOnly := range []bool{false, true} {
+		name := "outcome"
+		if receiptOnly {
+			name = "receipt-fallback"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			f := newServiceFixture(t)
+			data := []byte("committed before a slow cleanup")
+			u, parts := f.stage(t, ctx, "slow-cleanup", "CRC64NVME", "FULL_OBJECT", map[uint32][]byte{1: data})
+			in := input(u, parts, false, 1)
+			o := f.options
+			admit := o.AdmitWriter
+			o.AdmitWriter = func(ctx context.Context, r WriterRequest) (AdmittedWriter, error) {
+				a, err := admit(ctx, r)
+				finish := a.Finish
+				a.Finish = func() {
+					if finish != nil {
+						finish()
+					}
+					time.Sleep(5200 * time.Millisecond)
+				}
+				return a, err
+			}
+			if receiptOnly {
+				o.Metadata = completionReceiptFallback{o.Metadata}
+			}
+			var err error
+			f.service, err = New(o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.after = func(op string) error {
+				if strings.HasPrefix(op, "commit/") {
+					return storage.ErrUnavailable
+				}
+				return nil
+			}
+			head, err := f.complete(ctx, u.ID, in)
+			if got := f.state(t, ctx, u.ID); got.State != "Completed" {
+				t.Fatal("commit did not land", got.State)
+			}
+			if err != nil || head.Revision != 1 {
+				t.Fatal("cleanup consumed outcome/receipt read budget", head, err)
+			}
+			again, err := f.complete(ctx, u.ID, in)
+			if err != nil || again.Revision != 1 {
+				t.Fatal("committed upload did not return its receipt", again, err)
+			}
+			q := f.quota(t, ctx)
+			if q.Used != int64(len(data)) || q.Reserved != 0 || q.Staged != 0 || q.ActiveUploads != 0 {
+				t.Fatal("cleanup or retry changed quota twice", q)
+			}
+		})
+	}
+}
+
 func TestRecoverUploadResumesFrozenInput(t *testing.T) {
 	ctx := context.Background()
 	f := newServiceFixtureQuota(t, nil, 64*mib)

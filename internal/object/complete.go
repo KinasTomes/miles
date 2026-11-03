@@ -401,22 +401,25 @@ func (c *completion) commit() (storage.ObjectHead, error) {
 // initiator's right aborts. Reopen and abort both close the completion op
 // first, so a late commit of this attempt can no longer land.
 func (c *completion) fail(err error) (storage.ObjectHead, error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
-	defer cancel()
+	transitionCtx, stopTransition := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
+	defer stopTransition()
 	var invalid *core.ValidationError
 	switch {
 	case c.takeover && errors.Is(err, storage.ErrAccessDenied):
-		c.abandonWith(ctx)
+		c.abandonWith(transitionCtx)
 	case errors.As(err, &invalid), errors.Is(err, storage.ErrQuotaExceeded), errors.Is(err, storage.ErrAccessDenied), errors.Is(err, storage.ErrConflict):
-		if _, e := c.s.o.Uploads.ReopenUpload(ctx, c.request()); errors.Is(e, storage.ErrFenced) {
+		if _, e := c.s.o.Uploads.ReopenUpload(transitionCtx, c.request()); errors.Is(e, storage.ErrFenced) {
 			// Reopen refuses an expired upload: abort it instead.
-			c.abandonWith(ctx)
+			c.abandonWith(transitionCtx)
 		}
 	}
+	stopTransition()
 	// Reopen/abort needs live authority and atomically closes the commit attempt.
 	// Reconciliation below instead requires joined work and a closed writer.
 	_ = c.session.Close()
 	if unknownOutcome(err) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.ctx), 5*time.Second)
+		defer cancel()
 		out, e := c.session.Reconcile(ctx)
 		if e == nil && out.Head.Revision > 0 {
 			return out.Head, nil

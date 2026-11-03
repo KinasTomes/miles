@@ -78,7 +78,7 @@ ceilings are request limits, not provisioned capacity or a billing hard cap.
 
 ## Regression checks after review
 
-The successful deployment sequence did not exercise three failure paths found
+The successful deployment sequence did not exercise these failure paths found
 afterward. Each was reproduced before its correction:
 
 - Multipart takeover now closes the old commit and settles its recovery producer
@@ -88,6 +88,10 @@ afterward. Each was reproduced before its correction:
 - A rejected completion keeps its writer live through reopening. The composed
   Cloud/Edge fixture rejects a wrong ETag with InvalidPart, checks Active state
   and unchanged staging quota, then completes successfully with the correct ETag.
+- After a lost commit acknowledgement, outcome/receipt reads get a fresh bounded
+  context after writer cleanup. Regressions delay cleanup by 5.2 seconds and
+  require both outcome lookup and receipt fallback to return the committed head
+  without charging quota again.
 - Owner probes wait for SSH's forwarding acknowledgement, use a private Unix
   socket and do not follow redirects. Tests reproduce an unrelated listener
   receiving the old probe's dummy bearer. The corrected tests cover bind failure,
