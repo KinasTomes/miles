@@ -110,7 +110,7 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 }
 
 func (m *Store) jobFence(t *transaction, kind jobs.Type, f s.WriterFence) error {
-	if _, shared := m.authority.(*SharedAuthority); shared && kind == "journal_flush" {
+	if _, shared := m.authority.(*SharedAuthority); shared && (kind == "journal_flush" || kind == "purge_uploads" || kind == "recover_uploads") {
 		l, err := r1Read[s.R1Lease](t, r1LeaseKey(f.LeaseID))
 		if err != nil {
 			return err

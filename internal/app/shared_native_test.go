@@ -304,6 +304,7 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 		t.Fatal("native producer events missing", q, e)
 	}
 	nativeUploadJobs(t, ctx, nodes, clients, c.DDBTablePrefix, bucket)
+	nativeSweepDuringCut(t, ctx, nodes, clients, c.DDBTablePrefix, bucket)
 	nativeClusterOperations(t, ctx, nodes, tokenID+"."+tokenSecret)
 
 }

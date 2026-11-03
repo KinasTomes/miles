@@ -30,6 +30,9 @@ type uploadJobs struct {
 
 func (w uploadJobs) executor(kind jobs.Type) jobs.Executor {
 	return jobs.Executor{
+		// This lease fences job progress only. Each upload operation obtains
+		// fresh writer admission, so a cut never waits for its own dispatcher.
+		Kind:     "recovery",
 		Periodic: time.Minute,
 		Validate: func(raw json.RawMessage) error {
 			var params map[string]json.RawMessage
