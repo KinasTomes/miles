@@ -34,7 +34,7 @@ Mỗi lần đổi input tạo output directory mới để review diff trước
 Templates dùng các marker `{{ACCOUNT_ID}}`, `{{REGION}}`, `{{INSTALLATION_NAME}}`,
 `{{ENVIRONMENT}}`, `{{RUNTIME_IAM_PATH}}` và ARN từ operator config. Renderer giữ
 state DeleteObject chỉ trên `.tflock`. Runtime role creation bắt buộc boundary đúng
-ARN đã chọn. PassRole tới EC2 chỉ cho gateway/jobs. Edge có cùng bounded role-management
+ARN đã chọn. PassRole tới EC2 chỉ cho gateway/jobs và Edge bootstrap role. Edge có cùng bounded role-management
 contract, provider dùng trust anchor và certificate CN cấu hình trong Terraform.
 
 State bucket là `<installation>-tfstate-<account>-<region>`, data bucket là
@@ -47,7 +47,20 @@ review trong một plan riêng trước khi dùng gate pause/resume.
 Đổi `installation_name`, Region hoặc IAM path của installation có dữ liệu cần
 migration plan riêng vì nhiều tài nguyên sẽ thay tên hoặc bị replace.
 
-## Bootstrap danh tính
+## Bộ dựng account mới
+
+`main.tf` tạo user, role MFA, runtime boundary và các deploy managed policies từ
+`operator.tfvars.json`. Renderer chia deploy policies trong quota mặc định. Password
+Console được bộ dựng tạo ngoài Terraform state. CA/key/material Edge cũng nằm ngoài
+Terraform, chỉ ARN/public CA được truyền vào IaC.
+
+Dùng `scripts/deploy-installation.py` theo [hướng dẫn account mới](../../../../../docs/testing/aws-personal-account-guide.md).
+`plan operator` và `apply operator --plan-sha256 ...` chạy bằng admin profile sau khi
+được chủ account duyệt. Các stage state/foundation/active dùng deploy role.
+`operator.cleanup_expires_at` bật grant xóa có hạn tối đa bốn giờ. Xóa trường này và
+review/apply operator plan để thu hồi. Giữ operator/state bootstrap sau lượt test.
+
+## Bootstrap danh tính khi thao tác trực tiếp
 
 1. Tạo operator user đúng `operator.user_arn`, Console password và MFA đúng
    `operator.mfa_arn`. Gắn user policy đã render. User policy deny tạo access key.
@@ -65,9 +78,8 @@ migration plan riêng vì nhiều tài nguyên sẽ thay tên hoặc bị replac
 
 ## Đối chiếu quyền với plan
 
-Các baseline trong repo giữ action/resource scope đã review trước đây và được
-render theo installation. Chúng chưa bao phủ mọi API của fleet, Roles Anywhere,
-publisher hoặc metadata bootstrap. Từng account có boundary, key policy, quota và
+Các templates bao phủ state/foundation, fleet/ALB/SLR, Edge/PrivateLink/Roles Anywhere,
+release publisher, metadata bootstrap và cleanup có hạn. Từng account có boundary, key policy, quota và
 service availability riêng. Quyền read/update/delete của provider cũng cần kiểm.
 
 Tạo plan JSON private từ plan thật. Empty-state `plan-local.py` chỉ phục vụ phân tích
@@ -94,7 +106,9 @@ simulate ca allow/deny và review bằng danh tính quản trị trước khi g�
 
 Baseline Autopilot 0.4.0 đã chạy trên synthetic Terraform mock plan có fleet/Edge
 ở account fixture và Sydney khi triển khai cấu hình này. Mock tests kiểm tên,
-ARN, boundary, tags và mặc định tương thích. Apply/permissions ở account member cần
+ARN, boundary, tags và mặc định tương thích. Tên action trong templates đã được
+đối chiếu với [AWS Service Authorization Reference](https://docs.aws.amazon.com/service-authorization/latest/reference/)
+ngày 03/11/2026, cùng dependent actions cho certificate/provider creation. Apply/permissions ở account member cần
 bằng chứng riêng từ lượt AWS được duyệt.
 
 ## Audit và cleanup

@@ -2,13 +2,15 @@
 
 Cấu hình account/Region/prefix/owner/operator theo từng installation bằng
 [installation example](environments/dev/installation.example.json) và
-[renderer IAM/backend/tfvars](bootstrap/operator/README.md). Mặc định giữ tên cũ.
+[bộ dựng account mới](bootstrap/operator/README.md). Mặc định tên tài nguyên cũ giữ để tương thích. Owner mặc định là `operator`,
+installation mới yêu cầu điền owner riêng. Installation cũ nên pin `owner` trong
+private inputs để giữ nguyên tag phục vụ theo dõi chi phí.
 Xem [quy trình cho account cá nhân](../../../docs/testing/aws-personal-account-guide.md).
 
 Môi trường dev một node ở Singapore, được chuẩn bị theo W03-HUNG-01. Hạ tầng đã
 kiểm trên AWS ngày 25/10/2026 với pause/resume; full teardown đã nghiệm thu ngày
 26/10, giữ bootstrap/state và ghi riêng key/secret/SYSTEM backups chờ xóa trong
-[readiness](../../../docs/testing/aws-dev-readiness.md). DSG chưa triển khai.
+[readiness](../../../docs/testing/aws-dev-readiness.md). Đây là bằng chứng lịch sử của single-node stack.
 Terraform 1.15.2, AWS provider 6.21.0; lockfiles pin
 provider cho linux_arm64/linux_amd64. Không thay kiến trúc/API.
 W04-HUNG-01 bổ sung [Cloud ASG/Edge deployment config](../../../deploy/README.md),
@@ -36,8 +38,7 @@ Nguồn: kiến trúc §10.1/11/19, API §1/8/13 và
 - Security/IAM: gateway/jobs instance profiles, KMS/key policy, secret metadata,
   SSM config, log group mã hóa KMS. Không tạo secret value hoặc SystemConfig trong TF.
 - ALB vẫn tùy chọn, cần certificate ACM ISSUED cùng account/Region và client CIDRs.
-  Bảo toàn Host, TLS 443→8080, health 9100/readyz. Policy deploy hiện chưa cấp quyền
-  tạo ALB; phải generate/review policy từ plan có TLS thật trước khi bật nó.
+  Bảo toàn Host, TLS 443→8080, health 9100/readyz. Policy fleet/ALB được render cùng installation.
 - `modules/fleet`: opt-in `enable_asg`, hai private AZ/node với launch template,
   release version/hash pin, lifecycle drain; không dùng retained dev EBS. Mutually
   exclusive với `enable_compute`. [Runbook và giới hạn](../../../deploy/cloud/README.md).
@@ -47,6 +48,12 @@ keys; vẫn có phí lưu trữ/key nếu apply. `enable_compute=false` mặc đ
 foundation plan; cấu hình Warm thật đặt true và giữ nguyên qua mỗi lần nghỉ/bật.
 `egress_mode` là lựa chọn khi đang chạy; pause ghi đè thành isolated, tắt ALB và EC2.
 Output `aws_api_egress_configured` mô tả route, không chứng minh app/secret/SSM ready.
+
+`modules/edge` bổ sung EC2 Edge opt-in trong cùng state, bootstrap profile riêng,
+TLS/provider material qua Secrets Manager và release/helper đã pin. Khi bật Edge,
+interface endpoints có thêm Roles Anywhere và ingress SG Edge. Bộ dựng chuẩn bị
+CA test riêng, bootstrap operator/state/shared runtime, publish, probe và cleanup.
+Xem hướng dẫn account mới ở trên. Luồng mới được kiểm offline, cần pilot AWS riêng.
 
 ## Kiểm tra không tạo hạ tầng
 
