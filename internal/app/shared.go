@@ -207,6 +207,13 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	metrics := new(observability.Operations)
 	identity := jobs.Node{ID: c.RuntimeNodeID + "-" + id, Incarnation: id, ServiceIncarnation: g.Incarnation, Profile: c.Profile, Address: c.AdminAddress, AppliedPolicyRevision: 1}
 	nodeRegistry := &jobs.Registry{Store: m, Clock: clk, Identity: identity}
+	nodeRegistry.CacheSnapshot = func() jobs.CacheSample {
+		s := resident.Stats()
+		tier := func(t cache.TierStats) jobs.CacheTier {
+			return jobs.CacheTier{UsedBytes: t.UsedBytes, CapacityBytes: t.CapacityBytes, Entries: t.Entries, MaxEntries: t.MaxEntries, Evictions: t.Evictions}
+		}
+		return jobs.CacheSample{Hits: s.Hits, Misses: s.Misses, Errors: s.Errors, Lookups: s.Lookups, Puts: s.Puts, Memory: tier(s.Memory), Disk: tier(s.Disk)}
+	}
 	runner := &jobs.Runner{Service: jobs.Service{Store: m, Policies: m, Now: func() time.Time { return clk.Now().WallUTC }, Observe: metrics.JobUpdate}, Authority: sharedJobAuthority{metadata}, Node: identity, Clock: clk, Executors: map[jobs.Type]jobs.Executor{}}
 	cluster := &jobs.Cluster{Runner: runner, Registry: nodeRegistry}
 	runner.ObserveError = metrics.DispatchFailure
@@ -233,6 +240,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	runner.Executors["purge_uploads"] = uploads.executor("purge_uploads")
 	runner.Executors["recover_uploads"] = uploads.executor("recover_uploads")
 	a.Operations = cluster
+	a.CacheStatistics = cluster
 	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Cluster: cluster}
 	if clients.metrics != nil {
 		operational.CloudWatch, err = observability.NewCloudWatch(clients.metrics, c.Profile)

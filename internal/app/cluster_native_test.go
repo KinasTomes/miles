@@ -54,6 +54,14 @@ func nativeClusterOperations(t *testing.T, ctx context.Context, nodes []Dependen
 		}
 		return j
 	}
+	purge := func(node int, body string) jobs.Detail {
+		rec := call(node, "POST", "/admin/v1/cache/purge", body)
+		var j jobs.Detail
+		if rec.Code != 202 || json.Unmarshal(rec.Body.Bytes(), &j) != nil {
+			t.Fatal(rec.Code, rec.Body)
+		}
+		return j
+	}
 	wait := func(id string) jobs.Job {
 		deadline := time.Now().Add(25 * time.Second)
 		for time.Now().Before(deadline) {
@@ -109,7 +117,17 @@ func nativeClusterOperations(t *testing.T, ctx context.Context, nodes []Dependen
 	if rec := call(0, "POST", "/admin/v1/jobs", `{"type":"cache_purge","params":{"scope":"cluster","targets":[{"node_id":"forged","incarnation":"forged"}]}}`); rec.Code != 400 {
 		t.Fatal("caller forged target membership", rec.Code, rec.Body)
 	}
-	j := create(0, `{"type":"cache_purge","params":{"scope":"cluster"}}`)
+	var j jobs.Detail
+	// Dedicated cache routes use the same shared durable parent/child jobs.
+	reportResponse := call(1, "GET", "/admin/v1/cache/stats?scope=cluster", "")
+	var report jobs.CacheReport
+	if reportResponse.Code != 200 || json.Unmarshal(reportResponse.Body.Bytes(), &report) != nil || !report.Complete || len(report.Nodes) != 3 {
+		t.Fatal(reportResponse.Code, reportResponse.Body)
+	}
+	purgeResponse := call(2, "POST", "/admin/v1/cache/purge", `{"scope":"cluster"}`)
+	if purgeResponse.Code != 202 || json.Unmarshal(purgeResponse.Body.Bytes(), &j) != nil {
+		t.Fatal(purgeResponse.Code, purgeResponse.Body)
+	}
 	out := wait(j.ID)
 	if out.State != jobs.Succeeded {
 		t.Fatal(out)
@@ -137,12 +155,16 @@ func nativeClusterOperations(t *testing.T, ctx context.Context, nodes []Dependen
 	if _, e := nodes[0].Operations.Registry.Store.PutNode(ctx, 0, stale); e != nil {
 		t.Fatal(e)
 	}
-	j = create(2, `{"type":"cache_purge","params":{"scope":"cluster"}}`)
+	reportResponse = call(0, "GET", "/admin/v1/cache/stats?scope=cluster", "")
+	if reportResponse.Code != 200 || json.Unmarshal(reportResponse.Body.Bytes(), &report) != nil || report.Complete || len(report.Nodes) != 4 || report.IncludedNodes != 3 {
+		t.Fatal("stale cache sample included", reportResponse.Code, reportResponse.Body)
+	}
+	j = purge(2, `{"scope":"cluster"}`)
 	out = wait(j.ID)
 	if out.State != jobs.Failed || out.ErrorCode != "partial_cluster" || !strings.Contains(string(out.Result), `"state":"unavailable"`) {
 		t.Fatal("partial cluster reported success", out)
 	}
-	j = create(0, `{"type":"cache_purge","params":{"scope":"node","node_id":"offline-node"}}`)
+	j = purge(0, `{"scope":"node","node_id":"offline-node"}`)
 	out = wait(j.ID)
 	if out.State != jobs.Failed || !strings.Contains(string(out.Result), `"scope":"node"`) || !strings.Contains(string(out.Result), `"state":"unavailable"`) {
 		t.Fatal("unreachable node-scope job remained queued", out)

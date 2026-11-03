@@ -945,6 +945,34 @@ Shared được xác định bằng refcount occurrences đã đối soát trừ
 
 Scope=node cần node_id. Cluster job kết quả từng node/partial failure, không giả định gọi node bất kỳ đã xóa cache toàn cluster.
 
+Trả `202` với job detail và `Location: /admin/v1/jobs/{id}`; status/result đọc
+được qua gateway khác trong cùng shared installation. Auth system admin và
+transactional actor check áp dụng trước khi tạo job. Purge chỉ evict memory/disk
+resident bytes; không sửa object, pack hoặc quota. Fill mới có thể chạy sau purge.
+
+**GET /admin/v1/cache/stats?scope=node&node_id=...** hoặc `?scope=cluster`:
+
+System admin only. Scope bắt buộc; cluster không nhận node_id. Response `200`
+gồm `scope`, `complete`, `observed_at`, `nodes`, `included_nodes`, `hits`, `misses`,
+`denominator`, `hit_ratio`. Mỗi node có node_id/incarnation, state/error_code,
+sample timestamp, counters và occupancy/capacity/evictions memory/disk.
+
+Samples publish cùng Nodes heartbeat mỗi 15s, gắn boot/service incarnation;
+không forward bearer hoặc mở peer Admin port. Snapshot age phải <30s; node stale,
+clock future quá 2s hoặc thiếu sample trả state=unavailable, sample/ratio=null.
+Node không tồn tại trả404. Cluster discovery tối đa64node cùng service trong
+2phút gần đây; historical boots bị loại, node mới sau discovery không được hứa
+nằm trong kết quả. Lookup budget5s, tối đa100pages; read error không thành số0.
+
+Denominator = hits + misses (successful logical cache lookups, một disk promotion
+chỉ tính một hit). `errors` gồm failed gets/puts, bị loại khỏi denominator.
+Aggregate ratio = sum(hits)/sum(denominator) trên node sample hợp lệ, **không**
+trung bình node ratios. Denominator0 trả ratio=null. Khi partial, complete=false,
+aggregate chỉ mô tả included_nodes; kết quả từng node vẫn giữ lỗi rõ ràng.
+Counters tích lũy theo boot, purge không reset; đây là các heartbeat samples khác
+thời điểm, không phải atomic cluster snapshot hoặc ratio trong một time window.
+Legacy/local runtime chưa có shared cache service trả503, không giả lập cluster.
+
 **POST /admin/v1/faults** (chỉ enabled + system admin):
 
 ```json

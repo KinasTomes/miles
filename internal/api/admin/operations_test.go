@@ -31,7 +31,7 @@ func (s beforeOperationalWrite) ChangeJob(ctx context.Context, c jobs.Change) (j
 
 func TestOperationalMutationsRecheckActorAfterAdmission(t *testing.T) {
 	for _, actorChange := range []string{"revoke", "disable_user"} {
-		for _, action := range []string{"create", "cancel", "drain"} {
+		for _, action := range []string{"create", "cancel", "drain", "cache-purge"} {
 			t.Run(actorChange+"/"+action, func(t *testing.T) {
 				w := newWorld(t, badger.Bootstrap{})
 				actor := w.mintToken("user-writer", true)
@@ -57,6 +57,8 @@ func TestOperationalMutationsRecheckActorAfterAdmission(t *testing.T) {
 				}
 				method, path, body := "POST", "/admin/v1/jobs", `{"type":"cache_purge"}`
 				switch action {
+				case "cache-purge":
+					path, body = "/admin/v1/cache/purge", `{"scope":"node","node_id":"node-a"}`
 				case "cancel":
 					method, path, body = "DELETE", "/admin/v1/jobs/"+job.ID, ""
 				case "drain":

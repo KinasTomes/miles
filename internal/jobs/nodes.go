@@ -26,6 +26,7 @@ type NodeStatus struct {
 	AppliedPolicyRevision uint64
 }
 type Registry struct {
+	CacheSnapshot    func() CacheSample
 	Store            Store
 	Identity         Node
 	Clock            clock.Clock
@@ -76,6 +77,10 @@ func (r *Registry) tick(ctx context.Context, gate Gate, status NodeStatus) error
 		n := r.Identity
 		n.Revision = old.Revision
 		n.HeartbeatAt = r.Clock.Now().WallUTC
+		if r.CacheSnapshot != nil {
+			n.Cache = r.CacheSnapshot()
+			n.Cache.SampledAt = n.HeartbeatAt
+		}
 		n.ActiveRequests = active
 		n.Draining = draining || status.Draining || old.Draining
 		n.DrainApplied = draining
