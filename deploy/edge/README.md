@@ -25,9 +25,11 @@ Không cho key của S3 client vào AWS credential provider (hai danh tính khá
 
 ## Credentials và TLS
 
-`/etc/miles/aws-config` dùng profile `miles-runtime`, `credential_process` của IAM
+`/etc/miles/aws-config` dùng profile khớp `aws_profile` trong startup JSON (mặc định
+`miles-runtime`), `credential_process` của IAM
 Roles Anywhere. Thay public ARN placeholders bằng trust anchor/profile/role đã
-review, scope role tới backend/tenant tương ứng. Cài helper tại đường dẫn đã ghi;
+review, scope role tới backend/tenant tương ứng. Certificate CN phải khớp
+`edge_certificate_common_name` của installation. Cài helper tại đường dẫn đã ghi;
 certificate và private key provider ở `/etc/miles/rolesanywhere/`, directory0750
 root:miles, key0640 root:miles. Không đặt secret trong environment, startup JSON,
 Terraform hoặc Git. SDK refresh qua provider; test thực tế cả phiên hết hạn/renewal,

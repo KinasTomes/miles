@@ -12,7 +12,7 @@ target deregistration 1800s. ALB giữ Host và không có URL/Host rewrite rule
 Launch template dùng AL2023 Amazon pin AMI/kiến trúc, IMDSv2, private ENI, encrypted
 gp3 20 GiB **disposable**. Không mount EBS data của single-node dev. Metadata phải
 shared DDB, không dùng Badger node-local thay thế. ASG dùng custom service-linked
-role `AWSServiceRoleForAutoScaling_miles-dev`; KMS grant chỉ role đó, điều kiện
+role `AWSServiceRoleForAutoScaling_<installation_name>`; KMS grant chỉ role đó, điều kiện
 `kms:GrantIsForAWSResource=true`.
 
 ## Trước lần chạy thật

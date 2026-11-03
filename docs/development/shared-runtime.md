@@ -49,7 +49,7 @@ fresh recovery authority. A failed final export returns an error; it cannot emit
 ## AWS provider and UTC source
 
 Cloud uses only the IMDSv2 instance profile. Edge reads only `credential_process`
-from the explicit `miles-runtime` profile; static keys, source profiles, web
+from the explicit `aws_profile` startup setting (default `miles-runtime`); static keys, source profiles, web
 identity and fallback providers are rejected. The SDK credential cache refreshes
 temporary credentials before expiration. AWS identity and gateway client identity
 are separate. A broken helper never falls back to the developer's credentials.

@@ -1,5 +1,10 @@
 # Terraform AWS dev Warm
 
+Cấu hình account/Region/prefix/owner/operator theo từng installation bằng
+[installation example](environments/dev/installation.example.json) và
+[renderer IAM/backend/tfvars](bootstrap/operator/README.md). Mặc định giữ tên cũ.
+Xem [quy trình cho account cá nhân](../../../docs/testing/aws-personal-account-guide.md).
+
 Môi trường dev một node ở Singapore, được chuẩn bị theo W03-HUNG-01. Hạ tầng đã
 kiểm trên AWS ngày 25/10/2026 với pause/resume; full teardown đã nghiệm thu ngày
 26/10, giữ bootstrap/state và ghi riêng key/secret/SYSTEM backups chờ xóa trong
