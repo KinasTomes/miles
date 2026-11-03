@@ -30,7 +30,10 @@ permission. Applied means a known synchronous SDK acknowledgement; for restore
 it proves acceptance, not readiness. Restore waits until a positive backend expiry
 exceeds the conservative UTC upper bound. A positive ongoing restore can settle
 acceptance after an unknown response, but does not grant payload readability.
-IR restore is a no-op with `restore_not_required` progress. A cancelled accepted
+Persisted Restored state can remain after expiry; observational readable becomes
+false when its deadline passes, and payload reads independently verify physical
+state/UTC. Promotion requires a readable source; archive generations must be
+restored first. IR restore is a no-op with `restore_not_required` progress. A cancelled accepted
 restore can resume observation under a new explicit job without reissuing RESTORE.
 
 Tiering reserves exclusive R1 maintenance only with the requesting control lease
@@ -61,9 +64,14 @@ are never deleted. Retry of an immutable PUT requires the same plan/body digest.
 
 Jobs keep their unknown-step barrier. Only authoritative native Done/Skipped/
 NotApplied or known Waiting restore outcomes permit pending-step reconciliation
-before worker transfer; a generic caller cannot clear it. The runner may resume
+before worker transfer; a generic caller cannot clear it. Expiry cleanup checks
+this proof before closing/releasing the old physical job authority: missing intent
+does not prove preflight quiescence. The runner may resume
 this node's pending reconciliation while readiness is suppressed, including its
-own Maintenance gate, but each new SDK send/CAS still checks current modes.
+own Maintenance gate, but each new SDK send/CAS still checks current modes. Settled nonterminal
+checkpoints yield their progress lease between polls, so waiting restores/deferred
+tiering do not hold active control leases that block each other. Unknown steps
+never yield.
 
 ## Journal handoff to checkpoint/rebuild
 
@@ -97,6 +105,8 @@ this task never calls DELETE for lifecycle work.
   no-effect outcome, immutable lost ACK, send-claim/unknown-marker lost ACK,
   retained generations, owned Maintenance readiness, stale heartbeat, closing,
   cancelled accepted restore resumption and proven terminal job takeover.
+- `TestYieldLifecycleAuthorityOnlyAfterSettledCheckpoint`: known accepted waiting
+  steps yield only after joined work and checkpoint; unknowns retain authority.
 - `TestLocalLifecyclePagedPromotionPlan`: 80 zstd chunks, three immutable plan
   pages, all canonical rows moved and compressed codecs preserved.
 - `TestNativeSharedCloudEdgeRuntime`: public pack list/show/promote, three shared
