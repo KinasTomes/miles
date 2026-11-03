@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -43,7 +45,9 @@ func (a sharedJobAuthority) Acquire(ctx context.Context, id, kind string) (stora
 	if err != nil {
 		return f, err
 	}
-	_, err = m.AcquireR1(ctx, storage.R1Acquire{Fence: f, Owner: m.owner, Kind: kind, Deadline: minTime(b.Upper.Add(9*time.Minute), b.Horizon)})
+	sum := sha256.Sum256([]byte("job-producer/" + id))
+	op := hex.EncodeToString(sum[:16])
+	_, err = m.AcquireR1(ctx, storage.R1Acquire{Fence: f, Owner: m.owner, Kind: kind, OpID: op, Deadline: minTime(b.Upper.Add(9*time.Minute), b.Horizon)})
 	return f, err
 }
 func (a sharedJobAuthority) Renew(ctx context.Context, f storage.WriterFence) error {

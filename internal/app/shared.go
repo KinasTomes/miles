@@ -15,6 +15,7 @@ import (
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/engine"
 	"github.com/KinasTomes/miles/internal/jobs"
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
 	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/observability"
@@ -239,6 +240,12 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	uploads := uploadJobs{store: m, objects: objects, utc: utc}
 	runner.Executors["purge_uploads"] = uploads.executor("purge_uploads")
 	runner.Executors["recover_uploads"] = uploads.executor("recover_uploads")
+	packCatalog := &lifecycle.Catalog{Store: m, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 32768}
+	lifecycleWorker := &lifecycle.Worker{Store: m, Packs: packs, Catalog: packCatalog, UTC: utc}
+	for _, kind := range []jobs.Type{"tiering", "pack_restore", "pack_promote"} {
+		runner.Executors[kind] = lifecycleWorker.Executor(kind)
+	}
+	a.PackInventory = packCatalog
 	a.Operations = cluster
 	a.CacheStatistics = cluster
 	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Cluster: cluster}
