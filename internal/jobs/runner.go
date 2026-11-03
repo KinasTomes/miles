@@ -34,10 +34,11 @@ type Step struct {
 	ErrorCode     string
 }
 type Executor struct {
-	ResumePending bool // resume this node's in-flight reconciliation; backend still fences every new dispatch
-	Validate      func(json.RawMessage) error
-	Eligible      func(Job, Node) bool
-	Step          func(context.Context, Job, config.GlobalSnapshot) (Step, error)
+	YieldAfterCheckpoint bool // release only after a joined, settled nonterminal step
+	ResumePending        bool // resume this node's in-flight reconciliation; backend still fences every new dispatch
+	Validate             func(json.RawMessage) error
+	Eligible             func(Job, Node) bool
+	Step                 func(context.Context, Job, config.GlobalSnapshot) (Step, error)
 	// Periodic is opt-in: no periodic scrub or destructive job is invented.
 	Periodic time.Duration
 	Kind     string // control or recovery; never chosen by the HTTP caller
@@ -300,6 +301,12 @@ func (r *Runner) advance(ctx context.Context, j Job, exec Executor) error {
 	}
 	if j.State.Terminal() {
 		return nil
+	}
+	if exec.YieldAfterCheckpoint && !out.Done && runErr == nil {
+		if e = r.Authority.Close(ctx, f); e != nil {
+			return e
+		}
+		delete(r.leases, j.ID)
 	}
 	if out.Done || runErr != nil {
 		code := out.ErrorCode

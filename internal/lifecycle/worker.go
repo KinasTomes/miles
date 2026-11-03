@@ -43,7 +43,7 @@ type Worker struct {
 }
 
 func (w *Worker) Executor(kind jobs.Type) jobs.Executor {
-	return jobs.Executor{ResumePending: true, Validate: func(b json.RawMessage) error { _, e := Decode(b, kind); return e }, Step: w.Step}
+	return jobs.Executor{ResumePending: true, YieldAfterCheckpoint: true, Validate: func(b json.RawMessage) error { _, e := Decode(b, kind); return e }, Step: w.Step}
 }
 func TieringCandidate(record s.PolicySnapshot, p s.PackInfo, live int64, b s.R1Bounds) (s.StorageClass, error) {
 	validator, e := config.NewPolicyValidator(config.DSGPolicyLimits())
