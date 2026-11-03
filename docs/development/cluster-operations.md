@@ -19,6 +19,12 @@ server. Job views exclude fences, internal parameters and checkpoints.
 Declaring a type in `jobs.Types()` does not install an executor. GC/compaction,
 tiering, scrub and checkpoint job adapters remain separate integration work.
 
+Acceptance covers the shared dispatch/API, scheduler, policy checkpoints,
+fencing, cancellation, node drain and the installed executors above. Consumer
+components own their physical executor, its admission authority and business
+integration tests. They register execution after those contracts are available,
+using the explicit unavailable response during the handoff.
+
 In particular, destructive maintenance requires authority compatible with its
 R1 maintenance gate. Registering it as an ordinary control-lease executor would
 make the job itself an active participant blocking maintenance. Do not bypass

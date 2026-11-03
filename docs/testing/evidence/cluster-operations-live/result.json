@@ -1,0 +1,1401 @@
+{
+  "status": "acceptance_and_cleanup_complete",
+  "prepared_at": "2026-11-03T08:42:32.705392+00:00",
+  "region": "ap-southeast-1",
+  "foundation_release": {
+    "source_commit": "528b38522cb9fe131d219311aaa872720d2a276b",
+    "arch": "arm64",
+    "sha256": "2a5cbc395bf5b1edc70e79b79f200d774cc877e2c806f848202e2b30ba10f316",
+    "bytes": 31635427,
+    "binary_sha256": "dcc1020c34aa74181fecb735246cf0530a0ca73fce5a25b9ffe12514f31589a6"
+  },
+  "common_three_node_release": {
+    "source_commit": "12e0fe9b40fa53a23faa1b321137f3c9891fe630",
+    "arch": "arm64",
+    "sha256": "6cd14df3ef6e4d0781934329126ab01049ea91a052732eddd633fe683e827601",
+    "bytes": 31636428,
+    "binary_sha256": "1ee6cee47796608674745c1bd92ab8a031f03f8e9e302c2bbae68f5eb4349c53"
+  },
+  "final_edge_shutdown_fix_release": {
+    "source_commit": "b23741eacbca407c1dcc0558a5742a778336f4ba",
+    "arch": "arm64",
+    "sha256": "423323d78657d6be9e70cae1a317686b6e76a209f0608c76260b4f560a85bd57",
+    "bytes": 31639289,
+    "binary_sha256": "226aa16bd81a664a8d171700ef18f45bdba5d25b7e5711fa49b6822a341b2237"
+  },
+  "approved_window": {
+    "first_paid_apply_started_utc": "2026-11-03T06:27:30.582531+00:00",
+    "active_deadline_utc": "2026-11-03T08:57:30.582531+00:00",
+    "cleanup_start_by_utc": "2026-11-03T07:57:30.582531+00:00",
+    "budget_usd": 5,
+    "hard_billing_cap": false,
+    "authorization": "cluster-operations-20261103"
+  },
+  "service_role_cleanup": {
+    "time": "2026-11-03T08:31:48.028659+00:00",
+    "deletions": [
+      {
+        "role": "AWSServiceRoleForRolesAnywhere",
+        "DeletionTaskId": "task/aws-service-role/rolesanywhere.amazonaws.com/AWSServiceRoleForRolesAnywhere/a704ed09-d305-4a9a-8aea-98359fd828ae",
+        "status": {
+          "Status": "SUCCEEDED"
+        }
+      },
+      {
+        "role": "AWSServiceRoleForElasticLoadBalancing",
+        "DeletionTaskId": "task/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing/45b88049-f414-4eca-aebd-a43ffd3ca9e6",
+        "status": {
+          "Status": "FAILED",
+          "Reason": {
+            "Reason": "Resources in use",
+            "RoleUsageList": [
+              {
+                "Region": "ap-southeast-1",
+                "Resources": [
+                  "arn:aws:elasticloadbalancing:ap-southeast-1:499388132734:loadbalancer/app/miles-dev/5b88563dccb12f28"
+                ]
+              }
+            ]
+          }
+        },
+        "preserved_after_aws_refusal": false,
+        "retry": {
+          "time": "2026-11-03T08:41:26.355354+00:00",
+          "identity_matches": true,
+          "prior_workload_absent": true,
+          "DeletionTaskId": "task/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing/79013483-0b98-46a7-938c-99e9e67db258",
+          "status": {
+            "Status": "SUCCEEDED"
+          },
+          "absence_verified": true,
+          "completed_at": "2026-11-03T08:41:34.019848+00:00"
+        },
+        "final_absence_verified": true
+      }
+    ]
+  },
+  "local_secret_cleanup": {
+    "time": "2026-11-03T08:36:24.731968+00:00",
+    "removed_run_private_files": [
+      "runtime-secret-material.json",
+      "system-admin-token",
+      "owner-token",
+      "client-secret",
+      "client-credential-record.json",
+      "owner-token-record.json",
+      "bootstrap-cli-result.json",
+      "edge-ca-key.pem",
+      "edge-identity-key.pem",
+      "tls-ca-key.pem",
+      "cloud-tls-key.pem",
+      "edge-tls-key.pem",
+      "owner-ssh"
+    ],
+    "serving_nodes_and_disks_already_deleted": true
+  },
+  "scope_decision": {
+    "orchestration_and_installed_executors_accepted": true,
+    "future_physical_executors_owned_by_consumers": true
+  },
+  "native_results": {
+    "shared_jobs": {
+      "job_id": "job_99594528523bcf507553e66aa2ef1622",
+      "type": "cache_purge",
+      "state": "succeeded",
+      "dry_run": false,
+      "policy_revision": 1,
+      "worker_node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+      "progress": {
+        "targets": 3
+      },
+      "created_at": "2026-11-03T06:39:04.181854334Z",
+      "started_at": "2026-11-03T06:39:06.467178042Z",
+      "finished_at": "2026-11-03T06:39:12.088567212Z",
+      "result": {
+        "scope": "cluster",
+        "nodes": [
+          {
+            "node_id": "edge-operations-a838231b3209626467326504a509c6e4",
+            "state": "succeeded",
+            "result": {
+              "dry_run": false,
+              "node_id": "edge-operations-a838231b3209626467326504a509c6e4",
+              "purged": true
+            }
+          },
+          {
+            "node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+            "state": "succeeded",
+            "result": {
+              "dry_run": false,
+              "node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+              "purged": true
+            }
+          },
+          {
+            "node_id": "i-098542d519cd26273-48b41ad50cdeb3b24cad6efa1c8f2de6",
+            "state": "succeeded",
+            "result": {
+              "dry_run": false,
+              "node_id": "i-098542d519cd26273-48b41ad50cdeb3b24cad6efa1c8f2de6",
+              "purged": true
+            }
+          }
+        ]
+      },
+      "error": null
+    },
+    "cursor_handoff": {
+      "first": {
+        "items": [
+          {
+            "job_id": "periodic_purge_uploads_29894796",
+            "type": "purge_uploads",
+            "state": "succeeded",
+            "dry_run": false,
+            "policy_revision": 1,
+            "worker_node_id": "edge-operations-a838231b3209626467326504a509c6e4",
+            "progress": {
+              "aborted": 0,
+              "completed": 0,
+              "examined": 0,
+              "skipped": 0
+            },
+            "created_at": "2026-11-03T06:36:01.600488305Z",
+            "started_at": "2026-11-03T06:36:06.863136839Z",
+            "finished_at": "2026-11-03T06:36:07.058551099Z",
+            "result": {
+              "after": "",
+              "pages": 1,
+              "examined": 0,
+              "completed": 0,
+              "aborted": 0,
+              "skipped": 0
+            },
+            "error": null
+          }
+        ],
+        "next_cursor": "cloud-edge-31c4ec5a349e00dc.eyJ2IjoxLCJwcmluY2lwYWwiOiJvcGVyYXRvciIsInJlc291cmNlIjoiL2FkbWluL3YxL2pvYnMiLCJidWNrZXRfaWQiOiIiLCJmaWx0ZXIiOiIiLCJwb3MiOiJwZXJpb2RpY19wdXJnZV91cGxvYWRzXzI5ODk0Nzk2IiwiZXhwIjoxNzkzNjkxNTQ0fQ.aVEYBvbA6_u1dDBMqnIzq0Fd8SP6yuTI-Ka87sI9Emo"
+      },
+      "second": {
+        "items": [
+          {
+            "job_id": "periodic_recover_uploads_29894796",
+            "type": "recover_uploads",
+            "state": "succeeded",
+            "dry_run": false,
+            "policy_revision": 1,
+            "worker_node_id": "edge-operations-a838231b3209626467326504a509c6e4",
+            "progress": {
+              "aborted": 0,
+              "completed": 0,
+              "examined": 0,
+              "skipped": 0
+            },
+            "created_at": "2026-11-03T06:36:01.724388718Z",
+            "started_at": "2026-11-03T06:36:07.126206333Z",
+            "finished_at": "2026-11-03T06:36:07.316099463Z",
+            "result": {
+              "after": "",
+              "pages": 1,
+              "examined": 0,
+              "completed": 0,
+              "aborted": 0,
+              "skipped": 0
+            },
+            "error": null
+          }
+        ],
+        "next_cursor": "cloud-edge-31c4ec5a349e00dc.eyJ2IjoxLCJwcmluY2lwYWwiOiJvcGVyYXRvciIsInJlc291cmNlIjoiL2FkbWluL3YxL2pvYnMiLCJidWNrZXRfaWQiOiIiLCJmaWx0ZXIiOiIiLCJwb3MiOiJwZXJpb2RpY19yZWNvdmVyX3VwbG9hZHNfMjk4OTQ3OTYiLCJleHAiOjE3OTM2OTE1NDR9.HBjyiofbKEiz1FGtlzQlYSsjucXRtIU95SYErq2U0GM"
+      }
+    },
+    "partial_cluster": {
+      "job_id": "job_172119e674db5a229ec829333d6d4333",
+      "type": "cache_purge",
+      "state": "failed",
+      "dry_run": false,
+      "policy_revision": 1,
+      "worker_node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+      "progress": {
+        "targets": 3
+      },
+      "created_at": "2026-11-03T06:40:37.306885902Z",
+      "started_at": "2026-11-03T06:40:37.776277807Z",
+      "finished_at": "2026-11-03T06:40:58.627405622Z",
+      "result": {
+        "scope": "cluster",
+        "nodes": [
+          {
+            "node_id": "edge-operations-a838231b3209626467326504a509c6e4",
+            "state": "unavailable",
+            "error_code": "node_unavailable",
+            "result": null
+          },
+          {
+            "node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+            "state": "succeeded",
+            "result": {
+              "dry_run": false,
+              "node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+              "purged": true
+            }
+          },
+          {
+            "node_id": "i-098542d519cd26273-48b41ad50cdeb3b24cad6efa1c8f2de6",
+            "state": "succeeded",
+            "result": {
+              "dry_run": false,
+              "node_id": "i-098542d519cd26273-48b41ad50cdeb3b24cad6efa1c8f2de6",
+              "purged": true
+            }
+          }
+        ]
+      },
+      "error": {
+        "code": "partial_cluster",
+        "message": "partial_cluster"
+      }
+    },
+    "worker_takeover": {
+      "before": {
+        "job_id": "job_40c0d52552ecec0c39cc9842f1cadf4c",
+        "type": "cache_purge",
+        "state": "running",
+        "dry_run": true,
+        "policy_revision": 1,
+        "worker_node_id": "edge-operations-a838231b3209626467326504a509c6e4",
+        "progress": {},
+        "created_at": "2026-11-03T06:45:17.966491571Z",
+        "started_at": "2026-11-03T06:45:21.479512296Z",
+        "finished_at": null,
+        "result": null,
+        "error": null
+      },
+      "after": {
+        "job_id": "job_40c0d52552ecec0c39cc9842f1cadf4c",
+        "type": "cache_purge",
+        "state": "failed",
+        "dry_run": true,
+        "policy_revision": 1,
+        "worker_node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+        "progress": {
+          "targets": 3
+        },
+        "created_at": "2026-11-03T06:45:17.966491571Z",
+        "started_at": "2026-11-03T06:45:21.479512296Z",
+        "finished_at": "2026-11-03T06:46:27.737022472Z",
+        "result": {
+          "scope": "cluster",
+          "nodes": [
+            {
+              "node_id": "edge-operations-a838231b3209626467326504a509c6e4",
+              "state": "unavailable",
+              "error_code": "node_unavailable",
+              "result": null
+            },
+            {
+              "node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+              "state": "succeeded",
+              "result": {
+                "dry_run": true,
+                "node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+                "purged": false
+              }
+            },
+            {
+              "node_id": "i-098542d519cd26273-48b41ad50cdeb3b24cad6efa1c8f2de6",
+              "state": "succeeded",
+              "result": {
+                "dry_run": true,
+                "node_id": "i-098542d519cd26273-48b41ad50cdeb3b24cad6efa1c8f2de6",
+                "purged": false
+              }
+            }
+          ]
+        },
+        "error": {
+          "code": "partial_cluster",
+          "message": "partial_cluster"
+        }
+      },
+      "fault": "SIGSTOP owning Edge process until native R1 soft lease reclaim, then SIGCONT",
+      "time": "2026-11-03T06:46:28.811262+00:00"
+    },
+    "successor_outcome": {
+      "job_id": "job_40c0d52552ecec0c39cc9842f1cadf4c",
+      "type": "cache_purge",
+      "state": "failed",
+      "dry_run": true,
+      "policy_revision": 1,
+      "worker_node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+      "progress": {
+        "targets": 3
+      },
+      "created_at": "2026-11-03T06:45:17.966491571Z",
+      "started_at": "2026-11-03T06:45:21.479512296Z",
+      "finished_at": "2026-11-03T06:46:27.737022472Z",
+      "result": {
+        "scope": "cluster",
+        "nodes": [
+          {
+            "node_id": "edge-operations-a838231b3209626467326504a509c6e4",
+            "state": "unavailable",
+            "error_code": "node_unavailable",
+            "result": null
+          },
+          {
+            "node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+            "state": "succeeded",
+            "result": {
+              "dry_run": true,
+              "node_id": "i-073b28c9f515f9d74-1daf22326e4246b6f638b5dd40ec20bc",
+              "purged": false
+            }
+          },
+          {
+            "node_id": "i-098542d519cd26273-48b41ad50cdeb3b24cad6efa1c8f2de6",
+            "state": "succeeded",
+            "result": {
+              "dry_run": true,
+              "node_id": "i-098542d519cd26273-48b41ad50cdeb3b24cad6efa1c8f2de6",
+              "purged": false
+            }
+          }
+        ]
+      },
+      "error": {
+        "code": "partial_cluster",
+        "message": "partial_cluster"
+      }
+    },
+    "final_shared_jobs": {
+      "job_id": "job_256a7b77e544985510c20afcfc484e2c",
+      "type": "cache_purge",
+      "state": "succeeded",
+      "dry_run": false,
+      "policy_revision": 1,
+      "worker_node_id": "i-073b28c9f515f9d74-8914fca23bfb12f6de2fa1bb24136504",
+      "progress": {
+        "targets": 3
+      },
+      "created_at": "2026-11-03T07:15:33.757418539Z",
+      "started_at": "2026-11-03T07:15:35.955015334Z",
+      "finished_at": "2026-11-03T07:15:41.572896985Z",
+      "result": {
+        "scope": "cluster",
+        "nodes": [
+          {
+            "node_id": "edge-operations-7f3184066ce9d1e48aa0014e99bbd4de",
+            "state": "succeeded",
+            "result": {
+              "dry_run": false,
+              "node_id": "edge-operations-7f3184066ce9d1e48aa0014e99bbd4de",
+              "purged": true
+            }
+          },
+          {
+            "node_id": "i-073b28c9f515f9d74-8914fca23bfb12f6de2fa1bb24136504",
+            "state": "succeeded",
+            "result": {
+              "dry_run": false,
+              "node_id": "i-073b28c9f515f9d74-8914fca23bfb12f6de2fa1bb24136504",
+              "purged": true
+            }
+          },
+          {
+            "node_id": "i-08219aa783c1c71c5-5aba5f4e7990f6af4f3de457c6a1fecc",
+            "state": "succeeded",
+            "result": {
+              "dry_run": false,
+              "node_id": "i-08219aa783c1c71c5-5aba5f4e7990f6af4f3de457c6a1fecc",
+              "purged": true
+            }
+          }
+        ]
+      },
+      "error": null
+    },
+    "running_cancellation": {
+      "running": {
+        "job_id": "job_6edd182f9304308164a44c23d06827b4",
+        "type": "cache_purge",
+        "state": "running",
+        "dry_run": false,
+        "policy_revision": 1,
+        "worker_node_id": "i-08219aa783c1c71c5-5aba5f4e7990f6af4f3de457c6a1fecc",
+        "progress": {},
+        "created_at": "2026-11-03T07:15:41.966585257Z",
+        "started_at": "2026-11-03T07:15:43.665219953Z",
+        "finished_at": null,
+        "result": null,
+        "error": null
+      },
+      "cancel_request": {
+        "job_id": "job_6edd182f9304308164a44c23d06827b4",
+        "type": "cache_purge",
+        "state": "cancelling",
+        "dry_run": false,
+        "policy_revision": 1,
+        "worker_node_id": "i-08219aa783c1c71c5-5aba5f4e7990f6af4f3de457c6a1fecc",
+        "progress": {},
+        "created_at": "2026-11-03T07:15:41.966585257Z",
+        "started_at": "2026-11-03T07:15:43.665219953Z",
+        "finished_at": null,
+        "result": null,
+        "error": null
+      },
+      "terminal": {
+        "job_id": "job_6edd182f9304308164a44c23d06827b4",
+        "type": "cache_purge",
+        "state": "cancelled",
+        "dry_run": false,
+        "policy_revision": 1,
+        "worker_node_id": "i-08219aa783c1c71c5-5aba5f4e7990f6af4f3de457c6a1fecc",
+        "progress": {
+          "targets": 3
+        },
+        "created_at": "2026-11-03T07:15:41.966585257Z",
+        "started_at": "2026-11-03T07:15:43.665219953Z",
+        "finished_at": "2026-11-03T07:15:49.275564665Z",
+        "result": null,
+        "error": null
+      }
+    },
+    "periodic_scheduler": {
+      "historical_overlaps": [],
+      "states": [
+        {
+          "type": "journal_flush",
+          "state": "succeeded",
+          "count": 54
+        },
+        {
+          "type": "purge_uploads",
+          "state": "succeeded",
+          "count": 54
+        },
+        {
+          "type": "recover_uploads",
+          "state": "succeeded",
+          "count": 54
+        }
+      ],
+      "fully_paged_native_scan": true
+    },
+    "quota_before_purge": {
+      "user_id": "owner",
+      "bytes_logical_used": 6258714,
+      "bytes_logical_reserved": 102400,
+      "bytes_logical_limit": 268435456
+    },
+    "quota_after_purge": {
+      "user_id": "owner",
+      "bytes_logical_used": 6258714,
+      "bytes_logical_reserved": 0,
+      "bytes_logical_limit": 268435456
+    },
+    "repeat_purge": {
+      "job_id": "job_cb94811e43deb0a9a0273a0dbcbb8540",
+      "type": "purge_uploads",
+      "state": "succeeded",
+      "dry_run": false,
+      "policy_revision": 1,
+      "worker_node_id": "i-098542d519cd26273-48b41ad50cdeb3b24cad6efa1c8f2de6",
+      "progress": {
+        "aborted": 0,
+        "completed": 0,
+        "examined": 0,
+        "skipped": 0
+      },
+      "created_at": "2026-11-03T06:44:05.877599543Z",
+      "started_at": "2026-11-03T06:44:06.060632566Z",
+      "finished_at": "2026-11-03T06:44:06.256463056Z",
+      "result": {
+        "after": "",
+        "pages": 3,
+        "examined": 0,
+        "completed": 0,
+        "aborted": 0,
+        "skipped": 0
+      },
+      "error": null
+    },
+    "held_put": {
+      "ok": true,
+      "bytes": 16777216,
+      "sha256": "d965cf8657ea57bc7195d6f3e6624a060ec35b2b245ca809127d2083aa88952a"
+    },
+    "manual_cloud_drain": {
+      "job_id": "job_28fd48e89f792e1e1c8d57e8dc737a73",
+      "type": "drain",
+      "state": "succeeded",
+      "dry_run": false,
+      "policy_revision": 1,
+      "worker_node_id": "i-08219aa783c1c71c5-5aba5f4e7990f6af4f3de457c6a1fecc",
+      "progress": {},
+      "created_at": "2026-11-03T06:50:39.528733562Z",
+      "started_at": "2026-11-03T06:50:42.795723723Z",
+      "finished_at": "2026-11-03T07:20:50.472161231Z",
+      "result": {
+        "admission_closed": true,
+        "flush_complete": true,
+        "alb_unused": true,
+        "profile": "cloud"
+      },
+      "error": null
+    },
+    "final_cloud_drains": {
+      "time": "2026-11-03T07:57:21.848112+00:00",
+      "jobs": [
+        {
+          "job_id": "job_b681843638689c1230c71a27b724f221",
+          "state": "succeeded",
+          "result": {
+            "admission_closed": true,
+            "flush_complete": true,
+            "alb_unused": true,
+            "profile": "cloud"
+          }
+        },
+        {
+          "job_id": "job_bc4cfb05ea3c7acfe646fde442a8a33e",
+          "state": "succeeded",
+          "result": {
+            "admission_closed": true,
+            "flush_complete": true,
+            "alb_unused": true,
+            "profile": "cloud"
+          }
+        }
+      ],
+      "fleet_empty": true
+    },
+    "all_alb_targets_unhealthy": {
+      "TargetHealthDescriptions": [
+        {
+          "Target": {
+            "Id": "i-073b28c9f515f9d74",
+            "Port": 8080
+          },
+          "HealthCheckPort": "9100",
+          "TargetHealth": {
+            "State": "unhealthy",
+            "Reason": "Target.ResponseCodeMismatch",
+            "Description": "Health checks failed with these codes: [503]"
+          },
+          "AdministrativeOverride": {
+            "State": "no_override",
+            "Reason": "AdministrativeOverride.NoOverride",
+            "Description": "No override is currently active on target"
+          }
+        },
+        {
+          "Target": {
+            "Id": "i-08219aa783c1c71c5",
+            "Port": 8080
+          },
+          "HealthCheckPort": "9100",
+          "TargetHealth": {
+            "State": "unhealthy",
+            "Reason": "Target.ResponseCodeMismatch",
+            "Description": "Health checks failed with these codes: [503]"
+          },
+          "AdministrativeOverride": {
+            "State": "no_override",
+            "Reason": "AdministrativeOverride.NoOverride",
+            "Description": "No override is currently active on target"
+          }
+        }
+      ]
+    },
+    "alb_fail_open": {
+      "all_native_targets_unhealthy": true,
+      "native_target_count": 2,
+      "signed_request_rejected_by_application_gate": true,
+      "status": 503,
+      "time": "2026-11-03T07:26:28.603494+00:00",
+      "no_additional_vm_launches": true
+    },
+    "edge_gate": {
+      "job_id": "job_2ab710bc18c18500ae6f03561c36c8a0",
+      "result": {
+        "admission_closed": true,
+        "flush_complete": false,
+        "profile": "edge"
+      },
+      "readyz": 503,
+      "runtime_still_running": true,
+      "systemd": "MainPID=34056\nInvocationID=c538265782f445bb8be35caa371ba49e\n",
+      "response_lost": true,
+      "reconciliation": "Last operator tunnel health probe observed the target gate close and disconnected the POST; native Jobs record confirms accepted operation succeeded. No resubmission.",
+      "time": "2026-11-03T07:34:15.505474+00:00"
+    },
+    "edge_final_drain": {
+      "accepted": {
+        "job_id": "job_93488c050b31a02aa4dd0482ad89f022",
+        "type": "drain",
+        "state": "queued",
+        "dry_run": false,
+        "policy_revision": 1,
+        "progress": {},
+        "created_at": "2026-11-03T08:19:13.942163375Z",
+        "started_at": null,
+        "finished_at": null,
+        "result": null,
+        "error": null
+      },
+      "status": 202,
+      "node": {
+        "node_id": "edge-operations-f59f9c34a270a0bfb2ae42c2a934cfed",
+        "incarnation": "f59f9c34a270a0bfb2ae42c2a934cfed",
+        "service_incarnation": "49c8b662ecdceca32b1000e496153c99",
+        "revision": 3,
+        "profile": "edge",
+        "address": "127.0.0.1:9000",
+        "heartbeat_at": "2026-11-03T08:19:00.315332048Z",
+        "ready": true,
+        "draining": false,
+        "drain_applied": false,
+        "drain_state": "",
+        "active_requests": 0,
+        "applied_policy_revision": 1
+      },
+      "systemd": "MainPID=50585\nInvocationID=1227d6793e1c4cf48799ee6ca4eb7072\n",
+      "time": "2026-11-03T08:19:14.405579+00:00"
+    },
+    "edge_actual_crash_recovery": {
+      "before": "MainPID=33652\nInvocationID=8da438103cf747b3aec7d72ce77536ff\n",
+      "after": "MainPID=34056\nInvocationID=c538265782f445bb8be35caa371ba49e\n",
+      "old_node": {
+        "node_id": "edge-operations-67ef9c55e15934928e9291b62db0f1d4",
+        "incarnation": "67ef9c55e15934928e9291b62db0f1d4",
+        "service_incarnation": "49c8b662ecdceca32b1000e496153c99",
+        "revision": 6,
+        "profile": "edge",
+        "address": "127.0.0.1:9000",
+        "heartbeat_at": "2026-11-03T07:07:49.166797101Z",
+        "ready": true,
+        "draining": false,
+        "drain_applied": false,
+        "drain_state": "",
+        "active_requests": 0,
+        "applied_policy_revision": 1
+      },
+      "fresh_node": {
+        "node_id": "edge-operations-7f3184066ce9d1e48aa0014e99bbd4de",
+        "incarnation": "7f3184066ce9d1e48aa0014e99bbd4de",
+        "service_incarnation": "49c8b662ecdceca32b1000e496153c99",
+        "revision": 2,
+        "profile": "edge",
+        "address": "127.0.0.1:9000",
+        "heartbeat_at": "2026-11-03T07:08:11.94227957Z",
+        "ready": true,
+        "draining": false,
+        "drain_applied": false,
+        "drain_state": "",
+        "active_requests": 0,
+        "applied_policy_revision": 1
+      },
+      "fault": "SIGKILL main runtime process, systemd Restart=on-failure",
+      "actual_readyz": 200
+    },
+    "cloudwatch_failure": {
+      "fault_start": "2026-11-03T07:18:51.221922+00:00",
+      "fault_end": "2026-11-03T07:20:06.414769+00:00",
+      "only_monitoring_hostname_overridden": true,
+      "original_hosts_restored": true,
+      "same_process": true,
+      "readiness_samples": [
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "native_tls_failure_observed": true,
+      "nginx_error": "2026/11/03 07:18:51 [notice] 22766#22766: using the \"epoll\" event method\n2026/11/03 07:18:51 [notice] 22766#22766: start worker processes\n2026/11/03 07:18:51 [notice] 22766#22766: start worker process 37243\n2026/11/03 07:18:51 [notice] 22766#22766: signal 17 (SIGCHLD) received from 22768\n2026/11/03 07:18:51 [notice] 22766#22766: worker process 22768 exited with code 0\n2026/11/03 07:18:51 [notice] 22766#22766: signal 29 (SIGIO) received\n2026/11/03 07:18:57 [info] 37243#37243: *86 SSL_do_handshake() failed (SSL: error:0A000412:SSL routines::ssl/tls alert bad certificate:SSL alert number 42) while SSL handshaking, client: 127.0.0.1, server: 0.0.0.0:443\n2026/11/03 07:19:57 [info] 37243#37243: *87 SSL_do_handshake() failed (SSL: error:0A000412:SSL routines::ssl/tls alert bad certificate:SSL alert number 42) while SSL handshaking, client: 127.0.0.1, server: 0.0.0.0:443\n2026/11/03 07:20:06 [notice] 22766#22766: signal 1 (SIGHUP) received from 37386, reconfiguring\n2026/11/03 07:20:06 [notice] 22766#22766: reconfiguring\n",
+      "systemd": "MainPID=34056\nInvocationID=c538265782f445bb8be35caa371ba49e\n"
+    },
+    "cloudwatch_native_readback": {
+      "MetricDataResults": [
+        {
+          "Id": "cloud",
+          "Label": "cloud",
+          "Timestamps": [
+            "2026-11-03T07:26:00+00:00",
+            "2026-11-03T07:25:00+00:00",
+            "2026-11-03T07:24:00+00:00",
+            "2026-11-03T07:23:00+00:00",
+            "2026-11-03T07:22:00+00:00",
+            "2026-11-03T07:21:00+00:00",
+            "2026-11-03T07:20:00+00:00",
+            "2026-11-03T07:19:00+00:00",
+            "2026-11-03T07:18:00+00:00",
+            "2026-11-03T07:17:00+00:00",
+            "2026-11-03T07:16:00+00:00",
+            "2026-11-03T07:15:00+00:00",
+            "2026-11-03T07:14:00+00:00",
+            "2026-11-03T07:13:00+00:00",
+            "2026-11-03T07:12:00+00:00",
+            "2026-11-03T07:11:00+00:00"
+          ],
+          "Values": [
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "StatusCode": "Complete"
+        },
+        {
+          "Id": "edge",
+          "Label": "edge",
+          "Timestamps": [
+            "2026-11-03T07:26:00+00:00",
+            "2026-11-03T07:25:00+00:00",
+            "2026-11-03T07:24:00+00:00",
+            "2026-11-03T07:23:00+00:00",
+            "2026-11-03T07:22:00+00:00",
+            "2026-11-03T07:21:00+00:00",
+            "2026-11-03T07:20:00+00:00",
+            "2026-11-03T07:17:00+00:00",
+            "2026-11-03T07:16:00+00:00",
+            "2026-11-03T07:14:00+00:00",
+            "2026-11-03T07:13:00+00:00",
+            "2026-11-03T07:12:00+00:00",
+            "2026-11-03T07:11:00+00:00"
+          ],
+          "Values": [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "StatusCode": "Complete"
+        }
+      ],
+      "Messages": []
+    },
+    "s3_roundtrips": [
+      {
+        "bytes": 0,
+        "elapsed_ms": 866,
+        "endpoint": "cloud",
+        "method": "PUT",
+        "path": "/cluster-operations-acceptance/unicode/%E1%BA%A3nh%20Vi%E1%BB%87t.bin",
+        "status": 200
+      },
+      {
+        "bytes": 122881,
+        "elapsed_ms": 415,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/unicode/%E1%BA%A3nh%20Vi%E1%BB%87t.bin",
+        "status": 200
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 85,
+        "endpoint": "cloud",
+        "method": "HEAD",
+        "path": "/cluster-operations-acceptance/unicode/%E1%BA%A3nh%20Vi%E1%BB%87t.bin",
+        "status": 200
+      },
+      {
+        "bytes": 29,
+        "elapsed_ms": 422,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/unicode/%E1%BA%A3nh%20Vi%E1%BB%87t.bin",
+        "status": 206
+      },
+      {
+        "case": "cross-profile signed path unicode/%E1%BA%A3nh%20Vi%E1%BB%87t.bin",
+        "host_port": 443,
+        "reader": "edge",
+        "time": "2026-11-03T07:12:28.392716063Z",
+        "writer": "cloud"
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 866,
+        "endpoint": "edge",
+        "method": "PUT",
+        "path": "/cluster-operations-acceptance/literal%25percent%2Bplus.bin",
+        "status": 200
+      },
+      {
+        "bytes": 122881,
+        "elapsed_ms": 394,
+        "endpoint": "cloud",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/literal%25percent%2Bplus.bin",
+        "status": 200
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 31,
+        "endpoint": "edge",
+        "method": "HEAD",
+        "path": "/cluster-operations-acceptance/literal%25percent%2Bplus.bin",
+        "status": 200
+      },
+      {
+        "bytes": 29,
+        "elapsed_ms": 464,
+        "endpoint": "cloud",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/literal%25percent%2Bplus.bin",
+        "status": 206
+      },
+      {
+        "case": "cross-profile signed path literal%25percent%2Bplus.bin",
+        "host_port": 443,
+        "reader": "cloud",
+        "time": "2026-11-03T07:12:30.150041377Z",
+        "writer": "edge"
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 799,
+        "endpoint": "cloud",
+        "method": "PUT",
+        "path": "/cluster-operations-acceptance/encoded%2Fslash.bin",
+        "status": 200
+      },
+      {
+        "bytes": 122881,
+        "elapsed_ms": 316,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/encoded%2Fslash.bin",
+        "status": 200
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 62,
+        "endpoint": "cloud",
+        "method": "HEAD",
+        "path": "/cluster-operations-acceptance/encoded%2Fslash.bin",
+        "status": 200
+      },
+      {
+        "bytes": 29,
+        "elapsed_ms": 395,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/encoded%2Fslash.bin",
+        "status": 206
+      },
+      {
+        "case": "cross-profile signed path encoded%2Fslash.bin",
+        "host_port": 443,
+        "reader": "edge",
+        "time": "2026-11-03T07:12:31.724592252Z",
+        "writer": "cloud"
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 824,
+        "endpoint": "edge",
+        "method": "PUT",
+        "path": "/cluster-operations-acceptance/double//slash.bin",
+        "status": 200
+      },
+      {
+        "bytes": 122881,
+        "elapsed_ms": 306,
+        "endpoint": "cloud",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/double//slash.bin",
+        "status": 200
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 43,
+        "endpoint": "edge",
+        "method": "HEAD",
+        "path": "/cluster-operations-acceptance/double//slash.bin",
+        "status": 200
+      },
+      {
+        "bytes": 29,
+        "elapsed_ms": 368,
+        "endpoint": "cloud",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/double//slash.bin",
+        "status": 206
+      },
+      {
+        "case": "cross-profile signed path double//slash.bin",
+        "host_port": 443,
+        "reader": "cloud",
+        "time": "2026-11-03T07:12:33.26950779Z",
+        "writer": "edge"
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 855,
+        "endpoint": "cloud",
+        "method": "PUT",
+        "path": "/cluster-operations-acceptance/dots/./../kept.bin",
+        "status": 200
+      },
+      {
+        "bytes": 122881,
+        "elapsed_ms": 423,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/dots/./../kept.bin",
+        "status": 200
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 30,
+        "endpoint": "cloud",
+        "method": "HEAD",
+        "path": "/cluster-operations-acceptance/dots/./../kept.bin",
+        "status": 200
+      },
+      {
+        "bytes": 29,
+        "elapsed_ms": 349,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/dots/./../kept.bin",
+        "status": 206
+      },
+      {
+        "case": "cross-profile signed path dots/./../kept.bin",
+        "host_port": 443,
+        "reader": "edge",
+        "time": "2026-11-03T07:12:34.928939742Z",
+        "writer": "cloud"
+      },
+      {
+        "bytes": 763,
+        "elapsed_ms": 25,
+        "endpoint": "cloud",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance",
+        "status": 200
+      },
+      {
+        "bytes": 898,
+        "elapsed_ms": 28,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance",
+        "status": 200
+      },
+      {
+        "case": "Cloud LIST cursor continues on Edge",
+        "time": "2026-11-03T07:12:34.983485561Z"
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 784,
+        "endpoint": "edge",
+        "method": "PUT",
+        "path": "/cluster-operations-acceptance/unicode/%E1%BA%A3nh%20Vi%E1%BB%87t.bin",
+        "status": 200
+      },
+      {
+        "bytes": 22,
+        "elapsed_ms": 371,
+        "endpoint": "cloud",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/unicode/%E1%BA%A3nh%20Vi%E1%BB%87t.bin",
+        "status": 200
+      },
+      {
+        "bytes": 184,
+        "elapsed_ms": 910,
+        "endpoint": "cloud",
+        "method": "PUT",
+        "path": "/cluster-operations-acceptance/copy.bin",
+        "status": 200
+      },
+      {
+        "bytes": 22,
+        "elapsed_ms": 385,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/copy.bin",
+        "status": 200
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 426,
+        "endpoint": "edge",
+        "method": "DELETE",
+        "path": "/cluster-operations-acceptance/copy.bin",
+        "status": 204
+      },
+      {
+        "bytes": 240,
+        "elapsed_ms": 114,
+        "endpoint": "cloud",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/copy.bin",
+        "status": 404
+      },
+      {
+        "case": "overwrite Copy Delete are shared",
+        "time": "2026-11-03T07:12:37.975682795Z"
+      },
+      {
+        "bytes": 225,
+        "elapsed_ms": 222,
+        "endpoint": "cloud",
+        "method": "POST",
+        "path": "/cluster-operations-acceptance/multipart.bin",
+        "status": 200
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 1071,
+        "endpoint": "edge",
+        "method": "PUT",
+        "path": "/cluster-operations-acceptance/multipart.bin",
+        "status": 200
+      },
+      {
+        "bytes": 0,
+        "elapsed_ms": 815,
+        "endpoint": "cloud",
+        "method": "PUT",
+        "path": "/cluster-operations-acceptance/multipart.bin",
+        "status": 200
+      },
+      {
+        "bytes": 407,
+        "elapsed_ms": 898,
+        "endpoint": "edge",
+        "method": "POST",
+        "path": "/cluster-operations-acceptance/multipart.bin",
+        "status": 200
+      },
+      {
+        "bytes": 5767168,
+        "elapsed_ms": 712,
+        "endpoint": "cloud",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/multipart.bin",
+        "status": 200
+      },
+      {
+        "bytes": 21,
+        "elapsed_ms": 522,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/cluster-operations-acceptance/multipart.bin",
+        "status": 206
+      },
+      {
+        "bytes": 5767168,
+        "case": "cross-profile multipart complete and boundary Range",
+        "range_sha256": "eff8bdb77ff49e767415321b655f3d56d1302b87e2a7f02c723e1254c5b7d796",
+        "time": "2026-11-03T07:12:42.242807758Z"
+      },
+      {
+        "bytes": 203,
+        "elapsed_ms": 47,
+        "endpoint": "cloud",
+        "method": "GET",
+        "path": "/admin/v1/users/owner",
+        "status": 404
+      },
+      {
+        "bytes": 201,
+        "elapsed_ms": 9,
+        "endpoint": "cloud",
+        "method": "GET",
+        "path": "/metrics",
+        "status": 501
+      },
+      {
+        "case": "cloud front door does not expose Admin or metrics",
+        "time": "2026-11-03T07:12:42.299472223Z"
+      },
+      {
+        "bytes": 203,
+        "elapsed_ms": 33,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/admin/v1/users/owner",
+        "status": 404
+      },
+      {
+        "bytes": 201,
+        "elapsed_ms": 12,
+        "endpoint": "edge",
+        "method": "GET",
+        "path": "/metrics",
+        "status": 501
+      },
+      {
+        "case": "edge front door does not expose Admin or metrics",
+        "time": "2026-11-03T07:12:42.345957055Z"
+      }
+    ],
+    "final_edge_clean_shutdown": {
+      "time": "2026-11-03T08:20:04.452022+00:00",
+      "invocation": "1227d6793e1c4cf48799ee6ca4eb7072",
+      "systemd": "MainPID=0\nResult=success\nExecMainStatus=0\nActiveState=inactive\n",
+      "journal": [
+        {
+          "time": "2026-11-03T08:18:30.149335384Z",
+          "level": "INFO",
+          "msg": "health server listening",
+          "address": "127.0.0.1:9100",
+          "profile": "edge",
+          "mode": "runtime"
+        },
+        {
+          "time": "2026-11-03T08:18:30.150639042Z",
+          "level": "INFO",
+          "msg": "s3 server listening",
+          "address": "127.0.0.1:8080",
+          "profile": "edge",
+          "mode": "runtime"
+        },
+        {
+          "time": "2026-11-03T08:18:30.150849536Z",
+          "level": "INFO",
+          "msg": "admin server listening",
+          "address": "127.0.0.1:9000",
+          "profile": "edge",
+          "mode": "runtime"
+        },
+        {
+          "time": "2026-11-03T08:19:14.39142917Z",
+          "level": "INFO",
+          "msg": "admin mutation",
+          "request_id": "24f87c2fd316b067775f74b241b569bb",
+          "principal": "operator",
+          "action": "POST /admin/v1/cluster/nodes/{id}/drain",
+          "resource": "/admin/v1/cluster/nodes/edge-operations-f59f9c34a270a0bfb2ae42c2a934cfed/drain",
+          "outcome": 202
+        },
+        {
+          "time": "2026-11-03T08:20:03.515372188Z",
+          "level": "INFO",
+          "msg": "shutdown complete"
+        }
+      ],
+      "clean_shutdown": true,
+      "proxy_stopped_gracefully": true
+    }
+  },
+  "cleanup": {
+    "verified_at": "2026-11-03T08:30:56.614913+00:00",
+    "managed_state_empty": true,
+    "instances": [
+      {
+        "instance": "i-098542d519cd26273",
+        "native_state": "absent_from_explicit_id_query"
+      },
+      {
+        "instance": "i-08219aa783c1c71c5",
+        "native_state": "terminated"
+      },
+      {
+        "instance": "i-06de4ed3c9c252b90",
+        "native_state": "terminated"
+      },
+      {
+        "instance": "i-073b28c9f515f9d74",
+        "native_state": "terminated"
+      }
+    ],
+    "root_volumes": [
+      {
+        "volume": "vol-0689c17cc5b5b57ab",
+        "absent": true
+      },
+      {
+        "volume": "vol-037a0abf29f869305",
+        "absent": true
+      },
+      {
+        "volume": "vol-07995df0ef40ce4a1",
+        "absent": true
+      },
+      {
+        "volume": "vol-00e0b3ee072f8af84",
+        "absent": true
+      }
+    ],
+    "synthetic_inventory": {
+      "tables": 20
+    },
+    "deleted_versions": 222,
+    "tables_deleted": 20,
+    "retained_system_backups": [
+      {
+        "table": "miles-dev-AdminTokens",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:55.862000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-BucketGrants",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:54.286000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Buckets",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:49.350000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Chunks",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:50.288000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-CompletionPages",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:54.944000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Credentials",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:55.926000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Jobs",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:48.319000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Leases",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:56.031000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-ManifestPages",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:48.967000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Nodes",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:54.444000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Objects",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:50.508000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Outbox",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:48.518000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Packs",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:48.552000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-QuotaReservations",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:48.559000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-RecoveryEpochs",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:54.892000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-SystemConfig",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:54.851000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-UploadPartPages",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:54.858000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-UploadParts",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:57.724000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Uploads",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:48.495000+00:00",
+        "size_bytes": 0
+      },
+      {
+        "table": "miles-dev-Users",
+        "type": "SYSTEM",
+        "expires_at": "2026-11-04T08:25:48.314000+00:00",
+        "size_bytes": 0
+      }
+    ],
+    "kms_pending_deletion": "2026-12-03T08:26:02.360000+00:00",
+    "secret_deletion_requested": "2026-11-03T08:25:42.647000+00:00",
+    "iam_temporary_grants_revoked_at": "2026-11-03T08:33:22.067457+00:00",
+    "iam_defaults_restored": true,
+    "bootstrap_state_preserved": true
+  },
+  "limitations": [
+    "Functional sequential test on 2 GiB nodes. Throughput and production sizing require separate measurement.",
+    "Final shutdown export correction ran live on Edge after Cloud had already been removed.",
+    "Frozen multipart recovery has native local contract coverage. This AWS run covered scheduler discovery and normal multipart completion.",
+    "One initial concurrent S3/purge probe received 409 OperationAborted. Complete serial retry and common-release S3 suite passed.",
+    "Final bill has not been reconciled. USD5 is the approved spending envelope."
+  ]
+}

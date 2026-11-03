@@ -41,11 +41,12 @@ contract CI job, using test credentials only:
 go test -race -count=1 -timeout=10m ./internal/metadata/dynamodb ./internal/metadata/badger ./internal/storage/contracttest ./internal/readpath ./internal/app
 ```
 
-## Native AWS acceptance still required
+## Native AWS acceptance
 
 These tests do not prove live CloudWatch ingestion, EC2 invocation ownership,
-private endpoint reachability or actual ASG replacement. A separate approved
-AWS-only run must pin the release/hash and record:
+private endpoint reachability or actual ASG replacement. The approved
+AWS-only run is recorded in [live validation](cluster-operations-live-validation.md).
+Its release/hash and native evidence cover:
 
 1. Jobs list/create/get/cancel through either Cloud node and Edge, with exact
    policy revision, owner transfer, stable checkpoints and cancellation proof.
@@ -59,6 +60,8 @@ AWS-only run must pin the release/hash and record:
 5. Evidence export and cleanup of that run's synthetic data, temporary grants
    and resources within the separately approved time/cost envelope.
 
-Local fixtures cannot turn the task fully Done. Missing executor integrations,
-maintenance-compatible job authority and native AWS acceptance remain explicit
-handoff items; no GC/tiering/checkpoint success is claimed here.
+The orchestration foundation and its installed executors form the accepted
+scope. Future GC/tiering/checkpoint/scrub implementations supply their executors
+and maintenance-compatible authority, then prove their business operations.
+An uninstalled executor returns HTTP501 before enqueue. Native physical success
+for those future operations is owned by their integration suites.
