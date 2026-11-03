@@ -66,7 +66,7 @@ if c['owner_ssh_public_key']:
     subprocess.run(['sshd', '-t'], check=True)
     subprocess.run(['systemctl', 'reload', 'sshd'], check=True)
 (pathlib.Path('/etc/miles') / 'lifecycle.json').write_text(json.dumps({
-    key:c[key] for key in ['account_id','region','asg_name','hook_name','target_group_arn']}))
+    key:c[key] for key in ['account_id','region','asg_name','hook_name','target_group_arn','table_prefix']}))
 subprocess.run(['systemctl', 'daemon-reload'], check=True)
 subprocess.run(['systemctl', 'enable', '--now', 'miles.service', 'miles-lifecycle.service'], check=True)
 MILES_BOOTSTRAP_PY

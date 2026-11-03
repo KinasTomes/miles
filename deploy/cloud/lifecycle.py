@@ -2,8 +2,10 @@
 """On-instance ASG termination hook. Never equate timeout/exit alone with drain."""
 import argparse
 import fcntl
+import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import stat
@@ -14,6 +16,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 
 STATE = Path("/var/lib/miles-lifecycle")
+REQUEST = Path("/var/lib/miles/drain-request.json")
 POLL_SECONDS = 5
 HEARTBEAT_SECONDS = 30
 TOTAL_SECONDS = 2100  # app1800/ALB1800 plus bounded control-plane slack
@@ -101,6 +104,60 @@ class Lifecycle:
             raise RuntimeError("target health response is ambiguous")
         return targets[0].get("TargetHealth", {}).get("State") == "unused"
 
+    def requested(self):
+        """Read only a bounded, regular marker owned by the gateway account."""
+        try:
+            fd = os.open(REQUEST, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            return None
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_uid != pwd.getpwnam("miles").pw_uid or info.st_size > 4096):
+                raise IncompleteDrain("unsafe gateway drain request")
+            request = json.loads(stream.read(4097))
+        if set(request) != {"invocation", "node_id", "incarnation", "service_incarnation"}:
+            raise IncompleteDrain("invalid gateway drain request")
+        if not re.fullmatch(r"[a-f0-9]{32}", request["invocation"]):
+            raise IncompleteDrain("invalid gateway invocation")
+        for key in ("node_id", "incarnation", "service_incarnation"):
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", request[key]):
+                raise IncompleteDrain("invalid gateway node binding")
+        return request
+
+    def acknowledge_node(self, request):
+        """Publish proof with the adapter's optimistic record token intact."""
+        if not request:
+            return
+        prefix = self.config.get("table_prefix", "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,200}", prefix):
+            raise IncompleteDrain("node proof requires the reviewed table prefix")
+        key = json.dumps({"node_id": {"S": request["node_id"]}})
+        row = self.aws("dynamodb", "get-item", "--table-name", prefix + "Nodes",
+                       "--key", key, "--consistent-read").get("Item", {})
+        if (row.get("incarnation") != {"S": request["incarnation"]}
+                or row.get("service_incarnation") != {"S": request["service_incarnation"]}
+                or row.get("draining") != {"BOOL": True}
+                or row.get("drain_applied") != {"BOOL": True}):
+            raise IncompleteDrain("node proof binding changed")
+        if row.get("drain_state") == {"S": "complete"}:
+            return  # Includes recovery after a lost UpdateItem acknowledgement.
+        revision = int(row["revision"]["N"])
+        old = row["record_revision"]["S"]
+        if not re.fullmatch(r"[a-f0-9]{64}", old) or not 0 < revision < 9007199254740991:
+            raise IncompleteDrain("invalid node record revision")
+        token = hashlib.sha256((old + request["invocation"] + "drain-complete").encode()).hexdigest()
+        names = {"#state": "drain_state", "#revision": "revision", "#token": "record_revision",
+                 "#boot": "incarnation", "#service": "service_incarnation"}
+        values = {":complete": {"S": "complete"}, ":next": {"N": str(revision + 1)},
+                  ":token": {"S": token}, ":old": {"S": old},
+                  ":boot": row["incarnation"], ":service": row["service_incarnation"]}
+        self.aws("dynamodb", "update-item", "--table-name", prefix + "Nodes", "--key", key,
+                 "--update-expression", "SET #state=:complete, #revision=:next, #token=:token",
+                 "--condition-expression", "#token=:old AND #boot=:boot AND #service=:service",
+                 "--expression-attribute-names", json.dumps(names),
+                 "--expression-attribute-values", json.dumps(values))
+
     def save(self, state):
         temporary = STATE / "state.new"
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
@@ -110,7 +167,7 @@ class Lifecycle:
             os.fsync(stream.fileno())
         os.replace(temporary, STATE / "state.json")
 
-    def drain(self):
+    def drain(self, manual=False, request=None):
         identity = json.loads(self.metadata("dynamic/instance-identity/document"))
         self.instance = identity["instanceId"]
         if (identity["accountId"] != self.config["account_id"] or identity["region"] != self.config["region"]
@@ -131,6 +188,8 @@ class Lifecycle:
             state = {"instance": self.instance, "boot": boot, "invocation": invocation,
                      "start": time.monotonic(), "stopping": False, "deregistered": False}
             self.save(state)
+        if request and request["invocation"] != state["invocation"]:
+            raise IncompleteDrain("drain request belongs to another invocation")
         next_heartbeat = 0
         while True:
             now = time.monotonic()
@@ -145,7 +204,11 @@ class Lifecycle:
                     state["stopping"] = True
                     self.save(state)
                     event("drain-started")
-                if now >= next_heartbeat:
+                # An operator drain can overlap an ASG replacement. Begin
+                # hook heartbeats as soon as IMDS reports that transition.
+                if manual and self.metadata("meta-data/autoscaling/target-lifecycle-state") == "Terminated":
+                    manual = False
+                if not manual and now >= next_heartbeat:
                     self.hook("record-lifecycle-action-heartbeat")
                     next_heartbeat = time.monotonic() + HEARTBEAT_SECONDS
                 if not state["deregistered"]:
@@ -154,7 +217,9 @@ class Lifecycle:
                     state["deregistered"] = True
                     self.save(state)
                 if self.stopped_cleanly(state["invocation"]) and self.target_unused():
-                    self.hook("complete-lifecycle-action")
+                    self.acknowledge_node(request)
+                    if not manual:
+                        self.hook("complete-lifecycle-action")
                     event("drain-completed", proof="gateway shutdown complete and ALB target unused")
                     return
             except IncompleteDrain:
@@ -179,10 +244,13 @@ class Lifecycle:
                 raise
             while True:
                 try:
+                    request = self.requested()
                     # IMDS exposes the TARGET steady state, not Terminating:Wait.
                     if self.metadata("meta-data/autoscaling/target-lifecycle-state") == "Terminated":
-                        self.drain()
+                        self.drain(request=request)
                         return
+                    if request and request["invocation"] == self.service().get("InvocationID"):
+                        self.drain(manual=True, request=request)
                 except IncompleteDrain:
                     raise
                 except (OSError, ValueError):
