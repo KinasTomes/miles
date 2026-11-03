@@ -60,3 +60,13 @@ Acceptance ở đây là native development integration. Không thay live Cloud/
 deployment evidence của dependency bằng emulator và không claim đã đo stats/purge
 trên các node AWS thật. Rollout binary mới cần heartbeat đầu tiên để có sample;
 old nodes thiếu field vẫn hiển thị unavailable. Purge không là refill barrier.
+
+## Recorded result (2026-11-03)
+
+Code/test revision `1633cdf`: `make check` PASS trên clean Linux clone (full Go
+suite, vet/build, 32 Python tests, doc-name và gofmt checks). Native three-runtime
+Cloud/Edge integration với dedicated cache routes PASS cùng race detector.
+Full affected `go test -race -count=1 -timeout=10m` PASS cho cache, jobs, readpath,
+engine/write, object, app, api/admin và metadata/dynamodb; native endpoints nêu
+trên bắt buộc trong lượt chạy. Whitespace check PASS. Live deployed AWS cache
+acceptance chưa chạy trong task này.
