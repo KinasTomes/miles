@@ -1,6 +1,6 @@
 # Warm GC and compaction validation
 
-W05-HAI-01. Shared runtime uses explicit target generation job parameters
+The shared runtime uses explicit target generation job parameters
 `pack_id` and `generation`. A system administrator submits
 `gc` or `compaction` through the existing Jobs API. A GC dry run reports
 observed roots, live bytes and canonical locations without physical dispatch.
@@ -15,14 +15,17 @@ metadata proof in a dry run.
   part bytes and open publisher counts must reconcile with the upload record.
   Refcounts count committed occurrences; live bytes count each canonical blob
   once. These measurements are never a delete condition.
-- Compaction copies canonical blobs from an exact Warm generation, including
-  unreferenced winners that PUT may still reuse. It uses the immutable repack
+- Compaction copies canonical blobs referenced by live heads or unfinished
+  uploads from an exact Warm generation. Unreferenced winners stay on the
+  source until a GC job retires them under the maintenance gate. It uses the immutable repack
   plan, verifies destination pack and sidecar, and swaps locations by revision
   under the job fence and current gate. Source generation remains readable
   for pinned readers. Physical reclamation is a separate operation.
 - A real GC job reserves the shared maintenance gate only when its control
   lease is the sole active lease, then takes a fresh mark. It defers when the
-  source has a root, canonical location or retention protection. A Warm
+  source has a root or retention protection. Under the gate it replaces dead
+  canonical locations with revisioned tombstones and journals them atomically.
+  A later PUT can publish the same identity with a higher revision. A Warm
   source first becomes Retiring, closing new admission and starting the
   recovery window. A later job requires 24 hours plus 10 minutes and a
   published cut after retirement, as well as a fresh proof of no roots.
