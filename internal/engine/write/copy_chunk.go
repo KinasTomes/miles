@@ -6,74 +6,51 @@ import (
 
 	"github.com/KinasTomes/miles/internal/engine"
 	"github.com/KinasTomes/miles/internal/pack"
+	"github.com/KinasTomes/miles/internal/policy"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
-// CopyChunk prepares one destination manifest reference using the admitted
-// destination writer. The caller holds the source read view while load runs
-// and retains destination writer protection through manifest publication.
-// A failed publication leaves any staged generation for normal GC.
-func (p *StorePublisher) CopyChunk(ctx context.Context, source storage.ChunkRef, domain string, load func(context.Context) ([]byte, error), restoreRequiredUntil ...time.Time) (storage.ChunkRef, error) {
-	var zero storage.ChunkRef
-	var required time.Time
-	if len(restoreRequiredUntil) == 1 {
-		required = restoreRequiredUntil[0]
-	}
-	if len(restoreRequiredUntil) > 1 {
-		return zero, storage.ErrInvalid
-	}
-	dest := source
-	dest.Key.Domain = domain
-	if p == nil || p.Metadata == nil || p.Writer.LeaseID == "" || source.Key.Validate() != nil || dest.Key.Validate() != nil ||
-		source.RawBytes <= 0 || source.RawBytes > engine.MaxChunkBytes || source.LogicalOffset < 0 || load == nil {
-		return zero, storage.ErrInvalid
-	}
-	prior, err := lookupComplete(ctx, p.Metadata, []storage.ChunkKey{dest.Key})
+// CopyChunks prepares ordered references from a pinned source manifest iterator.
+// next returns io.EOF at the end. The caller holds the source read view while
+// load runs and retains destination writer protection through head publication.
+func (p *StorePublisher) CopyChunks(ctx context.Context, domain string, compression engine.CompressionPolicy,
+	request policy.Request, utc policy.UTCProof,
+	next func(context.Context) (storage.ChunkRef, error),
+	load func(context.Context, storage.ChunkRef) ([]byte, error),
+	emit func(storage.ChunkRef) error) (Result, error) {
+	required, err := policy.RestoreRequiredUntil(request, utc)
 	if err != nil {
-		return zero, err
+		return Result{}, err
 	}
-	if row, found := prior[dest.Key]; found {
-		if row.Key != dest.Key || row.RawBytes != dest.RawBytes {
-			return zero, storage.ErrInvalid
-		}
-		reusable, err := p.reuse(ctx, row, required)
+	if p == nil || p.Metadata == nil || p.Writer.LeaseID == "" || next == nil || load == nil || storage.ValidateDomain(domain) != nil {
+		return Result{}, storage.ErrInvalid
+	}
+	publisher := copyPublisher{p, required}
+	pipeline := Pipeline{Lookup: p.Metadata, Publisher: publisher, Compression: compression}
+	return pipeline.run(ctx, domain, func(ctx context.Context) (pipelineChunk, error) {
+		source, err := next(ctx)
 		if err != nil {
-			return zero, err
+			return pipelineChunk{}, err
 		}
-		if reusable {
-			return dest, nil
+		dest := source
+		dest.Key.Domain = domain
+		if source.Key.Validate() != nil || dest.Key.Validate() != nil ||
+			source.RawBytes <= 0 || source.RawBytes > engine.MaxChunkBytes || source.LogicalOffset < 0 {
+			return pipelineChunk{}, storage.ErrInvalid
 		}
-	}
-	raw, err := load(ctx)
-	if err != nil {
-		return zero, err
-	}
-	key, err := engine.HashChunk(domain, raw)
-	if err != nil || key != dest.Key || int64(len(raw)) != source.RawBytes {
-		return zero, storage.ErrInvalid
-	}
+		return pipelineChunk{ref: dest, source: source}, nil
+	}, load, emit)
+}
 
-	ref, err := pack.NewRef()
-	if err != nil {
-		return zero, err
-	}
-	builder, err := pack.NewBuilder(ref)
-	if err != nil {
-		return zero, err
-	}
-	if err = builder.Add(pack.Blob{Key: key, Codec: "raw", RawLength: uint32(len(raw)), Stored: raw}); err != nil {
-		return zero, err
-	}
-	data, index, entries, err := builder.Finish()
-	if err != nil {
-		return zero, err
-	}
-	winners, err := p.publish(ctx, ref, data, index, entries, prior, required)
-	if err != nil {
-		return zero, err
-	}
-	if winner := winners[key]; winner.Key != key || winner.RawBytes != dest.RawBytes || winner.Validate() != nil {
-		return zero, storage.ErrUnavailable
-	}
-	return dest, nil
+type copyPublisher struct {
+	store                *StorePublisher
+	restoreRequiredUntil time.Time
+}
+
+func (p copyPublisher) Reuse(ctx context.Context, row storage.Chunk) (bool, error) {
+	return p.store.reuse(ctx, row, p.restoreRequiredUntil)
+}
+
+func (p copyPublisher) Publish(ctx context.Context, ref storage.PackRef, data, index []byte, entries []pack.Entry, prior map[storage.ChunkKey]storage.Chunk) (map[storage.ChunkKey]storage.Chunk, error) {
+	return p.store.publish(ctx, ref, data, index, entries, prior, p.restoreRequiredUntil)
 }
