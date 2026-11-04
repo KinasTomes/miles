@@ -112,3 +112,12 @@ module "fleet" {
   runtime_secret_arn      = module.security.secret_arn
   owner_ssh_public_key    = var.owner_ssh_public_key
 }
+
+module "observability" {
+  source        = "../../modules/observability"
+  name          = local.name
+  table_prefix  = "${local.name}-"
+  enabled       = var.enable_alarms && !var.paused
+  profiles      = var.monitored_profiles
+  alarm_actions = var.alarm_actions
+}

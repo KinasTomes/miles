@@ -182,3 +182,20 @@ variable "runtime_secret_name" {
   default     = null
   description = "Fresh installation secret name; null preserves the original installation name."
 }
+
+variable "enable_alarms" {
+  description = "Opt-in paid pilot alarms; paused environments do not retain runtime alarms."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+variable "monitored_profiles" {
+  description = "Profiles actually running; absent profiles should not page."
+  type        = set(string)
+  default     = ["cloud", "edge"]
+}
+variable "alarm_actions" {
+  description = "Optional existing SNS topics. Empty means alarm state only, no notifications."
+  type        = list(string)
+  default     = []
+}

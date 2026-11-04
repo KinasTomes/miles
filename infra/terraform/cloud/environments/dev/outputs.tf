@@ -43,3 +43,4 @@ output "session_configuration" {
     certificate_arn = var.certificate_arn
   }
 }
+output "alarm_contract" { value = module.observability.contract }
