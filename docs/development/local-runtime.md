@@ -102,9 +102,12 @@ mới (O_EXCL, 0600), stdout bị che. Xem [Jobs/Nodes contract](../contracts/jo
 Local/benchmark mở Admin API khi có `admin_address`. Token đầu tiên cấp offline khi
 gateway dừng: `dsgctl admin-token bootstrap --user <id> --token-file <path>
 --local-data-path <local_data_path>` (lần hai bị từ chối, không ghi gì); sau đó system
-admin cấp thêm token/credential qua API. Route chưa có provider ở local mode (bucket
-stats/layout, packs, cache, jobs, nodes) trả 503 `unavailable`; router404 không có Admin
-error envelope báo unsupported; JSON404 có `error.code` trả `adminclient.ErrNotFound`.
+admin cấp thêm token/credential qua API. `stats`, `stats --bucket` và `layout` đọc
+snapshot của collector local (chu kỳ 30 s, quá 2 phút là stale): chưa có snapshot,
+snapshot stale, hoặc bucket/object tạo sau snapshot trả 503 `unavailable` tới lần
+refresh kế tiếp. Local mode không gắn packs, cache statistics và jobs/nodes nên các
+route đó trả 503 `unavailable`. Router404 không có Admin error envelope báo unsupported;
+JSON404 có `error.code` trả `adminclient.ErrNotFound`.
 Error vẫn bounded/redacted, exit nonzero, không giả success.
 W05-HUNG-01/02 nối runtime Cloud/Edge, shared jobs/nodes và executors thật.
 

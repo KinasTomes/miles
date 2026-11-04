@@ -36,8 +36,20 @@ stdout `[REDACTED]`). Endpoint/token lấy từ `DSGCTL_ENDPOINT`/`DSGCTL_TOKEN_
 | Lệnh | system admin | owner | stranger |
 |---|---|---|---|
 | `stats` | 200 | 403 | 403 |
-| `stats --bucket`, `layout`, `pack ls`, `cache stats`, `job ls`, `node ls` | 503 `unavailable` (local chưa gắn provider) | 403 | 403 |
+| `stats --bucket demo`, `layout demo <key>` ngay sau khi tạo bucket/object | 503 `unavailable` (snapshot thống kê cũ hơn bucket/object) | 403 | 403 |
+| `pack ls`, `cache stats`, `job ls`, `node ls` | 503 `unavailable` (local mode không gắn provider) | 403 | 403 |
 | `grant ls demo`, `bucket show demo` | 200 | 200 | 403 |
+
+Local mode gắn collector thống kê (`internal/app/local.go`, chu kỳ 30 s, snapshot quá
+2 phút là stale). Global, bucket stats và layout đọc cùng snapshot: chưa có snapshot,
+snapshot stale, hoặc bucket/object mới chưa có trong snapshot đều trả 503 `unavailable`;
+đó là chưa đo, không phải thiếu wiring. Chạy lại sau lần refresh kế tiếp (chờ 35 s, cùng
+binary): `stats` và `stats --bucket demo` 200 cùng `snapshot_id` (2 object, 70000 byte
+logical); `layout demo "dir/a b+c.txt"` và `layout demo empty` (object rỗng) 200 với
+`integrity: metadata-only/not-verified`; `layout demo missing` 404 `object_not_found`;
+`stats --bucket nope` 404 `bucket_not_found`. `pack ls`, `cache stats`, `job ls`,
+`node ls` vẫn 503 vì local mode không gắn pack inventory, cache statistics và
+operations.
 
 Owner `grant set` với bucket_id cũ: 409 `bucket_id_mismatch`; với bucket_id hiện tại:
 200 revision 1; stranger có grant read vẫn 403 ở `grant ls`. Owner
@@ -47,8 +59,9 @@ Owner `grant set` với bucket_id cũ: 409 `bucket_id_mismatch`; với bucket_id
 
 ## Giới hạn
 
-- Smoke local trả 503 cho route mà local mode chưa gắn provider; bằng chứng scope và
-  wire của các route này là test CLI với Admin server thật, không phải Cloud/Edge.
+- Local mode không gắn pack inventory, cache statistics và operations nên `pack`,
+  `cache`, `job`, `node` trả 503; bằng chứng scope và wire của các route này là test CLI
+  với Admin server thật, không phải Cloud/Edge.
 - Kiểm tra quyền file 0600 dùng mode bit POSIX; `dsgctl` không build trên Windows.
 - Chưa chạy trên Cloud/Edge thật hay DynamoDB; CAS concurrent ở đây chạy trên Badger.
 - `cost report`, `fault`, `rebuild-index`, `sim run` vẫn unsupported.
