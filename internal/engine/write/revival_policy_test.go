@@ -145,3 +145,52 @@ func TestWritePublisherExtendsDurableProtectionBeforeReuse(t *testing.T) {
 		})
 	}
 }
+
+func TestCopyChunkRevivesDestinationWithoutRelabelingSource(t *testing.T) {
+	pub, metadata, physical := publisherFixture(t, true)
+	ctx := t.Context()
+	ref, data, index, entries := onePack(t)
+	sourceRows, err := pub.Publish(ctx, ref, data, index, entries, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := sourceRows[entries[0].Key]
+	raw, err := pack.ReadCanonicalChunk(ctx, physical, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRef := storage.ChunkRef{Key: source.Key, RawBytes: source.RawBytes, LogicalOffset: 10}
+	calls := 0
+	load := func(context.Context) ([]byte, error) { calls++; return raw, nil }
+	if _, err := pub.CopyChunk(ctx, sourceRef, "destination", func(context.Context) ([]byte, error) { return []byte("invalid"), nil }); err == nil {
+		t.Fatal("accepted corrupted source")
+	}
+	dest, err := pub.CopyChunk(ctx, sourceRef, "destination", load)
+	if err != nil || calls != 1 || dest.Key.Domain != "destination" || dest.Key.Hash != source.Key.Hash || dest.LogicalOffset != sourceRef.LogicalOffset {
+		t.Fatal(dest, calls, err)
+	}
+	rows, err := metadata.GetChunks(ctx, []storage.ChunkKey{source.Key, dest.Key}, true)
+	if err != nil || rows[source.Key] != source || rows[dest.Key].Location.Pack == ref {
+		t.Fatal(rows, err)
+	}
+	old := rows[dest.Key]
+	infos, err := metadata.GetPacks(ctx, []storage.PackRef{old.Location.Pack})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cold := infos[old.Location.Pack]
+	cold.State, cold.Class = "Cold", storage.Glacier
+	cold.StateRevision++
+	metadata.SetPack(cold)
+	if _, err := pub.CopyChunk(ctx, sourceRef, "destination", load); err != nil || calls != 2 {
+		t.Fatal(calls, err)
+	}
+	rows, err = metadata.GetChunks(ctx, []storage.ChunkKey{source.Key, dest.Key}, true)
+	revived := rows[dest.Key]
+	if err != nil || rows[source.Key] != source || revived.LocationRevision != old.LocationRevision+1 || revived.Location.Pack == old.Location.Pack {
+		t.Fatal(rows, err)
+	}
+	if _, err := pub.CopyChunk(ctx, sourceRef, "destination", load); err != nil || calls != 2 {
+		t.Fatal("protected destination should skip source", calls, err)
+	}
+}
