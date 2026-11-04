@@ -3,6 +3,8 @@ package lifecycle
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"github.com/KinasTomes/miles/internal/jobs"
 	s "github.com/KinasTomes/miles/internal/storage"
@@ -25,11 +27,26 @@ func (p Params) Validate(kind jobs.Type) error {
 		if p.Days < 1 || p.Days > 30 || p.Tier != "Standard" && p.Tier != "Bulk" && p.Tier != "Expedited" {
 			return s.ErrInvalid
 		}
-	} else if (kind != "tiering" && kind != "pack_promote") || p.Days != 0 || p.Tier != "" {
+	} else if (kind != "tiering" && !Repack(kind)) || p.Days != 0 || p.Tier != "" {
 		return s.ErrInvalid
 	}
 	return nil
 }
+
+// Repack jobs share immutable destination publication and canonical CAS.
+func Repack(kind jobs.Type) bool {
+	return kind == "pack_promote" || kind == "compaction"
+}
+
+func Destination(kind jobs.Type, id string, source s.PackRef) s.PackRef {
+	prefix := "promote/"
+	if kind == "compaction" {
+		prefix = "compact/"
+	}
+	sum := sha256.Sum256([]byte(prefix + id))
+	return s.PackRef{ID: source.ID, Generation: hex.EncodeToString(sum[:16])}
+}
+
 func Decode(b json.RawMessage, kind jobs.Type) (Params, error) {
 	var p Params
 	d := json.NewDecoder(bytes.NewReader(b))

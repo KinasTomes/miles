@@ -36,6 +36,7 @@ type Store interface {
 	SkipLifecycle(context.Context, jobs.Job) (Action, error)
 }
 type Worker struct {
+	Marker  *Marker
 	Store   Store
 	Packs   s.PackStore
 	Catalog *Catalog
@@ -92,7 +93,7 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 		if a.Target != "" {
 			report["storage_class"] = a.Target
 		}
-		if a.Kind == "pack_promote" && a.State == "Done" {
+		if Repack(a.Kind) && a.State == "Done" {
 			report["destination"] = map[string]string{"pack_id": a.Destination.ID, "generation": a.Destination.Generation}
 		}
 		body, _ := json.Marshal(report)
@@ -139,20 +140,30 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 		}
 		var plan []s.Chunk
 		digest := ""
-		if j.Type == "pack_promote" {
+		if Repack(j.Type) {
 			if e = w.Store.PinR1(ctx, j.Worker, []s.PackRef{p.Ref()}); e != nil {
 				return jobs.Step{Settled: true}, e
 			}
-			_, live, e := w.Catalog.Collect(ctx)
-			if e != nil {
-				return jobs.Step{Settled: true}, e
+			if j.Type == "compaction" {
+				if source.State != "Warm" || source.Class != s.Standard && source.Class != s.StandardIA || w.Marker == nil {
+					return jobs.Step{Settled: true}, s.ErrConflict
+				}
+				mark, err := w.Marker.Collect(ctx)
+				if err != nil {
+					return jobs.Step{Settled: true}, err
+				}
+				plan = mark.CanonicalFor(source.Ref)
+			} else {
+				_, live, err := w.Catalog.Collect(ctx)
+				if err != nil {
+					return jobs.Step{Settled: true}, err
+				}
+				plan = live[p.Ref()]
 			}
-			plan = live[p.Ref()]
 			if len(plan) == 0 || len(plan) > pack.MaxEntries {
-				return jobs.Step{Settled: true}, fmt.Errorf("%w: promotion plan exceeds the pack format entry bound", s.ErrInvalid)
+				return jobs.Step{Settled: true}, fmt.Errorf("%w: repack plan is empty or exceeds pack format bounds", s.ErrInvalid)
 			}
-			sum := sha256.Sum256([]byte("promote/" + j.ID))
-			dest := s.PackRef{ID: p.PackID, Generation: hex.EncodeToString(sum[:16])}
+			dest := Destination(j.Type, j.ID, p.Ref())
 			data, sidecar, entries, e = w.build(ctx, dest, plan)
 			if e != nil {
 				return jobs.Step{Settled: true}, e
@@ -297,7 +308,7 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 			return jobs.Step{}, e
 		}
 		return result(a, ready), nil
-	case "pack_promote":
+	case "pack_promote", "compaction":
 		if len(data) == 0 {
 			data, sidecar, entries, e = w.build(ctx, a.Destination, a.Chunks)
 			if e != nil {

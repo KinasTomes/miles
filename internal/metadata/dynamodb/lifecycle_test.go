@@ -786,3 +786,49 @@ func TestLocalLifecycleNodeClosureWinsLateCanonicalCAS(t *testing.T) {
 		t.Fatal("drained worker published a late canonical location", rows, e)
 	}
 }
+
+func TestLocalWarmCompactionRetainsPinnedSource(t *testing.T) {
+	m, w, j, policy, utc, physical, old := lifeFixture(t, "compaction", s.Standard)
+	ctx := t.Context()
+	w.Marker = &lifecycle.Marker{Store: m, Pinned: m.ObservePackPins, MaxRecords: 1000, MaxReferences: 1000, RecoveryRoots: func(context.Context) ([]s.PackRef, error) { return nil, nil }}
+	headPage, e := m.ObservePage(ctx, s.ObservationRequest{Kind: "heads", Limit: 100})
+	if e != nil || len(headPage.Heads) != 1 {
+		t.Fatal(headPage, e)
+	}
+	reader := s.WriterFence{LeaseID: "compaction-old-reader", Epoch: 1, ServiceIncarnation: j.Worker.ServiceIncarnation}
+	if _, e = m.AcquireR1(ctx, s.R1Acquire{Fence: reader, Owner: "old-reader", Kind: "reader", Object: headPage.Heads[0].Object, Deadline: utc.Now().Add(time.Minute)}); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.BindR1(ctx, reader, headPage.Heads[0]); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.PinR1(ctx, reader, []s.PackRef{old.Location.Pack}); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.ResolvedR1(ctx, reader); e != nil {
+		t.Fatal(e)
+	}
+	step, e := w.Step(ctx, j, policy)
+	if e != nil || !step.Done || !step.Settled {
+		t.Fatal(step, e)
+	}
+	rows, e := m.GetChunks(ctx, []s.ChunkKey{old.Key}, true)
+	now := rows[old.Key]
+	if e != nil || now.LocationRevision != old.LocationRevision+1 || now.Location.Pack == old.Location.Pack {
+		t.Fatal(now, e)
+	}
+	for _, c := range []s.Chunk{old, now} {
+		r, e := physical.RangeGet(ctx, c.Location.Pack, c.Location.Range)
+		if e != nil {
+			t.Fatal(e)
+		}
+		data, e := io.ReadAll(r)
+		closeErr := r.Close()
+		if e != nil || closeErr != nil || string(data) != "data" {
+			t.Fatal(string(data), e, closeErr)
+		}
+	}
+	if pinned, e := m.ObservePackPins(ctx, old.Location.Pack); e != nil || !pinned {
+		t.Fatal(pinned, e)
+	}
+}

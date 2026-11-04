@@ -3,6 +3,7 @@ package lifecycle
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/KinasTomes/miles/internal/engine"
 	s "github.com/KinasTomes/miles/internal/storage"
@@ -274,4 +275,22 @@ func (m Marker) Collect(ctx context.Context) (*Mark, error) {
 		}
 	}
 	return out, ctx.Err()
+}
+
+// CanonicalFor keeps every canonical winner on the source, including currently
+// unreferenced chunks that remain eligible for PUT reuse.
+func (m *Mark) CanonicalFor(source s.PackRef) []s.Chunk {
+	var rows []s.Chunk
+	for _, c := range m.Locations {
+		if c.Location.Pack == source {
+			rows = append(rows, c)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Key.Domain != rows[j].Key.Domain {
+			return rows[i].Key.Domain < rows[j].Key.Domain
+		}
+		return rows[i].Key.Hash < rows[j].Key.Hash
+	})
+	return rows
 }
