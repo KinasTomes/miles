@@ -87,21 +87,25 @@ Local/benchmark hiện nối PUT/GET/HEAD/Range/LIST/DELETE qua object service t
 
 Token file là raw bearer format API §6.4, permission đúng 0600, regular file không symlink; có thể có một newline cuối. CLI không nhận raw token argument, không dùng SigV4 và chỉ gửi bearer đến `/admin/v1/`. Plain HTTP chỉ cho literal loopback/tunnel; endpoint remote bắt buộc HTTPS với certificate verification. Không follow redirect hoặc environment proxy; response tối đa 2 MiB, timeout bao phủ cả đọc response. Error không in response body hay transport URL/token; reflected bearer trong JSON success được redact.
 
-Transport hỗ trợ `stats`, `pack ls`, lệnh danh tính/quyền/policy (`user`, `usage`,
+Transport hỗ trợ `stats [--bucket]`, `layout`, `pack ls/show/restore/promote`,
+`cache stats/purge --scope`, lệnh danh tính/quyền/policy (`user`, `usage`,
 `bucket show`, `grant`, `policy`, `bucket-policy`, `credentials`, `admin-token`),
 `job ls/show/run/cancel` và `node ls/drain`. Đặt global flags trước command; list nhận
 `--limit` và `--cursor`, job run nhận `--dry-run`, `--params-file`, `--policy-revision`.
+`DSGCTL_ENDPOINT`/`DSGCTL_TOKEN_FILE` thay `--endpoint`/`--token-file` khi không truyền flag.
 Secret/token do `credentials create`/`admin-token create` trả chỉ ghi vào file `--out`
 mới (O_EXCL, 0600), stdout bị che. Xem [Jobs/Nodes contract](../contracts/jobs-and-nodes.md),
-[validation](../testing/jobs-nodes-metrics-validation.md) và
-[Admin identity validation](../testing/admin-identity-validation.md).
+[validation](../testing/jobs-nodes-metrics-validation.md),
+[Admin identity validation](../testing/admin-identity-validation.md) và
+[Admin CLI validation](../testing/admin-cli-validation.md).
 
 Local/benchmark mở Admin API khi có `admin_address`. Token đầu tiên cấp offline khi
 gateway dừng: `dsgctl admin-token bootstrap --user <id> --token-file <path>
 --local-data-path <local_data_path>` (lần hai bị từ chối, không ghi gì); sau đó system
-admin cấp thêm token/credential qua API. Route stats/packs/jobs/nodes chưa phục vụ:
-router404 không có Admin error envelope báo unsupported; JSON404 có `error.code` trả
-`adminclient.ErrNotFound`. Error vẫn bounded/redacted, exit nonzero, không giả success.
+admin cấp thêm token/credential qua API. Route chưa có provider ở local mode (bucket
+stats/layout, packs, cache, jobs, nodes) trả 503 `unavailable`; router404 không có Admin
+error envelope báo unsupported; JSON404 có `error.code` trả `adminclient.ErrNotFound`.
+Error vẫn bounded/redacted, exit nonzero, không giả success.
 W05-HUNG-01/02 nối runtime Cloud/Edge, shared jobs/nodes và executors thật.
 
 ## Test không cần container
