@@ -28,10 +28,11 @@ import (
 )
 
 type Options struct {
-	Manifest    string
-	Out         string
-	Concurrency int
-	ReadRepeats int // additional full GET passes, separate from initial verification
+	Manifest      string
+	Out           string
+	Concurrency   int
+	RetainObjects bool // Retain only this run prefix for external statistics; caller owns cleanup.
+	ReadRepeats   int  // additional full GET passes, separate from initial verification
 }
 
 type Sample struct {
@@ -76,6 +77,7 @@ type Result struct {
 	Phases              []Phase                `json:"phases"`
 	Samples             []Sample               `json:"samples"`
 	Cleanup             string                 `json:"cleanup"`
+	HTTPBodyBytes       map[string]uint64      `json:"http_body_bytes"`
 	Limitations         []string               `json:"limitations"`
 }
 
@@ -90,7 +92,8 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 		return result, err
 	}
 	defer root.Close()
-	client, closeClient, err := newClient(c, o.Concurrency)
+	traffic := new(bodyTraffic)
+	client, closeClient, err := newClient(c, o.Concurrency, traffic)
 	if err != nil {
 		return result, err
 	}
@@ -121,6 +124,7 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 	}
 	defer func() {
 		result.FinishedAt = time.Now().UTC()
+		result.HTTPBodyBytes = traffic.snapshot(c.Target)
 		result.Status = "passed"
 		if err != nil {
 			result.Status, result.Error = "failed", errorCode(err)
@@ -148,6 +152,10 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 		if err = filePhase(ctx, client, root, c, o, fmt.Sprintf("repeat-get-%d", i), &result); err != nil {
 			return result, err
 		}
+	}
+	if o.RetainObjects {
+		result.Cleanup = "retained_owned_prefix_for_observation"
+		return result, nil
 	}
 	if err = filePhase(ctx, client, root, c, o, "delete", &result); err != nil {
 		return result, err

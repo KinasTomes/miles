@@ -369,3 +369,12 @@ func TestRedirectCannotForwardCredentials(t *testing.T) {
 		t.Fatal("redirect was followed or run reported success")
 	}
 }
+
+func TestRetainObjectsForExternalStatistics(t *testing.T) {
+	c, o, f := setup(t)
+	o.RetainObjects = true
+	result, err := Run(t.Context(), c, o)
+	if err != nil || result.Cleanup != "retained_owned_prefix_for_observation" || f.deleteCalls != 0 || len(f.objects) != len(result.Dataset.Files)+1 {
+		t.Fatal("retained run deleted data or hid cleanup", err, result.Cleanup, f.deleteCalls)
+	}
+}

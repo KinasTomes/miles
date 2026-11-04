@@ -3,10 +3,12 @@ package benchmark
 import (
 	"context"
 	"errors"
+	"github.com/KinasTomes/miles/internal/observability"
 	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sync/atomic"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/secretfile"
@@ -29,6 +31,7 @@ type Config struct {
 
 // Environment records operator declarations, not measurements or readiness proof.
 type Environment struct {
+	Profile        string `json:"profile,omitempty"`
 	Topology       string `json:"topology"`
 	Host           string `json:"host"`
 	CPU            string `json:"cpu"`
@@ -50,7 +53,7 @@ type credentials struct {
 	UserID          string `json:"user_id,omitempty"` // accepts the local runtime file
 }
 
-func newClient(c Config, concurrency int) (*awss3.Client, func(), error) {
+func newClient(c Config, concurrency int, traffic *bodyTraffic) (*awss3.Client, func(), error) {
 	if c.Target != "direct-s3" && c.Target != "miles-warm" && c.Target != "local-s3-smoke" {
 		return nil, nil, errors.New("target must be direct-s3, miles-warm or local-s3-smoke")
 	}
@@ -96,7 +99,7 @@ func newClient(c Config, concurrency int) (*awss3.Client, func(), error) {
 		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 			return aws.Credentials{AccessKeyID: cred.AccessKeyID, SecretAccessKey: cred.SecretAccessKey, SessionToken: cred.SessionToken}, nil
 		}),
-		HTTPClient: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		HTTPClient: observability.CountHTTPClient(&http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, func(n int) { traffic.sent.Add(uint64(n)) }, func(n int) { traffic.received.Add(uint64(n)) }),
 	})
 	return client, transport.CloseIdleConnections, nil
 }
@@ -123,3 +126,12 @@ func errorCode(err error) string {
 }
 
 const requestTimeout = 30 * time.Minute
+
+type bodyTraffic struct{ sent, received atomic.Uint64 }
+
+func (t *bodyTraffic) snapshot(target string) map[string]uint64 {
+	if target == "miles-warm" {
+		return map[string]uint64{"client_to_gateway": t.sent.Load(), "gateway_to_client": t.received.Load()}
+	}
+	return map[string]uint64{"client_to_s3": t.sent.Load(), "s3_to_client": t.received.Load()}
+}

@@ -29,6 +29,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	manifest := f.String("manifest", "", "Dataset manifest.json; every source file is hashed before network I/O")
 	out := f.String("out", "", "New private artifact directory; must not exist")
 	concurrency := f.Int("concurrency", 1, "Concurrent requests, 1..64; same value for both targets")
+	retain := f.Bool("retain-objects", false, "Retain this run prefix for external statistics; caller must clean it up")
 	repeats := f.Int("read-repeats", 3, "Additional full GET passes, 0..10 (each verifies SHA-256)")
 	if err := f.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -52,7 +53,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "invalid config JSON or unknown field")
 		return 1
 	}
-	r, err := benchmark.Run(ctx, c, benchmark.Options{Manifest: *manifest, Out: *out, Concurrency: *concurrency, ReadRepeats: *repeats})
+	r, err := benchmark.Run(ctx, c, benchmark.Options{Manifest: *manifest, Out: *out, Concurrency: *concurrency, ReadRepeats: *repeats, RetainObjects: *retain})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
