@@ -35,6 +35,7 @@ type PhysicalObject struct {
 	Key, VersionID, Category string
 	Size                     int64
 	Current                  bool
+	Class                    StorageClass
 	Pack                     PackRef
 	// Nil means no verified index: only canonical payload can be attributed;
 	// unknown structural/dead overhead stays in the global pool.
