@@ -250,7 +250,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	} else if !errors.Is(e, storage.ErrInvalid) {
 		return d, e
 	}
-	uploads := uploadJobs{store: m, objects: objects, utc: utc}
+	uploads := uploadJobs{store: m, utc: utc, objects: func(ctx context.Context, bucket string) (uploadRecovery, error) { return objects(ctx, bucket) }}
 	runner.Executors["purge_uploads"] = uploads.executor("purge_uploads")
 	runner.Executors["recover_uploads"] = uploads.executor("recover_uploads")
 	packCatalog := &lifecycle.Catalog{Store: m, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 32768}

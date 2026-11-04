@@ -70,7 +70,7 @@ func nativeSweepDuringCut(t *testing.T, ctx context.Context, nodes []Dependencie
 			executors := runner.Executors
 			defer func() { runner.Executors = executors }()
 			entered, resume := make(chan struct{}), make(chan struct{})
-			sweep := uploadJobs{store: store, utc: metadata.utc, objects: func(call context.Context, bucket string) (*object.Service, error) {
+			sweep := uploadJobs{store: store, utc: metadata.utc, objects: func(call context.Context, bucket string) (uploadRecovery, error) {
 				close(entered)
 				select {
 				case <-resume:
