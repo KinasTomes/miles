@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -25,6 +28,16 @@ func (a sharedJobAuthority) Acquire(ctx context.Context, id, kind string) (stora
 			return f, storage.ErrFenced
 		}
 		if old.State != "Released" {
+			job, readErr := m.GetJob(ctx, id)
+			if readErr != nil && !errors.Is(readErr, storage.ErrNotFound) {
+				return f, readErr
+			}
+			if readErr == nil && job.PendingStep != "" && (job.Type == "tiering" || job.Type == "pack_restore" || job.Type == "pack_promote") {
+				if err = m.LifecycleQuiescent(ctx, id, old.Fence); err != nil {
+					return f, errors.Join(jobs.ErrReconciliation, err)
+				}
+			}
+
 			if err = m.ReclaimR1(ctx, old.Fence, 5*time.Second); err != nil {
 				return f, err
 			}
@@ -43,7 +56,9 @@ func (a sharedJobAuthority) Acquire(ctx context.Context, id, kind string) (stora
 	if err != nil {
 		return f, err
 	}
-	_, err = m.AcquireR1(ctx, storage.R1Acquire{Fence: f, Owner: m.owner, Kind: kind, Deadline: minTime(b.Upper.Add(9*time.Minute), b.Horizon)})
+	sum := sha256.Sum256([]byte("job-producer/" + id))
+	op := hex.EncodeToString(sum[:16])
+	_, err = m.AcquireR1(ctx, storage.R1Acquire{Fence: f, Owner: m.owner, Kind: kind, OpID: op, Deadline: minTime(b.Upper.Add(9*time.Minute), b.Horizon)})
 	return f, err
 }
 func (a sharedJobAuthority) Renew(ctx context.Context, f storage.WriterFence) error {

@@ -15,6 +15,7 @@ import (
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/engine"
 	"github.com/KinasTomes/miles/internal/jobs"
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
 	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/observability"
@@ -207,6 +208,13 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	metrics := new(observability.Operations)
 	identity := jobs.Node{ID: c.RuntimeNodeID + "-" + id, Incarnation: id, ServiceIncarnation: g.Incarnation, Profile: c.Profile, Address: c.AdminAddress, AppliedPolicyRevision: 1}
 	nodeRegistry := &jobs.Registry{Store: m, Clock: clk, Identity: identity}
+	nodeRegistry.CacheSnapshot = func() jobs.CacheSample {
+		s := resident.Stats()
+		tier := func(t cache.TierStats) jobs.CacheTier {
+			return jobs.CacheTier{UsedBytes: t.UsedBytes, CapacityBytes: t.CapacityBytes, Entries: t.Entries, MaxEntries: t.MaxEntries, Evictions: t.Evictions}
+		}
+		return jobs.CacheSample{Hits: s.Hits, Misses: s.Misses, Errors: s.Errors, Lookups: s.Lookups, Puts: s.Puts, Memory: tier(s.Memory), Disk: tier(s.Disk)}
+	}
 	runner := &jobs.Runner{Service: jobs.Service{Store: m, Policies: m, Now: func() time.Time { return clk.Now().WallUTC }, Observe: metrics.JobUpdate}, Authority: sharedJobAuthority{metadata}, Node: identity, Clock: clk, Executors: map[jobs.Type]jobs.Executor{}}
 	cluster := &jobs.Cluster{Runner: runner, Registry: nodeRegistry}
 	runner.ObserveError = metrics.DispatchFailure
@@ -232,7 +240,14 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	uploads := uploadJobs{store: m, objects: objects, utc: utc}
 	runner.Executors["purge_uploads"] = uploads.executor("purge_uploads")
 	runner.Executors["recover_uploads"] = uploads.executor("recover_uploads")
+	packCatalog := &lifecycle.Catalog{Store: m, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 32768}
+	lifecycleWorker := &lifecycle.Worker{Store: m, Packs: packs, Catalog: packCatalog, UTC: utc}
+	for _, kind := range []jobs.Type{"tiering", "pack_restore", "pack_promote"} {
+		runner.Executors[kind] = lifecycleWorker.Executor(kind)
+	}
+	a.PackInventory = packCatalog
 	a.Operations = cluster
+	a.CacheStatistics = cluster
 	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Cluster: cluster}
 	if clients.metrics != nil {
 		operational.CloudWatch, err = observability.NewCloudWatch(clients.metrics, c.Profile)

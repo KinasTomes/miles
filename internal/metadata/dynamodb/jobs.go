@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/KinasTomes/miles/internal/jobs"
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/metadata/operations"
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -95,6 +96,19 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 			}
 			if _, e = get[s.PolicySnapshot](t, policyKey(old.PolicyRevision)); e != nil {
 				return e
+			}
+		}
+		// A physical lifecycle step may transfer only after its own native
+		// transaction proves terminal/no-effect or known accepted restore.
+		// The public caller cannot supply this reconciliation fact.
+		if c.Kind == "claim" && old.PendingStep != "" && c.Fence != old.Worker && (old.Type == "tiering" || old.Type == "pack_restore" || old.Type == "pack_promote") {
+			a, err := r1Read[lifecycle.Action](t, lifecycleKey(old.ID))
+			if err != nil && !errors.Is(err, s.ErrNotFound) {
+				return err
+			}
+			if err == nil && a.Fence == old.Worker && a.Kind == old.Type && (a.State == "Done" || a.State == "Skipped" || a.State == "NotApplied" || a.State == "Waiting") {
+				old.PendingStep = ""
+				old.Checkpoint = []byte(`{"lifecycle_reconciled":true}`)
 			}
 		}
 		out, e = jobs.Apply(old, c, m.now())

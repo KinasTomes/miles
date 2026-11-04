@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	"reflect"
 	"sort"
 	"strconv"
@@ -593,6 +594,14 @@ func (t *transaction) setPage(k string, body []byte) error {
 }
 
 func (m *Store) fence(t *transaction, w s.WriterFence) error {
+	if j, ok := lifecycle.JobFromContext(t.ctx); ok {
+		if j.Worker != w {
+			return s.ErrFenced
+		}
+		if e := m.lifecycleJob(t, j, true); e != nil {
+			return e
+		}
+	}
 	if _, ok := m.authority.(*SharedAuthority); ok {
 		if t.r1Fences == nil {
 			t.r1Fences = map[s.WriterFence]bool{}

@@ -29,6 +29,7 @@ type Store interface {
 	GetBucket(context.Context, string) (storage.Bucket, error)
 	GetCredential(context.Context, string) (storage.Credential, error)
 	GetQuota(context.Context, string) (storage.LogicalQuota, error)
+	GetPacks(context.Context, []storage.PackRef) (map[storage.PackRef]storage.PackInfo, error)
 	GetPolicy(context.Context, uint64) (storage.PolicySnapshot, error)
 	PutPolicy(context.Context, storage.PolicyUpdate) (storage.PolicySnapshot, error)
 	MutateControl(context.Context, storage.ControlMutation) (storage.MutationResult, error)
@@ -38,15 +39,17 @@ type Store interface {
 type Admit func(ctx context.Context, tokenID string) (storage.MutationContext, error)
 
 type Options struct {
-	Operations Operations
-	Statistics Statistics
-	Store      Store
-	Admit      Admit
-	Finish     func(context.Context, storage.MutationContext) // after the handler's synchronous metadata work
-	Sealer     Sealer
-	Cursors    Keyring
-	Clock      clock.Clock
-	Logger     *slog.Logger // audit log; never bearer/secret/hash
+	PackInventory   PackInventory
+	CacheStatistics CacheStatistics
+	Operations      Operations
+	Statistics      Statistics
+	Store           Store
+	Admit           Admit
+	Finish          func(context.Context, storage.MutationContext) // after the handler's synchronous metadata work
+	Sealer          Sealer
+	Cursors         Keyring
+	Clock           clock.Clock
+	Logger          *slog.Logger // audit log; never bearer/secret/hash
 }
 
 // Operations is the shared operational service, independent of the gateway
@@ -121,7 +124,13 @@ func NewServer(o Options) (http.Handler, error) {
 		mutation bool
 		h        func(*call) error
 	}{
+		{"GET /admin/v1/packs", false, s.listPacks},
+		{"GET /admin/v1/packs/{id}", false, s.showPack},
+		{"POST /admin/v1/packs/{id}/{generation}/restore", true, s.restorePack},
+		{"POST /admin/v1/packs/{id}/{generation}/promote", true, s.promotePack},
 		{"GET /admin/v1/jobs", false, s.listJobs},
+		{"GET /admin/v1/cache/stats", false, s.cacheStats},
+		{"POST /admin/v1/cache/purge", true, s.purgeCache},
 		{"POST /admin/v1/jobs", true, s.createJob},
 		{"GET /admin/v1/jobs/{id}", false, s.getJob},
 		{"DELETE /admin/v1/jobs/{id}", true, s.cancelJob},

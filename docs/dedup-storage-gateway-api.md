@@ -938,6 +938,29 @@ Shared được xác định bằng refcount occurrences đã đối soát trừ
 
 Đây là mô hình chi phí quản trị, không quota/hóa đơn người dùng. Giá nhân byte-thời-gian, không chỉ dung lượng cuối kỳ. Cloud cache không làm giảm logical Internet bytes; Edge cache có thể giảm S3 → Edge download theo đo thực.
 
+**Pack administration**: `GET /admin/v1/packs` accepts `state`,
+`storage_class`, decimal `live_ratio_lt` (0..1), `limit` and signed `cursor`.
+`GET /admin/v1/packs/{id}` pages all generations of that ID; both return
+`items`/`next_cursor`. Fields include `pack_id`, `generation`, `state`,
+`storage_class`, `state_revision`, `bytes`, `live_bytes`, `live_ratio`,
+`protected_until`, `min_retention_until`, `restored_until`, observational
+`readable`, `as_of` and `consistency`. Head-live bytes count unique canonical
+stored blobs reached by current object heads; they exclude staging/historical
+roots and are not GC eligibility or an atomic snapshot. IR is readable in Cold.
+
+`POST /admin/v1/packs/{id}/{generation}/restore` accepts
+`{"days":1,"tier":"Standard"}` (1..30 days; Standard/Bulk/Expedited).
+`/promote` accepts `{}`. System admin only, transactional actor recheck,
+exact-generation 404 `pack_not_found`, and 202 job detail/Location. Job types are
+`pack_restore`, `pack_promote`; explicit `tiering` jobs take
+`{"pack_id":"...","generation":"..."}` params and pin policy revision.
+Restore acceptance is not readiness; job/pack states track observed completion.
+Promotion writes a new verified Warm generation, conditionally moves the frozen
+head-live plan, keeps concurrent winners and retains source bytes. It does not
+promise to delete or atomically move the whole generation. Ambiguous mutable
+COPY remains protected until trusted terminal/isolation reconciliation; no public
+force-complete route exists. Live Cold acceptance remains a separate gate.
+
 **POST /admin/v1/cache/purge**:
 
 ```json
@@ -945,6 +968,34 @@ Shared được xác định bằng refcount occurrences đã đối soát trừ
 ```
 
 Scope=node cần node_id. Cluster job kết quả từng node/partial failure, không giả định gọi node bất kỳ đã xóa cache toàn cluster.
+
+Trả `202` với job detail và `Location: /admin/v1/jobs/{id}`; status/result đọc
+được qua gateway khác trong cùng shared installation. Auth system admin và
+transactional actor check áp dụng trước khi tạo job. Purge chỉ evict memory/disk
+resident bytes; không sửa object, pack hoặc quota. Fill mới có thể chạy sau purge.
+
+**GET /admin/v1/cache/stats?scope=node&node_id=...** hoặc `?scope=cluster`:
+
+System admin only. Scope bắt buộc; cluster không nhận node_id. Response `200`
+gồm `scope`, `complete`, `observed_at`, `nodes`, `included_nodes`, `hits`, `misses`,
+`denominator`, `hit_ratio`. Mỗi node có node_id/incarnation, state/error_code,
+sample timestamp, counters và occupancy/capacity/evictions memory/disk.
+
+Samples publish cùng Nodes heartbeat mỗi 15s, gắn boot/service incarnation;
+không forward bearer hoặc mở peer Admin port. Snapshot age phải <30s; node stale,
+clock future quá 2s hoặc thiếu sample trả state=unavailable, sample/ratio=null.
+Node không tồn tại trả404. Cluster discovery tối đa64node cùng service trong
+2phút gần đây; historical boots bị loại, node mới sau discovery không được hứa
+nằm trong kết quả. Lookup budget5s, tối đa100pages; read error không thành số0.
+
+Denominator = hits + misses (successful logical cache lookups, một disk promotion
+chỉ tính một hit). `errors` gồm failed gets/puts, bị loại khỏi denominator.
+Aggregate ratio = sum(hits)/sum(denominator) trên node sample hợp lệ, **không**
+trung bình node ratios. Denominator0 trả ratio=null. Khi partial, complete=false,
+aggregate chỉ mô tả included_nodes; kết quả từng node vẫn giữ lỗi rõ ràng.
+Counters tích lũy theo boot, purge không reset; đây là các heartbeat samples khác
+thời điểm, không phải atomic cluster snapshot hoặc ratio trong một time window.
+Legacy/local runtime chưa có shared cache service trả503, không giả lập cluster.
 
 **POST /admin/v1/faults** (chỉ enabled + system admin):
 
