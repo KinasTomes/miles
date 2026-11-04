@@ -225,6 +225,10 @@ A native shutdown regression reproduces R1 busy while a peer still holds the
 recovery authority for a closed epoch. Shutdown flush now waits and retries
 discovery within its original eight-minute budget. It seals after the peer
 releases authority, while cancellation and fencing still fail the shutdown.
+Operation and lease-cleanup errors are returned separately. A busy operation is
+retried only after successful lease cleanup. A native regression injects a
+release failure while the peer holds the epoch and requires both errors to
+propagate, with the failed lease still Active and no second attempt started.
 Writer reconciliation, journal flush and recovery-authority cleanup errors now
 identify their stage. This reproduces one cause of the recorded error, while
 the combined historical log cannot establish that it was the only cause in

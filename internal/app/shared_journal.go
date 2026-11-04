@@ -23,38 +23,37 @@ type journalRuntime struct {
 	authority jobs.Authority
 }
 
-func (j *journalRuntime) once(ctx context.Context, flush bool) (err error) {
+func (j *journalRuntime) once(ctx context.Context, flush bool) (workErr, cleanupErr error) {
 	id := "recovery_supervisor"
 	if flush {
 		suffix, e := storage.NewBucketID()
 		if e != nil {
-			return e
+			return e, nil
 		}
 		id = "shutdown_" + suffix
 	}
 	f, err := j.authority.Acquire(ctx, id, "recovery")
 	if err != nil {
-		return fmt.Errorf("acquire recovery authority: %w", err)
+		return fmt.Errorf("acquire recovery authority: %w", err), nil
 	}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		e := j.authority.Close(cleanup, f)
-		if e != nil {
-			e = fmt.Errorf("release recovery authority: %w", e)
+		cleanupErr = j.authority.Close(cleanup, f)
+		if cleanupErr != nil {
+			cleanupErr = fmt.Errorf("release recovery authority: %w", cleanupErr)
 		}
-		err = errors.Join(err, e)
 	}()
 	w := recovery.Worker{Store: j.store, Payloads: j.store, Objects: j.objects, Catalog: j.catalog, Clock: j.clock, Fence: f}
 	if flush {
-		return w.FlushSupervised(ctx)
+		return w.FlushSupervised(ctx), nil
 	}
-	return w.RunCuts(ctx)
+	return w.RunCuts(ctx), nil
 }
 
 func (j *journalRuntime) run(ctx context.Context) error {
 	for ctx.Err() == nil {
-		_ = j.once(ctx, false)
+		_, _ = j.once(ctx, false)
 		if err := j.clock.Sleep(ctx, time.Second); err != nil {
 			return err
 		}
@@ -66,9 +65,9 @@ func (j *journalRuntime) flush(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(parent, 8*time.Minute)
 	defer cancel()
 	for {
-		err := j.once(ctx, true)
-		if !errors.Is(err, storage.ErrR1Busy) {
-			return err
+		workErr, cleanupErr := j.once(ctx, true)
+		if cleanupErr != nil || !errors.Is(workErr, storage.ErrR1Busy) {
+			return errors.Join(workErr, cleanupErr)
 		}
 		// A peer may still own a closed epoch's seal. Keep its authority intact
 		// and retry discovery within this shutdown's original flush deadline.

@@ -8,12 +8,29 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/clock"
+	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
 type releasePeerRecoveryClock struct {
 	clock.Clock
 	release func() error
+}
+
+type failedRecoveryRelease struct {
+	jobs.Authority
+	failure error
+	fence   storage.WriterFence
+	calls   int
+}
+
+func (a *failedRecoveryRelease) Close(ctx context.Context, f storage.WriterFence) error {
+	a.calls++
+	if a.calls == 1 {
+		a.fence = f
+		return a.failure
+	}
+	return a.Authority.Close(ctx, f)
 }
 
 func (c releasePeerRecoveryClock) Sleep(ctx context.Context, d time.Duration) error {
@@ -61,8 +78,8 @@ func nativeShutdownDuringPeerRecovery(t *testing.T, ctx context.Context, nodes [
 	if epoch.State != "Closed" {
 		t.Fatal("unexpected epoch state", epoch.State)
 	}
-	if err := closing.once(ctx, true); !errors.Is(err, storage.ErrR1Busy) {
-		t.Fatal("shutdown did not encounter the peer's retained recovery authority", err)
+	if workErr, cleanupErr := closing.once(ctx, true); !errors.Is(workErr, storage.ErrR1Busy) || cleanupErr != nil {
+		t.Fatal("shutdown did not encounter the peer's retained recovery authority", workErr, cleanupErr)
 	}
 	original := closing.clock
 	defer func() { closing.clock = original }()
@@ -76,6 +93,33 @@ func nativeShutdownDuringPeerRecovery(t *testing.T, ctx context.Context, nodes [
 		released = true
 		return nil
 	}}
+	// Flush sees a busy peer while its own lease release also fails. The
+	// release error must survive even though another attempt could succeed.
+	authority := closing.authority
+	failure := errors.New("injected recovery lease release failure")
+	fault := &failedRecoveryRelease{Authority: authority, failure: failure}
+	closing.authority = fault
+	defer func() {
+		closing.authority = authority
+		if fault.fence.LeaseID != "" {
+			if err := authority.Close(context.Background(), fault.fence); err != nil {
+				t.Error(err)
+			}
+		}
+	}()
+	err = closing.flush(ctx)
+	closing.authority = authority
+	if !errors.Is(err, storage.ErrR1Busy) || !errors.Is(err, failure) || fault.calls != 1 || released {
+		t.Fatal("shutdown retried after failed lease cleanup", err, fault.calls, released)
+	}
+	lease, err := closing.store.GetR1Lease(ctx, fault.fence.LeaseID)
+	if err != nil || lease.State != "Active" {
+		t.Fatal("injected cleanup failure did not retain the original lease", lease, err)
+	}
+	if err := authority.Close(ctx, fault.fence); err != nil {
+		t.Fatal("fixture lease cleanup", err)
+	}
+	fault.fence = storage.WriterFence{}
 	if err := closing.flush(ctx); err != nil {
 		t.Fatal("shutdown failed instead of waiting for peer recovery", err)
 	}
