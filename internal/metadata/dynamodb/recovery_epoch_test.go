@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/clock"
+	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/jobs"
 	opstest "github.com/KinasTomes/miles/internal/jobs/contracttest"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
 	"github.com/KinasTomes/miles/internal/recovery"
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/contracttest"
@@ -33,6 +35,9 @@ type recoveryFixture struct {
 }
 
 func newRecoveryFixture(t *testing.T) *recoveryFixture {
+	return newRecoveryFixtureBase(t, false)
+}
+func newRecoveryFixtureBase(t *testing.T, audited bool) *recoveryFixture {
 	t.Helper()
 	ctx := context.Background()
 	f := contracttest.NewFixture()
@@ -57,7 +62,57 @@ func newRecoveryFixture(t *testing.T) *recoveryFixture {
 	base, _ := recovery.Encode(map[string]any{"r2_version": 1, "fixture": "audited seed; not a production checkpoint"})
 	sum := sha256.Sum256(base)
 	catalog := recovery.Catalog{Version: 1, History: h, Incarnation: inc, Genesis: recovery.Reference{Length: len(base), SHA256: hex.EncodeToString(sum[:])}}
-	if err = recovery.ProvisionHistory(ctx, m, objects, catalog, base); err != nil {
+	if audited {
+		rows := []recovery.Effect{}
+		add := func(entity, id string, revision uint64, v any) {
+			r, e := operations.Projection(entity, id, revision, v, false)
+			if e != nil {
+				t.Fatal(e)
+			}
+			rows = append(rows, r)
+		}
+		for _, u := range f.Users {
+			add("Users", u.ID, u.Revision, u)
+			limit := int64(0)
+			if u.ID == f.Quota.OwnerID {
+				limit = f.Quota.Limit
+			}
+			add("UsersQuota", u.ID, u.Revision, struct {
+				Owner string
+				Limit int64
+			}{u.ID, limit})
+		}
+		add("Buckets", f.Bucket.Name, f.Bucket.Revision, f.Bucket)
+		add("BucketGrants", f.Grant.BucketID+"/"+f.Grant.UserID, f.Grant.Revision, f.Grant)
+		for _, c := range f.Credentials {
+			add("Credentials", c.ID, c.Revision, struct {
+				Credential s.Credential
+				Security   s.CredentialSecurity
+			}{c, s.CredentialSecurity{}})
+		}
+		validator, _ := config.NewPolicyValidator(config.DSGPolicyLimits())
+		snapshot, e := validator.NewGlobalSnapshot(1, config.DefaultGlobalPolicy())
+		if e != nil {
+			t.Fatal(e)
+		}
+		policy, e := snapshot.StorageSnapshot()
+		if e != nil {
+			t.Fatal(e)
+		}
+		add("SystemConfig", "global-policy", 1, policy)
+		if e = m.update(ctx, func(t *transaction) error {
+			if e := put(t, policyKey(1), policy); e != nil {
+				return e
+			}
+			return put(t, "policy-current", uint64(1))
+		}); e != nil {
+			t.Fatal(e)
+		}
+		catalog, err = recovery.ProvisionAuditedHistory(ctx, m, objects, h, inc, rows, nil)
+	} else {
+		err = recovery.ProvisionHistory(ctx, m, objects, catalog, base)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	local, _ := clock.NewVirtual(f.Now, 10000)

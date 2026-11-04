@@ -865,6 +865,15 @@ Reject tiering/compression/chunking/dedup_domain fields tại endpoint bucket; k
 { "type": "tiering", "dry_run": true, "params": {}, "policy_revision": 4 }
 ```
 
+`recovery_checkpoint` yêu cầu `params={"target_epoch":0}` (safe integer không âm,
+không nhận unknown fields/null/missing target). Target phải có contiguous sealed
+chain; không tự đổi sang epoch mới hơn khi target thiếu seal. Executor shared
+runtime dựng checkpoint từ audited genesis/checkpoint trước + replay, rồi công bố
+support catalog bằng immutable completion marker và fenced metadata CAS. Dry run
+chỉ verify chain, không công bố recovery target. Receipt/counter/security, retention
+window và quy trình offline new-history install được mô tả trong
+[checkpoint/rebuild validation](testing/checkpoint-rebuild-validation.md).
+
 → 202, Location /admin/v1/jobs/job_example:
 
 ```json

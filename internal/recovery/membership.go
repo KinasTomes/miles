@@ -115,6 +115,7 @@ type membershipVerifier struct {
 	history     string
 	epoch       uint64
 	last, chain string
+	visit       func(Member) error
 }
 
 func (v *membershipVerifier) walk(ctx context.Context, r AttachmentReference, parentLevel int) (uint64, error) {
@@ -147,6 +148,11 @@ func (v *membershipVerifier) walk(ctx context.Context, r AttachmentReference, pa
 				return 0, err
 			}
 			v.last = m.ID
+			if v.visit != nil {
+				if err := v.visit(m); err != nil {
+					return 0, err
+				}
+			}
 			count++
 		}
 	} else {

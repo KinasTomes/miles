@@ -2,14 +2,13 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
 	"github.com/KinasTomes/miles/internal/recovery"
 	"github.com/KinasTomes/miles/internal/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -88,21 +87,31 @@ func provisionSharedHistory(ctx context.Context, m *dynamodb.Store, clients runt
 	}
 	// Genesis records the exact offline installation base, including hashed
 	// bearer state and policy. No plaintext credential/token is written to S3.
-	base, err := recovery.Encode(struct {
-		Version int                    `json:"runtime_genesis_version"`
-		User    storage.User           `json:"user"`
-		Token   storage.AdminToken     `json:"admin_token"`
-		Quota   storage.LogicalQuota   `json:"quota"`
-		Policy  storage.PolicySnapshot `json:"policy"`
-	}{1, user, token, quota, policy})
-	if err != nil {
+	rows := []recovery.Effect{}
+	add := func(entity, id string, revision uint64, v any) error {
+		row, e := operations.Projection(entity, id, revision, v, false)
+		rows = append(rows, row)
+		return e
+	}
+	if err = add("Users", user.ID, user.Revision, user); err != nil {
 		return err
 	}
-	sum := sha256.Sum256(base)
+	if err = add("AdminTokens", token.ID, token.Revision, token); err != nil {
+		return err
+	}
+	if err = add("UsersQuota", user.ID, user.Revision, struct {
+		Owner string
+		Limit int64
+	}{user.ID, quota.Limit}); err != nil {
+		return err
+	}
+	if err = add("SystemConfig", "global-policy", policy.Revision, policy); err != nil {
+		return err
+	}
 	objects, err := recovery.NewS3Objects(clients.packs, c.PackBucket, "", c.PackKMSKeyID)
 	if err != nil {
 		return err
 	}
-	catalog := recovery.Catalog{Version: 1, History: history, Incarnation: incarnation, Genesis: recovery.Reference{SHA256: hex.EncodeToString(sum[:]), Length: len(base)}}
-	return recovery.ProvisionHistory(ctx, m, objects, catalog, base)
+	_, err = recovery.ProvisionAuditedHistory(ctx, m, objects, history, incarnation, rows, nil)
+	return err
 }
