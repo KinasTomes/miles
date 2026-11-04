@@ -26,6 +26,7 @@ func runMultipartContract(t *testing.T, factory func(*testing.T, contracttest.Fi
 	t.Helper()
 	contracttest.RunMultipart(t, func(t *testing.T, f contracttest.Fixture) contracttest.MultipartHarness {
 		m, _ := factory(t, f)
+		measureContractFootprint(t, m)
 		now := f.Now
 		m.now = func() time.Time { return now }
 		m.authority = fixtureAuthority{m.now}

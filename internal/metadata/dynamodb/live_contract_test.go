@@ -76,7 +76,9 @@ func (p trackedDevPacks) PutObject(ctx context.Context, in *s3.PutObjectInput, o
 		defer cancel()
 		if _, err := p.Client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &key, VersionId: &version, ExpectedBucketOwner: aws.String(p.account)}); err != nil {
 			p.t.Error("cleanup dev object version", key, version, err)
+			return
 		}
+		p.t.Log("removed test S3 object version")
 	})
 	return out, nil
 }

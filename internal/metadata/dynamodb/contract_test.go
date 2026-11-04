@@ -25,6 +25,7 @@ func runMetadataContract(t *testing.T, factory func(*testing.T, contracttest.Fix
 	t.Helper()
 	contracttest.RunMetadata(t, func(t *testing.T, f contracttest.Fixture) contracttest.MetadataHarness {
 		m, client := factory(t, f)
+		measureContractFootprint(t, m)
 		set := func(k string, v any) {
 			t.Helper()
 			if err := m.update(context.Background(), func(tx *transaction) error { return put(tx, k, v) }); err != nil {

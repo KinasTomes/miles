@@ -104,6 +104,33 @@ func fixtureStoreWithClient(t *testing.T, f contracttest.Fixture, client *ddb.Cl
 	}
 	prefix := namespace + hex.EncodeToString(random) + "_"
 	inventory := map[string]string{}
+	created := make([]string, 0, len(Tables()))
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		deleting := make([]string, 0, len(created))
+		for _, physical := range created {
+			if _, err := client.DeleteTable(ctx, &ddb.DeleteTableInput{TableName: aws.String(physical)}); err != nil {
+				t.Error("scoped test table cleanup", physical, err)
+				continue
+			}
+			deleting = append(deleting, physical)
+		}
+		if live {
+			waiter := ddb.NewTableNotExistsWaiter(client, func(o *ddb.TableNotExistsWaiterOptions) {
+				o.MinDelay, o.MaxDelay = time.Second, 3*time.Second
+			})
+			removed := 0
+			for _, physical := range deleting {
+				if err := waiter.Wait(ctx, &ddb.DescribeTableInput{TableName: aws.String(physical)}, time.Minute); err != nil {
+					t.Error("verify table removal", physical, err)
+				} else {
+					removed++
+				}
+			}
+			t.Logf("verified removal of %d/%d created tables", removed, len(created))
+		}
+	})
 	for name, spec := range Tables() {
 		physical := prefix + name
 		inventory[name] = physical
@@ -116,25 +143,15 @@ func fixtureStoreWithClient(t *testing.T, f contracttest.Fixture, client *ddb.Cl
 		if _, err := client.CreateTable(ctx, &ddb.CreateTableInput{TableName: aws.String(physical), AttributeDefinitions: definitions, KeySchema: keys, BillingMode: types.BillingModePayPerRequest}); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-			defer cancel()
-			if _, err := client.DeleteTable(ctx, &ddb.DeleteTableInput{TableName: aws.String(physical)}); err != nil {
-				t.Error("scoped test table cleanup", physical, err)
-				return
-			}
-			if live {
-				if err := ddb.NewTableNotExistsWaiter(client).Wait(ctx, &ddb.DescribeTableInput{TableName: aws.String(physical)}, time.Minute); err != nil {
-					t.Error("verify table removal", physical, err)
-				}
-			}
-		})
-
+		created = append(created, physical)
 	}
 	if live {
 		t.Logf("isolated table prefix=%s table_count=%d", prefix, len(inventory))
-		for _, physical := range inventory {
-			if err := ddb.NewTableExistsWaiter(client).Wait(ctx, &ddb.DescribeTableInput{TableName: aws.String(physical)}, 90*time.Second); err != nil {
+		waiter := ddb.NewTableExistsWaiter(client, func(o *ddb.TableExistsWaiterOptions) {
+			o.MinDelay, o.MaxDelay = time.Second, 3*time.Second
+		})
+		for _, physical := range created {
+			if err := waiter.Wait(ctx, &ddb.DescribeTableInput{TableName: aws.String(physical)}, 90*time.Second); err != nil {
 				t.Fatal("wait for active table", physical, err)
 			}
 		}
