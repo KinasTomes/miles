@@ -3,87 +3,206 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"strconv"
+	"regexp"
+	"unicode/utf8"
 
 	"github.com/KinasTomes/miles/internal/adminclient"
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
-func operationCommand(args []string) (method, path string, body []byte, err error) {
-	if len(args) < 2 || (args[0] != "job" && args[0] != "node") {
-		return "", "", nil, adminclient.ErrUnsupported
+// packPart is a path-safe pack_id or generation; the gateway checks existence.
+var packPart = regexp.MustCompile(`^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$`)
+
+// operationCommand builds the system-admin statistics, pack, cache, job and
+// node commands. Scope errors stay local: no request leaves for them.
+func operationCommand(args []string) (command, error) {
+	invalid := fmt.Errorf("invalid %s command; use -help", args[0])
+	switch args[0] {
+	case "stats":
+		f := newFlags("stats")
+		bucket := f.String("bucket", "", "bucket name")
+		set, ok := parse(f, args[1:])
+		if !ok || (set["bucket"] && !validBucket(*bucket)) {
+			return command{}, invalid
+		}
+		if set["bucket"] {
+			return command{method: http.MethodGet, path: "/admin/v1/buckets/" + *bucket + "/stats"}, nil
+		}
+		return command{method: http.MethodGet, path: "/admin/v1/stats"}, nil
+	case "layout":
+		// No flags: a key may start with "-".
+		if len(args) != 3 || !validBucket(args[1]) || args[2] == "" || len(args[2]) > 1024 || !utf8.ValidString(args[2]) {
+			return command{}, invalid
+		}
+		q := url.Values{"bucket": {args[1]}, "key": {args[2]}}
+		return command{method: http.MethodGet, path: "/admin/v1/objects/layout?" + q.Encode()}, nil
 	}
-	invalid := errors.New("invalid job/node command; use -help")
+	if len(args) < 2 {
+		return command{}, invalid
+	}
+	switch args[0] {
+	case "pack":
+		return packCommand(args[1], args[2:], invalid)
+	case "cache":
+		return cacheCommand(args[1], args[2:], invalid)
+	case "job", "node":
+		return jobCommand(args[0], args[1], args[2:], invalid)
+	}
+	return command{}, adminclient.ErrUnsupported
+}
+
+func packCommand(sub string, args []string, invalid error) (command, error) {
+	f := newFlags("pack " + sub)
+	switch sub {
+	case "ls":
+		filters := map[string]*string{
+			"state":         f.String("state", "", "pack state"),
+			"storage_class": f.String("storage-class", "", "storage class"),
+			"live_ratio_lt": f.String("live-ratio-lt", "", "decimal live ratio 0..1"),
+		}
+		limit, cursor := listFlags(f)
+		set, ok := parse(f, args)
+		if !ok {
+			return command{}, invalid
+		}
+		// The gateway validates filter values; Encode keeps them inside the query.
+		q := url.Values{}
+		for name, v := range filters {
+			if *v != "" {
+				q.Set(name, *v)
+			}
+		}
+		path, ok := listPath("/admin/v1/packs", set, *limit, *cursor, q)
+		if !ok {
+			return command{}, invalid
+		}
+		return command{method: http.MethodGet, path: path}, nil
+	case "show":
+		if len(args) < 1 || !packPart.MatchString(args[0]) {
+			return command{}, invalid
+		}
+		limit, cursor := listFlags(f)
+		set, ok := parse(f, args[1:])
+		if !ok {
+			return command{}, invalid
+		}
+		path, ok := listPath("/admin/v1/packs/"+args[0], set, *limit, *cursor, url.Values{})
+		if !ok {
+			return command{}, invalid
+		}
+		return command{method: http.MethodGet, path: path}, nil
+	case "restore", "promote":
+	default:
+		return command{}, invalid
+	}
+	if len(args) < 2 || !packPart.MatchString(args[0]) || !packPart.MatchString(args[1]) {
+		return command{}, errors.New("pack " + sub + " needs <pack_id> <generation>")
+	}
+	path := "/admin/v1/packs/" + args[0] + "/" + args[1] + "/" + sub
+	if sub == "promote" {
+		if len(args) != 2 {
+			return command{}, invalid
+		}
+		return command{method: http.MethodPost, path: path, body: []byte(`{}`)}, nil
+	}
+	days := f.Int("days", 1, "restore days 1..30")
+	tier := f.String("tier", "Standard", "Standard|Bulk|Expedited")
+	set, ok := parse(f, args[2:])
+	if !ok || *days < 1 || *days > 30 || (*tier != "Standard" && *tier != "Bulk" && *tier != "Expedited") {
+		return command{}, errors.New("pack restore needs --days 1..30 and --tier Standard|Bulk|Expedited")
+	}
+	body := map[string]any{}
+	if set["days"] {
+		body["days"] = *days
+	}
+	if set["tier"] {
+		body["tier"] = *tier
+	}
+	return command{method: http.MethodPost, path: path, body: jsonBody(body)}, nil
+}
+
+func cacheCommand(sub string, args []string, invalid error) (command, error) {
+	if sub != "stats" && sub != "purge" {
+		return command{}, invalid
+	}
+	f := newFlags("cache " + sub)
+	scope := f.String("scope", "", "node|cluster")
+	node := f.String("node", "", "node id for --scope node")
+	set, ok := parse(f, args)
+	if !ok || !(*scope == "cluster" && !set["node"] || *scope == "node" && jobs.ValidID(*node)) {
+		return command{}, errors.New("cache " + sub + " needs --scope cluster, or --scope node --node <id>")
+	}
+	if sub == "purge" {
+		body := map[string]any{"scope": *scope}
+		if set["node"] {
+			body["node_id"] = *node
+		}
+		return command{method: http.MethodPost, path: "/admin/v1/cache/purge", body: jsonBody(body)}, nil
+	}
+	q := url.Values{"scope": {*scope}}
+	if set["node"] {
+		q.Set("node_id", *node)
+	}
+	return command{method: http.MethodGet, path: "/admin/v1/cache/stats?" + q.Encode()}, nil
+}
+
+func jobCommand(kind, sub string, args []string, invalid error) (command, error) {
 	base := "/admin/v1/jobs"
-	if args[0] == "node" {
+	if kind == "node" {
 		base = "/admin/v1/cluster/nodes"
 	}
-	if args[1] == "ls" {
-		f := flag.NewFlagSet("list", flag.ContinueOnError)
-		f.SetOutput(io.Discard)
-		limit := f.Int("limit", 100, "page limit")
-		cursor := f.String("cursor", "", "opaque cursor")
-		if e := f.Parse(args[2:]); e != nil || f.NArg() != 0 || *limit < 1 || *limit > 1000 || len(*cursor) > 8192 {
-			return "", "", nil, invalid
+	f := newFlags(kind + " " + sub)
+	if sub == "ls" {
+		limit, cursor := listFlags(f)
+		set, ok := parse(f, args)
+		if !ok {
+			return command{}, invalid
 		}
-		if len(args) == 2 {
-			return http.MethodGet, base, nil, nil
+		path, ok := listPath(base, set, *limit, *cursor, url.Values{})
+		if !ok {
+			return command{}, invalid
 		}
-		q := url.Values{"limit": {strconv.Itoa(*limit)}}
-		if *cursor != "" {
-			q.Set("cursor", *cursor)
-		}
-		return http.MethodGet, base + "?" + q.Encode(), nil, nil
+		return command{method: http.MethodGet, path: path}, nil
 	}
-	if args[0] == "job" && args[1] == "run" {
-		if len(args) < 3 || !jobs.Type(args[2]).Valid() {
-			return "", "", nil, fmt.Errorf("invalid job type; supported types: %v", jobs.Types())
+	if kind == "job" && sub == "run" {
+		if len(args) < 1 || !jobs.Type(args[0]).Valid() {
+			return command{}, fmt.Errorf("invalid job type; supported types: %v", jobs.Types())
 		}
-		f := flag.NewFlagSet("job run", flag.ContinueOnError)
-		f.SetOutput(io.Discard)
 		dry := f.Bool("dry-run", false, "dry run")
 		revision := f.Uint64("policy-revision", 0, "pinned policy revision")
 		params := f.String("params-file", "", "JSON params")
-		if e := f.Parse(args[3:]); e != nil || f.NArg() != 0 || *revision > storage.MaxPolicyRevision {
-			return "", "", nil, invalid
+		if _, ok := parse(f, args[1:]); !ok || *revision > storage.MaxPolicyRevision {
+			return command{}, invalid
 		}
 		doc := json.RawMessage(`{}`)
 		if *params != "" {
-			file, e := os.Open(*params)
-			if e != nil {
-				return "", "", nil, errors.New("cannot read params file")
-			}
-			data, e := io.ReadAll(io.LimitReader(file, 8193))
-			file.Close()
-			if e != nil || len(data) > 8192 {
-				return "", "", nil, errors.New("params exceed 8 KiB or cannot be read")
+			data, err := readBounded(*params, 8192)
+			if err != nil {
+				return command{}, err
 			}
 			var object map[string]json.RawMessage
 			if json.Unmarshal(data, &object) != nil || object == nil {
-				return "", "", nil, errors.New("params must be a JSON object")
+				return command{}, errors.New("params must be a JSON object")
 			}
 			doc = data
 		}
-		body, e := json.Marshal(jobs.Create{Type: jobs.Type(args[2]), DryRun: *dry, Params: doc, PolicyRevision: *revision})
-		return http.MethodPost, base, body, e
+		body, err := json.Marshal(jobs.Create{Type: jobs.Type(args[0]), DryRun: *dry, Params: doc, PolicyRevision: *revision})
+		return command{method: http.MethodPost, path: base, body: body}, err
 	}
-	if len(args) != 3 || !jobs.ValidID(args[2]) {
-		return "", "", nil, invalid
+	if len(args) != 1 || !jobs.ValidID(args[0]) {
+		return command{}, invalid
 	}
 	switch {
-	case args[0] == "job" && args[1] == "show":
-		return http.MethodGet, base + "/" + args[2], nil, nil
-	case args[0] == "job" && args[1] == "cancel":
-		return http.MethodDelete, base + "/" + args[2], nil, nil
-	case args[0] == "node" && args[1] == "drain":
-		return http.MethodPost, base + "/" + args[2] + "/drain", []byte(`{}`), nil
+	case kind == "job" && sub == "show":
+		return command{method: http.MethodGet, path: base + "/" + args[0]}, nil
+	case kind == "job" && sub == "cancel":
+		return command{method: http.MethodDelete, path: base + "/" + args[0]}, nil
+	case kind == "node" && sub == "drain":
+		return command{method: http.MethodPost, path: base + "/" + args[0] + "/drain", body: []byte(`{}`)}, nil
 	}
-	return "", "", nil, adminclient.ErrUnsupported
+	return command{}, invalid
 }

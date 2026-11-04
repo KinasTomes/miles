@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
@@ -96,14 +97,6 @@ func (c *Client) Request(ctx context.Context, method, path string, body []byte) 
 		return nil, errors.New("Admin request failed (connection, TLS or timeout)")
 	}
 	defer response.Body.Close()
-	switch response.StatusCode {
-	case http.StatusMethodNotAllowed, http.StatusNotImplemented:
-		return nil, ErrUnsupported
-	case http.StatusUnauthorized:
-		return nil, errors.New("Admin authentication failed (HTTP 401)")
-	case http.StatusForbidden:
-		return nil, errors.New("Admin access denied (HTTP 403)")
-	}
 	b, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil || len(b) > maxResponseBytes {
 		return nil, errors.New("Admin response unreadable or exceeds 2 MiB")
@@ -111,19 +104,25 @@ func (c *Client) Request(ctx context.Context, method, path string, body []byte) 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		var failure struct {
 			Error struct {
-				Code string `json:"code"`
+				Code      string `json:"code"`
+				RequestID string `json:"request_id"`
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(b, &failure)
-		code := failure.Error.Code
-		if !validCode(code) {
-			code = ""
+		e := &APIError{Status: response.StatusCode}
+		// Messages may echo input; only checked code and request id surface.
+		if validCode(failure.Error.Code) {
+			e.Code = failure.Error.Code
 		}
-		// Admin resource errors have the API envelope; router 404s do not.
-		if response.StatusCode == http.StatusNotFound && code == "" {
+		if requestID.MatchString(failure.Error.RequestID) {
+			e.RequestID = failure.Error.RequestID
+		}
+		// Admin errors have the API envelope; router 404/405 and a bare 501 do
+		// not. A 501 with a code (job_type_unavailable) is a gateway answer.
+		if e.Code == "" && (e.Status == http.StatusNotFound || e.Status == http.StatusNotImplemented) || e.Status == http.StatusMethodNotAllowed {
 			return nil, ErrUnsupported
 		}
-		return nil, &APIError{Status: response.StatusCode, Code: code}
+		return nil, e
 	}
 	if response.StatusCode == http.StatusNoContent {
 		return nil, nil
@@ -136,10 +135,13 @@ func (c *Client) Request(ctx context.Context, method, path string, body []byte) 
 	return b, nil
 }
 
-// APIError carries only status and the envelope code; messages may echo input.
+var requestID = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// APIError carries only status, the envelope code and the request id for
+// the gateway audit log; messages may echo input.
 type APIError struct {
-	Status int
-	Code   string
+	Status          int
+	Code, RequestID string
 }
 
 func (e *APIError) Error() string {
@@ -147,7 +149,15 @@ func (e *APIError) Error() string {
 	if e.Code != "" {
 		detail += " " + e.Code
 	}
-	if e.Status == http.StatusNotFound {
+	if e.RequestID != "" {
+		detail += ", request_id " + e.RequestID
+	}
+	switch e.Status {
+	case http.StatusUnauthorized:
+		return "Admin authentication failed (" + detail + ")"
+	case http.StatusForbidden:
+		return "Admin access denied for this token's scope (" + detail + ")"
+	case http.StatusNotFound:
 		return "Admin resource not found (" + detail + ")"
 	}
 	return "Admin request failed (" + detail + ")"

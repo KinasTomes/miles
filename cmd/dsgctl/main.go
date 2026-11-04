@@ -8,10 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -23,13 +21,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("dsgctl", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	version := flags.Bool("version", false, "Hiển thị phiên bản")
-	endpoint := flags.String("endpoint", "http://127.0.0.1:9000", "Admin API origin; HTTP chỉ qua loopback/tunnel, remote dùng HTTPS")
-	tokenFile := flags.String("token-file", "", "Bắt buộc: bearer token file permission 0600; không truyền raw token")
+	endpoint := flags.String("endpoint", "http://127.0.0.1:9000", "Admin API origin, mặc định env DSGCTL_ENDPOINT; HTTP chỉ qua literal loopback/SSH tunnel, remote dùng HTTPS")
+	tokenFile := flags.String("token-file", "", "Bắt buộc, mặc định env DSGCTL_TOKEN_FILE: bearer token file permission 0600; không truyền raw token")
 	timeout := flags.Duration("timeout", 30*time.Second, "Thời hạn toàn bộ request, tối đa 30m")
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, `CLI quản trị Miles
 
-Read: stats, pack ls
+Read: stats [--bucket b]; layout <bucket> <key>
+Packs: pack ls [--state s] [--storage-class c] [--live-ratio-lt r]; pack show <pack_id>
+  pack restore <pack_id> <generation> [--days 1..30] [--tier Standard|Bulk|Expedited]; pack promote <pack_id> <generation>
+Cache: cache stats|purge --scope cluster | --scope node --node <id>
 Users: user create <id> [--default-domain d] [--logical-limit n]; user ls; user show <id>
   user set <id> [--status active|disabled] [--default-domain d] [--logical-limit n] --expected-revision n
   usage <user> [--detail]
@@ -44,7 +45,8 @@ Tokens: admin-token create --user u [--system-admin] [--ttl 24h] --out file; adm
     offline, gateway stopped; DynamoDB credentials from AWS_* env
 Jobs: job ls, job show <id>, job run <type> [--dry-run] [--params-file file] [--policy-revision n], job cancel <id>
 Nodes: node ls, node drain <id>
-List flags: --limit 1..1000, --cursor token. Secrets go only to new 0600 --out files.
+List commands (ls, pack show): --limit 1..1000, --cursor <next_cursor>. Secrets go only to new 0600 --out files.
+SSH tunnel: ssh -N -L 127.0.0.1:19000:<node>:9000 <bastion>; DSGCTL_ENDPOINT=http://127.0.0.1:19000
 Đặt global flags trước command; command flags sau positional arguments.`)
 		flags.SetOutput(stderr)
 		flags.PrintDefaults()
@@ -55,6 +57,16 @@ List flags: --limit 1..1000, --cursor token. Secrets go only to new 0600 --out f
 			return nil
 		}
 		return errors.New("invalid CLI flags; use -help")
+	}
+	// The environment keeps a tunnel origin and token path out of every
+	// command line; flags win. Resolved after parsing so help never echoes it.
+	set := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if v := os.Getenv("DSGCTL_ENDPOINT"); v != "" && !set["endpoint"] {
+		*endpoint = v
+	}
+	if !set["token-file"] {
+		*tokenFile = os.Getenv("DSGCTL_TOKEN_FILE")
 	}
 	if *version {
 		fmt.Fprintln(stdout, buildinfo.String("dsgctl"))
@@ -69,24 +81,18 @@ List flags: --limit 1..1000, --cursor token. Secrets go only to new 0600 --out f
 		return bootstrap(ctx, args[2:], stdout)
 	}
 	var cmd command
-	switch strings.Join(args, " ") {
-	case "stats":
-		cmd = command{method: http.MethodGet, path: "/admin/v1/stats"}
-	case "pack ls":
-		cmd = command{method: http.MethodGet, path: "/admin/v1/packs"}
+	var err error
+	switch args[0] {
+	case "stats", "layout", "pack", "cache", "job", "node":
+		cmd, err = operationCommand(args)
 	default:
-		var err error
-		if args[0] == "job" || args[0] == "node" {
-			cmd.method, cmd.path, cmd.body, err = operationCommand(args)
-		} else {
-			cmd, err = identityCommand(args)
-		}
-		if err != nil {
-			return err
-		}
+		cmd, err = identityCommand(args)
+	}
+	if err != nil {
+		return err
 	}
 	if *tokenFile == "" {
-		return errors.New("--token-file is required")
+		return errors.New("--token-file or DSGCTL_TOKEN_FILE is required")
 	}
 	client, err := adminclient.New(*endpoint, *tokenFile, *timeout)
 	if err != nil {
