@@ -91,13 +91,18 @@ func writerKey(id string) Key {
 
 func fixtureStore(t *testing.T, f contracttest.Fixture) (*Store, *ddb.Client) {
 	t.Helper()
-	client := localClient(t)
-	ctx := context.Background()
+	return fixtureStoreWithClient(t, f, localClient(t), "miles_contract_", false)
+}
+
+func fixtureStoreWithClient(t *testing.T, f contracttest.Fixture, client *ddb.Client, namespace string, live bool) (*Store, *ddb.Client) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
+	defer cancel()
 	random := make([]byte, 8)
 	if _, err := rand.Read(random); err != nil {
 		t.Fatal(err)
 	}
-	prefix := "miles_contract_" + hex.EncodeToString(random) + "_"
+	prefix := namespace + hex.EncodeToString(random) + "_"
 	inventory := map[string]string{}
 	for name, spec := range Tables() {
 		physical := prefix + name
@@ -112,12 +117,27 @@ func fixtureStore(t *testing.T, f contracttest.Fixture) (*Store, *ddb.Client) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 			defer cancel()
 			if _, err := client.DeleteTable(ctx, &ddb.DeleteTableInput{TableName: aws.String(physical)}); err != nil {
-				t.Error("scoped test table cleanup", err)
+				t.Error("scoped test table cleanup", physical, err)
+				return
+			}
+			if live {
+				if err := ddb.NewTableNotExistsWaiter(client).Wait(ctx, &ddb.DescribeTableInput{TableName: aws.String(physical)}, time.Minute); err != nil {
+					t.Error("verify table removal", physical, err)
+				}
 			}
 		})
+
+	}
+	if live {
+		t.Logf("isolated table prefix=%s table_count=%d", prefix, len(inventory))
+		for _, physical := range inventory {
+			if err := ddb.NewTableExistsWaiter(client).Wait(ctx, &ddb.DescribeTableInput{TableName: aws.String(physical)}, 90*time.Second); err != nil {
+				t.Fatal("wait for active table", physical, err)
+			}
+		}
 	}
 	now := func() time.Time { return f.Now }
 	store, err := New(Options{API: client, Tables: inventory, Now: now, Authority: fixtureAuthority{now}})
