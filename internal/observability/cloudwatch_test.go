@@ -38,7 +38,7 @@ func (c *captureCloudWatch) PutMetricData(_ context.Context, in *cw.PutMetricDat
 }
 func TestCloudWatchBatchDeltasAndFailures(t *testing.T) {
 	api := new(captureCloudWatch)
-	export, e := NewCloudWatch(api, "cloud")
+	export, e := NewCloudWatch(api, "cloud", "test-")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -65,6 +65,16 @@ func TestCloudWatchBatchDeltasAndFailures(t *testing.T) {
 			}
 		}
 		return -1
+	}
+
+	for _, datum := range api.calls[0].MetricData {
+		dims := map[string]string{}
+		for _, dim := range datum.Dimensions {
+			dims[aws.ToString(dim.Name)] = aws.ToString(dim.Value)
+		}
+		if dims["profile"] != "cloud" || dims["installation"] != "test-" {
+			t.Fatal("wrong installation identity", dims)
+		}
 	}
 	if value(api.calls[0]) != 2 {
 		t.Fatal("initial counter delta")
@@ -127,7 +137,7 @@ func TestCloudWatchNativeSDKLoopbackBatch(t *testing.T) {
 	client := cw.New(cw.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(server.URL), Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 		return aws.Credentials{AccessKeyID: "fixture", SecretAccessKey: "fixture"}, nil
 	})})
-	export, e := NewCloudWatch(client, "edge")
+	export, e := NewCloudWatch(client, "edge", "test-")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -152,15 +162,27 @@ func TestCloudWatchFullMetricInventoryFitsOneBatch(t *testing.T) {
 		}
 	}
 	api := new(captureCloudWatch)
-	export, e := NewCloudWatch(api, "cloud")
+	export, e := NewCloudWatch(api, "cloud", "test-")
 	if e != nil {
 		t.Fatal(e)
 	}
+	runtime := new(Runtime)
+	runtime.Observe(time.Now(), 3601, 120, 70, 1)
+	for _, name := range runtimeCounters {
+		runtime.add(name, 1)
+	}
+	h.AttachRuntime(runtime)
 	samples := h.Snapshot()
 	if e = export.Flush(context.Background(), time.Now(), samples); e != nil {
 		t.Fatalf("full metric inventory (%d series) cannot be exported: %v", len(samples), e)
 	}
-	if len(api.calls) != 1 || len(api.calls[0].MetricData) != len(samples) {
+	expected := 0
+	for _, s := range samples {
+		if !s.Counter || s.Value != 0 {
+			expected++
+		}
+	}
+	if len(api.calls) != 1 || len(api.calls[0].MetricData) != expected {
 		t.Fatal("full inventory was dropped or split")
 	}
 }

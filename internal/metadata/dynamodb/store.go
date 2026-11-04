@@ -32,6 +32,7 @@ type WriterAuthority interface {
 }
 type Options struct {
 	OfflineRecovery  OfflineRecoveryGuard
+	OnRetry          func()
 	API              API
 	Tables           map[string]string
 	Now              func() time.Time
@@ -41,6 +42,7 @@ type Options struct {
 }
 type Store struct {
 	offlineRecovery                        OfflineRecoveryGuard
+	onRetry                                func()
 	api                                    API
 	tables                                 map[string]string
 	now                                    func() time.Time
@@ -81,7 +83,7 @@ func New(options Options) (*Store, error) {
 			return nil, s.ErrInvalid
 		}
 	}
-	return &Store{offlineRecovery: options.OfflineRecovery, api: options.API, tables: tables, now: options.Now, authority: options.Authority, maxAttempts: options.MaxAttempts, requireProducers: options.RequireProducers}, nil
+	return &Store{offlineRecovery: options.OfflineRecovery, onRetry: options.OnRetry, api: options.API, tables: tables, now: options.Now, authority: options.Authority, maxAttempts: options.MaxAttempts, requireProducers: options.RequireProducers}, nil
 }
 
 type outcome struct {
@@ -351,7 +353,7 @@ func (m *Store) update(ctx context.Context, fn func(*transaction) error) error {
 		if attempt+1 == m.maxAttempts {
 			return err
 		}
-		if err := retryPause(ctx, attempt); err != nil {
+		if err := m.retryPause(ctx, attempt); err != nil {
 			return err
 		}
 	}
@@ -384,7 +386,7 @@ func (t *transaction) commit() error {
 		return t.ctx.Err()
 	}
 	sort.Strings(ids)
-	input := &ddb.TransactWriteItemsInput{}
+	input := &ddb.TransactWriteItemsInput{ReturnConsumedCapacity: types.ReturnConsumedCapacityTotal}
 	images := []Item{}
 	inventory := map[string]Table{}
 	for _, id := range ids {
@@ -588,6 +590,13 @@ func put[T any](t *transaction, k string, v T) error {
 		case a.scope == "publication" || a.scope == "preparation":
 			item["record_kind"] = text("manifest_owner_v1")
 		}
+	}
+	if _, event := any(v).(s.OutboxEvent); event {
+		observed := row.before["event_observed_at"]
+		if observed == nil {
+			observed = text(t.store.now().UTC().Format(time.RFC3339Nano))
+		}
+		item["event_observed_at"] = observed
 	}
 	if err := ValidateItem(item); err != nil {
 		return err

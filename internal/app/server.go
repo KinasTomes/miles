@@ -56,6 +56,7 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 	if d.Operations != nil {
 		operationalReady = d.Operations.Registry.Healthy
 		operationMetrics = d.Operations.Metrics
+		h.AttachRuntime(d.Operations.Runtime)
 	}
 	h.AttachOperations(operationMetrics, func() int64 { n, _ := admission.Status(); return n }, operationalReady)
 	health := &http.Server{Handler: h.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 150 * time.Second, MaxHeaderBytes: 16 << 10}
@@ -77,7 +78,11 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 			return closeDependencies(d, err)
 		}
 		defer listener.Close()
-		servers = append(servers, &http.Server{Handler: l.handler(admission), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 150 * time.Second, MaxHeaderBytes: 16 << 10})
+		handler := l.handler(admission)
+		if l.name == "s3" && d.Operations != nil && d.Operations.Runtime != nil {
+			handler = d.Operations.Runtime.Handler(handler)
+		}
+		servers = append(servers, &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 150 * time.Second, MaxHeaderBytes: 16 << 10})
 		listeners = append(listeners, listener)
 		names = append(names, l.name)
 	}

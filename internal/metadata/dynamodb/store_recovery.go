@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"time"
 
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -115,4 +116,48 @@ func (m *Store) MarkOutboxExported(ctx context.Context, p s.OutboxExport) error 
 }
 func (m *Store) GetOutboxExport(ctx context.Context, id string) (s.OutboxExport, error) {
 	return read[s.OutboxExport](m, ctx, key("exports", id))
+}
+
+// ObserveExportLag is a bounded approximate base scan, never a closure proof.
+// The timestamp is telemetry beside the immutable event, not part of its digest.
+func (m *Store) ObserveExportLag(ctx context.Context, history string) (time.Time, error) {
+	var oldest time.Time
+	var cursor Item
+	for page := 0; page < 32; page++ {
+		result, err := m.api.Scan(ctx, &ddb.ScanInput{TableName: aws.String(m.tables["Outbox"]), ConsistentRead: aws.Bool(true), Limit: aws.Int32(128), ExclusiveStartKey: cursor, ProjectionExpression: aws.String("history_id, event_observed_at, export_progress")})
+		if err != nil {
+			return time.Time{}, backend(err)
+		}
+		if result == nil {
+			return time.Time{}, s.ErrUnavailable
+		}
+		for _, item := range result.Items {
+			h, ok := item["history_id"].(*types.AttributeValueMemberS)
+			if !ok || h == nil {
+				return time.Time{}, s.ErrUnavailable
+			}
+			if h.Value != history || item["export_progress"] != nil {
+				continue
+			}
+			stamp, ok := item["event_observed_at"].(*types.AttributeValueMemberS)
+			if !ok || stamp == nil {
+				return time.Time{}, s.ErrUnavailable
+			}
+			observed, err := time.Parse(time.RFC3339Nano, stamp.Value)
+			if err != nil {
+				return time.Time{}, s.ErrUnavailable
+			}
+			if oldest.IsZero() || observed.Before(oldest) {
+				oldest = observed
+			}
+		}
+		if len(result.LastEvaluatedKey) == 0 {
+			return oldest, nil
+		}
+		if reflect.DeepEqual(cursor, result.LastEvaluatedKey) {
+			return time.Time{}, s.ErrUnavailable
+		}
+		cursor = result.LastEvaluatedKey
+	}
+	return time.Time{}, s.ErrUnavailable
 }

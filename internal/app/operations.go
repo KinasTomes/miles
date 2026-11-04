@@ -15,6 +15,8 @@ import (
 type Operational struct {
 	Registry   *jobs.Registry
 	Metrics    *observability.Operations
+	Runtime    *observability.Runtime
+	Collect    func(context.Context) error
 	CloudWatch *observability.CloudWatch
 	Cluster    *jobs.Cluster
 	OnDrain    func(context.Context) error
@@ -24,7 +26,7 @@ func (o *Operational) validate() error {
 	if o == nil {
 		return nil
 	}
-	if o.Registry == nil || o.Registry.Store == nil || o.Registry.Clock == nil {
+	if o.Registry == nil || o.Registry.Store == nil || o.Registry.Clock == nil || o.Collect != nil && o.Runtime == nil {
 		return storage.ErrInvalid
 	}
 	n := o.Registry.Identity
@@ -53,6 +55,22 @@ func (o *Operational) run(ctx context.Context, h *observability.Health, a *Admis
 				}
 				if e := o.Registry.Clock.Sleep(ctx, time.Second); e != nil {
 					return e
+				}
+			}
+			return ctx.Err()
+		})
+	}
+	if o.Collect != nil {
+		workers = append(workers, func() error {
+			for ctx.Err() == nil {
+				call, done := context.WithTimeout(ctx, 10*time.Second)
+				err := o.Collect(call)
+				done()
+				if err != nil {
+					o.Runtime.ObservationFailure()
+				}
+				if err = o.Registry.Clock.Sleep(ctx, 15*time.Second); err != nil {
+					return err
 				}
 			}
 			return ctx.Err()

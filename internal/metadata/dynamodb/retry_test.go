@@ -35,9 +35,10 @@ func TestReadRetryDistinguishesThrottleValidationAndCancellation(t *testing.T) {
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			api := &throttledRead{code: tc.code}
-			m := &Store{api: api, maxAttempts: 3}
+			retries := 0
+			m := &Store{api: api, maxAttempts: 3, onRetry: func() { retries++ }}
 			_, err := m.readItem(context.Background(), &ddb.GetItemInput{})
-			if (err != nil) != tc.fail || api.calls != tc.calls {
+			if (err != nil) != tc.fail || api.calls != tc.calls || retries != tc.calls-1 {
 				t.Fatal(api.calls, err)
 			}
 		})

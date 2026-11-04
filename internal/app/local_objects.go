@@ -102,7 +102,7 @@ func localObjects(m *badger.Store, packs *packs3.Store, resident storage.Cache, 
 			return validator.NewBucketSnapshot(id, 1, cachePolicy)
 		},
 		Uploads: m,
-	}, m, packs, gate, global, nil)
+	}, m, packs, gate, global, nil, nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}

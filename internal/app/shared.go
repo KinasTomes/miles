@@ -21,6 +21,7 @@ import (
 	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/observability"
 	"github.com/KinasTomes/miles/internal/recovery"
+	"github.com/KinasTomes/miles/internal/stats"
 	"github.com/KinasTomes/miles/internal/storage"
 	packs3 "github.com/KinasTomes/miles/internal/storage/s3"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -32,7 +33,11 @@ func sharedStore(c config.Startup, clients runtimeClients, utc storage.R1TimeSou
 	for name := range dynamodb.Tables() {
 		tables[name] = c.DDBTablePrefix + name
 	}
-	return dynamodb.New(dynamodb.Options{API: clients.metadata, Tables: tables, Authority: &dynamodb.SharedAuthority{Time: utc, Lifetime: time.Minute}, RequireProducers: true})
+	var onRetry func()
+	if clients.telemetry != nil {
+		onRetry = clients.telemetry.Retry
+	}
+	return dynamodb.New(dynamodb.Options{OnRetry: onRetry, API: clients.metadata, Tables: tables, Authority: &dynamodb.SharedAuthority{Time: utc, Lifetime: time.Minute}, RequireProducers: true})
 }
 
 func bootstrapShared(c config.Startup) (Dependencies, error) {
@@ -66,6 +71,8 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	if _, err = utc.Bounds(ctx); err != nil {
 		return d, err
 	}
+	runtimeMetrics := new(observability.Runtime)
+	clients = clients.observed(runtimeMetrics, c.DDBTablePrefix+"Leases")
 	m, err := sharedStore(c, clients, utc)
 	if err != nil {
 		return d, err
@@ -175,7 +182,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 				}
 				return v.DecodeBucket(id, record.Revision, record.Document)
 			},
-		}, m, packs, gate, global, admission)
+		}, m, packs, gate, global, admission, &runtimeMetrics.Warm)
 	}
 	sealer, err := admin.NewAESSealer(keyID, seal)
 	if err != nil {
@@ -258,12 +265,17 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	for _, kind := range []jobs.Type{"tiering", "pack_restore", "pack_promote"} {
 		runner.Executors[kind] = lifecycleWorker.Executor(kind)
 	}
+	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: clients.packs, Bucket: c.PackBucket}, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second})
+	if err != nil {
+		return d, err
+	}
+	a.Statistics = measurements
 	a.PackInventory = packCatalog
 	a.Operations = cluster
 	a.CacheStatistics = cluster
-	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Cluster: cluster}
+	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Runtime: runtimeMetrics, Collect: runtimeObserver(m, runtimeMetrics, clk, g.HistoryID), Cluster: cluster}
 	if clients.metrics != nil {
-		operational.CloudWatch, err = observability.NewCloudWatch(clients.metrics, c.Profile)
+		operational.CloudWatch, err = observability.NewCloudWatch(clients.metrics, c.Profile, c.DDBTablePrefix)
 		if err != nil {
 			return d, err
 		}
@@ -284,7 +296,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 		clients.transport.CloseIdleConnections()
 		return errors.Join(e, flushErr, metadata.closeError(), resident.Close())
 	}
-	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
+	return Dependencies{Statistics: measurements, Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
 		Operations:       operational,
 		closeWithContext: closeRuntime,
 		Close:            func() error { return closeRuntime(context.Background()) }}, nil
