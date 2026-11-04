@@ -22,8 +22,11 @@ on tables under the generated miles_hai_contract_ prefix. The S3 role needs
 versioning read, pack and sidecar reads/writes, and version deletion on the
 dev bucket. The fixture logs its generated prefix and records each exact
 table name before CreateTable. For an uncertain create, cleanup polls for
-up to five seconds before accepting persistent absence. It preserves tables
-rejected as name collisions and reports unresolved names with the run prefix.
+up to five seconds if DescribeTable keeps returning ResourceNotFound. If the
+result is still unknown, cleanup reports the table as unresolved and excludes
+it from the verified count. The fixture checks context cancellation before
+recording a dispatch attempt. It preserves tables rejected as name collisions
+and reports unresolved names with the run prefix.
 It deletes pack and sidecar versions by their returned version IDs. An S3
 write with an unknown outcome may need scoped follow-up inspection.
 

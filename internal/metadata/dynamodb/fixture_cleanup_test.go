@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 
 func TestLocalFixtureCreateCleanup(t *testing.T) {
 	client := localClient(t)
-	for _, scenario := range []string{"lost-response", "not-dispatched", "name-collision"} {
+	for _, scenario := range []string{"lost-response", "delayed-visibility", "not-dispatched", "name-collision"} {
 		t.Run(scenario, func(t *testing.T) {
 			var nonce [8]byte
 			if _, err := rand.Read(nonce[:]); err != nil {
@@ -32,7 +33,12 @@ func TestLocalFixtureCreateCleanup(t *testing.T) {
 			options := client.Options()
 			transport := options.HTTPClient
 			options.HTTPClient = wireClient(func(req *http.Request) (*http.Response, error) {
-				if req.Header.Get("X-Amz-Target") != "DynamoDB_20120810.CreateTable" {
+				target := req.Header.Get("X-Amz-Target")
+				if scenario == "delayed-visibility" && target == "DynamoDB_20120810.DescribeTable" {
+					return &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": {"application/x-amz-json-1.0"}},
+						Body: io.NopCloser(strings.NewReader(`{"__type":"ResourceNotFoundException","message":"injected delayed visibility"}`)), Request: req}, nil
+				}
+				if target != "DynamoDB_20120810.CreateTable" {
 					return transport.Do(req)
 				}
 				calls++
@@ -46,9 +52,6 @@ func TestLocalFixtureCreateCleanup(t *testing.T) {
 					return nil, err
 				}
 				name = input.TableName
-				if scenario == "not-dispatched" {
-					return nil, injected
-				}
 				if scenario == "name-collision" {
 					// Create the exact name through a separate, unmodified client.
 					_, err := client.CreateTable(req.Context(), &ddb.CreateTableInput{
@@ -84,6 +87,38 @@ func TestLocalFixtureCreateCleanup(t *testing.T) {
 					t.Error(err)
 				}
 			})
+			if scenario == "not-dispatched" || scenario == "delayed-visibility" {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				if scenario == "not-dispatched" {
+					cancel()
+				}
+				faultClient := ddb.New(options)
+				_, attempts, err := createFixtureTables(ctx, faultClient, prefix, true)
+				if scenario == "not-dispatched" {
+					if !errors.Is(err, context.Canceled) || calls != 0 || len(attempts) != 0 {
+						t.Fatalf("pre-cancelled create reached dispatch: calls=%d attempts=%d err=%v", calls, len(attempts), err)
+					}
+					verified, err := reconcileFixtureTables(t.Context(), faultClient, attempts, true, time.Now())
+					if verified != 0 || err != nil {
+						t.Fatal(verified, err)
+					}
+					return
+				}
+				if !errors.Is(err, injected) || calls != 1 || len(attempts) != 1 || name == "" {
+					t.Fatalf("expected lost create response: calls=%d attempts=%d name=%q err=%v", calls, len(attempts), name, err)
+				}
+				// Keep the synthetic missing responses active through the whole
+				// observation budget, then check with the independent client.
+				verified, err := reconcileFixtureTables(t.Context(), faultClient, attempts, true, time.Now().Add(100*time.Millisecond))
+				if verified != 0 || err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "outcome still unknown") {
+					t.Fatalf("hidden table must remain unresolved: verified=%d err=%v", verified, err)
+				}
+				if _, err := client.DescribeTable(t.Context(), &ddb.DescribeTableInput{TableName: &name}); err != nil {
+					t.Fatal("real table must still exist under delayed visibility", err)
+				}
+				return
+			}
 			t.Run("fixture", func(t *testing.T) {
 				_, err := provisionFixtureTables(t, t.Context(), ddb.New(options), prefix, true)
 				var collision *types.ResourceInUseException

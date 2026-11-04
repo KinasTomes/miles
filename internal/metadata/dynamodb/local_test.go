@@ -222,9 +222,24 @@ func provisionFixtureTables(t *testing.T, ctx context.Context, client *ddb.Clien
 	if live {
 		t.Logf("isolated table prefix=%s", prefix)
 	}
+	inventory, attempts, err := createFixtureTables(ctx, client, prefix, live)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		verified, err := reconcileFixtureTables(ctx, client, attempts, live, time.Now().Add(5*time.Second))
+		if err != nil {
+			t.Errorf("fixture %s cleanup: %v", prefix, err)
+		}
+		if live {
+			t.Logf("verified absence of %d fixture tables for %s", verified, prefix)
+		}
+	})
+	return inventory, err
+}
+
+func createFixtureTables(ctx context.Context, client *ddb.Client, prefix string, live bool) (map[string]string, []*fixtureTableAttempt, error) {
 	inventory := map[string]string{}
 	var attempts []*fixtureTableAttempt
-	t.Cleanup(func() { cleanupFixtureTables(t, client, prefix, attempts, live) })
 	for name, spec := range Tables() {
 		physical := prefix + name
 		inventory[name] = physical
@@ -234,13 +249,16 @@ func provisionFixtureTables(t *testing.T, ctx context.Context, client *ddb.Clien
 			definitions = append(definitions, types.AttributeDefinition{AttributeName: aws.String(spec.Sort), AttributeType: types.ScalarAttributeType(spec.SortType)})
 			keys = append(keys, types.KeySchemaElement{AttributeName: aws.String(spec.Sort), KeyType: types.KeyTypeRange})
 		}
+		if err := ctx.Err(); err != nil {
+			return nil, attempts, err
+		}
 		attempt := &fixtureTableAttempt{name: physical}
 		attempts = append(attempts, attempt)
 		_, err := client.CreateTable(ctx, &ddb.CreateTableInput{TableName: aws.String(physical), AttributeDefinitions: definitions, KeySchema: keys, BillingMode: types.BillingModePayPerRequest}, func(o *ddb.Options) { o.Retryer = aws.NopRetryer{} })
 		if err != nil {
 			var collision *types.ResourceInUseException
 			attempt.collision = errors.As(err, &collision)
-			return nil, fmt.Errorf("create fixture table %s: %w", physical, err)
+			return nil, attempts, fmt.Errorf("create fixture table %s: %w", physical, err)
 		}
 		attempt.created = true
 	}
@@ -248,33 +266,30 @@ func provisionFixtureTables(t *testing.T, ctx context.Context, client *ddb.Clien
 		waiter := ddb.NewTableExistsWaiter(client, func(o *ddb.TableExistsWaiterOptions) { o.MinDelay, o.MaxDelay = time.Second, 3*time.Second })
 		for _, attempt := range attempts {
 			if err := waiter.Wait(ctx, &ddb.DescribeTableInput{TableName: aws.String(attempt.name)}, 90*time.Second); err != nil {
-				return nil, fmt.Errorf("wait for active fixture table %s: %w", attempt.name, err)
+				return nil, attempts, fmt.Errorf("wait for active fixture table %s: %w", attempt.name, err)
 			}
 		}
 	}
-	return inventory, nil
+	return inventory, attempts, nil
 }
 
-func cleanupFixtureTables(t *testing.T, client *ddb.Client, prefix string, attempts []*fixtureTableAttempt, live bool) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-	// An uncertain create can briefly be invisible to DescribeTable.
-	settleUntil := time.Now().Add(5 * time.Second)
+func reconcileFixtureTables(ctx context.Context, client *ddb.Client, attempts []*fixtureTableAttempt, live bool, settleUntil time.Time) (int, error) {
 	pending := make(map[string]*fixtureTableAttempt, len(attempts))
 	for _, attempt := range attempts {
 		if !attempt.collision {
 			pending[attempt.name] = attempt
 		}
 	}
-	count := len(pending)
-	unresolved := 0
+	verified := 0
+	var unresolved error
 	for len(pending) > 0 {
 		for name, attempt := range pending {
 			done, err := cleanupFixtureTable(ctx, client, attempt, live, settleUntil)
 			if err != nil {
-				unresolved++
-				t.Errorf("fixture %s cleanup unresolved for %s: %v", prefix, name, err)
+				unresolved = errors.Join(unresolved, fmt.Errorf("unresolved table %s: %w", name, err))
+			}
+			if done {
+				verified++
 			}
 			if done || err != nil {
 				delete(pending, name)
@@ -286,15 +301,13 @@ func cleanupFixtureTables(t *testing.T, client *ddb.Client, prefix string, attem
 		select {
 		case <-ctx.Done():
 			for name := range pending {
-				t.Errorf("fixture %s cleanup unresolved for %s: %v", prefix, name, ctx.Err())
+				unresolved = errors.Join(unresolved, fmt.Errorf("unresolved table %s: %w", name, ctx.Err()))
 			}
-			return
+			return verified, unresolved
 		case <-time.After(time.Second):
 		}
 	}
-	if live && unresolved == 0 {
-		t.Logf("verified absence of %d fixture tables for %s", count, prefix)
-	}
+	return verified, unresolved
 }
 
 func cleanupFixtureTable(ctx context.Context, client *ddb.Client, attempt *fixtureTableAttempt, live bool, settleUntil time.Time) (bool, error) {
@@ -304,7 +317,14 @@ func cleanupFixtureTable(ctx context.Context, client *ddb.Client, attempt *fixtu
 		out, err := client.DescribeTable(ctx, &ddb.DescribeTableInput{TableName: aws.String(name)})
 		switch {
 		case errors.As(err, &missing):
-			return attempt.created || attempt.deleting || !time.Now().Before(settleUntil), nil
+			if attempt.created || attempt.deleting {
+				return true, nil
+			}
+			// A missing description can reflect delayed metadata visibility.
+			if !time.Now().Before(settleUntil) {
+				return false, fmt.Errorf("CreateTable outcome still unknown after observation: %w", err)
+			}
+			return false, nil
 		case retryableRead(err):
 			return false, nil
 		case err != nil:
