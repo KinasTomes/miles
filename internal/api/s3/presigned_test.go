@@ -140,6 +140,30 @@ func TestPresignedQueryHeaderSemantics(t *testing.T) {
 	}
 }
 
+func TestPresignedRejectsMalformedQueryPayloadModeBeforeDispatch(t *testing.T) {
+	for _, query := range []string{
+		"X-Amz-Content-Sha256=not-a-sha256",
+		"X-Amz-Content-Sha256=",
+		"X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Content-Sha256=not-a-sha256",
+	} {
+		t.Run(query, func(t *testing.T) {
+			w := newBucketWorld(t)
+			called := false
+			w.router.Handlers[PutObject] = func(http.ResponseWriter, *Request) error {
+				called = true
+				return nil
+			}
+			r := httptest.NewRequest("PUT", "http://s3.test/demo/k?"+query, strings.NewReader("body"))
+			r = presignRequest(t, r, "owner", 900, authNow)
+			rec := httptest.NewRecorder()
+			w.router.ServeHTTP(rec, r)
+			if called || rec.Code != http.StatusBadRequest || errorCode(rec) != ErrInvalidArgument {
+				t.Fatalf("malformed payload mode reached handler=%v, status=%d body=%s", called, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 // Use the independent SDK signer, including its header hoisting, rather than
 // signing with the verifier's own canonical-request implementation.
 func presignRequest(t *testing.T, r *http.Request, principal string, expires int, at time.Time) *http.Request {

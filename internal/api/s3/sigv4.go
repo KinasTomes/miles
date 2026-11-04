@@ -216,13 +216,16 @@ func parseSigV4(r *http.Request, query url.Values, region string) (sigV4, *Error
 	if s.signedHeaders = strings.Split(signedHeaders, ";"); slices.Contains(s.signedHeaders, "") {
 		return invalid("malformed SignedHeaders")
 	}
-	switch _, hexHash := hexDigest(s.payloadHash); {
-	case hexHash, s.payloadHash == unsignedPayload, s.payloadHash == streamingSigned,
-		s.payloadHash == streamingUnsignedTrailer, s.payloadHash == streamingSignedTrailer:
-	default:
+	if !validPayloadHash(s.payloadHash) {
 		return invalid("x-amz-content-sha256 must be a hex SHA-256, " + unsignedPayload + " or a STREAMING- value of API v2 2.2")
 	}
 	return s, nil
+}
+
+func validPayloadHash(value string) bool {
+	_, hexHash := hexDigest(value)
+	return hexHash || value == unsignedPayload || value == streamingSigned ||
+		value == streamingUnsignedTrailer || value == streamingSignedTrailer
 }
 
 // signingKey derives the SigV4 key of a scope: HMAC-SHA256 chained from

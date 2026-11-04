@@ -86,6 +86,9 @@ func (rt *Router) serve(w http.ResponseWriter, r *http.Request, id string) error
 		return e
 	}
 	if r != original {
+		if values, present := r.Header["X-Amz-Content-Sha256"]; present && (len(values) != 1 || !validPayloadHash(values[0])) {
+			return &Error{Code: ErrInvalidArgument, Message: "invalid presigned payload hash mode"}
+		}
 		// A hoisted copy-source selects CopyObject rather than PutObject;
 		// route and header validation must use the effective request too.
 		route, e = Resolve(r)
