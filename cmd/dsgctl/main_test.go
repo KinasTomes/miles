@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -40,7 +41,7 @@ func TestCLICommandsAndErrors(t *testing.T) {
 			t.Fatal("read command failed", command, err)
 		}
 	}
-	for _, command := range [][]string{{"job", "ls"}, {"job", "run", "scrub"}, {"layout", "demo", "key"}} {
+	for _, command := range [][]string{{"job", "ls"}, {"job", "run", "scrub"}, {"cost", "report"}} {
 		var out, diagnostics bytes.Buffer
 		args := append([]string{"--endpoint", server.URL, "--token-file", file}, command...)
 		if err := run(context.Background(), args, &out, &diagnostics); !errors.Is(err, adminclient.ErrUnsupported) || out.Len() != 0 {
@@ -57,10 +58,11 @@ func TestCLICommandsAndErrors(t *testing.T) {
 }
 
 func TestCLIRequiresTokenOnlyForSupportedReadCommands(t *testing.T) {
+	t.Setenv("DSGCTL_TOKEN_FILE", "")
 	for _, args := range [][]string{{"stats"}, {"policy", "get"}, {"node", "ls"}, {"job", "run", "scrub"}, {"job", "cancel", "job-fixture"}, {"node", "drain", "node-a"}} {
 		var out, diagnostics bytes.Buffer
 		err := run(context.Background(), args, &out, &diagnostics)
-		if err == nil || err.Error() != "--token-file is required" || out.Len() != 0 {
+		if err == nil || err.Error() != "--token-file or DSGCTL_TOKEN_FILE is required" || out.Len() != 0 {
 			t.Fatalf("missing required flag was not explained for %v: %v", args, err)
 		}
 	}
@@ -69,7 +71,47 @@ func TestCLIRequiresTokenOnlyForSupportedReadCommands(t *testing.T) {
 			t.Fatal("help/version must not require a token", err)
 		}
 	}
-	if err := run(context.Background(), []string{"layout", "demo", "key"}, &bytes.Buffer{}, &bytes.Buffer{}); !errors.Is(err, adminclient.ErrUnsupported) {
-		t.Fatal("unsupported commands must remain explicit", err)
+	for _, args := range [][]string{{"cost", "report"}, {"fault", "ls"}, {"rebuild-index"}} {
+		if err := run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{}); !errors.Is(err, adminclient.ErrUnsupported) {
+			t.Fatal("unsupported commands must remain explicit", args, err)
+		}
+	}
+}
+
+// TestEnvironmentSelectsTunnelEndpointAndTokenFile: an SSH tunnel origin and
+// token path come from the environment; explicit flags win.
+func TestEnvironmentSelectsTunnelEndpointAndTokenFile(t *testing.T) {
+	file, token := bearerFile(t)
+	hits := map[string]int{}
+	handler := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer "+token {
+				t.Error("missing bearer")
+			}
+			hits[name]++
+			w.Write([]byte(`{}`))
+		}))
+	}
+	tunnel, direct := handler("tunnel"), handler("direct")
+	defer tunnel.Close()
+	defer direct.Close()
+	t.Setenv("DSGCTL_ENDPOINT", tunnel.URL)
+	t.Setenv("DSGCTL_TOKEN_FILE", file)
+	if err := run(context.Background(), []string{"stats"}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(context.Background(), []string{"--endpoint", direct.URL, "stats"}, io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if hits["tunnel"] != 1 || hits["direct"] != 1 {
+		t.Fatalf("endpoint precedence: %v", hits)
+	}
+	t.Setenv("DSGCTL_ENDPOINT", "http://10.0.0.5:9000")
+	if err := run(context.Background(), []string{"stats"}, io.Discard, io.Discard); err == nil {
+		t.Fatal("plaintext non-loopback endpoint from the environment accepted")
+	}
+	t.Setenv("DSGCTL_TOKEN_FILE", file+"-missing")
+	if err := run(context.Background(), []string{"--endpoint", direct.URL, "stats"}, io.Discard, io.Discard); err == nil || hits["direct"] != 1 {
+		t.Fatal("missing token file from the environment reached the gateway", err)
 	}
 }
