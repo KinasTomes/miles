@@ -68,9 +68,16 @@ checkpointing progress. The 10,000-page run cap reports `scan_limit` with its
 checkpoint. Eligibility uses the trusted UTC lower bound and is rechecked by
 the operation transaction. Purge closes expired Active/Aborting uploads through
 the recovery port, including open publishers, before releasing quota. A Completing
-upload follows frozen-input recovery even after its upload expiry. Dry-run
-reports examined/skipped counts and preserves data. Outcome errors retain the
-pending step until durable upload state proves it settled.
+upload follows frozen-input recovery even after its upload expiry; purge never
+touches it, and recovery waits for the completion lease plus 5 seconds of grace.
+Recovery leaves an upload that a revoked takeover moved to Aborting to purge.
+Dry-run reports examined/skipped counts and preserves data. Unknown outcomes,
+lost fences or admission and CAS conflicts retain the pending step until durable
+upload state proves it settled. Any other failure of one upload (for example a
+corrupt frozen input) is counted as `deferred` and the scan continues, so one
+upload cannot hold every later one; the upload keeps its state, roots and
+reservation, the next periodic run retries it and the finished job fails with
+`uploads_deferred`.
 
 Upload sweep dispatch holds recovery-kind authority for job progress. Physical
 cleanup or completion acquires its own writer admission. A recovery cut can

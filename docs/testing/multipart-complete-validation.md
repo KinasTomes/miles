@@ -96,10 +96,10 @@ Client: AWS CLI 2.36.41 (bản pin, Windows) và boto3 1.43.122 không awscrt.
 
 ## Giới hạn và bàn giao
 
-- Lịch sweeper `recover_uploads` mỗi 60 giây (job, lease job, quét Completing) chưa có;
-  service giao `object.Service.RecoverUpload` cho một upload. Admission của recovery dùng
-  credential lưu trong upload: credential bị thu hồi thì local authority từ chối admit,
-  upload giữ Completing cho recovery authority sau này.
+- Lịch sweeper `recover_uploads`/`purge_uploads` mỗi 60 giây đã chạy trong runtime
+  Cloud/Edge; xem [multipart sweeper validation](multipart-sweeper-validation.md). Mode
+  local/benchmark không có job runner: admission local dùng credential lưu trong upload,
+  credential bị thu hồi thì từ chối admit và upload giữ Completing tới khi client retry.
 - `Writer.Do` giữ khóa dispatch qua callback nhưng nhả mutex trạng thái để heartbeat R1
   gia hạn trong lúc backend prepare đọc/ghi pages. Close/release/invalidate vẫn chờ callback
   hoàn tất; callback và ACK đang chạy hoặc outcome chưa rõ vẫn giữ protection. Regression
