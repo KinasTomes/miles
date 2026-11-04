@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/engine"
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/manifest"
 	"github.com/KinasTomes/miles/internal/metadata/operations"
 	"github.com/KinasTomes/miles/internal/pack"
@@ -414,9 +416,10 @@ func TestRetentionRejectsChecksummedCheckpointWithMissingReceipt(t *testing.T) {
 }
 
 type memoryInstaller struct {
-	request  s.IndexInstall
-	records  []s.IndexRecord
-	finished bool
+	stageHook func()
+	request   s.IndexInstall
+	records   []s.IndexRecord
+	finished  bool
 }
 
 type interruptedInstaller struct {
@@ -427,51 +430,92 @@ type interruptedInstaller struct {
 func (m *interruptedInstaller) StageIndexRecord(ctx context.Context, r s.IndexInstall, record s.IndexRecord) error {
 	if !m.interrupted {
 		m.interrupted = true
+		if e := m.memoryInstaller.StageIndexRecord(ctx, r, record); e != nil {
+			return e
+		}
 		return crash
 	}
 	return m.memoryInstaller.StageIndexRecord(ctx, r, record)
 }
 func TestRecoveryRetryUsesFrozenGenesisAfterRestoreExtension(t *testing.T) {
-	w, root, physical := liveCheckpointFixture(t)
-	r := Retention{Checkpointer: w, Store: &memoryCatalog{}, Packs: physical}
-	if e := r.Publish(t.Context(), root); e != nil {
-		t.Fatal(e)
-	}
-	ref := s.PackRef{ID: "pack", Generation: "generation"}
-	if e := physical.ChangeStorageClass(t.Context(), ref, s.Glacier); e != nil {
-		t.Fatal(e)
-	}
-	restore := func(days int) {
-		if e := physical.Restore(t.Context(), ref, s.RestoreRequest{Days: days, Tier: "Standard"}); e != nil {
-			t.Fatal(e)
-		}
-		if e := physical.CompleteRestore(ref, time.Date(2026, 11, 4+days, 0, 0, 0, 0, time.UTC)); e != nil {
-			t.Fatal(e)
-		}
-	}
-	restore(1)
-	now := time.Date(2026, 11, 4, 1, 0, 0, 0, time.UTC)
-	request := RecoverRequest{Target: now, Bounds: s.R1Bounds{Lower: now, Upper: now, Horizon: now.Add(time.Hour)}, History: strings.Repeat("8", 32), Incarnation: strings.Repeat("9", 32)}
-	installer := &interruptedInstaller{}
-	recoverer := Recoverer{Retention: r, Installer: installer}
-	if _, e := recoverer.Recover(t.Context(), request); !errors.Is(e, crash) {
-		t.Fatal(e)
-	}
-	frozenRequest := installer.request
-	original, e := w.Objects.Read(t.Context(), "recovery/active/"+request.Incarnation+".json")
-	if e != nil {
-		t.Fatal(e)
-	}
-	restore(2)
-	if _, e = recoverer.Recover(t.Context(), request); e != nil {
-		t.Fatal(e)
-	}
-	after, e := w.Objects.Read(t.Context(), "recovery/active/"+request.Incarnation+".json")
-	if e != nil || !bytes.Equal(original, after) || !installer.finished {
-		t.Fatal(e)
-	}
-	if installer.request != frozenRequest {
-		t.Fatal("installation digest changed on retry")
+	for _, changed := range []bool{false, true} {
+		t.Run(fmt.Sprint(changed), func(t *testing.T) {
+			w, root, physical := liveCheckpointFixture(t)
+			r := Retention{Checkpointer: w, Store: &memoryCatalog{}, Packs: physical}
+			if e := r.Publish(t.Context(), root); e != nil {
+				t.Fatal(e)
+			}
+			ref := s.PackRef{ID: "pack", Generation: "generation"}
+			if e := physical.ChangeStorageClass(t.Context(), ref, s.Glacier); e != nil {
+				t.Fatal(e)
+			}
+			restore := func(days int) {
+				if e := physical.Restore(t.Context(), ref, s.RestoreRequest{Days: days, Tier: "Standard"}); e != nil {
+					t.Fatal(e)
+				}
+				if e := physical.CompleteRestore(ref, time.Date(2026, 11, 4+days, 0, 0, 0, 0, time.UTC)); e != nil {
+					t.Fatal(e)
+				}
+			}
+			restore(1)
+			now := time.Date(2026, 11, 4, 1, 0, 0, 0, time.UTC)
+			request := RecoverRequest{Target: now, Bounds: s.R1Bounds{Lower: now, Upper: now, Horizon: now.Add(time.Hour)}, History: strings.Repeat("8", 32), Incarnation: strings.Repeat("9", 32)}
+			installer := &interruptedInstaller{}
+			recoverer := Recoverer{Retention: r, Installer: installer}
+			if _, e := recoverer.Recover(t.Context(), request); !errors.Is(e, crash) {
+				t.Fatal(e)
+			}
+			frozenRequest := installer.request
+			stagedBefore := len(installer.records)
+			original, e := w.Objects.Read(t.Context(), "recovery/active/"+request.Incarnation+".json")
+			if e != nil {
+				t.Fatal(e)
+			}
+			if changed {
+				restore(2)
+				request.Bounds.Lower = time.Date(2026, 11, 5, 0, 30, 0, 0, time.UTC)
+				request.Bounds.Upper = request.Bounds.Lower
+				request.Bounds.Horizon = request.Bounds.Upper.Add(time.Hour)
+				if _, e = recoverer.Recover(t.Context(), request); !errors.Is(e, s.ErrConflict) {
+					t.Fatal("opened with stale frozen restore facts", e)
+				}
+				if installer.finished {
+					t.Fatal("stale restore facts reached readiness")
+				}
+				if len(installer.records) != stagedBefore {
+					t.Fatal("staged stale facts after readiness mismatch")
+				}
+			} else {
+				if _, e = recoverer.Recover(t.Context(), request); e != nil || !installer.finished {
+					t.Fatal(e)
+				}
+				found := false
+				for _, record := range installer.records {
+					if record.Kind == "packs" {
+						var p s.PackInfo
+						if e = json.Unmarshal(record.Body, &p); e != nil {
+							t.Fatal(e)
+						}
+						if p.Ref == ref {
+							found = true
+							if !p.RestoredUntil.Equal(time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)) || !lifecycle.Readable(p, request.Bounds.Upper) {
+								t.Fatal("unreadable staged facts at readiness", p)
+							}
+						}
+					}
+				}
+				if !found {
+					t.Fatal("pack facts were not inspected at readiness")
+				}
+			}
+			after, e := w.Objects.Read(t.Context(), "recovery/active/"+request.Incarnation+".json")
+			if e != nil || !bytes.Equal(original, after) {
+				t.Fatal(e)
+			}
+			if installer.request != frozenRequest {
+				t.Fatal("installation digest changed on retry")
+			}
+		})
 	}
 }
 func TestRebuildDoesNotInstallUnreferencedCanonicalWinners(t *testing.T) {
@@ -565,6 +609,9 @@ func (m *memoryInstaller) BeginIndexInstall(_ context.Context, r s.IndexInstall)
 }
 func (m *memoryInstaller) StageIndexRecord(_ context.Context, _ s.IndexInstall, r s.IndexRecord) error {
 	m.records = append(m.records, r)
+	if m.stageHook != nil {
+		m.stageHook()
+	}
 	return nil
 }
 func (m *memoryInstaller) FinishIndexInstall(context.Context, s.IndexInstall) error {

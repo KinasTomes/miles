@@ -35,6 +35,7 @@ type RecoverRequest struct {
 }
 
 func (w Recoverer) Recover(ctx context.Context, r RecoverRequest) (Catalog, error) {
+	started := time.Now()
 	var zero Catalog
 	if w.Installer == nil || !isHex(r.History, 32) || !isHex(r.Incarnation, 32) || r.History == w.Catalog.History || r.Incarnation == w.Catalog.Incarnation {
 		return zero, s.ErrInvalid
@@ -58,7 +59,7 @@ func (w Recoverer) Recover(ctx context.Context, r RecoverRequest) (Catalog, erro
 		if e = current.VerifyPayload(ctx, w.Packs); e != nil {
 			return zero, e
 		}
-		return w.installFrozen(ctx, frozen, SupportedCut{Epoch: image.Snapshot.SourceTarget, Checkpoint: image.Snapshot.SourceCheckpoint})
+		return w.installFrozen(ctx, frozen, SupportedCut{Epoch: image.Snapshot.SourceTarget, Checkpoint: image.Snapshot.SourceCheckpoint}, ageRecoveryBounds(r.Bounds, time.Since(started)))
 	} else if !errors.Is(e, s.ErrNotFound) {
 		return zero, e
 	}
@@ -291,15 +292,19 @@ func (w Recoverer) Recover(ctx context.Context, r RecoverRequest) (Catalog, erro
 	if err = putVerified(ctx, w.Objects, selectedCatalogKey(catalog), encoded); err != nil {
 		return zero, err
 	}
-	return w.installFrozen(ctx, catalog, cut)
+	return w.installFrozen(ctx, catalog, cut, ageRecoveryBounds(r.Bounds, time.Since(started)))
 }
-func (w Recoverer) installFrozen(ctx context.Context, catalog Catalog, cut SupportedCut) (Catalog, error) {
+func (w Recoverer) installFrozen(ctx context.Context, catalog Catalog, cut SupportedCut, bounds s.R1Bounds) (Catalog, error) {
+	started := time.Now()
 	var zero Catalog
 	r := RecoverRequest{History: catalog.History, Incarnation: catalog.Incarnation}
 	// Derive installation rows from the exact new genesis, not from the old
 	// credential-active historical image or an operator-provided replacement.
 	next, err := (Checkpointer{Objects: w.Objects, Catalog: catalog}).Rebuild(ctx, AttachmentReference{Key: genesisKey(catalog), Reference: catalog.Genesis})
 	if err != nil {
+		return zero, err
+	}
+	if err = w.checkFrozenReadiness(ctx, next, ageRecoveryBounds(bounds, time.Since(started))); err != nil {
 		return zero, err
 	}
 	chain := ""
@@ -321,8 +326,62 @@ func (w Recoverer) installFrozen(ctx context.Context, catalog Catalog, cut Suppo
 			return zero, fmt.Errorf("%w: staging %s", err, record.Kind)
 		}
 	}
+	if err = w.checkFrozenReadiness(ctx, next, ageRecoveryBounds(bounds, time.Since(started))); err != nil {
+		return zero, err
+	}
 	if err = w.Installer.FinishIndexInstall(ctx, request); err != nil {
 		return zero, err
 	}
 	return catalog, nil
+}
+
+// The immutable plan is never rebased to mutable HEAD facts. If its published
+// read policy no longer matches physical readiness, leave installation closed.
+func (w Recoverer) checkFrozenReadiness(ctx context.Context, index Rebuilt, b s.R1Bounds) error {
+	started := time.Now()
+	if b.Upper.IsZero() || b.Lower.IsZero() || b.Upper.Before(b.Lower) || b.Horizon.Before(b.Upper) {
+		return s.ErrInvalid
+	}
+	seen := map[s.PackRef]bool{}
+	var earliestRestore time.Time
+	for key := range index.Live {
+		ref := index.Chunks[key].Location.Pack
+		if seen[ref] {
+			continue
+		}
+		seen[ref] = true
+		frozen := index.Packs[ref]
+		current, e := w.Packs.HeadPack(ctx, ref)
+		if e != nil {
+			return e
+		}
+		if current.Ref != ref || current.Size != frozen.Size || current.Class != frozen.Class || !current.RestoredUntil.Equal(frozen.RestoredUntil) {
+			return fmt.Errorf("%w: frozen pack facts require offline reconciliation", s.ErrConflict)
+		}
+		if !lifecycle.Readable(frozen, b.Upper) {
+			return s.ErrCold
+		}
+		if frozen.Class == s.Glacier && (earliestRestore.IsZero() || frozen.RestoredUntil.Before(earliestRestore)) {
+			earliestRestore = frozen.RestoredUntil
+		}
+	}
+	currentBounds := ageRecoveryBounds(b, time.Since(started))
+	if currentBounds.Horizon.Before(currentBounds.Upper) {
+		return s.ErrInvalid
+	}
+	if !earliestRestore.IsZero() && !earliestRestore.After(currentBounds.Upper) {
+		return s.ErrCold
+	}
+	return nil
+}
+
+// Advance the supplied trusted sample with monotonic elapsed time. Its original
+// horizon stays fixed, so long verification/staging cannot reuse expired bounds.
+func ageRecoveryBounds(b s.R1Bounds, elapsed time.Duration) s.R1Bounds {
+	if b.Lower.IsZero() || b.Upper.IsZero() {
+		return b
+	}
+	b.Lower = b.Lower.Add(elapsed)
+	b.Upper = b.Upper.Add(elapsed)
+	return b
 }

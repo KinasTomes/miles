@@ -209,6 +209,30 @@ regression verifies both omissions.
 Installation retry first rediscovers the immutable incarnation selector, validates
 its source checkpoint and original requested target, rechecks current payload
 readiness, then reuses that exact genesis/record digest. It does not regenerate
-restore-expiry facts or select a newer support cut. The interrupted-install test
-extends archive restoration between attempts and asserts unchanged selector and
-installation digest before successful resumption.
+restore-expiry facts or select a newer support cut. The interrupted-install test checks unchanged facts resume successfully. If
+class or restore expiry changes, the immutable plan is not rewritten: installation
+stays gated pending an audited replacement/reconciliation path.
+
+
+## Frozen-plan readiness gate
+
+Payload bytes alone do not establish that staged read-policy facts are usable.
+Before staging and again immediately before `FinishIndexInstall`, recovery compares
+live exact-generation HEAD size/class/restore expiry with the frozen plan and
+checks the frozen pack's read policy against trusted UTC bounds. Any mismatch or
+expired restore prevents Finish; an in-progress native installation remains
+Closing. This deliberately selects the fail-closed option rather than modifying
+an immutable selector or rebasing its record digest. A changed plan requires an
+explicit audited replacement/clean target, not repeated rewriting of this one.
+
+The supplied time sample advances with monotonic elapsed verification/staging
+time while its original validity horizon stays fixed. The earliest archive expiry
+is checked again after the HEAD walk so expiry during that walk cannot grant
+readiness from an old sample.
+
+Regression coverage includes interruption after one staged record, HEAD restore
+extension to Nov 6, retry with trusted time Nov 5 00:30 (after the original Nov 5
+expiry), unchanged selector/digest and no additional staging/Finish. The unchanged
+retry inspects the actual staged pack expiry and read policy at successful
+readiness. Separate tests change class during staging and cross restore expiry
+while HEAD verification is delayed; both keep readiness closed.
