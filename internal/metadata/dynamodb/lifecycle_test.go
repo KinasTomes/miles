@@ -832,3 +832,115 @@ func TestLocalWarmCompactionRetainsPinnedSource(t *testing.T) {
 		t.Fatal(pinned, e)
 	}
 }
+
+type sweepPhysicalFixture struct {
+	calls   []s.SweepVersion
+	unknown bool
+}
+
+func (p *sweepPhysicalFixture) ListSweepVersions(context.Context, s.PackRef) ([]s.SweepVersion, error) {
+	return []s.SweepVersion{{Category: "pack", VersionID: "pack-version"}, {Category: "sidecar", VersionID: "index-version"}}, nil
+}
+func (p *sweepPhysicalFixture) DeleteSweepVersion(ctx context.Context, _ s.PackRef, v s.SweepVersion) error {
+	if e := s.CheckPhysicalDispatch(ctx); e != nil {
+		return e
+	}
+	p.calls = append(p.calls, v)
+	if p.unknown && v.Category == "sidecar" {
+		return s.ErrUnavailable
+	}
+	return nil
+}
+
+func TestLocalGCSweepDoesNotReuseUnknownDispatch(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		name := "known"
+		if unknown {
+			name = "unknown_after_pack_ack"
+		}
+		t.Run(name, func(t *testing.T) {
+			m, w, j, policy, utc, _, old := lifeFixture(t, "gc", s.Standard)
+			ctx := t.Context()
+			// Model a source retired by a prior stable mark, with the live object
+			// still referencing its new generation. The retired pack has no winners.
+			rows, e := m.GetPacks(ctx, []s.PackRef{old.Location.Pack})
+			if e != nil {
+				t.Fatal(e)
+			}
+			p := rows[old.Location.Pack]
+			dead := p
+			dead.Ref = s.PackRef{ID: "gc-pack", Generation: "retiring"}
+			dead.State = "Retiring"
+			when := utc.Now().Add(-26 * time.Hour)
+			if e = m.update(ctx, func(tx *transaction) error {
+				if e := put(tx, packKey(dead.Ref), dead); e != nil {
+					return e
+				}
+				if e := r1Put(tx, sweepRetirementKey(dead.Ref), sweepRetirement{Version: 1, Ref: dead.Ref, At: when}); e != nil {
+					return e
+				}
+				current, e := get[jobs.Job](tx, key("jobs", j.ID))
+				if e != nil {
+					return e
+				}
+				current.Params, _ = json.Marshal(lifecycle.Params{PackID: dead.Ref.ID, Generation: dead.Ref.Generation})
+				j = current
+				return put(tx, key("jobs", j.ID), current)
+			}); e != nil {
+				t.Fatal(e)
+			}
+			w.Marker = &lifecycle.Marker{Store: m, Pinned: m.ObservePackPins, MaxRecords: 1000, MaxReferences: 1000, RecoveryRoots: func(context.Context) ([]s.PackRef, error) { return nil, nil }}
+			w.VerifyCutAfter = func(_ context.Context, at time.Time) error {
+				if !at.Equal(when) {
+					return s.ErrInvalid
+				}
+				return nil
+			}
+			physical := &sweepPhysicalFixture{unknown: unknown}
+			w.Sweep = physical
+			step, e := w.Step(ctx, j, policy)
+			action, readErr := m.GetLifecycle(ctx, j.ID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			gate, readErr := m.GetR1Gate(ctx)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			rows, readErr = m.GetPacks(ctx, []s.PackRef{dead.Ref})
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if unknown {
+				if e == nil || step.Settled || action.State != "Unknown" || gate.State != "Maintenance" || rows[dead.Ref].State != "Deleting" {
+					t.Fatal(step, e, action.State, gate.State, rows[dead.Ref].State)
+				}
+				if again, e := w.Step(ctx, j, policy); e == nil || again.Settled {
+					t.Fatal(again, e)
+				}
+			} else if e != nil || !step.Done || !step.Settled || action.State != "Done" || gate.State != "Open" || rows[dead.Ref].State != "Retired" {
+				t.Fatal(step, e, action.State, gate.State, rows[dead.Ref].State)
+			}
+			if len(physical.calls) != 2 {
+				t.Fatal("dispatched again", physical.calls)
+			}
+		})
+	}
+}
+
+func TestLocalGCProtectsLiveGeneration(t *testing.T) {
+	m, w, j, policy, _, _, old := lifeFixture(t, "gc", s.Standard)
+	ctx := t.Context()
+	physical := &sweepPhysicalFixture{}
+	w.Sweep = physical
+	w.Marker = &lifecycle.Marker{Store: m, Pinned: m.ObservePackPins, MaxRecords: 1000, MaxReferences: 1000, RecoveryRoots: func(context.Context) ([]s.PackRef, error) { return nil, nil }}
+	step, e := w.Step(ctx, j, policy)
+	if !errors.Is(e, s.ErrR1Busy) || !step.Settled || len(physical.calls) != 0 {
+		t.Fatal(step, e, physical.calls)
+	}
+	rows, e := m.GetPacks(ctx, []s.PackRef{old.Location.Pack})
+	gate, gateErr := m.GetR1Gate(ctx)
+	if e != nil || gateErr != nil || rows[old.Location.Pack].State != "Warm" || gate.State != "Open" {
+		t.Fatal(rows, gate, e, gateErr)
+	}
+}

@@ -174,6 +174,7 @@ func (m Marker) Collect(ctx context.Context) (*Mark, error) {
 				if u.ID == "" || u.Object.Validate() != nil || u.Domain == "" {
 					return nil, s.ErrUnavailable
 				}
+				publishedBytes := int64(0)
 				after := uint32(0)
 				for {
 					parts, e := m.Store.ObserveUploadParts(ctx, u.ID, after, 100)
@@ -185,10 +186,11 @@ func (m Marker) Collect(ctx context.Context) (*Mark, error) {
 					}
 					last := after
 					for _, part := range parts.Parts {
-						if part.UploadID != u.ID || part.Number <= last || part.ManifestID == "" || reserve(int(part.Pages)) != nil {
+						if part.UploadID != u.ID || part.Number <= last || part.Number > 10000 || part.ManifestID == "" || part.Size < 0 || part.Size > 5<<30 || part.Pages > s.MaxManifestPages || reserve(int(part.Pages)) != nil {
 							return nil, s.ErrUnavailable
 						}
 						last = part.Number
+						offset := int64(0)
 						for n := uint32(0); n < part.Pages; n++ {
 							page, e := m.Store.GetPartPage(ctx, part.ManifestID, n)
 							if e != nil {
@@ -198,11 +200,19 @@ func (m Marker) Collect(ctx context.Context) (*Mark, error) {
 								return nil, s.ErrUnavailable
 							}
 							for _, r := range page.Chunks {
+								if r.LogicalOffset != offset || r.RawBytes > part.Size-offset {
+									return nil, s.ErrUnavailable
+								}
+								offset += r.RawBytes
 								if e = reference(r, UnfinishedUpload); e != nil {
 									return nil, e
 								}
 							}
 						}
+						if offset != part.Size || part.Size > u.PublishedBytes-publishedBytes {
+							return nil, s.ErrUnavailable
+						}
+						publishedBytes += part.Size
 					}
 					if parts.Next == 0 {
 						break
@@ -211,6 +221,9 @@ func (m Marker) Collect(ctx context.Context) (*Mark, error) {
 						return nil, s.ErrUnavailable
 					}
 					after = parts.Next
+				}
+				if publishedBytes != u.PublishedBytes {
+					return nil, s.ErrUnavailable
 				}
 				// A frozen completion retains all of its published part heads. Include
 				// the prepared object manifest as well when the snapshot has been bound.
@@ -225,6 +238,7 @@ func (m Marker) Collect(ctx context.Context) (*Mark, error) {
 						return nil, e
 					}
 				}
+				openPublishers := uint32(0)
 				publisherCursor := ""
 				for {
 					page, e := m.Store.ListPublishers(ctx, u.ID, publisherCursor, 100)
@@ -236,6 +250,14 @@ func (m Marker) Collect(ctx context.Context) (*Mark, error) {
 					}
 					for _, publisher := range page.Publishers {
 						if publisher.UploadID != u.ID {
+							return nil, s.ErrUnavailable
+						}
+						switch publisher.State {
+						case "Published", "Cancelled":
+							continue
+						case "Open":
+							openPublishers++
+						default:
 							return nil, s.ErrUnavailable
 						}
 						if e = reserve(len(publisher.Packs)); e != nil {
@@ -254,6 +276,9 @@ func (m Marker) Collect(ctx context.Context) (*Mark, error) {
 						return nil, s.ErrUnavailable
 					}
 					publisherCursor = page.Next
+				}
+				if openPublishers != u.Publishers {
+					return nil, s.ErrUnavailable
 				}
 			}
 			if p.Next == "" {

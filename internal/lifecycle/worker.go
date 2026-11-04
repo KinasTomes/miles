@@ -36,11 +36,13 @@ type Store interface {
 	SkipLifecycle(context.Context, jobs.Job) (Action, error)
 }
 type Worker struct {
-	Marker  *Marker
-	Store   Store
-	Packs   s.PackStore
-	Catalog *Catalog
-	UTC     s.R1TimeSource
+	Marker         *Marker
+	Sweep          SweepStorage
+	VerifyCutAfter func(context.Context, time.Time) error
+	Store          Store
+	Packs          s.PackStore
+	Catalog        *Catalog
+	UTC            s.R1TimeSource
 }
 
 func (w *Worker) Executor(kind jobs.Type) jobs.Executor {
@@ -89,7 +91,7 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 		return jobs.Step{Settled: true}, e
 	}
 	result := func(a Action, done bool) jobs.Step {
-		report := map[string]any{"action": a.State, "pack_id": p.PackID, "generation": p.Generation, "source_retained": true}
+		report := map[string]any{"action": a.State, "pack_id": p.PackID, "generation": p.Generation, "source_retained": a.Kind != "gc" || a.State != "Done" || len(a.SweepVersions) == 0}
 		if a.Target != "" {
 			report["storage_class"] = a.Target
 		}
@@ -122,10 +124,32 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 	}
 	source, ok := rows[p.Ref()]
 	if !ok {
+		if j.Type == "gc" && j.DryRun && w.Sweep != nil {
+			versions, err := w.Sweep.ListSweepVersions(ctx, p.Ref())
+			if err != nil {
+				return jobs.Step{Settled: true}, err
+			}
+			report, _ := json.Marshal(map[string]any{"dry_run": true, "pack_id": p.PackID, "generation": p.Generation, "reason": "no_metadata_proof", "physical_versions": len(versions), "physical_dispatch": false})
+			return jobs.Step{Settled: true, Done: true, Result: report}, nil
+		}
 		return jobs.Step{Settled: true}, s.ErrNotFound
 	}
 	if j.DryRun {
-		body, _ := json.Marshal(map[string]any{"dry_run": true, "pack_id": source.Ref.ID, "generation": source.Ref.Generation, "state": source.State, "storage_class": source.Class, "physical_dispatch": false})
+		report := map[string]any{"dry_run": true, "pack_id": source.Ref.ID, "generation": source.Ref.Generation, "state": source.State, "storage_class": source.Class, "physical_dispatch": false}
+		if j.Type == "gc" {
+			if w.Marker == nil {
+				return jobs.Step{Settled: true}, s.ErrInvalid
+			}
+			mark, err := w.Marker.Collect(ctx)
+			if err != nil {
+				return jobs.Step{Settled: true}, err
+			}
+			report["root_reasons"] = mark.Roots[source.Ref]
+			report["canonical_locations"] = len(mark.CanonicalFor(source.Ref))
+			report["head_live_bytes"] = mark.LiveBytes[source.Ref]
+			report["consistency"] = "observational"
+		}
+		body, _ := json.Marshal(report)
 		return jobs.Step{Settled: true, Done: true, Result: body}, nil
 	}
 	a, e := w.Store.GetLifecycle(ctx, j.ID)
@@ -229,7 +253,26 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 				return result(a, true), nil
 			}
 		}
-		a, e = w.Store.DispatchLifecycle(ctx, j, target, liveBytes)
+		if a.Kind == "gc" {
+			versions, err := w.sweepPlan(ctx, a)
+			if err != nil {
+				return w.abortPrepared(ctx, j, err)
+			}
+			store, ok := w.Store.(sweepDispatch)
+			if !ok {
+				return w.abortPrepared(ctx, j, s.ErrInvalid)
+			}
+			if a.Source.State == "Warm" {
+				a, e = store.RetireSweep(ctx, j)
+				if e != nil {
+					return jobs.Step{}, e
+				}
+				return result(a, true), nil
+			}
+			a, e = store.DispatchSweep(ctx, j, versions)
+		} else {
+			a, e = w.Store.DispatchLifecycle(ctx, j, target, liveBytes)
+		}
 		if e != nil {
 			return jobs.Step{}, e
 		}
@@ -250,6 +293,34 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 	a.Chunks = plannedChunks
 	guarded := s.WithPhysicalDispatch(ctx, func(call context.Context) error { return w.Store.CheckLifecycle(call, j) })
 	switch a.Kind {
+	case "gc":
+		if a.State == "Dispatched" && !freshSend {
+			return w.unknown(ctx, j, jobs.ErrReconciliation)
+		}
+		if a.State == "Unknown" {
+			a, e = w.Store.ResolveLifecycle(ctx, j)
+			if e != nil {
+				return jobs.Step{}, e
+			}
+		}
+		if freshSend {
+			if w.Sweep == nil || !s.ValidSweepVersions(a.SweepVersions) {
+				return w.unknown(ctx, j, s.ErrInvalid)
+			}
+			for _, version := range a.SweepVersions {
+				if e = w.Sweep.DeleteSweepVersion(guarded, a.Source.Ref, version); e != nil {
+					return w.unknown(ctx, j, e)
+				}
+			}
+			if e = w.Store.AppliedLifecycle(ctx, j); e != nil {
+				return jobs.Step{}, e
+			}
+		}
+		a, e = w.Store.FinishLifecycle(ctx, j, s.PackInfo{}, false)
+		if e != nil {
+			return jobs.Step{}, e
+		}
+		return result(a, true), nil
 	case "tiering":
 		if a.State == "Dispatched" && !freshSend {
 			if e = w.Store.UnknownLifecycle(ctx, j); e != nil {

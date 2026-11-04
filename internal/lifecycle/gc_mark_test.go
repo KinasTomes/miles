@@ -57,14 +57,14 @@ func TestMarkerProtectsEachRootAndCountsOnlyCommittedOccurrences(t *testing.T) {
 			"chunks/":    {Chunks: []s.Chunk{row(a, live), row(b, part)}},
 			"heads/":     {Next: "next"},
 			"heads/next": {Heads: []s.ObjectHead{head}},
-			"uploads/":   {Uploads: []s.MultipartUpload{{ID: "upload", Object: uploadObj, Domain: "b", State: "Completing"}}},
+			"uploads/":   {Uploads: []s.MultipartUpload{{ID: "upload", Object: uploadObj, Domain: "b", State: "Completing", PublishedBytes: 4, Publishers: 1}}},
 		},
 		manifests: map[string]s.ManifestPage{
 			"live": {Version: 1, ManifestID: "live", Domain: "a", Chunks: []s.ChunkRef{{Key: a, RawBytes: 4}, {Key: a, RawBytes: 4, LogicalOffset: 4}}},
 			"part": {Version: 1, ManifestID: "part", Domain: "b", Chunks: []s.ChunkRef{{Key: b, RawBytes: 4}}},
 		},
 		parts:      []s.UploadPart{{UploadID: "upload", Number: 1, ManifestID: "part", Pages: 1, Size: 4}},
-		publishers: []s.PartPublisher{{UploadID: "upload", Packs: []s.PackRef{pending}}},
+		publishers: []s.PartPublisher{{UploadID: "upload", State: "Open", Packs: []s.PackRef{pending}}},
 	}
 	m := Marker{Store: f, MaxRecords: 100, MaxReferences: 100,
 		Pinned:        func(_ context.Context, p s.PackRef) (bool, error) { return p == pin, nil },

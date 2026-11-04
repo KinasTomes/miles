@@ -34,7 +34,7 @@ func (m *Store) lifecycleJob(t *transaction, j jobs.Job, dispatch bool) error {
 	if e != nil {
 		return e
 	}
-	if old.Worker != j.Worker || old.PendingStep != j.PendingStep || old.WorkerNodeID != j.WorkerNodeID || old.WorkerNodeIncarnation != j.WorkerNodeIncarnation || old.State != jobs.Running && old.State != jobs.Cancelling {
+	if old.Type != j.Type || old.Worker != j.Worker || old.PendingStep != j.PendingStep || old.WorkerNodeID != j.WorkerNodeID || old.WorkerNodeIncarnation != j.WorkerNodeIncarnation || old.State != jobs.Running && old.State != jobs.Cancelling {
 		return s.ErrFenced
 	}
 	n, e := get[jobs.Node](t, key("nodes", j.WorkerNodeID))
@@ -50,7 +50,7 @@ func (m *Store) lifecycleJob(t *transaction, j jobs.Job, dispatch bool) error {
 	}
 	if g.State != "Open" {
 		a, e := r1Read[lifecycle.Action](t, lifecycleKey(j.ID))
-		if e != nil || a.Kind != "tiering" || a.Fence != j.Worker || g.State != "Maintenance" || a.GateRevision != g.Revision {
+		if e != nil || (a.Kind != "tiering" && a.Kind != "gc") || a.Fence != j.Worker || g.State != "Maintenance" || a.GateRevision != g.Revision {
 			return s.ErrFenced
 		}
 	}
@@ -77,7 +77,7 @@ func (m *Store) CheckLifecycle(ctx context.Context, j jobs.Job) error {
 		if e != nil {
 			return e
 		}
-		if a.Fence != j.Worker || a.State != "Dispatched" && a.State != "Unknown" {
+		if a.Fence != j.Worker || a.State != "Dispatched" && (a.State != "Unknown" || a.Kind == "gc") {
 			return s.ErrFenced
 		}
 		// Last, after slow records: a new physical send cannot use stale UTC.
@@ -154,7 +154,7 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 					out = old
 					return nil
 				}
-				if old.State != "Waiting" && old.State != "Prepared" {
+				if old.Kind == "gc" || old.State != "Waiting" && old.State != "Prepared" {
 					return s.ErrFenced
 				}
 				old.Fence = j.Worker
@@ -186,6 +186,10 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 		a := lifecycle.Action{Version: 1, ID: j.ID, JobID: j.ID, Kind: j.Type, State: "Prepared", Revision: 1, Fence: j.Worker, Source: source, Days: p.Days, Tier: p.Tier, PlanPages: pageCount, PlanSHA256: planHash, Digest: digest}
 		a.Destination = lifecycle.Destination(j.Type, j.ID, source.Ref)
 		switch j.Type {
+		case "gc":
+			if e = m.reserveSweep(t, &a, b); e != nil {
+				return e
+			}
 		case "tiering":
 			g, e := r1Read[s.R1Gate](t, r1GateKey())
 			if e != nil {
@@ -273,7 +277,16 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 }
 
 // Dispatch records the complete intent and pending protection before SDK I/O.
-func (m *Store) DispatchLifecycle(ctx context.Context, j jobs.Job, target s.StorageClass, live int64) (out lifecycle.Action, err error) {
+func (m *Store) DispatchLifecycle(ctx context.Context, j jobs.Job, target s.StorageClass, live int64) (lifecycle.Action, error) {
+	return m.dispatchLifecycle(ctx, j, target, live, nil)
+}
+func (m *Store) DispatchSweep(ctx context.Context, j jobs.Job, versions []s.SweepVersion) (lifecycle.Action, error) {
+	if j.Type != "gc" || !s.ValidSweepVersions(versions) {
+		return lifecycle.Action{}, s.ErrInvalid
+	}
+	return m.dispatchLifecycle(ctx, j, "", 0, versions)
+}
+func (m *Store) dispatchLifecycle(ctx context.Context, j jobs.Job, target s.StorageClass, live int64, versions []s.SweepVersion) (out lifecycle.Action, err error) {
 	err = m.update(ctx, func(t *transaction) error {
 		if e := m.fence(t, j.Worker); e != nil {
 			return e
@@ -321,6 +334,13 @@ func (m *Store) DispatchLifecycle(ctx context.Context, j jobs.Job, target s.Stor
 			a.Target = target
 			a.LiveBytes = live
 			p.State = "Transitioning"
+			p.StateRevision++
+		} else if a.Kind == "gc" {
+			if p.State != "Uploading" && p.State != "Retiring" || !s.ValidSweepVersions(versions) {
+				return s.ErrInvalid
+			}
+			a.SweepVersions = slices.Clone(versions)
+			p.State = "Deleting"
 			p.StateRevision++
 		} else if a.Kind == "pack_restore" {
 			p.State = "Restoring"
@@ -432,6 +452,20 @@ func (m *Store) FinishLifecycle(ctx context.Context, j jobs.Job, physical s.Pack
 			return e
 		}
 		switch a.Kind {
+		case "gc":
+			if a.State != "Applied" || p.State != "Deleting" || p.StateRevision != a.Source.StateRevision+1 {
+				return s.ErrConflict
+			}
+			if a.KnownApplied {
+				p.State = "Retired"
+			} else {
+				p.State = a.Source.State
+				a.State = "NotApplied"
+			}
+			p.StateRevision++
+			if e = m.reopenSweep(t, a); e != nil {
+				return e
+			}
 		case "tiering":
 			if a.State != "Applied" || physical.Ref != p.Ref || (a.KnownApplied && physical.Class != a.Target || !a.KnownApplied && physical.Class != a.Source.Class) || physical.Size != p.Size || p.State != "Transitioning" || p.StateRevision != a.Source.StateRevision+1 {
 				return s.ErrConflict
@@ -537,6 +571,11 @@ func (m *Store) SkipLifecycle(ctx context.Context, j jobs.Job) (out lifecycle.Ac
 			return s.ErrFenced
 		}
 		registered := a.State == "Ready"
+		if a.Kind == "gc" {
+			if e = m.reopenSweep(t, a); e != nil {
+				return e
+			}
+		}
 		if a.Kind == "tiering" {
 			g, e := r1Read[s.R1Gate](t, r1GateKey())
 			if e != nil {
@@ -680,7 +719,7 @@ func (m *Store) ResolveLifecycle(ctx context.Context, j jobs.Job) (out lifecycle
 			out = a
 			return nil
 		}
-		if a.State != "Unknown" || a.Kind != "tiering" {
+		if a.State != "Unknown" || a.Kind != "tiering" && a.Kind != "gc" {
 			return s.ErrConflict
 		}
 		authority, e := m.r1Authority()
