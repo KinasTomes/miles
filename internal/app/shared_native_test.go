@@ -179,6 +179,7 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 		})
 	}
 	nativeShutdownDuringPeerRecovery(t, ctx, nodes)
+	nativeProvisionedCheckpoint(t, ctx, nodes[0])
 	mutation, e := nodes[0].Admin.Admit(ctx, tokenID)
 	if e != nil {
 		t.Fatal(e)

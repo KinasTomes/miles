@@ -10,10 +10,42 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/api/admin"
+	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/storage"
 )
+
+func nativeProvisionedCheckpoint(t *testing.T, ctx context.Context, node Dependencies) {
+	t.Helper()
+	journal := node.Journal
+	state, e := journal.store.GetRecoveryState(ctx, journal.catalog.History)
+	if e != nil || state.NextToSeal == 0 {
+		t.Fatal(state, e)
+	}
+	fence, e := journal.authority.Acquire(ctx, "provisioned-checkpoint", "recovery")
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer func() {
+		if e := journal.authority.Close(context.Background(), fence); e != nil {
+			t.Error(e)
+		}
+	}()
+	executor, ok := node.Operations.Cluster.Runner.Executors["recovery_checkpoint"]
+	if !ok {
+		t.Fatal("typed bootstrap did not expose checkpoint capability")
+	}
+	params, _ := json.Marshal(map[string]uint64{"target_epoch": state.NextToSeal - 1})
+	step, e := executor.Step(ctx, jobs.Job{Worker: fence, Params: params}, config.GlobalSnapshot{})
+	if e != nil || !step.Done {
+		t.Fatal(step, e)
+	}
+	head, e := journal.store.GetRecoveryCatalog(ctx, journal.catalog.History)
+	if e != nil || head.Revision == 0 {
+		t.Fatal(head, e)
+	}
+}
 
 func nativeClusterOperations(t *testing.T, ctx context.Context, nodes []Dependencies, token string) {
 	t.Helper()

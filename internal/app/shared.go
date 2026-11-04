@@ -238,7 +238,11 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 		return jobs.Step{Settled: true, Done: true, Result: json.RawMessage(`{"exported":true}`)}, nil
 	}}
 	runner.Executors["drain"] = cluster.DrainExecutor()
-	runner.Executors["recovery_checkpoint"] = (recovery.CheckpointWorker{Store: m, Objects: journalObjects, Packs: packs, Catalog: catalog}).Executor()
+	// Opaque prototype bases cannot establish checkpoint completeness. Keep
+	// this capability unavailable until an audited typed base is provisioned.
+	if _, e := (recovery.Checkpointer{Objects: journalObjects, Catalog: catalog}).Load(ctx, recovery.AttachmentReference{Key: "recovery/histories/" + catalog.History + "/genesis-" + catalog.Genesis.SHA256 + ".json", Reference: catalog.Genesis}); e == nil {
+		runner.Executors["recovery_checkpoint"] = (recovery.CheckpointWorker{Store: m, Objects: journalObjects, Packs: packs, Catalog: catalog}).Executor()
+	}
 	uploads := uploadJobs{store: m, objects: objects, utc: utc}
 	runner.Executors["purge_uploads"] = uploads.executor("purge_uploads")
 	runner.Executors["recover_uploads"] = uploads.executor("recover_uploads")
