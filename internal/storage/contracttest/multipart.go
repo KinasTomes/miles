@@ -28,11 +28,9 @@ func RunMultipart(t *testing.T, factory MultipartFactory) {
 	RunMultipartRaces(t, factory)
 	runPartPermissions(t, factory)
 	runMultipartAdversarial(t, factory)
-	for _, reopen := range []bool{false, true} {
-		name := "complete-subset-and-receipt"
-		if reopen {
-			name = "freeze-cancel-reopen"
-		}
+	for _, name := range []string{"complete-subset-and-receipt", "freeze-cancel-reopen", "replace-part-and-complete"} {
+		reopen := name == "freeze-cancel-reopen"
+		replace := name == "replace-part-and-complete"
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			f := NewFixture()
@@ -55,16 +53,28 @@ func RunMultipart(t *testing.T, factory MultipartFactory) {
 			}
 			var parts []s.UploadPart
 			for n := 1; n <= 2; n++ {
+				partNumber := uint32(n)
+				refs := []s.ChunkRef{{Key: f.Chunk("default").Key, RawBytes: 4}}
+				etag := strings.Repeat("a", 32)
+				if replace && n == 2 {
+					partNumber = 1
+					refs = append(refs, s.ChunkRef{Key: refs[0].Key, RawBytes: 4, LogicalOffset: 4})
+					etag = strings.Repeat("b", 32)
+				}
+				size := int64(len(refs)) * 4
 				pid := fmt.Sprintf("%032x", n+1)
 				manifestID := fmt.Sprintf("%032x", n+10)
-				if err := h.Metadata.(s.PartPageStore).WritePartPages(ctx, []s.ManifestPage{{Version: 1, ManifestID: manifestID, Domain: "default", Chunks: []s.ChunkRef{{Key: f.Chunk("default").Key, RawBytes: 4}}}}, r.Writer); err != nil {
+				if err := h.Metadata.(s.PartPageStore).WritePartPages(ctx, []s.ManifestPage{{Version: 1, ManifestID: manifestID, Domain: "default", Chunks: refs}}, r.Writer); err != nil {
 					t.Fatal(err)
 				}
-				pub := s.PartPublisher{ID: pid, UploadID: uid, OpID: fixtureOpID(fmt.Sprint("part-", n)), PartNumber: uint32(n), Bytes: 4, ManifestID: manifestID, Deadline: f.Now.Add(time.Minute)}
+				pub := s.PartPublisher{ID: pid, UploadID: uid, OpID: fixtureOpID(fmt.Sprint("part-", n)), PartNumber: partNumber, Bytes: size, ManifestID: manifestID, Deadline: f.Now.Add(time.Minute)}
+				if replace && n == 2 {
+					pub.BaseRevision = parts[0].Revision
+				}
 				if _, err := m.RegisterPartPublisher(ctx, r, pub); err != nil {
 					t.Fatal(err)
 				}
-				p := s.UploadPart{Version: 1, Number: uint32(n), Size: 4, ManifestID: manifestID, Pages: 1, ETag: strings.Repeat("a", 32), Checksum: s.Checksum{Algorithm: "CRC32C", Type: "FULL_OBJECT", Value: "AAAAAA=="}}
+				p := s.UploadPart{Version: 1, Number: partNumber, Size: size, ManifestID: manifestID, Pages: 1, ETag: etag, Checksum: s.Checksum{Algorithm: "CRC32C", Type: "FULL_OBJECT", Value: "AAAAAA=="}}
 				if reopen && n == 2 {
 					if err := m.CancelPartPublisher(ctx, r, pid); err != nil {
 						t.Fatal(err)
@@ -76,6 +86,15 @@ func RunMultipart(t *testing.T, factory MultipartFactory) {
 					t.Fatal(err)
 				}
 				parts = append(parts, published)
+				if replace {
+					quota, err := h.Metadata.GetQuota(ctx, f.Bucket.OwnerID)
+					if err != nil || quota.Used != 0 || quota.Staged != size {
+						t.Fatal("replacement staging", quota, err)
+					}
+					if n == 2 && published.Revision != parts[0].Revision+1 {
+						t.Fatal("replacement revision", published)
+					}
+				}
 			}
 			u, err = m.GetUpload(ctx, uid)
 			if err != nil {
@@ -147,14 +166,14 @@ func RunMultipart(t *testing.T, factory MultipartFactory) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Head.Size != 4 {
+			if result.Head.Size != selected.Size {
 				t.Fatal(result)
 			}
 			if _, err := h.Metadata.CommitObject(ctx, base); err != nil {
 				t.Fatal("complete retry", err)
 			}
 			q, err := h.Metadata.GetQuota(ctx, "owner")
-			if err != nil || q.Used != 4 || q.Reserved != 0 || q.Staged != 0 || q.ActiveUploads != 0 {
+			if err != nil || q.Used != selected.Size || q.Reserved != 0 || q.Staged != 0 || q.ActiveUploads != 0 {
 				t.Fatal(q, err)
 			}
 			r.Fence = 0
