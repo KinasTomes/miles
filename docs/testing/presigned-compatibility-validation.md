@@ -209,8 +209,29 @@ regressions explicitly pass renewal and peer membership changes while rejecting
 a closed writer and a changed owner. This correction has not been deployed to
 AWS; the live results above remain results for `438ed46`.
 
-Acceptance stays open pending sustained-latency Complete on the corrected
-release and investigation of the shutdown failure.
+Review of the first correction found that the enclosing publication transaction
+still retained its pre-scan lease. Commit now separates preparation from final
+publication, discards pre-scan observations, and rechecks all publication conditions
+in a fresh transaction. A native regression uses the production 60-second lease,
+advances 75 seconds during enumeration with five successful heartbeats, and
+requires the first commit to publish revision 1 and its outbox event. Related
+cases reject revocation and expiry during enumeration without publication.
+
+Effective presigned payload modes also use the signature parser's existing
+validation before handler dispatch. Independently signed requests with a malformed,
+empty or repeated `X-Amz-Content-Sha256` query value must return InvalidArgument.
+
+A native shutdown regression reproduces R1 busy while a peer still holds the
+recovery authority for a closed epoch. Shutdown flush now waits and retries
+discovery within its original eight-minute budget. It seals after the peer
+releases authority, while cancellation and fencing still fail the shutdown.
+Writer reconciliation, journal flush and recovery-authority cleanup errors now
+identify their stage. This reproduces one cause of the recorded error, while
+the combined historical log cannot establish that it was the only cause in
+the diagnostic AWS run.
+
+Acceptance stays open pending sustained-latency Complete and shutdown confirmation
+on the corrected AWS release. The live results above still describe `438ed46`.
 
 ## Verified cleanup
 
