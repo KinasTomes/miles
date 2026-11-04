@@ -1,0 +1,156 @@
+{
+  "completed_utc": "2026-11-03T16:51:13.507919+00:00",
+  "iam_temporary_grant_revoked_utc": "2026-11-03T16:40:00.377956+00:00",
+  "first_paid_apply_started_utc": "2026-11-03T14:25:44.762371+00:00",
+  "approved_deadline_utc": "2026-11-03T16:55:44.762371+00:00",
+  "approved_budget_usd": 5,
+  "billing_hard_cap": false,
+  "instances_terminated": 3,
+  "root_disks_deleted_without_backup": 3,
+  "root_disk_size_gib_each": 20,
+  "metadata_tables_deleted": 20,
+  "synthetic_metadata_items_before_deletion": 5886,
+  "s3_versions_and_markers_deleted": 1637,
+  "s3_multipart_uploads_aborted": 0,
+  "verified_absent": [
+    "workload bucket",
+    "20 metadata tables",
+    "3 root disks",
+    "Cloud ASG",
+    "ALB",
+    "VPC and network interfaces",
+    "private endpoints",
+    "Edge Roles Anywhere profile and trust anchor",
+    "test ACM certificate",
+    "audited SSM session document"
+  ],
+  "terraform_workload_state_empty": true,
+  "temporary_iam_grant_removed": true,
+  "prior_managed_policy_versions_restored": true,
+  "edge_role_cleanup": {
+    "admin_iam_only": true,
+    "native_absence_verified": true,
+    "terraform_state_reconciled_after_native_absence": true,
+    "deploy_permission_gap": "iam:ListInstanceProfilesForRole on the Edge role"
+  },
+  "run_created_service_linked_roles_deleted": 3,
+  "service_linked_roles_remaining_after_aws_refusal": [],
+  "workload_cleanup_complete": true,
+  "all_run_created_iam_resources_deleted": true,
+  "operator_aws_cli_sessions_cleared": 2,
+  "operator_tunnels_stopped": 3,
+  "operator_private_key_and_credential_files_removed": 12,
+  "retained": {
+    "bootstrap_and_remote_state": true,
+    "kms_state": "PendingDeletion",
+    "kms_deletion_date": "2026-12-03T16:33:49.101000+00:00",
+    "secret_describe_deleted_date": "2026-11-03T16:33:30.903000+00:00",
+    "secret_configured_recovery_window_days": 30,
+    "this_run_system_backups": [
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:42.219000+00:00",
+        "expires_at": "2026-11-04T16:33:42.219000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:35.394000+00:00",
+        "expires_at": "2026-11-04T16:33:35.394000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:44.354000+00:00",
+        "expires_at": "2026-11-04T16:33:44.354000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:36.851000+00:00",
+        "expires_at": "2026-11-04T16:33:36.851000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:42.253000+00:00",
+        "expires_at": "2026-11-04T16:33:42.253000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:42.785000+00:00",
+        "expires_at": "2026-11-04T16:33:42.785000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:44.005000+00:00",
+        "expires_at": "2026-11-04T16:33:44.005000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:42.414000+00:00",
+        "expires_at": "2026-11-04T16:33:42.414000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:43.645000+00:00",
+        "expires_at": "2026-11-04T16:33:43.645000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:41.900000+00:00",
+        "expires_at": "2026-11-04T16:33:41.900000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:35.048000+00:00",
+        "expires_at": "2026-11-04T16:33:35.048000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:42.401000+00:00",
+        "expires_at": "2026-11-04T16:33:42.401000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:35.646000+00:00",
+        "expires_at": "2026-11-04T16:33:35.646000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:35.263000+00:00",
+        "expires_at": "2026-11-04T16:33:35.263000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:37.792000+00:00",
+        "expires_at": "2026-11-04T16:33:37.792000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:36.356000+00:00",
+        "expires_at": "2026-11-04T16:33:36.356000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:35.801000+00:00",
+        "expires_at": "2026-11-04T16:33:35.801000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:35.066000+00:00",
+        "expires_at": "2026-11-04T16:33:35.066000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:41.966000+00:00",
+        "expires_at": "2026-11-04T16:33:41.966000+00:00"
+      },
+      {
+        "type": "SYSTEM",
+        "created_at": "2026-11-03T16:33:37.676000+00:00",
+        "expires_at": "2026-11-04T16:33:37.676000+00:00"
+      }
+    ],
+    "other_preexisting_backups_untouched": 40
+  },
+  "acceptance_complete": false,
+  "billing_statement_verified": false,
+  "within_approved_deadline": true
+}

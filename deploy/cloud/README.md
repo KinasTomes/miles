@@ -8,12 +8,18 @@ phải copy ra thư mục riêng và thay mọi placeholder trước plan.
 Hai private subnet khác AZ, desired/min/max=2, ELB health `/readyz:9100`, HTTPS ACM
 443 → S3 8080. Tái dùng SG hiện có: 8080/9100 chỉ từ ALB (metrics thêm jobs/admin),
 9000 chỉ từ admin SG; không public Admin/metrics. App idle 150s, ALB idle 120s,
-target deregistration 1800s. ALB giữ Host và không có URL/Host rewrite rule.
+target deregistration mặc định 1800s. ALB giữ Host và không có URL/Host rewrite rule.
 Launch template dùng AL2023 Amazon pin AMI/kiến trúc, IMDSv2, private ENI, encrypted
 gp3 20 GiB **disposable**. Không mount EBS data của single-node dev. Metadata phải
 shared DDB, không dùng Badger node-local thay thế. ASG dùng custom service-linked
 role `AWSServiceRoleForAutoScaling_miles-dev`; KMS grant chỉ role đó, điều kiện
 `kms:GrantIsForAWSResource=true`.
+
+Đặt `alb_deregistration_delay_seconds = 300` trong file `.tfvars` riêng để dùng
+5 phút cho dev/test, hoặc dùng `TF_VAR_alb_deregistration_delay_seconds=300` khi
+file `.tfvars` không ghi đè biến này. Chấp nhận số nguyên 0–1800 giây; chọn đủ dài
+cho request đang chạy. Biến này chỉ đổi thời gian ALB drain, không đổi budget
+shutdown/flush của app hay điều kiện controller phải xác nhận shutdown sạch.
 
 ## Trước lần chạy thật
 

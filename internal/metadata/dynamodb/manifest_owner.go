@@ -88,8 +88,8 @@ func (m *Store) prepareManifest(ctx context.Context, w s.WriterFence, h *s.Objec
 	}); err != nil {
 		return err
 	}
-	// Keep the original protection observations until the Verified CAS. Page and
-	// chunk enumeration is outside the bounded transaction, under frozen membership.
+	// Page/chunk enumeration runs under frozen membership. Recheck the same
+	// authority and exact owner before publication, since heartbeats move R1 rows.
 	t := m.transaction(ctx)
 	if err := m.fence(t, w); err != nil {
 		return err
@@ -105,6 +105,7 @@ func (m *Store) prepareManifest(ctx context.Context, w s.WriterFence, h *s.Objec
 		return s.ErrConflict
 	}
 	if owner.State == "Closing" {
+		frozen := owner
 		candidate := *h
 		if err := m.verifyFrozenManifest(ctx, &candidate); err != nil {
 			// A definite validation rejection before any publication attempt may
@@ -125,10 +126,25 @@ func (m *Store) prepareManifest(ctx context.Context, w s.WriterFence, h *s.Objec
 		if err := advanceOwner(&owner); err != nil {
 			return err
 		}
-		if err := put(t, k, owner); err != nil {
-			return err
-		}
-		if err := t.commit(); err != nil {
+		if err := m.update(ctx, func(tx *transaction) error {
+			if err := m.fence(tx, w); err != nil {
+				return err
+			}
+			if err := m.protect(tx, w, h.ManifestID); err != nil {
+				return err
+			}
+			current, err := get[manifestOwner](tx, k)
+			if err != nil {
+				return err
+			}
+			if reflect.DeepEqual(current, owner) {
+				return nil
+			}
+			if !reflect.DeepEqual(current, frozen) {
+				return s.ErrConflict
+			}
+			return put(tx, k, owner)
+		}); err != nil {
 			return err
 		}
 	} else if owner.State != "Verified" {

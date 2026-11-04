@@ -1,0 +1,27 @@
+{
+  "resource_prefix": "acceptance-b0a3ff6e5a5f",
+  "passed": true,
+  "timeout_seconds": 180,
+  "cases": [
+    {
+      "case": "slow preflight and full read-back",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 175215,
+      "first_byte_ms": 70739,
+      "bytes": 367001600,
+      "sha256": "275d2b9684072f4e26588eae0ff54d49a1cc335861ac9a9300f9da2aec550bd0"
+    },
+    {
+      "case": "slow preflight and full read-back",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 104640,
+      "first_byte_ms": 68669,
+      "bytes": 367001600,
+      "sha256": "275d2b9684072f4e26588eae0ff54d49a1cc335861ac9a9300f9da2aec550bd0"
+    }
+  ]
+}

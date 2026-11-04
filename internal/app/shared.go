@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"path/filepath"
 	"time"
@@ -260,7 +261,13 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	}
 	closeRuntime := func(ctx context.Context) error {
 		e := registry.Quiescent()
+		if e != nil {
+			e = fmt.Errorf("shutdown writer reconciliation: %w", e)
+		}
 		flushErr := journal.flush(ctx)
+		if flushErr != nil {
+			flushErr = fmt.Errorf("shutdown journal flush: %w", flushErr)
+		}
 		registry.Invalidate()
 		clients.transport.CloseIdleConnections()
 		return errors.Join(e, flushErr, metadata.closeError(), resident.Close())
