@@ -1,8 +1,8 @@
 # Checkpoint, rebuild and retained recovery cuts
 
-W05-PHONG-03. Baseline `b3af419`, checked 2026-11-04. The supplied backlog
-snapshot lists W04-HAI-02, W04-PHONG-04, W05-HUNG-02 and W05-PHONG-02 as Hard
-Done. PR #61 is merged in this baseline. This change does not update task status.
+Technical prerequisites are the authoritative multipart/event producers, sealed
+recovery epochs, shared jobs/drain coordination and pack lifecycle projections.
+The baseline includes these merged implementations.
 
 ## Implementation mapping
 
@@ -141,7 +141,7 @@ Recorded results:
   materialization bound. New native install tests use modeled persistent isolation
   and an S3 service seam; separate existing runtime tests use the real SDK on Moto.
 
-## Long-history checkpoint review evidence
+## Historical full-prefix measurement (before anchored verification)
 
 At 720 sealed epochs (at least 720 events; quota updates plus the initial live
 manifest/receipt fixture), the opt-in test measures the full Build/Load/Publish
@@ -163,3 +163,52 @@ per sequential read the measured whole sequence alone would exceed 480 seconds;
 this result does not establish a universal long-history/S3 step-time guarantee.
 Larger histories, attachment-heavy workloads and higher-latency deployments
 require separate measurement or checkpoint-anchored validation before rollout.
+
+
+## Published-checkpoint anchors and review regressions
+
+Normal `CheckpointWorker.Step` obtains its base from the history/incarnation-bound
+support catalog. It installs an internal anchor only from that published,
+checksum-bound checkpoint; HTTP/job parameters cannot supply anchors. Publication
+of the base already verified its complete state by independent sealed replay.
+Loading an anchored base still checks snapshot pages and required dependencies.
+Successors verify every epoch from anchor + 1 through the requested target, with
+exact previous-seal binding, marker/history/epoch checks, membership/event digest
+checks and attachment validation. New candidate state is still independently
+re-derived at publication. Thus integrity follows from the trusted base plus the
+contiguous verified suffix; a matching new seal alone remains insufficient.
+
+The standalone `VerifyCut` and unanchored offline audits retain complete-prefix
+verification. A missing old marker is still detected by full audit; it is not
+withdrawal or physical GC permission. Inherited provenance/dependency validation
+and snapshot size still contribute work, so this is not a universal S3 latency SLA.
+
+`TestCheckpointWorkerAnchoredStepReadBudget` exercises the actual job Step after
+publishing epoch 718 in a 720-epoch history. With 20 ms injected on each immutable
+object read, epoch 719 required 128 reads / 145,216 returned bytes, 2.56 seconds
+of modeled I/O and 2.82 seconds observed Step time on Linux. Its ordinary regression
+cap is 2,000 reads and the Step context has the real eight-minute timeout.
+`TestCheckpointTrustedAnchorChecksEveryNewLink` checks wrong predecessor rejection
+and the separate full-audit behavior. These results supersede the full-prefix
+baseline above for the anchored runtime path.
+
+Standard first-install provisioning now creates a typed audited genesis from its
+exact offline bootstrap seed. The Cloud/Edge DynamoDB Local/Moto runtime test now
+seals and publishes a normal checkpoint using that standard seed. Existing opaque
+prototype bases do not register the checkpoint executor, returning the existing
+capability-unavailable response until an operator supplies an audited compatible
+base through offline recovery/provisioning. No running-table scan manufactures
+that compatibility.
+
+Rebuild installs only verified live canonical winners. Historical unused chunk
+rows stay in the original snapshot/source provenance for audit and retention,
+but are omitted from both the dedup index and normalized new-history baseline,
+so a subsequent insert starts a fresh revision sequence. The tombstone/missing-pack
+regression verifies both omissions.
+
+Installation retry first rediscovers the immutable incarnation selector, validates
+its source checkpoint and original requested target, rechecks current payload
+readiness, then reuses that exact genesis/record digest. It does not regenerate
+restore-expiry facts or select a newer support cut. The interrupted-install test
+extends archive restoration between attempts and asserts unchanged selector and
+installation digest before successful resumption.
