@@ -231,3 +231,46 @@ func TestCheckpointPagedStateAndImmutablePolicyHistory(t *testing.T) {
 		t.Fatal("immutable policy revisions lost", history)
 	}
 }
+
+func TestCheckpointTrustedAnchorChecksEveryNewLink(t *testing.T) {
+	for _, broken := range []bool{false, true} {
+		t.Run(fmt.Sprint(broken), func(t *testing.T) {
+			w, genesis := checkpointFixture(t)
+			first := fixtureSeal(t, w, 0, w.Catalog.Genesis.SHA256, []Effect{{Key: "row", Revision: 1, Value: "base"}})
+			base, e := w.Build(t.Context(), genesis, 0)
+			if e != nil {
+				t.Fatal(e)
+			}
+			previous := first.Reference.SHA256
+			if broken {
+				previous = strings.Repeat("a", 64)
+			}
+			fixtureSeal(t, w, 1, previous, []Effect{{Key: "row", Revision: 2, Value: "next"}})
+			w.anchor = &SupportedCut{Epoch: 0, Checkpoint: base}
+			delete(w.Objects.(*memoryObjects).objects, epochPrefix(w.Catalog.History, 0)+"complete.json")
+			_, e = w.Build(t.Context(), base, 1)
+			if broken && e == nil {
+				t.Fatal("accepted broken successor link")
+			}
+			if !broken && e != nil {
+				t.Fatal("revisited trusted prefix", e)
+			}
+			if _, e = VerifyCut(t.Context(), w.Objects, w.Catalog, 1); e == nil {
+				t.Fatal("full audit ignored missing old marker")
+			}
+		})
+	}
+}
+
+func TestOpaqueRuntimeGenesisCannotEnableCheckpoint(t *testing.T) {
+	w, _ := checkpointFixture(t)
+	body, e := Encode(map[string]any{"runtime_genesis_version": 1, "user": "legacy"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	w.Catalog.Genesis = ref(body)
+	w.Objects.(*memoryObjects).objects[genesisKey(w.Catalog)] = body
+	if _, e = w.Load(t.Context(), AttachmentReference{Key: genesisKey(w.Catalog), Reference: w.Catalog.Genesis}); !errors.Is(e, s.ErrInvalid) {
+		t.Fatal(e)
+	}
+}

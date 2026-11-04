@@ -55,10 +55,12 @@ func (w CheckpointWorker) Step(ctx context.Context, j jobs.Job, _ config.GlobalS
 	for _, cut := range catalog.Cuts {
 		if cut.Epoch <= *p.Target {
 			base = cut.Checkpoint
+			selected := cut
+			r.Checkpointer.anchor = &selected
 		}
 	}
 	if j.DryRun {
-		_, e = VerifyCut(ctx, objects, w.Catalog, *p.Target)
+		_, e = r.Checkpointer.verifyTarget(ctx, *p.Target)
 		if e != nil {
 			return jobs.Step{}, e
 		}

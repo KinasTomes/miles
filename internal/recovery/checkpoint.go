@@ -14,6 +14,7 @@ import (
 // Snapshot describes historical facts. Installation normalization never edits it.
 // BeforeFirst is reserved for an explicitly audited genesis, not a live scan.
 type Snapshot struct {
+	RequestedTarget  string                `json:"requested_target,omitempty"`
 	SourceCatalog    Catalog               `json:"source_catalog"`
 	SourceCheckpoint AttachmentReference   `json:"source_checkpoint"`
 	SourceTarget     uint64                `json:"source_target"`
@@ -52,6 +53,7 @@ type dependencyPage struct {
 // Checkpointer operates only on immutable, checksum-bound artifacts. All limits
 // fail closed; no partially built checkpoint is published as supported.
 type Checkpointer struct {
+	anchor  *SupportedCut
 	Objects ImmutableStore
 	Catalog Catalog
 }
@@ -106,7 +108,7 @@ func (w Checkpointer) Load(ctx context.Context, root AttachmentReference) (Image
 		if cp.Mode != "historical" {
 			return Image{}, s.ErrInvalid
 		}
-		seal, e := VerifyCut(ctx, w.Objects, w.Catalog, cp.Target)
+		seal, e := w.verifyTarget(ctx, cp.Target)
 		if e != nil {
 			return Image{}, e
 		}
@@ -187,7 +189,7 @@ func (w Checkpointer) Build(ctx context.Context, base AttachmentReference, targe
 	if !cp.BeforeFirst && target == cp.Target {
 		return base, nil
 	}
-	seal, err := VerifyCut(ctx, w.Objects, w.Catalog, target)
+	seal, err := w.verifyTarget(ctx, target)
 	if err != nil {
 		return zero, err
 	}
@@ -366,4 +368,27 @@ func (w Checkpointer) writeDependencies(ctx context.Context, snapshot *Snapshot,
 		snapshot.DependencyPages = append(snapshot.DependencyPages, r)
 	}
 	return nil
+}
+
+// An anchor is installed only from the fenced, immutable support catalog.
+// Its checksum-bound snapshot was independently replay-verified at publication.
+func (w Checkpointer) verifyTarget(ctx context.Context, target uint64) (AttachmentReference, error) {
+	if w.anchor == nil || target < w.anchor.Epoch {
+		return VerifyCut(ctx, w.Objects, w.Catalog, target)
+	}
+	body, e := readArtifact(ctx, w.Objects, w.anchor.Checkpoint)
+	if e != nil {
+		return AttachmentReference{}, e
+	}
+	var cp Snapshot
+	if Decode(body, &cp) != nil || cp.History != w.Catalog.History || cp.Mode != "historical" || cp.BeforeFirst || cp.Target != w.anchor.Epoch {
+		return AttachmentReference{}, s.ErrInvalid
+	}
+	if _, e = readArtifact(ctx, w.Objects, cp.Seal); e != nil {
+		return AttachmentReference{}, e
+	}
+	if target == cp.Target {
+		return cp.Seal, nil
+	}
+	return verifyCutFrom(ctx, w.Objects, w.Catalog, target, cp.Target+1, cp.Seal.Reference.SHA256)
 }

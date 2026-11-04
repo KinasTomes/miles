@@ -2,6 +2,10 @@ package recovery
 
 import (
 	"context"
+	"encoding/json"
+	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/jobs"
+	s "github.com/KinasTomes/miles/internal/storage"
 	"os"
 	"testing"
 	"time"
@@ -13,6 +17,53 @@ type measuredObjects struct {
 	ImmutableStore
 	reads, bytes int
 	delay        time.Duration
+}
+
+type scaleCheckpointStore struct {
+	s.RecoveryStore
+	memoryCatalog
+}
+
+func (*scaleCheckpointStore) CheckRecoveryWorker(context.Context, s.WriterFence) error { return nil }
+func TestCheckpointWorkerAnchoredStepReadBudget(t *testing.T) {
+	w, first, packs := liveCheckpointFixture(t)
+	image, e := w.Load(t.Context(), first)
+	if e != nil {
+		t.Fatal(e)
+	}
+	previous := image.Snapshot.Seal.Reference.SHA256
+	for epoch := uint64(1); epoch < 720; epoch++ {
+		row, e := operations.Projection("UsersQuota", "owner", epoch+1, struct {
+			Owner string
+			Limit int64
+		}{"owner", 100}, false)
+		if e != nil {
+			t.Fatal(e)
+		}
+		previous = fixtureSeal(t, w, epoch, previous, []Effect{row}).Reference.SHA256
+	}
+	base, e := w.Build(t.Context(), AttachmentReference{Key: genesisKey(w.Catalog), Reference: w.Catalog.Genesis}, 718)
+	if e != nil {
+		t.Fatal(e)
+	}
+	store := &scaleCheckpointStore{}
+	retention := Retention{Checkpointer: w, Store: store, Packs: packs}
+	if e = retention.Publish(t.Context(), base); e != nil {
+		t.Fatal(e)
+	}
+	measured := &measuredObjects{ImmutableStore: w.Objects, delay: 20 * time.Millisecond}
+	worker := CheckpointWorker{Store: store, Objects: measured, Packs: packs, Catalog: w.Catalog}
+	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Minute)
+	defer cancel()
+	start := time.Now()
+	result, e := worker.Step(ctx, jobs.Job{Params: json.RawMessage(`{"target_epoch":719}`)}, config.GlobalSnapshot{})
+	if e != nil || !result.Done {
+		t.Fatal(result, e)
+	}
+	t.Logf("actual Step epochs=720 new_epochs=1 reads=%d bytes=%d modeled_20ms=%s elapsed=%s", measured.reads, measured.bytes, time.Duration(measured.reads)*20*time.Millisecond, time.Since(start))
+	if measured.reads > 2000 {
+		t.Fatal("re-read the sealed prefix", measured.reads)
+	}
 }
 
 func (m *measuredObjects) Read(ctx context.Context, key string) ([]byte, error) {

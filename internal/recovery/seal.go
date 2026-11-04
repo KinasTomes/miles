@@ -292,8 +292,12 @@ func VerifyCut(ctx context.Context, objects ImmutableStore, c Catalog, target ui
 	if err := verifyCatalog(ctx, objects, c, false); err != nil {
 		return result, err
 	}
-	previous := c.Genesis.SHA256
-	for epoch := uint64(0); epoch <= target; epoch++ {
+	return verifyCutFrom(ctx, objects, c, target, 0, c.Genesis.SHA256)
+}
+func verifyCutFrom(ctx context.Context, objects ImmutableStore, c Catalog, target, start uint64, previous string) (AttachmentReference, error) {
+	var result AttachmentReference
+	for epoch := start; epoch <= target; epoch++ {
+
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
