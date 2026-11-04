@@ -128,7 +128,7 @@ func (w Retention) Publish(ctx context.Context, checkpoint AttachmentReference) 
 	if image.Snapshot.BeforeFirst {
 		return s.ErrInvalid
 	}
-	rebuilt, err := w.Rebuild(ctx, checkpoint)
+	rebuilt, err := w.rebuildImage(ctx, image)
 	if err != nil {
 		return err
 	}
@@ -318,15 +318,20 @@ func (w Retention) Select(ctx context.Context, target time.Time, bounds s.R1Boun
 	return selected, nil
 }
 
-// ProtectedRoots includes all published cuts plus their anchors, including
-// outside-window pinned cuts. No age-only deletion permission is returned.
-func (w Retention) ProtectedRoots(ctx context.Context) ([]s.PackRef, error) {
+type protectedCut struct {
+	Catalog Catalog
+	Cut     SupportedCut
+}
+
+func (w Retention) protectedCuts(ctx context.Context) ([]protectedCut, error) {
 	_, catalog, err := w.Read(ctx)
 	if err != nil {
 		return nil, err
 	}
-	set := map[s.PackRef]bool{}
-	cuts := append([]SupportedCut{}, catalog.Cuts...)
+	var cuts []protectedCut
+	for _, cut := range catalog.Cuts {
+		cuts = append(cuts, protectedCut{w.Catalog, cut})
+	}
 	current := w.Catalog
 	for depth := 0; depth < 16; depth++ {
 		image, e := (Checkpointer{Objects: w.Objects, Catalog: current}).Load(ctx, AttachmentReference{Key: genesisKey(current), Reference: current.Genesis})
@@ -345,33 +350,41 @@ func (w Retention) ProtectedRoots(ctx context.Context) ([]s.PackRef, error) {
 		if Decode(body, &prior) != nil || prior.History != inherited.History || prior.Incarnation != inherited.Incarnation || prior.Revision != inherited.Revision {
 			return nil, s.ErrInvalid
 		}
-		cuts = append(cuts, prior.Cuts...)
 		current = image.Snapshot.SourceCatalog
 		if current.Validate() != nil {
 			return nil, s.ErrInvalid
+		}
+		if current.History != prior.History || current.Incarnation != prior.Incarnation {
+			return nil, s.ErrInvalid
+		}
+		for _, cut := range prior.Cuts {
+			cuts = append(cuts, protectedCut{current, cut})
 		}
 		if depth == 15 {
 			return nil, s.ErrUnavailable
 		}
 	}
+	return cuts, nil
+}
+
+// ProtectedRoots lists exact generations for all advertised cuts, including pinned and inherited cuts.
+func (w Retention) ProtectedRoots(ctx context.Context) ([]s.PackRef, error) {
+	cuts, err := w.protectedCuts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	set := map[s.PackRef]bool{}
+
 	for _, cut := range cuts {
-		for _, r := range cut.Roots {
-			body, e := readArtifact(ctx, w.Objects, r)
-			if e != nil {
-				return nil, e
-			}
-			var p rootPage
-			if Decode(body, &p) != nil || p.Version != 1 {
-				return nil, s.ErrInvalid
-			}
-			for _, ref := range p.Packs {
-				if ref.Validate() != nil {
-					return nil, s.ErrInvalid
-				}
-				set[ref] = true
-			}
+		refs, err := w.rootRefs(ctx, cut.Cut)
+		if err != nil {
+			return nil, err
+		}
+		for ref := range refs {
+			set[ref] = true
 		}
 	}
+
 	out := make([]s.PackRef, 0, len(set))
 	for r := range set {
 		out = append(out, r)
@@ -465,4 +478,25 @@ func (w Retention) VerifyCutAfter(ctx context.Context, retired time.Time) error 
 		}
 	}
 	return s.ErrR1Busy
+}
+
+func (w Retention) rootRefs(ctx context.Context, cut SupportedCut) (map[s.PackRef]bool, error) {
+	set := map[s.PackRef]bool{}
+	for _, r := range cut.Roots {
+		body, e := readArtifact(ctx, w.Objects, r)
+		if e != nil {
+			return nil, e
+		}
+		var p rootPage
+		if Decode(body, &p) != nil || p.Version != 1 {
+			return nil, s.ErrInvalid
+		}
+		for _, ref := range p.Packs {
+			if ref.Validate() != nil || set[ref] {
+				return nil, s.ErrInvalid
+			}
+			set[ref] = true
+		}
+	}
+	return set, nil
 }
