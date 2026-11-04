@@ -30,7 +30,9 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		return resumed, err
 	}
 	var result s.CommitResult
-	err := m.update(ctx, func(t *transaction) error {
+	preparedHead := r.Head
+	preparingManifest := !r.Head.Deleted
+	build := func(t *transaction) error {
 		result = s.CommitResult{}
 
 		if m.requireProducers && r.Producer == nil {
@@ -145,7 +147,7 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		if r.Head.Size > q.Limit-used || q.Reserved-reservation.Bytes > q.Limit-used-r.Head.Size {
 			return s.ErrQuotaExceeded
 		}
-		h := r.Head
+		h := preparedHead
 		if !r.Head.Deleted {
 			sealed, err := exists(t, key("manifest-seals", h.ManifestID))
 			if err != nil {
@@ -154,11 +156,12 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 			if sealed {
 				return s.ErrConflict
 			}
-			if err := m.prepareManifest(ctx, r.Writer, &h); err != nil {
-				return err
+			if preparingManifest {
+				if err := m.prepareManifest(ctx, r.Writer, &preparedHead); err != nil {
+					return err
+				}
+				return nil
 			}
-			ownerAddress, _ := resolve(key("manifest-owner", h.ManifestID))
-			delete(t.rows, identity(ownerAddress.key))
 			owner, err := get[manifestOwner](t, key("manifest-owner", h.ManifestID))
 			if err != nil {
 				return err
@@ -266,7 +269,19 @@ func (m *Store) commit(ctx context.Context, r s.CommitRequest) (s.CommitResult, 
 		}
 		result = s.CommitResult{Head: owned.Head}
 		return nil
-	})
+	}
+	if preparingManifest {
+		// Discard every pre-scan observation. Final publication reruns the same
+		// preconditions under a fresh transaction and current R1 authority.
+		if err := m.view(ctx, build); err != nil {
+			return s.CommitResult{}, err
+		}
+		if result.AlreadyCommitted {
+			return result, nil
+		}
+		preparingManifest = false
+	}
+	err := m.update(ctx, build)
 	if err != nil {
 		return s.CommitResult{}, err
 	}
