@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/clock"
@@ -33,12 +34,15 @@ func (j *journalRuntime) once(ctx context.Context, flush bool) (err error) {
 	}
 	f, err := j.authority.Acquire(ctx, id, "recovery")
 	if err != nil {
-		return err
+		return fmt.Errorf("acquire recovery authority: %w", err)
 	}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		e := j.authority.Close(cleanup, f)
+		if e != nil {
+			e = fmt.Errorf("release recovery authority: %w", e)
+		}
 		err = errors.Join(err, e)
 	}()
 	w := recovery.Worker{Store: j.store, Payloads: j.store, Objects: j.objects, Catalog: j.catalog, Clock: j.clock, Fence: f}
@@ -61,5 +65,15 @@ func (j *journalRuntime) run(ctx context.Context) error {
 func (j *journalRuntime) flush(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(parent, 8*time.Minute)
 	defer cancel()
-	return j.once(ctx, true)
+	for {
+		err := j.once(ctx, true)
+		if !errors.Is(err, storage.ErrR1Busy) {
+			return err
+		}
+		// A peer may still own a closed epoch's seal. Keep its authority intact
+		// and retry discovery within this shutdown's original flush deadline.
+		if err := j.clock.Sleep(ctx, time.Second); err != nil {
+			return err
+		}
+	}
 }
