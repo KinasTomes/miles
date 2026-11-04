@@ -49,10 +49,27 @@ type Result struct {
 const defaultBatchBytes = 32 << 20
 const maxBatchKeys = 100
 
+type pipelineChunk struct {
+	ref    storage.ChunkRef
+	raw    []byte
+	source storage.ChunkRef
+}
+
 // Run consumes one logical object and emits ordered refs only after their
-// canonical locations have been resolved. The emitter may stream pages to a
-// backend; Run never retains all refs of a large object.
+// canonical locations have been resolved.
 func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit func(storage.ChunkRef) error) (Result, error) {
+	chunker, err := engine.NewChunker(body, domain, p.Chunking)
+	if err != nil {
+		return Result{}, err
+	}
+	return p.run(ctx, domain, func(ctx context.Context) (pipelineChunk, error) {
+		chunk, err := chunker.Next(ctx)
+		return pipelineChunk{ref: storage.ChunkRef{Key: chunk.Key, RawBytes: int64(len(chunk.Bytes)), LogicalOffset: chunk.Offset}, raw: chunk.Bytes}, err
+	}, nil, emit)
+}
+
+func (p Pipeline) run(ctx context.Context, domain string, next func(context.Context) (pipelineChunk, error),
+	load func(context.Context, storage.ChunkRef) ([]byte, error), emit func(storage.ChunkRef) error) (Result, error) {
 	if p.Lookup == nil || p.Publisher == nil || emit == nil {
 		return Result{}, storage.ErrInvalid
 	}
@@ -62,10 +79,6 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 	}
 	if limit < engine.MaxChunkBytes || limit > pack.MaxPackBytes/2 {
 		return Result{}, fmt.Errorf("%w: batch byte budget", storage.ErrInvalid)
-	}
-	chunker, err := engine.NewChunker(body, domain, p.Chunking)
-	if err != nil {
-		return Result{}, err
 	}
 	compressor, err := engine.NewCompressor(p.Compression)
 	if err != nil {
@@ -78,7 +91,7 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 	var builder *pack.Builder
 	var ref storage.PackRef
 	prior := make(map[storage.ChunkKey]storage.Chunk)
-	pendingKeys := make(map[storage.ChunkKey]struct{})
+	pendingKeys := make(map[storage.ChunkKey]int64)
 	var publishedSeq uint64
 	flush := func() error {
 		if builder == nil {
@@ -102,21 +115,21 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 		publishedSeq++
 		builder = nil
 		prior = make(map[storage.ChunkKey]storage.Chunk)
-		pendingKeys = make(map[storage.ChunkKey]struct{})
+		pendingKeys = make(map[storage.ChunkKey]int64)
 		return nil
 	}
-	var pending *engine.Chunk
+	var pending *pipelineChunk
 	for {
-		batch := make([]engine.Chunk, 0, maxBatchKeys)
-		unique := make(map[storage.ChunkKey]engine.Chunk)
+		batch := make([]pipelineChunk, 0, maxBatchKeys)
+		unique := make(map[storage.ChunkKey]pipelineChunk)
 		bytesHeld := 0
 		end := false
 		for len(batch) < maxBatchKeys {
-			var chunk engine.Chunk
+			var chunk pipelineChunk
 			if pending != nil {
 				chunk, pending = *pending, nil
 			} else {
-				chunk, err = chunker.Next(ctx)
+				chunk, err = next(ctx)
 				if errors.Is(err, io.EOF) {
 					end = true
 					break
@@ -125,14 +138,16 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 					return result, err
 				}
 			}
-			if len(batch) != 0 && bytesHeld+len(chunk.Bytes) > limit {
+			if len(batch) != 0 && bytesHeld+int(chunk.ref.RawBytes) > limit {
 				pending = &chunk
 				break
 			}
 			batch = append(batch, chunk)
-			bytesHeld += len(chunk.Bytes)
-			if _, ok := unique[chunk.Key]; !ok {
-				unique[chunk.Key] = chunk
+			bytesHeld += int(chunk.ref.RawBytes)
+			if first, ok := unique[chunk.ref.Key]; !ok {
+				unique[chunk.ref.Key] = chunk
+			} else if first.ref.RawBytes != chunk.ref.RawBytes {
+				return result, storage.ErrInvalid
 			}
 		}
 		if len(batch) == 0 {
@@ -149,8 +164,11 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 		}
 		keys := make([]storage.ChunkKey, 0, len(unique))
 		alreadyPending := make(map[storage.ChunkKey]struct{})
-		for key := range unique {
-			if _, ok := pendingKeys[key]; ok {
+		for key, chunk := range unique {
+			if rawBytes, ok := pendingKeys[key]; ok {
+				if rawBytes != chunk.ref.RawBytes {
+					return result, storage.ErrInvalid
+				}
 				alreadyPending[key] = struct{}{}
 				continue
 			}
@@ -167,7 +185,7 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 			}
 		}
 		for key, row := range rows {
-			if _, requested := unique[key]; !requested || row.Key != key || row.Validate() != nil {
+			if chunk, requested := unique[key]; !requested || row.Key != key || row.RawBytes != chunk.ref.RawBytes || row.Validate() != nil {
 				return result, fmt.Errorf("%w: invalid lookup result", storage.ErrUnavailable)
 			}
 		}
@@ -184,7 +202,17 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 					continue
 				}
 			}
-			encoded, err := compressor.Encode(chunk)
+			raw := chunk.raw
+			if load != nil {
+				raw, err = load(ctx, chunk.source)
+				if err != nil {
+					return result, err
+				}
+				if int64(len(raw)) != chunk.ref.RawBytes {
+					return result, storage.ErrInvalid
+				}
+			}
+			encoded, err := compressor.Encode(engine.Chunk{Key: key, Bytes: raw, Offset: chunk.ref.LogicalOffset})
 			if err != nil {
 				return result, err
 			}
@@ -221,7 +249,7 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 			if row, found := rows[key]; found {
 				prior[key] = row
 			}
-			pendingKeys[key] = struct{}{}
+			pendingKeys[key] = chunk.ref.RawBytes
 			if builder.Ready() {
 				if err := flush(); err != nil {
 					return result, err
@@ -230,10 +258,10 @@ func (p Pipeline) Run(ctx context.Context, body io.Reader, domain string, emit f
 		}
 		for _, chunk := range batch {
 			waitFor := publishedSeq
-			if _, ok := pendingKeys[chunk.Key]; ok {
+			if _, ok := pendingKeys[chunk.ref.Key]; ok {
 				waitFor++
 			}
-			if err := refs.Add(storage.ChunkRef{Key: chunk.Key, RawBytes: int64(len(chunk.Bytes)), LogicalOffset: chunk.Offset}, waitFor); err != nil {
+			if err := refs.Add(chunk.ref, waitFor); err != nil {
 				return result, err
 			}
 		}

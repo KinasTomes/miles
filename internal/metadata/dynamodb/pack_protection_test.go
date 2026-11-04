@@ -26,7 +26,7 @@ func (a *protectionInterleave) TransactWriteItems(ctx context.Context, r *ddb.Tr
 }
 
 func TestLocalProtectionRechecksStateAndLocationAtTransaction(t *testing.T) {
-	for _, race := range []string{"retire", "location"} {
+	for _, race := range []string{"retire", "location", "restore-expiry"} {
 		t.Run(race, func(t *testing.T) {
 			f := contracttest.NewFixture()
 			f.Packs[0].StateRevision = 1
@@ -39,8 +39,24 @@ func TestLocalProtectionRechecksStateAndLocationAtTransaction(t *testing.T) {
 			}
 			// A max-no-op STILL requires an authoritative condition at commit.
 			r := s.PackProtectionUpdate{Chunk: row, ExpectedStateRevision: 1, RequiredUntil: f.Now.Add(time.Minute), Writer: f.Lease.Fence}
+			if race == "restore-expiry" {
+				r.RestoreRequiredUntil = f.Now.Add(3 * time.Minute)
+				f.Packs[0].State, f.Packs[0].Class = "Restored", s.Glacier
+				f.Packs[0].RestoredUntil = r.RestoreRequiredUntil
+				if err := m.update(ctx, func(tx *transaction) error { return put(tx, packKey(f.Packs[0].Ref), f.Packs[0]) }); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := m.ExtendPackProtection(ctx, r); err != nil {
+					t.Fatal(err)
+				}
+			}
 			m.api = &protectionInterleave{API: m.api, before: func() {
 				if err := m.update(ctx, func(tx *transaction) error {
+					if race == "restore-expiry" {
+						p := f.Packs[0]
+						p.RestoredUntil = r.RestoreRequiredUntil.Add(-time.Nanosecond)
+						return put(tx, packKey(p.Ref), p)
+					}
 					if race == "retire" {
 						p := f.Packs[0]
 						p.State = "Retiring"

@@ -827,6 +827,19 @@ Không trả dedup/physical bytes, dù user-b là chủ bucket. Ví dụ user-b 
 
 See [storage statistics](contracts/storage-statistics.md) for the measured scope.
 `bytes_stored` is retained listed durable bytes (including noncurrent versions).
+
+For global stats, `listed_bytes_by_pack_lifecycle` and
+`listed_bytes_by_storage_class` partition the same listed bytes independently.
+A current pack or sidecar can be classified as `head_live`, `no_live_head`,
+`retired`, `orphan` or `unsettled`. The first two categories describe the
+observed generation as a whole, including its overhead. Cold generations with
+no observed live head remain in the totals. Older pack and sidecar versions
+are counted as `noncurrent`. Other objects are counted as `other`.
+`listed_known_protected_bytes` overlaps those categories. It includes current
+objects with an observed protection deadline or a supplied generation root.
+It is a lower bound from approximate observations and cannot establish GC
+eligibility. None of these fields changes bucket allocation or logical quota.
+
 Temporary restored billed bytes and revival counters without verified sources
 are null, not zero. Cached observations include timestamps, version scope,
 allocation methodology and consistency=approximate. Layout is metadata-only,

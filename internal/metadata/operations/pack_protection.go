@@ -25,8 +25,8 @@ func NextProtectedPack(row s.Chunk, p s.PackInfo, r s.PackProtectionUpdate, now 
 	if p.Version != s.ModelVersion || r.Chunk.Location.Range.Validate(p.Size) != nil {
 		return s.PackInfo{}, s.ErrInvalid
 	}
-	reusable, err := policy.WriteReuseCandidate(p.State, p.Class)
-	if err != nil || !reusable {
+	reusable, err := policy.CopyReuseCandidate(p, r.RestoreRequiredUntil)
+	if err != nil || !reusable || !r.RestoreRequiredUntil.IsZero() && !r.RestoreRequiredUntil.After(now) {
 		return s.PackInfo{}, s.ErrConflict
 	}
 	if !p.ProtectedUntil.IsZero() && (p.ProtectedUntil.UTC().Year() < 1 || p.ProtectedUntil.UTC().Year() > 9999) {
@@ -63,6 +63,9 @@ func ExtendProtection(t Tx, ctx context.Context, r s.PackProtectionUpdate, now t
 	identity := r.Chunk.Location.Pack.ID + "/" + r.Chunk.Location.Pack.Generation
 	input := r
 	input.RequiredUntil = r.RequiredUntil.UTC()
+	if !r.RestoreRequiredUntil.IsZero() {
+		input.RestoreRequiredUntil = r.RestoreRequiredUntil.UTC()
+	}
 	body, err := json.Marshal(input)
 	if err != nil {
 		return zero, s.ErrInvalid
@@ -83,7 +86,22 @@ func ExtendProtection(t Tx, ctx context.Context, r s.PackProtectionUpdate, now t
 			if json.Unmarshal(old.Value, &zero) != nil || zero.Ref != r.Chunk.Location.Pack || zero.ProtectedUntil.Before(r.RequiredUntil) {
 				return s.PackInfo{}, s.ErrUnavailable
 			}
-			return zero, nil
+			if r.RestoreRequiredUntil.IsZero() {
+				return zero, nil
+			}
+			// Copy needs fresh expiry and canonical proof even on replay.
+			row, err := get[s.Chunk](t, "chunks", r.Chunk.Key.Domain, r.Chunk.Key.Hash)
+			if err != nil {
+				return s.PackInfo{}, err
+			}
+			p, err := get[s.PackInfo](t, "packs", r.Chunk.Location.Pack.ID, r.Chunk.Location.Pack.Generation)
+			if err != nil {
+				return s.PackInfo{}, err
+			}
+			if p.ProtectedUntil.Before(r.RequiredUntil) {
+				return s.PackInfo{}, s.ErrConflict
+			}
+			return NextProtectedPack(row, p, r, now)
 		}
 		if !errors.Is(err, s.ErrNotFound) {
 			return zero, err

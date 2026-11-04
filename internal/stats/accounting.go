@@ -33,6 +33,9 @@ type Summary struct {
 	Methodology            string           `json:"allocation_methodology"`
 	VersionScope           string           `json:"physical_version_scope"`
 	PhysicalComplete       bool             `json:"physical_complete"`
+	PhysicalLifecycle      map[string]int64 `json:"listed_bytes_by_pack_lifecycle,omitempty"`
+	PhysicalClasses        map[string]int64 `json:"listed_bytes_by_storage_class,omitempty"`
+	KnownProtectedBytes    *int64           `json:"listed_known_protected_bytes,omitempty"`
 	Breakdown              map[string]int64 `json:"listed_bytes_by_category"`
 	Unallocated            *int64           `json:"unallocated_physical_bytes"`
 	TemporaryRestoredBytes *int64           `json:"temporary_restored_billed_bytes"`
@@ -72,6 +75,8 @@ type Input struct {
 	Chunks     map[s.ChunkKey]s.Chunk
 	Packs      map[s.PackRef]s.PackInfo
 	Physical   s.PhysicalInventory
+	ObservedAt time.Time
+	Protected  map[s.PackRef]bool
 }
 type Report struct {
 	Global  Summary
@@ -242,7 +247,9 @@ func Calculate(in Input) (Report, error) {
 	alloc := map[string]*big.Rat{}
 	physicalSeen := map[string]bool{}
 	packSeen := map[s.PackRef]bool{}
-	var physical int64
+	var physical, protected int64
+	r.Global.PhysicalLifecycle = map[string]int64{}
+	r.Global.PhysicalClasses = map[string]int64{}
 	for _, o := range in.Physical.Objects {
 		id := fmt.Sprintf("%d:%s%s", len(o.Key), o.Key, o.VersionID)
 		if physicalSeen[id] || o.Key == "" || o.Category == "" {
@@ -257,6 +264,37 @@ func Calculate(in Input) (Report, error) {
 			return r, s.ErrUnavailable
 		}
 		r.Global.Breakdown[o.Category] = v
+		state := "other"
+		class := o.Class
+		if class == "" {
+			class = "unknown"
+		}
+		r.Global.PhysicalClasses[string(class)] += o.Size
+		if o.Category == "pack" || o.Category == "sidecar" {
+			p, registered := in.Packs[o.Pack]
+			switch {
+			case !o.Current:
+				state = "noncurrent"
+			case !registered:
+				state = "orphan"
+			case p.State == "Retired":
+				state = "retired"
+			case len(weights[o.Pack]) != 0:
+				state = "head_live"
+			case p.State == "Warm" || p.State == "Cold" || p.State == "Restored" || p.State == "Restoring":
+				state = "no_live_head"
+			default:
+				state = "unsettled"
+			}
+			// Protection is an overlapping observation. Absence here cannot
+			// authorize deletion, and a generation pin is not a version ID.
+			if o.Current && (in.Protected[o.Pack] || registered && !in.ObservedAt.IsZero() &&
+				(p.ProtectedUntil.After(in.ObservedAt) || p.MinRetentionUntil.After(in.ObservedAt))) {
+				protected += o.Size
+			}
+		}
+		r.Global.PhysicalLifecycle[state] += o.Size
+
 		if !o.Current || o.Category != "pack" {
 			continue
 		}
@@ -296,6 +334,9 @@ func Calculate(in Input) (Report, error) {
 			return r, s.ErrUnavailable
 		}
 		r.Global.BytesStored = &physical
+		if !in.ObservedAt.IsZero() || in.Protected != nil {
+			r.Global.KnownProtectedBytes = &protected
+		}
 		unallocated := physical
 		for name, b := range r.Buckets {
 			n := int64(0)

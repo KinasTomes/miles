@@ -3,6 +3,7 @@ package write
 import (
 	"context"
 	"io"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/policy"
@@ -172,6 +173,14 @@ func (m *CoordinatedMetadata) DeleteObject(ctx context.Context, r storage.Commit
 // generation and is retained by Writer. Re-reading checks location revision;
 // this is a local no-maintenance handoff, not a distributed pin/CAS transaction.
 func (m *CoordinatedMetadata) Pin(ctx context.Context, row storage.Chunk) (bool, error) {
+	return m.pin(ctx, row, time.Time{})
+}
+
+func (m *CoordinatedMetadata) PinCopy(ctx context.Context, row storage.Chunk, restoreRequiredUntil time.Time) (bool, error) {
+	return m.pin(ctx, row, restoreRequiredUntil)
+}
+
+func (m *CoordinatedMetadata) pin(ctx context.Context, row storage.Chunk, restoreRequiredUntil time.Time) (bool, error) {
 	if row.Validate() != nil {
 		return false, storage.ErrInvalid
 	}
@@ -190,7 +199,7 @@ func (m *CoordinatedMetadata) Pin(ctx context.Context, row storage.Chunk) (bool,
 	if !ok {
 		return false, storage.ErrNotFound
 	}
-	reusable, err := policy.WriteReuseCandidate(info.State, info.Class)
+	reusable, err := policy.CopyReuseCandidate(info, restoreRequiredUntil)
 	if err != nil || !reusable {
 		return false, err
 	}
