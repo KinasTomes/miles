@@ -495,6 +495,12 @@ func get[T any](t *transaction, k string) (T, error) {
 			return out, s.ErrNotFound
 		}
 	}
+	if _, chunk := any(out).(s.Chunk); chunk && row.after[chunkRetirementAttribute] != nil {
+		if _, err := decodeChunkRetirement(row.after); err != nil {
+			return out, err
+		}
+		return out, s.ErrNotFound
+	}
 	var attr types.AttributeValue = &types.AttributeValueMemberM{Value: row.after}
 	if a.scope != "" && a.scope != "users" && a.scope != "quotas" {
 		attr = row.after[a.scope]

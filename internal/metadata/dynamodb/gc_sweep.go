@@ -2,12 +2,17 @@ package dynamodb
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"github.com/KinasTomes/miles/internal/jobs"
+	"strconv"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/lifecycle"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
+	"github.com/KinasTomes/miles/internal/recovery/format"
 	s "github.com/KinasTomes/miles/internal/storage"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 type sweepRetirement struct {
@@ -143,4 +148,102 @@ func (m *Store) RetireSweep(ctx context.Context, j jobs.Job) (out lifecycle.Acti
 		return nil
 	})
 	return
+}
+
+const chunkRetirementAttribute = "retired_location_revision"
+
+func chunkRetirementRevision(t *transaction, key s.ChunkKey) (uint64, error) {
+	address, e := resolve(chunkKey(key))
+	if e != nil {
+		return 0, e
+	}
+	row, e := t.observe(address.key)
+	if e != nil {
+		return 0, e
+	}
+	return decodeChunkRetirement(row.after)
+}
+
+func decodeChunkRetirement(item Item) (uint64, error) {
+	attribute := item[chunkRetirementAttribute]
+	if attribute == nil {
+		return 0, nil
+	}
+	n, ok := attribute.(*types.AttributeValueMemberN)
+	if !ok || n == nil {
+		return 0, s.ErrUnavailable
+	}
+	revision, e := strconv.ParseUint(n.Value, 10, 64)
+	if e != nil || revision == 0 || revision > s.MaxPolicyRevision {
+		return 0, s.ErrUnavailable
+	}
+	return revision, nil
+}
+
+// Each transaction retires one expected winner and journals its tombstone.
+// A resumed mark skips committed retirements and rechecks the remaining rows
+// while the same maintenance gate still excludes publishers and readers.
+func (m *Store) RetireCanonical(ctx context.Context, j jobs.Job, expected s.Chunk) error {
+	producer, e := m.LifecycleProducer(ctx, j)
+	if e != nil {
+		return e
+	}
+	return m.update(ctx, func(t *transaction) error {
+		if e := m.fence(t, j.Worker); e != nil {
+			return e
+		}
+		if e := m.lifecycleJob(t, j, true); e != nil {
+			return e
+		}
+		action, e := r1Read[lifecycle.Action](t, lifecycleKey(j.ID))
+		if e != nil {
+			return e
+		}
+		if action.Kind != "gc" || action.State != "Prepared" || action.Fence != j.Worker || action.Source.State != "Warm" || action.Source.Ref != expected.Location.Pack {
+			return s.ErrFenced
+		}
+		pack, e := get[s.PackInfo](t, packKey(action.Source.Ref))
+		if e != nil {
+			return e
+		}
+		if pack.State != "Warm" || pack.StateRevision != action.Source.StateRevision {
+			return s.ErrConflict
+		}
+		key := chunkKey(expected.Key)
+		current, e := get[s.Chunk](t, key)
+		if errors.Is(e, s.ErrNotFound) {
+			revision, e := chunkRetirementRevision(t, expected.Key)
+			if e != nil {
+				return e
+			}
+			if revision == expected.LocationRevision+1 {
+				return nil
+			}
+			return s.ErrConflict
+		}
+		if e != nil {
+			return e
+		}
+		if current != expected || current.LocationRevision >= s.MaxPolicyRevision {
+			return s.ErrConflict
+		}
+		revision := current.LocationRevision + 1
+		identity, e := current.Key.PartitionKey()
+		if e != nil {
+			return e
+		}
+		body, e := json.Marshal(current)
+		if e != nil {
+			return e
+		}
+		effect, e := operations.Projection("Chunks", identity, revision, nil, true)
+		if e != nil {
+			return e
+		}
+		mutation := s.ChildMutation(producer, "Chunks", identity, "location_retire")
+		if _, e = operations.Produce(multipartTx{t}, mutation, "Chunks", "location_retire", identity, revision, body, []format.Effect{effect}, nil); e != nil {
+			return e
+		}
+		return put(t, key, struct{ RetiredLocationRevision uint64 }{revision})
+	})
 }

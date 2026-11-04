@@ -274,3 +274,40 @@ func TestOpaqueRuntimeGenesisCannotEnableCheckpoint(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestCheckpointChunkRetirementAndReinsertion(t *testing.T) {
+	w, genesis := checkpointFixture(t)
+	key := s.ChunkKey{Domain: "default", Hash: strings.Repeat("a", 64)}
+	identity, e := key.PartitionKey()
+	if e != nil {
+		t.Fatal(e)
+	}
+	chunk := s.Chunk{Version: 1, Key: key, RawBytes: 4, LocationRevision: 1, Location: s.ChunkLocation{Pack: s.PackRef{ID: "pack", Generation: "old"}, Range: s.ByteRange{Length: 4}, Codec: "raw"}}
+	old, e := operations.Projection("Chunks", identity, 1, chunk, false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	retired, e := operations.Projection("Chunks", identity, 2, nil, true)
+	if e != nil {
+		t.Fatal(e)
+	}
+	chunk.Location.Pack.Generation = "new"
+	chunk.LocationRevision = 3
+	fresh, e := operations.Projection("Chunks", identity, 3, chunk, false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	previous := w.Catalog.Genesis.SHA256
+	for epoch, want := range []Effect{old, retired, fresh} {
+		seal := fixtureSeal(t, w, uint64(epoch), previous, []Effect{want})
+		previous = seal.Reference.SHA256
+		cut, e := w.Build(t.Context(), genesis, uint64(epoch))
+		if e != nil {
+			t.Fatal(e)
+		}
+		image, e := w.Load(t.Context(), cut)
+		if e != nil || image.Rows[old.Key] != want {
+			t.Fatal(epoch, image.Rows[old.Key], e)
+		}
+	}
+}

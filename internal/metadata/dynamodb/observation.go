@@ -83,6 +83,12 @@ func (m *Store) ObservePage(ctx context.Context, r s.ObservationRequest) (s.Obse
 			}
 			out.Uploads = append(out.Uploads, v)
 		case "chunks":
+			if row[chunkRetirementAttribute] != nil {
+				if _, e := decodeChunkRetirement(row); e != nil {
+					return out, e
+				}
+				continue
+			}
 			var v s.Chunk
 			if e := unmarshalNative(a, reflect.ValueOf(&v).Elem()); e != nil {
 				return out, e

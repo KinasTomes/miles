@@ -520,6 +520,11 @@ func TestRecoveryRetryUsesFrozenGenesisAfterRestoreExtension(t *testing.T) {
 	}
 }
 func TestRebuildDoesNotInstallUnreferencedCanonicalWinners(t *testing.T) {
+	t.Run("unreferenced winner", func(t *testing.T) { assertRebuildOmitsDeadCanonical(t, false) })
+	t.Run("retired winner", func(t *testing.T) { assertRebuildOmitsDeadCanonical(t, true) })
+}
+func assertRebuildOmitsDeadCanonical(t *testing.T, retire bool) {
+	t.Helper()
 	w, root, physical := liveCheckpointFixture(t)
 	image, e := w.Load(t.Context(), root)
 	if e != nil {
@@ -549,7 +554,15 @@ func TestRebuildDoesNotInstallUnreferencedCanonicalWinners(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	fixtureSeal(t, w, 1, image.Snapshot.Seal.Reference.SHA256, []Effect{effect})
+	effects := []Effect{effect}
+	if retire {
+		for key, row := range image.Rows {
+			if strings.HasPrefix(key, "Chunks/") {
+				effects = append(effects, Effect{Key: key, Revision: row.Revision + 1, Deleted: true})
+			}
+		}
+	}
+	fixtureSeal(t, w, 1, image.Snapshot.Seal.Reference.SHA256, effects)
 	next, e := w.Build(t.Context(), root, 1)
 	if e != nil {
 		t.Fatal(e)
