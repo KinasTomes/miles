@@ -242,6 +242,8 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	// this capability unavailable until an audited typed base is provisioned.
 	if _, e := (recovery.Checkpointer{Objects: journalObjects, Catalog: catalog}).Load(ctx, recovery.AttachmentReference{Key: "recovery/histories/" + catalog.History + "/genesis-" + catalog.Genesis.SHA256 + ".json", Reference: catalog.Genesis}); e == nil {
 		runner.Executors["recovery_checkpoint"] = (recovery.CheckpointWorker{Store: m, Objects: journalObjects, Packs: packs, Catalog: catalog}).Executor()
+	} else if !errors.Is(e, storage.ErrInvalid) {
+		return d, e
 	}
 	uploads := uploadJobs{store: m, objects: objects, utc: utc}
 	runner.Executors["purge_uploads"] = uploads.executor("purge_uploads")
