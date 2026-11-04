@@ -3,6 +3,7 @@ package write
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"math/big"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/KinasTomes/miles/internal/engine"
 	"github.com/KinasTomes/miles/internal/pack"
+	"github.com/KinasTomes/miles/internal/policy"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -192,5 +194,54 @@ func TestCopyChunkRevivesDestinationWithoutRelabelingSource(t *testing.T) {
 	}
 	if _, err := pub.CopyChunk(ctx, sourceRef, "destination", load); err != nil || calls != 2 {
 		t.Fatal("protected destination should skip source", calls, err)
+	}
+}
+
+func (g testGuard) PinCopy(ctx context.Context, row storage.Chunk, required time.Time) (bool, error) {
+	current, err := g.store.GetChunks(ctx, []storage.ChunkKey{row.Key}, true)
+	if err != nil || current[row.Key] != row {
+		return false, err
+	}
+	packs, err := g.store.GetPacks(ctx, []storage.PackRef{row.Location.Pack})
+	if err != nil {
+		return false, err
+	}
+	eligible, err := policy.CopyReuseCandidate(packs[row.Location.Pack], required)
+	return g.allow && eligible, err
+}
+
+func TestCopyRestoredExpiry(t *testing.T) {
+	for _, delta := range []time.Duration{-1, 0, time.Hour} {
+		t.Run(delta.String(), func(t *testing.T) {
+			pub, metadata, _ := publisherFixture(t, true)
+			ref, data, index, entries := onePack(t)
+			rows, err := pub.Publish(t.Context(), ref, data, index, entries, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := entries[0].Key
+			packs, err := metadata.GetPacks(t.Context(), []storage.PackRef{ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := packs[ref]
+			required := pub.ProtectedUntil.Add(2 * time.Minute)
+			p.State, p.Class, p.RestoredUntil = "Restored", storage.Glacier, required.Add(delta)
+			p.StateRevision++
+			metadata.SetPack(p)
+			if reused, err := pub.Reuse(t.Context(), rows[key]); reused || err != nil {
+				t.Fatal(reused, err)
+			}
+			source := storage.ChunkRef{Key: storage.ChunkKey{Domain: "source", Hash: key.Hash}, RawBytes: rows[key].RawBytes}
+			calls := 0
+			dest, err := pub.CopyChunk(t.Context(), source, key.Domain, func(context.Context) ([]byte, error) { calls++; return nil, storage.ErrCold }, required)
+			if delta < 0 {
+				if !errors.Is(err, storage.ErrCold) || calls != 1 {
+					t.Fatal(calls, err)
+				}
+			} else if err != nil || calls != 0 || dest.Key != key {
+				t.Fatal(dest, calls, err)
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package write
 
 import (
 	"context"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/engine"
 	"github.com/KinasTomes/miles/internal/pack"
@@ -12,8 +13,15 @@ import (
 // destination writer. The caller holds the source read view while load runs
 // and retains destination writer protection through manifest publication.
 // A failed publication leaves any staged generation for normal GC.
-func (p *StorePublisher) CopyChunk(ctx context.Context, source storage.ChunkRef, domain string, load func(context.Context) ([]byte, error)) (storage.ChunkRef, error) {
+func (p *StorePublisher) CopyChunk(ctx context.Context, source storage.ChunkRef, domain string, load func(context.Context) ([]byte, error), restoreRequiredUntil ...time.Time) (storage.ChunkRef, error) {
 	var zero storage.ChunkRef
+	var required time.Time
+	if len(restoreRequiredUntil) == 1 {
+		required = restoreRequiredUntil[0]
+	}
+	if len(restoreRequiredUntil) > 1 {
+		return zero, storage.ErrInvalid
+	}
 	dest := source
 	dest.Key.Domain = domain
 	if p == nil || p.Metadata == nil || p.Writer.LeaseID == "" || source.Key.Validate() != nil || dest.Key.Validate() != nil ||
@@ -28,7 +36,7 @@ func (p *StorePublisher) CopyChunk(ctx context.Context, source storage.ChunkRef,
 		if row.Key != dest.Key || row.RawBytes != dest.RawBytes {
 			return zero, storage.ErrInvalid
 		}
-		reusable, err := p.Reuse(ctx, row)
+		reusable, err := p.reuse(ctx, row, required)
 		if err != nil {
 			return zero, err
 		}
@@ -60,7 +68,7 @@ func (p *StorePublisher) CopyChunk(ctx context.Context, source storage.ChunkRef,
 	if err != nil {
 		return zero, err
 	}
-	winners, err := p.Publish(ctx, ref, data, index, entries, prior)
+	winners, err := p.publish(ctx, ref, data, index, entries, prior, required)
 	if err != nil {
 		return zero, err
 	}

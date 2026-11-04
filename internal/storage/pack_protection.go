@@ -21,11 +21,12 @@ type PackProtectionUpdate struct {
 	Chunk                 Chunk
 	ExpectedStateRevision uint64
 	RequiredUntil         time.Time // policy-evaluated conservative UTC deadline
+	RestoreRequiredUntil  time.Time `json:",omitzero"` // nonzero only for Copy with verified UTC evidence
 	Writer                WriterFence
 }
 
 func (r PackProtectionUpdate) Validate() error {
-	if r.Chunk.Validate() != nil || r.ExpectedStateRevision == 0 || r.ExpectedStateRevision > MaxPolicyRevision || r.RequiredUntil.IsZero() || r.RequiredUntil.UTC().Year() < 1 || r.RequiredUntil.UTC().Year() > 9999 {
+	if (!r.RestoreRequiredUntil.IsZero() && (r.RestoreRequiredUntil.UTC().Year() < 1 || r.RestoreRequiredUntil.UTC().Year() > 9999)) || r.Chunk.Validate() != nil || r.ExpectedStateRevision == 0 || r.ExpectedStateRevision > MaxPolicyRevision || r.RequiredUntil.IsZero() || r.RequiredUntil.UTC().Year() < 1 || r.RequiredUntil.UTC().Year() > 9999 {
 		return ErrInvalid
 	}
 	return nil
