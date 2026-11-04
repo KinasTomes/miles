@@ -468,6 +468,9 @@ func (w Checkpointer) Rebuild(ctx context.Context, root AttachmentReference) (Re
 		}
 	}
 	for key, c := range out.Chunks {
+		if !out.Live[key] {
+			continue
+		}
 		p, ok := out.Packs[c.Location.Pack]
 		if !ok || c.Location.Range.Validate(p.Size) != nil {
 			return zero, s.ErrInvalid

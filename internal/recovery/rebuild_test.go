@@ -419,6 +419,146 @@ type memoryInstaller struct {
 	finished bool
 }
 
+type interruptedInstaller struct {
+	memoryInstaller
+	interrupted bool
+}
+
+func (m *interruptedInstaller) StageIndexRecord(ctx context.Context, r s.IndexInstall, record s.IndexRecord) error {
+	if !m.interrupted {
+		m.interrupted = true
+		return crash
+	}
+	return m.memoryInstaller.StageIndexRecord(ctx, r, record)
+}
+func TestRecoveryRetryUsesFrozenGenesisAfterRestoreExtension(t *testing.T) {
+	w, root, physical := liveCheckpointFixture(t)
+	r := Retention{Checkpointer: w, Store: &memoryCatalog{}, Packs: physical}
+	if e := r.Publish(t.Context(), root); e != nil {
+		t.Fatal(e)
+	}
+	ref := s.PackRef{ID: "pack", Generation: "generation"}
+	if e := physical.ChangeStorageClass(t.Context(), ref, s.Glacier); e != nil {
+		t.Fatal(e)
+	}
+	restore := func(days int) {
+		if e := physical.Restore(t.Context(), ref, s.RestoreRequest{Days: days, Tier: "Standard"}); e != nil {
+			t.Fatal(e)
+		}
+		if e := physical.CompleteRestore(ref, time.Date(2026, 11, 4+days, 0, 0, 0, 0, time.UTC)); e != nil {
+			t.Fatal(e)
+		}
+	}
+	restore(1)
+	now := time.Date(2026, 11, 4, 1, 0, 0, 0, time.UTC)
+	request := RecoverRequest{Target: now, Bounds: s.R1Bounds{Lower: now, Upper: now, Horizon: now.Add(time.Hour)}, History: strings.Repeat("8", 32), Incarnation: strings.Repeat("9", 32)}
+	installer := &interruptedInstaller{}
+	recoverer := Recoverer{Retention: r, Installer: installer}
+	if _, e := recoverer.Recover(t.Context(), request); !errors.Is(e, crash) {
+		t.Fatal(e)
+	}
+	frozenRequest := installer.request
+	original, e := w.Objects.Read(t.Context(), "recovery/active/"+request.Incarnation+".json")
+	if e != nil {
+		t.Fatal(e)
+	}
+	restore(2)
+	if _, e = recoverer.Recover(t.Context(), request); e != nil {
+		t.Fatal(e)
+	}
+	after, e := w.Objects.Read(t.Context(), "recovery/active/"+request.Incarnation+".json")
+	if e != nil || !bytes.Equal(original, after) || !installer.finished {
+		t.Fatal(e)
+	}
+	if installer.request != frozenRequest {
+		t.Fatal("installation digest changed on retry")
+	}
+}
+func TestRebuildDoesNotInstallUnreferencedCanonicalWinners(t *testing.T) {
+	w, root, physical := liveCheckpointFixture(t)
+	image, e := w.Load(t.Context(), root)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var tombstone s.ObjectHead
+	for _, row := range image.Rows {
+		kind, _, raw, e := projection(row)
+		if e != nil {
+			t.Fatal(e)
+		}
+		if kind == "Objects" {
+			if e = json.Unmarshal(raw, &tombstone); e != nil {
+				t.Fatal(e)
+			}
+		}
+	}
+	tombstone.Revision++
+	tombstone.Deleted = true
+	tombstone.Size = 0
+	tombstone.ManifestID = ""
+	tombstone.PageCount = 0
+	tombstone.ChunkCount = 0
+	tombstone.PageIndex = nil
+	id, _ := json.Marshal(tombstone.Object)
+	effect, e := operations.Projection("Objects", string(id), tombstone.Revision, tombstone, false)
+	if e != nil {
+		t.Fatal(e)
+	}
+	fixtureSeal(t, w, 1, image.Snapshot.Seal.Reference.SHA256, []Effect{effect})
+	next, e := w.Build(t.Context(), root, 1)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = physical.DeletePack(t.Context(), s.PackRef{ID: "pack", Generation: "generation"}); e != nil {
+		t.Fatal(e)
+	}
+	rebuilt, e := w.Rebuild(t.Context(), next)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = rebuilt.VerifyPayload(t.Context(), physical); e != nil {
+		t.Fatal(e)
+	}
+	for _, record := range rebuilt.Records {
+		if record.Kind == "chunks" {
+			t.Fatal("unverified dead winner installed")
+		}
+	}
+	historical, e := w.Load(t.Context(), next)
+	if e != nil {
+		t.Fatal(e)
+	}
+	found := false
+	for key := range historical.Rows {
+		found = found || strings.HasPrefix(key, "Chunks/")
+	}
+	if !found {
+		t.Fatal("lost audit rows")
+	}
+	canonical, e := w.Build(t.Context(), AttachmentReference{Key: genesisKey(w.Catalog), Reference: w.Catalog.Genesis}, 1)
+	if e != nil {
+		t.Fatal(e)
+	}
+	retention := Retention{Checkpointer: w, Store: &memoryCatalog{}, Packs: physical}
+	if e = retention.Publish(t.Context(), canonical); e != nil {
+		t.Fatal(e)
+	}
+	now := time.Date(2026, 11, 4, 1, 0, 0, 0, time.UTC)
+	catalog, e := (Recoverer{Retention: retention, Installer: &memoryInstaller{}}).Recover(t.Context(), RecoverRequest{Target: now, Bounds: s.R1Bounds{Lower: now, Upper: now, Horizon: now.Add(time.Hour)}, History: strings.Repeat("8", 32), Incarnation: strings.Repeat("9", 32)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	normalized, e := (Checkpointer{Objects: w.Objects, Catalog: catalog}).Load(t.Context(), AttachmentReference{Key: genesisKey(catalog), Reference: catalog.Genesis})
+	if e != nil {
+		t.Fatal(e)
+	}
+	for key := range normalized.Rows {
+		if strings.HasPrefix(key, "Chunks/") {
+			t.Fatal("dead winner leaked into new history baseline")
+		}
+	}
+}
+
 func (m *memoryInstaller) BeginIndexInstall(_ context.Context, r s.IndexInstall) error {
 	m.request = r
 	return nil

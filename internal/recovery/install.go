@@ -39,6 +39,29 @@ func (w Recoverer) Recover(ctx context.Context, r RecoverRequest) (Catalog, erro
 	if w.Installer == nil || !isHex(r.History, 32) || !isHex(r.Incarnation, 32) || r.History == w.Catalog.History || r.Incarnation == w.Catalog.Incarnation {
 		return zero, s.ErrInvalid
 	}
+	if body, e := w.Objects.Read(ctx, "recovery/active/"+r.Incarnation+".json"); e == nil {
+		var frozen Catalog
+		if Decode(body, &frozen) != nil || frozen.History != r.History || frozen.Incarnation != r.Incarnation {
+			return zero, s.ErrConflict
+		}
+		image, e := (Checkpointer{Objects: w.Objects, Catalog: frozen}).Load(ctx, AttachmentReference{Key: genesisKey(frozen), Reference: frozen.Genesis})
+		if e != nil {
+			return zero, e
+		}
+		if image.Snapshot.SourceCatalog != w.Catalog || image.Snapshot.RequestedTarget != r.Target.UTC().Format(time.RFC3339Nano) {
+			return zero, s.ErrConflict
+		}
+		current, e := w.Rebuild(ctx, image.Snapshot.SourceCheckpoint)
+		if e != nil {
+			return zero, e
+		}
+		if e = current.VerifyPayload(ctx, w.Packs); e != nil {
+			return zero, e
+		}
+		return w.installFrozen(ctx, frozen, SupportedCut{Epoch: image.Snapshot.SourceTarget, Checkpoint: image.Snapshot.SourceCheckpoint})
+	} else if !errors.Is(e, s.ErrNotFound) {
+		return zero, e
+	}
 	cut, err := w.Select(ctx, r.Target, r.Bounds)
 	if err != nil {
 		return zero, err
@@ -72,7 +95,7 @@ func (w Recoverer) Recover(ctx context.Context, r RecoverRequest) (Catalog, erro
 	}
 	// A new historical root records installation normalization explicitly. It
 	// retains the original target and exact source checkpoint as provenance.
-	genesis := Snapshot{Version: 1, Mode: "normalized-genesis", History: r.History, BeforeFirst: true, Pages: []AttachmentReference{}, Dependencies: []Dependency{}, SourceCatalog: w.Catalog, SourceCheckpoint: cut.Checkpoint, SourceTarget: cut.Epoch}
+	genesis := Snapshot{Version: 1, Mode: "normalized-genesis", RequestedTarget: r.Target.UTC().Format(time.RFC3339Nano), History: r.History, BeforeFirst: true, Pages: []AttachmentReference{}, Dependencies: []Dependency{}, SourceCatalog: w.Catalog, SourceCheckpoint: cut.Checkpoint, SourceTarget: cut.Epoch}
 	inherited, _, err := w.Read(ctx)
 	if err != nil {
 		return zero, err
@@ -125,6 +148,15 @@ func (w Recoverer) Recover(ctx context.Context, r RecoverRequest) (Catalog, erro
 		}
 		if kind == "QuotaReservations" || kind == "ProducerScope" || kind == "UsersUsage" {
 			continue
+		}
+		if kind == "Chunks" && !row.Deleted {
+			var chunk s.Chunk
+			if strictJSON(value, &chunk) != nil {
+				return zero, s.ErrInvalid
+			}
+			if !rebuilt.Live[chunk.Key] {
+				continue
+			}
 		}
 		if !row.Deleted {
 			var normalized any
@@ -259,6 +291,11 @@ func (w Recoverer) Recover(ctx context.Context, r RecoverRequest) (Catalog, erro
 	if err = putVerified(ctx, w.Objects, selectedCatalogKey(catalog), encoded); err != nil {
 		return zero, err
 	}
+	return w.installFrozen(ctx, catalog, cut)
+}
+func (w Recoverer) installFrozen(ctx context.Context, catalog Catalog, cut SupportedCut) (Catalog, error) {
+	var zero Catalog
+	r := RecoverRequest{History: catalog.History, Incarnation: catalog.Incarnation}
 	// Derive installation rows from the exact new genesis, not from the old
 	// credential-active historical image or an operator-provided replacement.
 	next, err := (Checkpointer{Objects: w.Objects, Catalog: catalog}).Rebuild(ctx, AttachmentReference{Key: genesisKey(catalog), Reference: catalog.Genesis})
