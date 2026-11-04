@@ -8,8 +8,6 @@ import (
 
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/jobs"
-	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
-	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -20,11 +18,25 @@ type uploadCheckpoint struct {
 	Completed uint64 `json:"completed"`
 	Aborted   uint64 `json:"aborted"`
 	Skipped   uint64 `json:"skipped"`
+	Deferred  uint64 `json:"deferred"`
+}
+
+// uploadSweepStore is the shared metadata a sweep step reads.
+type uploadSweepStore interface {
+	GetJob(context.Context, string) (jobs.Job, error)
+	ScanUploadCandidate(context.Context, string) (*storage.MultipartUpload, string, error)
+	GetUpload(context.Context, string) (storage.MultipartUpload, error)
+}
+
+// uploadRecovery is the object service entry point of each sweep.
+type uploadRecovery interface {
+	RecoverUpload(context.Context, string) (storage.ObjectHead, error)
+	PurgeExpiredUpload(context.Context, string) (storage.MultipartUpload, error)
 }
 
 type uploadJobs struct {
-	store   *dynamodb.Store
-	objects func(context.Context, string) (*object.Service, error)
+	store   uploadSweepStore
+	objects func(context.Context, string) (uploadRecovery, error)
 	utc     storage.R1TimeSource
 }
 
@@ -53,8 +65,11 @@ func (w uploadJobs) step(ctx context.Context, j jobs.Job, kind jobs.Type) (jobs.
 		return jobs.Step{}, storage.ErrInvalid
 	}
 	settled := func(done bool, code string) (jobs.Step, error) {
+		if done && code == "" && checkpoint.Deferred > 0 {
+			code = "uploads_deferred"
+		}
 		encoded, err := json.Marshal(checkpoint)
-		return jobs.Step{Settled: true, Done: done, Checkpoint: encoded, Result: encoded, ErrorCode: code, Progress: map[string]uint64{"examined": checkpoint.Examined, "completed": checkpoint.Completed, "aborted": checkpoint.Aborted, "skipped": checkpoint.Skipped}}, err
+		return jobs.Step{Settled: true, Done: done, Checkpoint: encoded, Result: encoded, ErrorCode: code, Progress: map[string]uint64{"examined": checkpoint.Examined, "completed": checkpoint.Completed, "aborted": checkpoint.Aborted, "skipped": checkpoint.Skipped, "deferred": checkpoint.Deferred}}, err
 	}
 	// Each step bounds discovery and then checkpoints. CAS/receipts make replay
 	// safe after a crash between a completed upload and its job checkpoint.
@@ -109,11 +124,25 @@ func (w uploadJobs) step(ctx context.Context, j jobs.Job, kind jobs.Type) (jobs.
 						return jobs.Step{}, err
 					}
 					checkpoint.Skipped++
+				case "Aborting":
+					if kind == "recover_uploads" {
+						// A revoked takeover aborted it; purge_uploads closes its publishers.
+						checkpoint.Skipped++
+						break
+					}
+					fallthrough
 				default:
-					if err != nil {
+					if err == nil {
+						return jobs.Step{}, storage.ErrUnavailable
+					}
+					if retryUpload(ctx, err) {
 						return jobs.Step{}, err
 					}
-					return jobs.Step{}, storage.ErrUnavailable
+					// A failure no retry of this step can change (a corrupt frozen
+					// input) must not hold every later upload behind it. The upload
+					// keeps its state, roots and reservation; the next periodic run
+					// retries it and the job reports uploads_deferred.
+					checkpoint.Deferred++
 				}
 			}
 		}
@@ -126,4 +155,12 @@ func (w uploadJobs) step(ctx context.Context, j jobs.Job, kind jobs.Type) (jobs.
 		}
 	}
 	return settled(false, "")
+}
+
+// retryUpload reports whether the step must keep its pending marker and run
+// again: an unknown outcome, a lost fence or admission (a recovery cut) or a
+// concurrent writer may settle on the next attempt.
+func retryUpload(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || errors.Is(err, storage.ErrUnavailable) || errors.Is(err, storage.ErrFenced) || errors.Is(err, storage.ErrConflict) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
