@@ -56,3 +56,55 @@ pack acknowledgement and checks that retry neither sends another delete
 nor opens the gate. The compaction fixture holds a read pin and compares
 source and destination data after the canonical swap. Local fixtures do
 not establish live AWS timing or terminal request isolation.
+
+## Native object flow regressions
+
+`TestNativeWarmGCObjectFlows` uses real object services on separate gateway
+instances with shared DynamoDB Local tables and the S3 pack adapter against a
+versioned Moto bucket.
+
+- PUT pauses at its canonical chunk lookup while holding a writer lease.
+  GC defers, the exact pack and sidecar versions survive, and the resumed PUT
+  reuses the winner and reads back byte for byte. A separate PUT after retirement
+  writes a different generation with a higher canonical revision and reads back
+  the original payload.
+- GET pauses after preflight with the exact generation pinned. Same-domain
+  CopyObject pauses after it binds its source head, at the destination lookup.
+  A peer overwrites the source, GC defers, and compaction relocates the shared
+  chunks while the captured generation remains available. Resumed GET and the
+  copied destination match the original payload and SHA-256. A new GET reads the
+  overwritten payload.
+- After both requests release their leases, GC retires the old generation.
+  The fixture advances wall time past retention, closes and seals the epoch,
+  and publishes its checkpoint through the runtime executor. Sweep deletes the
+  old pack and sidecar versions through the S3 adapter. Version inventory and
+  GETs confirm that the current generation and copied destination survive.
+
+The fixture uses channels for request ordering, a controlled wall-clock offset
+and a test-only SDK transport wrapper for two pause points. It invokes GC and
+compaction executor steps with real claimed jobs and R1 leases. The post-retirement
+cut and checkpoint are produced against the emulators. The clock offset models
+elapsed retention time.
+
+The Compose fixtures pin DynamoDB Local 3.3.0
+(`sha256:d89f8fcc6b1a39cb35976c248ed42a28c66ae00dc043099210f5571e42648ab4`)
+and Moto 5.1.15
+(`sha256:8860b18917e1ee4d067df19a406ae95dc26037e6965d5b499e1cffd33755b914`).
+Use these commands on Linux with Go 1.27.2.
+
+```bash
+docker compose -f deploy/local/compose.yaml -p miles-gc-object up -d dynamodb s3
+export MILES_DDB_LOCAL_ENDPOINT="http://$(docker compose -f deploy/local/compose.yaml -p miles-gc-object port dynamodb 8000)"
+export MILES_RECOVERY_S3_ENDPOINT="http://$(docker compose -f deploy/local/compose.yaml -p miles-gc-object port s3 5000)"
+export MILES_DDB_LOCAL_REQUIRED=1 MILES_RECOVERY_S3_REQUIRED=1
+go vet ./internal/app
+go test -race -v ./internal/app -run '^(TestNativeWarmGCObjectFlows|TestNativeSharedCloudEdgeRuntime)$' -count=2 -timeout=5m
+docker compose -f deploy/local/compose.yaml -p miles-gc-object down
+```
+
+Local Linux results were PASS for both tests on both race runs. The app
+package completed in 60.584 seconds and `go vet ./internal/app` passed.
+
+The `dynamodb-contract` CI job runs the app package with `-race` and both
+required-endpoint flags. With either corresponding flag enabled, a missing
+endpoint fails fixture setup.
