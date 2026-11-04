@@ -447,3 +447,22 @@ func (w Retention) Prune(ctx context.Context, b s.R1Bounds) error {
 	c.Cuts = kept
 	return w.save(ctx, head, c)
 }
+
+// VerifyCutAfter confirms that published recovery support has advanced beyond
+// the source's retirement. Callers must independently check ProtectedRoots.
+func (w Retention) VerifyCutAfter(ctx context.Context, retired time.Time) error {
+	_, catalog, e := w.Read(ctx)
+	if e != nil {
+		return e
+	}
+	for _, cut := range catalog.Cuts {
+		at, e := time.Parse(time.RFC3339Nano, cut.CutAt)
+		if e != nil {
+			return s.ErrInvalid
+		}
+		if at.After(retired) {
+			return nil
+		}
+	}
+	return s.ErrR1Busy
+}

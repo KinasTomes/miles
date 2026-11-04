@@ -241,6 +241,11 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	// Opaque prototype bases cannot establish checkpoint completeness. Keep
 	// this capability unavailable until an audited typed base is provisioned.
 	if _, e := (recovery.Checkpointer{Objects: journalObjects, Catalog: catalog}).Load(ctx, recovery.AttachmentReference{Key: "recovery/histories/" + catalog.History + "/genesis-" + catalog.Genesis.SHA256 + ".json", Reference: catalog.Genesis}); e == nil {
+		retention := recovery.Retention{Store: m, Checkpointer: recovery.Checkpointer{Objects: journalObjects, Catalog: catalog}}
+		marker := &lifecycle.Marker{Store: m, Pinned: m.ObservePackPins, RecoveryRoots: retention.ProtectedRoots, MaxRecords: 10000, MaxReferences: 32768}
+		gcWorker := &lifecycle.Worker{Store: m, Packs: packs, Catalog: &lifecycle.Catalog{Store: m, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 32768}, UTC: utc, Marker: marker, Sweep: packs, VerifyCutAfter: retention.VerifyCutAfter}
+		runner.Executors["compaction"] = gcWorker.Executor("compaction")
+		runner.Executors["gc"] = gcWorker.Executor("gc")
 		runner.Executors["recovery_checkpoint"] = (recovery.CheckpointWorker{Store: m, Objects: journalObjects, Packs: packs, Catalog: catalog}).Executor()
 	} else if !errors.Is(e, storage.ErrInvalid) {
 		return d, e

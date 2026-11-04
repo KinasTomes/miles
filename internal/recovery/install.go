@@ -150,7 +150,12 @@ func (w Recoverer) Recover(ctx context.Context, r RecoverRequest) (Catalog, erro
 		if kind == "QuotaReservations" || kind == "ProducerScope" || kind == "UsersUsage" {
 			continue
 		}
-		if kind == "Chunks" && !row.Deleted {
+		if kind == "Chunks" {
+			// The replacement index has no row for a retired winner. Its new
+			// history must also allow the first insertion to start at revision 1.
+			if row.Deleted {
+				continue
+			}
 			var chunk s.Chunk
 			if strictJSON(value, &chunk) != nil {
 				return zero, s.ErrInvalid

@@ -32,7 +32,7 @@ func (a sharedJobAuthority) Acquire(ctx context.Context, id, kind string) (stora
 			if readErr != nil && !errors.Is(readErr, storage.ErrNotFound) {
 				return f, readErr
 			}
-			if readErr == nil && job.PendingStep != "" && (job.Type == "tiering" || job.Type == "pack_restore" || job.Type == "pack_promote") {
+			if readErr == nil && job.PendingStep != "" && (job.Type == "tiering" || job.Type == "pack_restore" || job.Type == "pack_promote" || job.Type == "compaction" || job.Type == "gc") {
 				if err = m.LifecycleQuiescent(ctx, id, old.Fence); err != nil {
 					return f, errors.Join(jobs.ErrReconciliation, err)
 				}

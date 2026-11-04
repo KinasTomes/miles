@@ -152,6 +152,18 @@ func nativeClusterOperations(t *testing.T, ctx context.Context, nodes []Dependen
 	if r := call(1, "GET", "/admin/v1/jobs/"+promotionJob.ID, ""); r.Code != 200 || !strings.Contains(r.Body.String(), `"source_retained":true`) {
 		t.Fatal(r.Code, r.Body)
 	}
+	// The same runtime executes Warm compaction against the promoted generation.
+	promoted := lifecycle.Destination("pack_promote", promotionJob.ID, storage.PackRef{ID: chosen.PackID, Generation: chosen.Generation})
+	compactBody, _ := json.Marshal(map[string]any{"type": "compaction", "params": lifecycle.Params{PackID: promoted.ID, Generation: promoted.Generation}})
+	compact := create(1, string(compactBody))
+	if out := wait(compact.ID); out.State != jobs.Succeeded || !strings.Contains(string(out.Result), `"source_retained":true`) {
+		t.Fatal("native runtime compaction", out)
+	}
+	gcBody, _ := json.Marshal(map[string]any{"type": "gc", "dry_run": true, "params": lifecycle.Params{PackID: promoted.ID, Generation: promoted.Generation}})
+	dryGC := create(2, string(gcBody))
+	if out := wait(dryGC.ID); out.State != jobs.Succeeded || !strings.Contains(string(out.Result), `"physical_dispatch":false`) {
+		t.Fatal("native runtime GC observation", out)
+	}
 	key := storage.CacheKey{Pack: storage.PackRef{ID: "native-cache", Generation: "generation-1"}, Range: storage.ByteRange{Length: 4}}
 	historical := nodes[0].Operations.Registry.Identity
 	historical.ID = "historical-boot"
@@ -241,8 +253,8 @@ func nativeClusterOperations(t *testing.T, ctx context.Context, nodes []Dependen
 		t.Fatal(rec.Code, rec.Body)
 	}
 	rec = call(0, "POST", "/admin/v1/jobs", `{"type":"gc"}`)
-	if rec.Code != 501 {
-		t.Fatal("unimplemented executor accepted", rec.Code, rec.Body)
+	if rec.Code != 400 {
+		t.Fatal("untargeted destructive job accepted", rec.Code, rec.Body)
 	}
 	target := nodes[2].Operations.Registry.Identity.ID
 	drained := make(chan *httptest.ResponseRecorder, 1)
