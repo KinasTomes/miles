@@ -63,7 +63,9 @@ func (m *Runtime) Snapshot(at time.Time) []Metric {
 	if !m.observed.IsZero() {
 		age = max(0, at.Sub(m.observed).Seconds())
 	}
-	out = append(out, Metric{Name: "miles_runtime_observation_age_seconds", Value: age})
+	if age >= 0 {
+		out = append(out, Metric{Name: "miles_runtime_observation_age_seconds", Value: age})
+	}
 	if age >= 0 && age < 60 {
 		for _, name := range runtimeGauges {
 			value := m.gauges[name]
@@ -87,7 +89,7 @@ func validRuntimeMetric(m Metric) bool {
 		return false
 	}
 	if m.Name == "miles_runtime_observation_age_seconds" {
-		return !m.Counter && m.Value >= -1
+		return !m.Counter && m.Value >= 0
 	}
 	for _, name := range runtimeCounters {
 		if name == m.Name {

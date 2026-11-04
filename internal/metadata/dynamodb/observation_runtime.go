@@ -29,7 +29,12 @@ func (m *Store) ObserveRuntime(ctx context.Context, history string, now time.Tim
 	if state.HistoryID != history || state.Incarnation != gate.Incarnation {
 		return out, storage.ErrFenced
 	}
-	// Before the first seal, the durable initial schedule supplies history age.
+	// A closed but unsealed first epoch advances the schedule, not recovery
+	// progress. Withhold telemetry rather than mistake that reset for a seal.
+	if state.NextToSeal == 0 && state.NextCutEpoch != 0 {
+		return out, storage.ErrUnavailable
+	}
+	// Before the first close, the durable initial schedule supplies history age.
 	cutAt := state.NextCutAt.Add(-storage.RecoveryCutInterval)
 	if state.NextToSeal > 0 {
 		epoch, e := m.GetRecoveryEpoch(ctx, history, state.NextToSeal-1)

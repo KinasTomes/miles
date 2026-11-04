@@ -22,7 +22,7 @@ existing type/state dimensions. Update metric consumers from profile-only series
 | `miles_ddb_read_units_total`, `miles_ddb_write_units_total` | Only explicit read/write breakdown fields reported by AWS. Missing fields contribute nothing; do not interpret zero as no charge or derive a read/write price from aggregate units. Cross-check native table metrics. |
 | `miles_ddb_lease_write_attempts_total` | Mutation actions targeting the physical Leases table in dispatched transactions; excludes condition checks. Attempts include failed/repeated transactions, not acknowledged lease changes. |
 | `miles_ddb_retries_total`, `miles_ddb_throttles_total` | Explicit adapter read/CAS/unprocessed-batch retries, and SDK throttling responses including transaction cancellation reasons. No object/user/table IDs are labels. |
-| `miles_recovery_cut_age_seconds` | Age of the durable latest **Sealed** epoch's CutAt. Before the first seal, age from the initial durable hourly schedule. Successful export alone never resets it. |
+| `miles_recovery_cut_age_seconds` | Age of the durable latest **Sealed** epoch's CutAt. Before the first close, age from the initial durable hourly schedule. A first Closed-but-unsealed epoch makes telemetry unavailable; its advanced schedule cannot reset cut age. Successful export alone never resets it. |
 | `miles_journal_export_lag_seconds` | Age of the oldest currently unexported event found by bounded base scan for this history;0 when a complete observation finds none. Approximate live discovery, not exact closure. |
 | `miles_r1_gate_closed_seconds` | Current RecoveryCut duration from its durable StartedAt; for other closed gates, time since this process first observed closure. Open gate is0. Sampling can miss short gates; record controlled GC/cut timelines for complete duration distributions. |
 | `miles_stuck_completing_uploads` | Completing uploads whose LeaseUntil has expired at observation. A signal to inspect/reconcile, never permission to abort or reclaim roots. |
@@ -157,8 +157,8 @@ sparse error deltas use Sum and missing=notBreaching. Default alarm actions are
 empty (state only); supply existing SNS topic ARNs for notifications. No alarm
 performs automatic data cleanup or instance replacement. Pause removes the alarms.
 
-The pre-first-refresh observation age is-1; absent gauges/freshness missing-data
-handling make startup/collector failure visible. Shared gauges are observations,
+Before the first successful refresh, freshness and state gauges are absent;
+missing-data handling makes startup/collector failure visible. Shared gauges are observations,
 never cluster sums. Capture both ALARM and recovery to OK with isolated synthetic
 inputs, exact dimensions and release hashes. `SetAlarmState` alone is not proof of
 threshold evaluation. Do not inject corrupt data or throttle a shared environment.

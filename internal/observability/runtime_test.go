@@ -122,6 +122,11 @@ func TestHTTPBodyCountersMeasureConsumedBytesAndStreaming(t *testing.T) {
 
 func TestRuntimeStaleGaugesAndScrapeNoIO(t *testing.T) {
 	m := new(Runtime)
+	for _, sample := range m.Snapshot(time.Now()) {
+		if sample.Name == "miles_runtime_observation_age_seconds" {
+			t.Fatal("unknown initial freshness must remain absent for missing-data alarm")
+		}
+	}
 	now := time.Now()
 	m.Observe(now, 3700, 120, 70, 1)
 	h := NewHealth(nil, nil, false)

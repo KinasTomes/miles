@@ -3,6 +3,8 @@ package observability
 import (
 	"io"
 	"net/http"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
 )
 
 type bodyCounter struct {
@@ -15,18 +17,12 @@ func (b bodyCounter) Read(p []byte) (int, error) { n, e := b.ReadCloser.Read(p);
 // CountHTTPClient counts bytes consumed by the transport/caller, including partial
 // errors. It preserves the client's TLS, redirect and proxy policies. These are
 // HTTP body bytes, excluding headers, TLS and TCP overhead, not wire/billed bytes.
-func CountHTTPClient(client interface {
-	Do(*http.Request) (*http.Response, error)
-}, sent, received func(int)) interface {
-	Do(*http.Request) (*http.Response, error)
-} {
+func CountHTTPClient(client aws.HTTPClient, sent, received func(int)) aws.HTTPClient {
 	return countingClient{client, sent, received}
 }
 
 type countingClient struct {
-	client interface {
-		Do(*http.Request) (*http.Response, error)
-	}
+	client         aws.HTTPClient
 	sent, received func(int)
 }
 
@@ -41,11 +37,7 @@ func (c countingClient) Do(r *http.Request) (*http.Response, error) {
 	}
 	return out, e
 }
-func (m *Runtime) HTTPClient(client interface {
-	Do(*http.Request) (*http.Response, error)
-}, metadata bool) interface {
-	Do(*http.Request) (*http.Response, error)
-} {
+func (m *Runtime) HTTPClient(client aws.HTTPClient, metadata bool) aws.HTTPClient {
 	request, response := "miles_gateway_s3_request_body_bytes_total", "miles_gateway_s3_response_body_bytes_total"
 	if metadata {
 		request, response = "miles_metadata_request_body_bytes_total", "miles_metadata_response_body_bytes_total"

@@ -66,3 +66,15 @@ func TestLocalRuntimeObservationUsesSealedCut(t *testing.T) {
 		t.Fatal("cut observation does not follow sealed publication", sample, epoch, err)
 	}
 }
+
+func TestLocalRuntimeObservationDoesNotResetAgeAtUnsealedClose(t *testing.T) {
+	f := newRecoveryFixture(t)
+	f.utc.Advance(10 * time.Second)
+	epoch := closeRecovery(t, f.m, f.request(0))
+	if epoch.State != "Closed" {
+		t.Fatal(epoch.State)
+	}
+	if _, err := f.m.ObserveRuntime(t.Context(), f.catalog.History, f.utc.Now()); err != storage.ErrUnavailable {
+		t.Fatal("advanced cadence was treated as a sealed cut", err)
+	}
+}
