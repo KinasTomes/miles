@@ -1,7 +1,7 @@
 # Checkpoint, rebuild and retained recovery cuts
 
 W05-PHONG-03. Baseline `b3af419`, checked 2026-11-04. The supplied backlog
-snapshot lists W04-HAI-02, W04-HUNG-04, W05-HUNG-02 and W05-PHONG-02 as Hard
+snapshot lists W04-HAI-02, W04-PHONG-04, W05-HUNG-02 and W05-PHONG-02 as Hard
 Done. PR #61 is merged in this baseline. This change does not update task status.
 
 ## Implementation mapping
@@ -140,3 +140,26 @@ Recorded results:
 - `9095f16`: recovery race suite and recovery vet passed after the attachment
   materialization bound. New native install tests use modeled persistent isolation
   and an S3 service seam; separate existing runtime tests use the real SDK on Moto.
+
+## Long-history checkpoint review evidence
+
+At 720 sealed epochs (at least 720 events; quota updates plus the initial live
+manifest/receipt fixture), the opt-in test measures the full Build/Load/Publish
+path with 1 ms injected per immutable-object read. Windows, Go 1.27.2 local run:
+
+- Incremental build: 10,832 reads, 17.544 seconds.
+- Loading the result: 3,611 additional reads.
+- Publication, including independent re-derivation: 23,104 reads.
+- Whole measured sequence, including a genesis-based candidate for initial
+  publication: 49,810 reads, 24,797,519 returned bytes, 80.519 seconds. PASS under
+  the 480-second step budget.
+
+Reproduce with `MILES_CHECKPOINT_SCALE=1 go test ./internal/recovery -run
+'^TestCheckpointLongHistoryReadBudget$' -count=1 -timeout=10m -v`. Ordinary CI
+skips this latency experiment. This is an artifact-store latency model, not an
+AWS benchmark: most epochs have one small event without binary attachments.
+The measurement exposes the remaining linear full-prefix read cost. At 10 ms
+per sequential read the measured whole sequence alone would exceed 480 seconds;
+this result does not establish a universal long-history/S3 step-time guarantee.
+Larger histories, attachment-heavy workloads and higher-latency deployments
+require separate measurement or checkpoint-anchored validation before rollout.
