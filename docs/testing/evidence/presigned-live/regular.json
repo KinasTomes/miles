@@ -1,0 +1,1167 @@
+{
+  "resource_prefix": "acceptance-2a41c7e65798",
+  "passed": true,
+  "timeout_seconds": 180,
+  "cases": [
+    {
+      "case": "create bucket",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 1320,
+      "first_byte_ms": 1320,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "presigned special-path PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 1451,
+      "first_byte_ms": 1451,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "presigned special-path GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 502,
+      "first_byte_ms": 502,
+      "bytes": 27,
+      "sha256": "85439531101a2011c11399bb9088810c03c23511c56ba44ed08568acbdeeea52"
+    },
+    {
+      "case": "HEAD metadata",
+      "endpoint": "cloud",
+      "method": "HEAD",
+      "status": 200,
+      "elapsed_ms": 48,
+      "first_byte_ms": 48,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "Range",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 206,
+      "elapsed_ms": 412,
+      "first_byte_ms": 412,
+      "bytes": 7,
+      "sha256": "5d1c87d3cdbcb914d520f74970b1e407748ed779ac18449e25e49b8a49893ffc"
+    },
+    {
+      "case": "presigned special-path PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 924,
+      "first_byte_ms": 924,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "presigned special-path GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 354,
+      "first_byte_ms": 354,
+      "bytes": 27,
+      "sha256": "85439531101a2011c11399bb9088810c03c23511c56ba44ed08568acbdeeea52"
+    },
+    {
+      "case": "HEAD metadata",
+      "endpoint": "cloud",
+      "method": "HEAD",
+      "status": 200,
+      "elapsed_ms": 25,
+      "first_byte_ms": 24,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "Range",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 206,
+      "elapsed_ms": 355,
+      "first_byte_ms": 355,
+      "bytes": 7,
+      "sha256": "5d1c87d3cdbcb914d520f74970b1e407748ed779ac18449e25e49b8a49893ffc"
+    },
+    {
+      "case": "presigned special-path PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 880,
+      "first_byte_ms": 880,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "presigned special-path GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 348,
+      "first_byte_ms": 348,
+      "bytes": 27,
+      "sha256": "85439531101a2011c11399bb9088810c03c23511c56ba44ed08568acbdeeea52"
+    },
+    {
+      "case": "HEAD metadata",
+      "endpoint": "cloud",
+      "method": "HEAD",
+      "status": 200,
+      "elapsed_ms": 36,
+      "first_byte_ms": 36,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "Range",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 206,
+      "elapsed_ms": 323,
+      "first_byte_ms": 323,
+      "bytes": 7,
+      "sha256": "5d1c87d3cdbcb914d520f74970b1e407748ed779ac18449e25e49b8a49893ffc"
+    },
+    {
+      "case": "presigned special-path PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 849,
+      "first_byte_ms": 849,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "presigned special-path GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 383,
+      "first_byte_ms": 383,
+      "bytes": 27,
+      "sha256": "85439531101a2011c11399bb9088810c03c23511c56ba44ed08568acbdeeea52"
+    },
+    {
+      "case": "HEAD metadata",
+      "endpoint": "cloud",
+      "method": "HEAD",
+      "status": 200,
+      "elapsed_ms": 20,
+      "first_byte_ms": 20,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "Range",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 206,
+      "elapsed_ms": 317,
+      "first_byte_ms": 317,
+      "bytes": 7,
+      "sha256": "5d1c87d3cdbcb914d520f74970b1e407748ed779ac18449e25e49b8a49893ffc"
+    },
+    {
+      "case": "CopyObject",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 1003,
+      "first_byte_ms": 1002,
+      "bytes": 184,
+      "sha256": "f8ca8c6239ad03b815e9e6dbde5175609b10c3143946d35c80a193a5b7f63f18"
+    },
+    {
+      "case": "copy read-back",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 327,
+      "first_byte_ms": 327,
+      "bytes": 27,
+      "sha256": "85439531101a2011c11399bb9088810c03c23511c56ba44ed08568acbdeeea52"
+    },
+    {
+      "case": "DeleteObject",
+      "endpoint": "cloud",
+      "method": "DELETE",
+      "status": 204,
+      "elapsed_ms": 449,
+      "first_byte_ms": 449,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "missing GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 404,
+      "elapsed_ms": 102,
+      "first_byte_ms": 102,
+      "bytes": 236,
+      "sha256": "a0aaa5628136b1272e3fcd4a6f78e794b81a29e3d210ae9708c765b43c449a89"
+    },
+    {
+      "case": "missing HEAD",
+      "endpoint": "cloud",
+      "method": "HEAD",
+      "status": 404,
+      "elapsed_ms": 25,
+      "first_byte_ms": 25,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "signed query checksum",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 400,
+      "elapsed_ms": 304,
+      "first_byte_ms": 304,
+      "bytes": 206,
+      "sha256": "491a2a6372f9fc65c40c1b4264651cb3fc6c6bbc468458a5065b21a9d6a84442"
+    },
+    {
+      "case": "bad checksum not published",
+      "endpoint": "cloud",
+      "method": "HEAD",
+      "status": 404,
+      "elapsed_ms": 26,
+      "first_byte_ms": 26,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "batch fixture PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 800,
+      "first_byte_ms": 800,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "batch fixture PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 813,
+      "first_byte_ms": 813,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "DeleteObjects",
+      "endpoint": "cloud",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 773,
+      "first_byte_ms": 773,
+      "bytes": 142,
+      "sha256": "7a67dfa20fcfe091514f2ccb0af41b120c24f64628acbe4f50937d9c6efa7ecb"
+    },
+    {
+      "case": "batch deletion visible",
+      "endpoint": "cloud",
+      "method": "HEAD",
+      "status": 404,
+      "elapsed_ms": 27,
+      "first_byte_ms": 27,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "CreateMultipartUpload",
+      "endpoint": "cloud",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 218,
+      "first_byte_ms": 217,
+      "bytes": 221,
+      "sha256": "0959f99090a23bc614d5fb205752629738e0fc4c2c335a0ef460cd8656ea97a3"
+    },
+    {
+      "case": "UploadPart",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 1230,
+      "first_byte_ms": 1230,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "ListParts",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 36,
+      "first_byte_ms": 36,
+      "bytes": 745,
+      "sha256": "5e7b3c1571a2a914c4b8e9b3adfd6b03c1676a17b165a5881d26889d8dad750d"
+    },
+    {
+      "case": "CompleteMultipartUpload",
+      "endpoint": "cloud",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 932,
+      "first_byte_ms": 932,
+      "bytes": 404,
+      "sha256": "da9d07d2523f056773916ac069976ad9b01761c74eb309d5b37a33680aa11e6d"
+    },
+    {
+      "case": "multipart read-back",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 386,
+      "first_byte_ms": 386,
+      "bytes": 28,
+      "sha256": "4d976c4255e00a0bc07d7097b7d6ca96836e5d563bea7085c887337518e2f581"
+    },
+    {
+      "case": "abort fixture create",
+      "endpoint": "cloud",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 215,
+      "first_byte_ms": 214,
+      "bytes": 217,
+      "sha256": "a6f6f1ece893306cc3c8af2ee50ae5d919532a2a05650076368c744f33088cc2"
+    },
+    {
+      "case": "AbortMultipartUpload",
+      "endpoint": "cloud",
+      "method": "DELETE",
+      "status": 204,
+      "elapsed_ms": 211,
+      "first_byte_ms": 211,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "aborted upload unavailable",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 404,
+      "elapsed_ms": 12,
+      "first_byte_ms": 12,
+      "bytes": 173,
+      "sha256": "1874f8b008b1108a1d1dfee30b5fda94afeb14cd1dfb7a94498b4956f5267526"
+    },
+    {
+      "case": "before credential revoke PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 1129,
+      "first_byte_ms": 1129,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "before credential revoke GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 398,
+      "first_byte_ms": 398,
+      "bytes": 30,
+      "sha256": "941a2a0e699c27cfbbe7ff70506b0445b6df3d79c6bec890bec4ef30c06d9198"
+    },
+    {
+      "case": "replayed URL after credential revoke GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 20,
+      "first_byte_ms": 20,
+      "bytes": 204,
+      "sha256": "3620c2dc3bf2cb496554ec8e5a5795557a42c69696ed53258bfa77d0260c33cb"
+    },
+    {
+      "case": "replayed URL after credential revoke PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 403,
+      "elapsed_ms": 22,
+      "first_byte_ms": 22,
+      "bytes": 204,
+      "sha256": "685638d13ad93083552b42fb92044f8f64fb84d07de791cf7d6e56536b64872b"
+    },
+    {
+      "case": "before grant revoke PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 769,
+      "first_byte_ms": 769,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "before grant revoke GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 366,
+      "first_byte_ms": 366,
+      "bytes": 30,
+      "sha256": "941a2a0e699c27cfbbe7ff70506b0445b6df3d79c6bec890bec4ef30c06d9198"
+    },
+    {
+      "case": "replayed URL after grant revoke GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 14,
+      "first_byte_ms": 14,
+      "bytes": 150,
+      "sha256": "71774a3f312e3b41b7dd415e73d40257464d5899297ec77e2e633bb803ce609d"
+    },
+    {
+      "case": "replayed URL after grant revoke PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 403,
+      "elapsed_ms": 18,
+      "first_byte_ms": 18,
+      "bytes": 150,
+      "sha256": "8a2123f1410b67bfcfad671904354dc113f836ff86d32f9bce93819b81245fb3"
+    },
+    {
+      "case": "before user revoke PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 747,
+      "first_byte_ms": 747,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "before user revoke GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 363,
+      "first_byte_ms": 363,
+      "bytes": 30,
+      "sha256": "941a2a0e699c27cfbbe7ff70506b0445b6df3d79c6bec890bec4ef30c06d9198"
+    },
+    {
+      "case": "replayed URL after user revoke GET",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 14,
+      "first_byte_ms": 14,
+      "bytes": 150,
+      "sha256": "0bc03d65c4b210435606ca377670182f2771723a25cd41b9338cafdeaa90c120"
+    },
+    {
+      "case": "replayed URL after user revoke PUT",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 403,
+      "elapsed_ms": 13,
+      "first_byte_ms": 13,
+      "bytes": 150,
+      "sha256": "9224a5b3fdf08745d0fb854b214449d58c3971560700ab2941370dff9d5b2956"
+    },
+    {
+      "case": "CreateMultipartUpload",
+      "endpoint": "cloud",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 256,
+      "first_byte_ms": 256,
+      "bytes": 222,
+      "sha256": "58079ff072a22391e26b9698ce863f28e636e65782ef70121cd3274b396a442d"
+    },
+    {
+      "case": "cross-user UploadPart denied",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 403,
+      "elapsed_ms": 20,
+      "first_byte_ms": 20,
+      "bytes": 150,
+      "sha256": "f29bea881f43c1498999cdc8823462c282215eb3b5a392867a4ef2a11df1de80"
+    },
+    {
+      "case": "write-only ListParts denied",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 7,
+      "first_byte_ms": 7,
+      "bytes": 150,
+      "sha256": "feb88c5e1dc637cbd7c26f33940f321c6524f80593a38cfa2512350dd1e7c6f9"
+    },
+    {
+      "case": "UploadPart",
+      "endpoint": "cloud",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 989,
+      "first_byte_ms": 989,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "cross-user Complete denied",
+      "endpoint": "cloud",
+      "method": "POST",
+      "status": 403,
+      "elapsed_ms": 22,
+      "first_byte_ms": 22,
+      "bytes": 150,
+      "sha256": "b0db097cd41d2b3ad4f90a3a057dbf7767c1b9ca0fca0ec2879fd6d9ae744d6e"
+    },
+    {
+      "case": "CompleteMultipartUpload",
+      "endpoint": "cloud",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 1500,
+      "first_byte_ms": 1500,
+      "bytes": 406,
+      "sha256": "7161238d52c61f6cf7dcc26e7bcaa3b1327d6bd05940cac6b82fd095722ea9b9"
+    },
+    {
+      "case": "write-only GET denied",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 9,
+      "first_byte_ms": 9,
+      "bytes": 150,
+      "sha256": "9dbfb3b155496b0fcf411968517fac8d35112649e9d5c110deb038fcf5cd3c45"
+    },
+    {
+      "case": "multipart read-back",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 404,
+      "first_byte_ms": 404,
+      "bytes": 28,
+      "sha256": "4d976c4255e00a0bc07d7097b7d6ca96836e5d563bea7085c887337518e2f581"
+    },
+    {
+      "case": "write-only HEAD error",
+      "endpoint": "cloud",
+      "method": "HEAD",
+      "status": 403,
+      "elapsed_ms": 7,
+      "first_byte_ms": 7,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "revoked bearer did not elevate data grant",
+      "endpoint": "cloud",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 53,
+      "first_byte_ms": 53,
+      "bytes": 150,
+      "sha256": "485a11855fc4ccae62fb906a445a46aea675ce37674d1e70e7708db02e7e40b0"
+    },
+    {
+      "case": "create bucket",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 165,
+      "first_byte_ms": 165,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "presigned special-path PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 1123,
+      "first_byte_ms": 1122,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "presigned special-path GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 344,
+      "first_byte_ms": 344,
+      "bytes": 27,
+      "sha256": "85439531101a2011c11399bb9088810c03c23511c56ba44ed08568acbdeeea52"
+    },
+    {
+      "case": "HEAD metadata",
+      "endpoint": "edge",
+      "method": "HEAD",
+      "status": 200,
+      "elapsed_ms": 52,
+      "first_byte_ms": 52,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "Range",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 206,
+      "elapsed_ms": 356,
+      "first_byte_ms": 356,
+      "bytes": 7,
+      "sha256": "5d1c87d3cdbcb914d520f74970b1e407748ed779ac18449e25e49b8a49893ffc"
+    },
+    {
+      "case": "presigned special-path PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 809,
+      "first_byte_ms": 809,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "presigned special-path GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 327,
+      "first_byte_ms": 327,
+      "bytes": 27,
+      "sha256": "85439531101a2011c11399bb9088810c03c23511c56ba44ed08568acbdeeea52"
+    },
+    {
+      "case": "HEAD metadata",
+      "endpoint": "edge",
+      "method": "HEAD",
+      "status": 200,
+      "elapsed_ms": 23,
+      "first_byte_ms": 23,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "Range",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 206,
+      "elapsed_ms": 335,
+      "first_byte_ms": 335,
+      "bytes": 7,
+      "sha256": "5d1c87d3cdbcb914d520f74970b1e407748ed779ac18449e25e49b8a49893ffc"
+    },
+    {
+      "case": "presigned special-path PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 767,
+      "first_byte_ms": 767,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "presigned special-path GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 325,
+      "first_byte_ms": 325,
+      "bytes": 27,
+      "sha256": "85439531101a2011c11399bb9088810c03c23511c56ba44ed08568acbdeeea52"
+    },
+    {
+      "case": "HEAD metadata",
+      "endpoint": "edge",
+      "method": "HEAD",
+      "status": 200,
+      "elapsed_ms": 23,
+      "first_byte_ms": 23,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "Range",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 206,
+      "elapsed_ms": 326,
+      "first_byte_ms": 326,
+      "bytes": 7,
+      "sha256": "5d1c87d3cdbcb914d520f74970b1e407748ed779ac18449e25e49b8a49893ffc"
+    },
+    {
+      "case": "presigned special-path PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 785,
+      "first_byte_ms": 785,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "presigned special-path GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 357,
+      "first_byte_ms": 356,
+      "bytes": 27,
+      "sha256": "85439531101a2011c11399bb9088810c03c23511c56ba44ed08568acbdeeea52"
+    },
+    {
+      "case": "HEAD metadata",
+      "endpoint": "edge",
+      "method": "HEAD",
+      "status": 200,
+      "elapsed_ms": 19,
+      "first_byte_ms": 19,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "Range",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 206,
+      "elapsed_ms": 328,
+      "first_byte_ms": 328,
+      "bytes": 7,
+      "sha256": "5d1c87d3cdbcb914d520f74970b1e407748ed779ac18449e25e49b8a49893ffc"
+    },
+    {
+      "case": "CopyObject",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 927,
+      "first_byte_ms": 927,
+      "bytes": 184,
+      "sha256": "9a8f581f626fa37d311816937ff884759ae1b5757fc6338e5c33ca36f93fda2c"
+    },
+    {
+      "case": "copy read-back",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 362,
+      "first_byte_ms": 362,
+      "bytes": 27,
+      "sha256": "85439531101a2011c11399bb9088810c03c23511c56ba44ed08568acbdeeea52"
+    },
+    {
+      "case": "DeleteObject",
+      "endpoint": "edge",
+      "method": "DELETE",
+      "status": 204,
+      "elapsed_ms": 417,
+      "first_byte_ms": 417,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "missing GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 404,
+      "elapsed_ms": 102,
+      "first_byte_ms": 102,
+      "bytes": 235,
+      "sha256": "8f4994068944344cd3bf1ee652d54e11331e691cc6842fcd3201ba49df2e2779"
+    },
+    {
+      "case": "missing HEAD",
+      "endpoint": "edge",
+      "method": "HEAD",
+      "status": 404,
+      "elapsed_ms": 22,
+      "first_byte_ms": 22,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "signed query checksum",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 400,
+      "elapsed_ms": 341,
+      "first_byte_ms": 341,
+      "bytes": 206,
+      "sha256": "7bdcb1ff88706aa15deb6e5c72ca3696b6d87db54e40065f9c405600ee078d8d"
+    },
+    {
+      "case": "bad checksum not published",
+      "endpoint": "edge",
+      "method": "HEAD",
+      "status": 404,
+      "elapsed_ms": 37,
+      "first_byte_ms": 37,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "batch fixture PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 927,
+      "first_byte_ms": 927,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "batch fixture PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 816,
+      "first_byte_ms": 816,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "DeleteObjects",
+      "endpoint": "edge",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 773,
+      "first_byte_ms": 772,
+      "bytes": 142,
+      "sha256": "7a67dfa20fcfe091514f2ccb0af41b120c24f64628acbe4f50937d9c6efa7ecb"
+    },
+    {
+      "case": "batch deletion visible",
+      "endpoint": "edge",
+      "method": "HEAD",
+      "status": 404,
+      "elapsed_ms": 26,
+      "first_byte_ms": 26,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "CreateMultipartUpload",
+      "endpoint": "edge",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 207,
+      "first_byte_ms": 207,
+      "bytes": 220,
+      "sha256": "74b17b780edb8e9dd67ce4b1c131395b4e82a5d553835623157f1c9e2aa4f7c4"
+    },
+    {
+      "case": "UploadPart",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 996,
+      "first_byte_ms": 996,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "ListParts",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 21,
+      "first_byte_ms": 21,
+      "bytes": 742,
+      "sha256": "8ae07b43a1ad2a0369b8fd430c2496274624a8dddcfacca0e62d97f351136e79"
+    },
+    {
+      "case": "CompleteMultipartUpload",
+      "endpoint": "edge",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 850,
+      "first_byte_ms": 850,
+      "bytes": 401,
+      "sha256": "c708b80f89f9de5f753622c5a1a37bd19566b9df151022dc5a2a13c51013cf84"
+    },
+    {
+      "case": "multipart read-back",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 324,
+      "first_byte_ms": 324,
+      "bytes": 28,
+      "sha256": "4d976c4255e00a0bc07d7097b7d6ca96836e5d563bea7085c887337518e2f581"
+    },
+    {
+      "case": "abort fixture create",
+      "endpoint": "edge",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 208,
+      "first_byte_ms": 207,
+      "bytes": 216,
+      "sha256": "debeb60eda7ac8727abbe9058f70ab486ec8d459edcfc7e739dff721495e2596"
+    },
+    {
+      "case": "AbortMultipartUpload",
+      "endpoint": "edge",
+      "method": "DELETE",
+      "status": 204,
+      "elapsed_ms": 209,
+      "first_byte_ms": 209,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "aborted upload unavailable",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 404,
+      "elapsed_ms": 12,
+      "first_byte_ms": 12,
+      "bytes": 173,
+      "sha256": "f8ba66f45757578af5099f2013347ecb0fa2e15e3253e01a9d19da90b32cf192"
+    },
+    {
+      "case": "before credential revoke PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 1089,
+      "first_byte_ms": 1089,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "before credential revoke GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 325,
+      "first_byte_ms": 325,
+      "bytes": 30,
+      "sha256": "941a2a0e699c27cfbbe7ff70506b0445b6df3d79c6bec890bec4ef30c06d9198"
+    },
+    {
+      "case": "replayed URL after credential revoke GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 6,
+      "first_byte_ms": 6,
+      "bytes": 204,
+      "sha256": "f0075aaa4ddbfe70cd6df885a245e2bae5630470d1f02862bb24b78867799ba0"
+    },
+    {
+      "case": "replayed URL after credential revoke PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 403,
+      "elapsed_ms": 6,
+      "first_byte_ms": 6,
+      "bytes": 204,
+      "sha256": "4b71cc60e24a944a895f1c14fb700e7a23d7bd390d9e4e6a825f87cf692fb99a"
+    },
+    {
+      "case": "before grant revoke PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 850,
+      "first_byte_ms": 850,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "before grant revoke GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 318,
+      "first_byte_ms": 318,
+      "bytes": 30,
+      "sha256": "941a2a0e699c27cfbbe7ff70506b0445b6df3d79c6bec890bec4ef30c06d9198"
+    },
+    {
+      "case": "replayed URL after grant revoke GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 40,
+      "first_byte_ms": 39,
+      "bytes": 150,
+      "sha256": "ec99b29ce5028cbc310878abde39041ee0b375fdfc546e70f955c1ba8a0ba6d9"
+    },
+    {
+      "case": "replayed URL after grant revoke PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 403,
+      "elapsed_ms": 6,
+      "first_byte_ms": 6,
+      "bytes": 150,
+      "sha256": "1c5efe4e80f25b444db0dd1968dc2d9c6a5ecd434e9b7d0171cb5f58ee0177ff"
+    },
+    {
+      "case": "before user revoke PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 800,
+      "first_byte_ms": 800,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "before user revoke GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 339,
+      "first_byte_ms": 339,
+      "bytes": 30,
+      "sha256": "941a2a0e699c27cfbbe7ff70506b0445b6df3d79c6bec890bec4ef30c06d9198"
+    },
+    {
+      "case": "replayed URL after user revoke GET",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 10,
+      "first_byte_ms": 10,
+      "bytes": 150,
+      "sha256": "ad27f8667cc1be7b859cb195c5f62cad8ac561bc12263badc1cf90427fedf6c4"
+    },
+    {
+      "case": "replayed URL after user revoke PUT",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 403,
+      "elapsed_ms": 10,
+      "first_byte_ms": 10,
+      "bytes": 150,
+      "sha256": "ea7cd8c093197c4f33e8e6b4da9b52bd6d5092afef3747ea3b2dcb59cf359f9e"
+    },
+    {
+      "case": "CreateMultipartUpload",
+      "endpoint": "edge",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 230,
+      "first_byte_ms": 230,
+      "bytes": 221,
+      "sha256": "1f26532362a421d4bdf1539b38a26c425449ddb9f0fb8934b94ed86c12348868"
+    },
+    {
+      "case": "cross-user UploadPart denied",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 403,
+      "elapsed_ms": 19,
+      "first_byte_ms": 19,
+      "bytes": 150,
+      "sha256": "0f4a193036dd1dd322cae802018594ad2e4bae164142ba7b56a7f29860846043"
+    },
+    {
+      "case": "write-only ListParts denied",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 6,
+      "first_byte_ms": 6,
+      "bytes": 150,
+      "sha256": "3595f7359cf9401a9c13f46c78cc2d4267a9380763fb180db79b096afe2a2c50"
+    },
+    {
+      "case": "UploadPart",
+      "endpoint": "edge",
+      "method": "PUT",
+      "status": 200,
+      "elapsed_ms": 766,
+      "first_byte_ms": 766,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "cross-user Complete denied",
+      "endpoint": "edge",
+      "method": "POST",
+      "status": 403,
+      "elapsed_ms": 11,
+      "first_byte_ms": 11,
+      "bytes": 150,
+      "sha256": "46d3c631b92c95c64deaae2d8b607ea2666d2007c8352c5eb377a4ecb23e0fe1"
+    },
+    {
+      "case": "CompleteMultipartUpload",
+      "endpoint": "edge",
+      "method": "POST",
+      "status": 200,
+      "elapsed_ms": 893,
+      "first_byte_ms": 892,
+      "bytes": 403,
+      "sha256": "f247a4a435e22eaf4137f75f8dc0ab7a5e0724dae519dec1d32ba7433b955afc"
+    },
+    {
+      "case": "write-only GET denied",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 6,
+      "first_byte_ms": 6,
+      "bytes": 150,
+      "sha256": "1317a679ab71453210f24af9a6e05a2aebef9d192551cdc5778634dc4190aa36"
+    },
+    {
+      "case": "multipart read-back",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 200,
+      "elapsed_ms": 330,
+      "first_byte_ms": 330,
+      "bytes": 28,
+      "sha256": "4d976c4255e00a0bc07d7097b7d6ca96836e5d563bea7085c887337518e2f581"
+    },
+    {
+      "case": "write-only HEAD error",
+      "endpoint": "edge",
+      "method": "HEAD",
+      "status": 403,
+      "elapsed_ms": 6,
+      "first_byte_ms": 6,
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "case": "revoked bearer did not elevate data grant",
+      "endpoint": "edge",
+      "method": "GET",
+      "status": 403,
+      "elapsed_ms": 13,
+      "first_byte_ms": 13,
+      "bytes": 150,
+      "sha256": "c31db37a3515cda72bff04ad0d6dd7f4a4aa3e38c9d4a465cb67f541af90715c"
+    }
+  ]
+}

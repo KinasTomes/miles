@@ -1,0 +1,17 @@
+{
+  "resource_prefix": "acceptance-17ca9c40bcb1",
+  "passed": false,
+  "timeout_seconds": 180,
+  "cases": [
+    {
+      "case": "slow CompleteMultipartUpload",
+      "endpoint": "edge",
+      "method": "POST",
+      "status": 409,
+      "elapsed_ms": 68945,
+      "first_byte_ms": 68945,
+      "bytes": 290,
+      "sha256": "a946c3b8eba78f16c13fbf26b6bb1874b232cbe18e4ad579b69b256cd5f0e213"
+    }
+  ]
+}
