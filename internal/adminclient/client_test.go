@@ -158,6 +158,7 @@ func TestResource404IsNotUnsupportedEndpoint(t *testing.T) {
 }
 
 func TestWriteMethodsErrorCodesAndNoContent(t *testing.T) {
+	const reqID = "0123456789abcdef0123456789abcdef"
 	path, _ := tokenFile(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -169,6 +170,12 @@ func TestWriteMethodsErrorCodesAndNoContent(t *testing.T) {
 			_, _ = w.Write([]byte(`{"error":{"code":"Bad Code\n","message":"x","request_id":"r"}}`))
 		case http.MethodDelete:
 			w.WriteHeader(http.StatusNoContent)
+		case http.MethodPost:
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":{"code":"forbidden","message":"echo secret-input","request_id":"` + reqID + `"}}`))
+		case http.MethodGet:
+			w.WriteHeader(http.StatusNotImplemented)
+			_, _ = w.Write([]byte(`{"error":{"code":"job_type_unavailable","message":"x","request_id":"not hex"}}`))
 		}
 	}))
 	defer server.Close()
@@ -186,6 +193,14 @@ func TestWriteMethodsErrorCodesAndNoContent(t *testing.T) {
 	}
 	if b, err := client.Request(ctx, http.MethodDelete, "/admin/v1/credentials/A", nil); err != nil || b != nil {
 		t.Fatal(b, err)
+	}
+	// The scope denial names code and request id for the audit log, never the message.
+	if _, err := client.Request(ctx, http.MethodPost, "/admin/v1/cache/purge", []byte(`{}`)); err == nil || err.Error() != "Admin access denied for this token's scope (HTTP 403 forbidden, request_id "+reqID+")" {
+		t.Fatal(err)
+	}
+	// An installed route without its executor is not an unsupported command.
+	if _, err := client.Request(ctx, http.MethodGet, "/admin/v1/jobs", nil); errors.Is(err, ErrUnsupported) || err == nil || err.Error() != "Admin request failed (HTTP 501 job_type_unavailable)" {
+		t.Fatal(err)
 	}
 	if _, err := client.Request(ctx, "HEAD", "/admin/v1/users", nil); err == nil {
 		t.Fatal("accepted HEAD")
