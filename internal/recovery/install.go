@@ -329,7 +329,38 @@ func (w Recoverer) installFrozen(ctx context.Context, catalog Catalog, cut Suppo
 	if err = w.checkFrozenReadiness(ctx, next, ageRecoveryBounds(bounds, time.Since(started))); err != nil {
 		return zero, err
 	}
-	if err = w.Installer.FinishIndexInstall(ctx, request); err != nil {
+	horizonDeadline := started.Add(bounds.Horizon.Sub(bounds.Upper))
+	var archiveDeadline time.Time
+	for key := range next.Live {
+		p := next.Packs[next.Chunks[key].Location.Pack]
+		if p.Class == s.Glacier {
+			deadline := started.Add(p.RestoredUntil.Sub(bounds.Upper))
+			if archiveDeadline.IsZero() || deadline.Before(archiveDeadline) {
+				archiveDeadline = deadline
+			}
+		}
+	}
+	validUntil := horizonDeadline
+	if !archiveDeadline.IsZero() && archiveDeadline.Before(validUntil) {
+		validUntil = archiveDeadline
+	}
+	finalContext := s.WithIndexReadiness(ctx, request, validUntil, func(ctx context.Context) error {
+		// Native invokes this after isolation proof, metadata reads and transaction
+		// preparation. Refresh physical facts first, then do only constant-time local
+		// deadline checks immediately before SDK dispatch.
+		if e := w.checkFrozenReadiness(ctx, next, ageRecoveryBounds(bounds, time.Since(started))); e != nil {
+			return e
+		}
+		now := time.Now()
+		if !now.Before(horizonDeadline) {
+			return s.ErrFenced
+		}
+		if !archiveDeadline.IsZero() && !now.Before(archiveDeadline) {
+			return s.ErrCold
+		}
+		return nil
+	})
+	if err = w.Installer.FinishIndexInstall(finalContext, request); err != nil {
 		return zero, err
 	}
 	return catalog, nil

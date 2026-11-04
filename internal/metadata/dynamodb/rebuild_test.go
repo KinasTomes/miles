@@ -18,6 +18,7 @@ import (
 	"github.com/KinasTomes/miles/internal/storage/contracttest"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 type testOfflineProof struct {
@@ -133,7 +134,7 @@ func TestLocalRebuiltIndexOfflineProofResumeAndDisabledCredentials(t *testing.T)
 		}
 	}
 	proof.denied = true
-	if e = m.FinishIndexInstall(t.Context(), request); !errors.Is(e, s.ErrFenced) {
+	if e = m.FinishIndexInstall(s.WithIndexReadiness(t.Context(), request, time.Now().Add(time.Hour), func(context.Context) error { return nil }), request); !errors.Is(e, s.ErrFenced) {
 		t.Fatal(e)
 	}
 	g, _ = m.GetR1Gate(t.Context())
@@ -141,10 +142,10 @@ func TestLocalRebuiltIndexOfflineProofResumeAndDisabledCredentials(t *testing.T)
 		t.Fatal("opened without isolation proof")
 	}
 	proof.denied = false
-	if e = m.FinishIndexInstall(t.Context(), request); e != nil {
+	if e = m.FinishIndexInstall(s.WithIndexReadiness(t.Context(), request, time.Now().Add(time.Hour), func(context.Context) error { return nil }), request); e != nil {
 		t.Fatal(e)
 	}
-	if e = m.FinishIndexInstall(t.Context(), request); e != nil {
+	if e = m.FinishIndexInstall(s.WithIndexReadiness(t.Context(), request, time.Now().Add(time.Hour), func(context.Context) error { return nil }), request); e != nil {
 		t.Fatal("lost final ACK", e)
 	}
 	for _, r := range records {
@@ -191,7 +192,7 @@ func TestLocalRebuiltIndexOfflineProofResumeAndDisabledCredentials(t *testing.T)
 	}); e != nil {
 		t.Fatal(e)
 	}
-	if e = m.FinishIndexInstall(t.Context(), request); !errors.Is(e, s.ErrFenced) {
+	if e = m.FinishIndexInstall(s.WithIndexReadiness(t.Context(), request, time.Now().Add(time.Hour), func(context.Context) error { return nil }), request); !errors.Is(e, s.ErrFenced) {
 		t.Fatal("stale install reported ready", e)
 	}
 }
@@ -205,7 +206,7 @@ func TestLocalRebuiltIndexRejectsPartialWrongDigestAndOldAuthority(t *testing.T)
 	if e := m.StageIndexRecord(t.Context(), request, records[0]); e != nil {
 		t.Fatal(e)
 	}
-	if e := m.FinishIndexInstall(t.Context(), request); !errors.Is(e, s.ErrConflict) {
+	if e := m.FinishIndexInstall(s.WithIndexReadiness(t.Context(), request, time.Now().Add(time.Hour), func(context.Context) error { return nil }), request); !errors.Is(e, s.ErrConflict) {
 		t.Fatal(e)
 	}
 	bad := records[1]
@@ -369,7 +370,7 @@ func TestLocalRebuiltIndexCanonicalManifestAndReceiptProjections(t *testing.T) {
 			t.Fatal(r.Kind, e)
 		}
 	}
-	if e := m.FinishIndexInstall(t.Context(), request); e != nil {
+	if e := m.FinishIndexInstall(s.WithIndexReadiness(t.Context(), request, time.Now().Add(time.Hour), func(context.Context) error { return nil }), request); e != nil {
 		t.Fatal(e)
 	}
 	actual, e := m.GetObject(t.Context(), head.Object)
@@ -395,5 +396,159 @@ func TestLocalRebuiltIndexCanonicalManifestAndReceiptProjections(t *testing.T) {
 	u, e := m.GetUpload(t.Context(), "upload")
 	if e != nil || u.State != "Completed" || u.Writer != (s.WriterFence{}) {
 		t.Fatal(u, e)
+	}
+}
+
+// A final proof can stall after the library checked readiness. Native dispatch
+// must enforce the same bound after that proof and all metadata reads.
+type slowFinishProof struct {
+	calls int
+	delay time.Duration
+}
+
+type finalInstallAPI struct {
+	API
+	policyDelay time.Duration
+	sends       int
+	noRetry     bool
+	deadline    time.Time
+}
+
+func (a *finalInstallAPI) GetItem(ctx context.Context, in *ddb.GetItemInput, opts ...func(*ddb.Options)) (*ddb.GetItemOutput, error) {
+	if id, ok := in.Key["config_id"].(*types.AttributeValueMemberS); ok && id.Value == "global-policy" && a.policyDelay > 0 {
+		time.Sleep(a.policyDelay)
+	}
+	return a.API.GetItem(ctx, in, opts...)
+}
+func (a *finalInstallAPI) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, opts ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
+	for _, item := range in.TransactItems {
+		if item.Put != nil {
+			if id, ok := item.Put.Item["config_id"].(*types.AttributeValueMemberS); ok && id.Value == "coordination/r1/current" {
+				if state, ok := item.Put.Item["state"].(*types.AttributeValueMemberS); ok && state.Value == "Open" {
+					a.sends++
+					a.deadline, _ = ctx.Deadline()
+					options := ddb.Options{}
+					for _, f := range opts {
+						f(&options)
+					}
+					_, a.noRetry = options.Retryer.(aws.NopRetryer)
+				}
+			}
+		}
+	}
+	return a.API.TransactWriteItems(ctx, in, opts...)
+}
+
+func (p *slowFinishProof) Check(ctx context.Context, r s.IndexInstall, o Observe) error {
+	p.calls++
+	if p.calls > 1 {
+		time.Sleep(p.delay)
+	}
+	return nil
+}
+func TestLocalInstallFinalDispatchRejectsExpiredReadiness(t *testing.T) {
+	for _, failure := range []error{s.ErrFenced, s.ErrCold} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			m := emptyRecoveryStore(t)
+			proof := &slowFinishProof{delay: 100 * time.Millisecond}
+			m.offlineRecovery = proof
+			request, records := installFixture(t)
+			if e := m.BeginIndexInstall(t.Context(), request); e != nil {
+				t.Fatal(e)
+			}
+			for _, record := range records {
+				if e := m.StageIndexRecord(t.Context(), request, record); e != nil {
+					t.Fatal(e)
+				}
+			}
+			deadline := time.Now().Add(40 * time.Millisecond)
+			api := &finalInstallAPI{API: m.api}
+			m.api = api
+			validUntil := time.Now().Add(time.Hour)
+			if failure == s.ErrFenced {
+				validUntil = deadline
+			}
+			ctx := s.WithIndexReadiness(t.Context(), request, validUntil, func(context.Context) error {
+				if failure == s.ErrCold && !time.Now().Before(deadline) {
+					return failure
+				}
+				return nil
+			})
+			if e := m.FinishIndexInstall(ctx, request); !errors.Is(e, failure) {
+				t.Fatal("expired readiness opened gate", e)
+			}
+			if api.sends != 0 {
+				t.Fatal("expired proof reached SDK", api.sends)
+			}
+			gate, e := m.GetR1Gate(t.Context())
+			if e != nil || gate.State != "Closing" {
+				t.Fatal(gate, e)
+			}
+			// A newly checked proof can resume the identical staged plan.
+			freshDeadline := time.Now().Add(time.Hour)
+			ctx = s.WithIndexReadiness(t.Context(), request, freshDeadline, func(context.Context) error { return nil })
+			if e = m.FinishIndexInstall(ctx, request); e != nil {
+				t.Fatal(e)
+			}
+			if api.sends != 1 || !api.noRetry || !api.deadline.Equal(freshDeadline) {
+				t.Fatal("final send permits hidden retries", api.sends, api.noRetry)
+			}
+		})
+	}
+}
+
+func TestLocalInstallFinalDispatchChecksAfterPolicyIO(t *testing.T) {
+	m := emptyRecoveryStore(t)
+	m.offlineRecovery = &testOfflineProof{}
+	request, records := installFixture(t)
+	if e := m.BeginIndexInstall(t.Context(), request); e != nil {
+		t.Fatal(e)
+	}
+	for _, r := range records {
+		if e := m.StageIndexRecord(t.Context(), request, r); e != nil {
+			t.Fatal(e)
+		}
+	}
+	api := &finalInstallAPI{API: m.api, policyDelay: 100 * time.Millisecond}
+	m.api = api
+	deadline := time.Now().Add(40 * time.Millisecond)
+	ctx := s.WithIndexReadiness(t.Context(), request, time.Now().Add(time.Hour), func(context.Context) error {
+		if !time.Now().Before(deadline) {
+			return s.ErrFenced
+		}
+		return nil
+	})
+	if e := m.FinishIndexInstall(ctx, request); !errors.Is(e, s.ErrFenced) {
+		t.Fatal(e)
+	}
+	gate, e := m.GetR1Gate(t.Context())
+	if e != nil || gate.State != "Closing" || api.sends != 0 {
+		t.Fatal(gate, e, api.sends)
+	}
+}
+func TestLocalInstallFinalDispatchRequiresBoundProof(t *testing.T) {
+	m := emptyRecoveryStore(t)
+	m.offlineRecovery = &testOfflineProof{}
+	request, records := installFixture(t)
+	if e := m.BeginIndexInstall(t.Context(), request); e != nil {
+		t.Fatal(e)
+	}
+	for _, r := range records {
+		if e := m.StageIndexRecord(t.Context(), request, r); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if e := m.FinishIndexInstall(t.Context(), request); !errors.Is(e, s.ErrFenced) {
+		t.Fatal(e)
+	}
+	wrong := request
+	wrong.TargetSHA256 = strings.Repeat("c", 64)
+	ctx := s.WithIndexReadiness(t.Context(), wrong, time.Now().Add(time.Hour), func(context.Context) error { return nil })
+	if e := m.FinishIndexInstall(ctx, request); !errors.Is(e, s.ErrFenced) {
+		t.Fatal(e)
+	}
+	gate, e := m.GetR1Gate(t.Context())
+	if e != nil || gate.State != "Closing" {
+		t.Fatal(gate, e)
 	}
 }

@@ -358,6 +358,14 @@ func (m *Store) FinishIndexInstall(ctx context.Context, r s.IndexInstall) error 
 			return s.ErrInvalid
 		}
 		g.State = "Open"
+		t.beforeDispatch = func(ctx context.Context) error {
+			if e := s.CheckIndexReadiness(ctx, r); e != nil {
+				return e
+			}
+			var e error
+			t.dispatchDeadline, e = s.IndexReadinessDeadline(ctx, r)
+			return e
+		}
 		g.Revision++
 		g.RecoveryEnabled = true
 		if e = r1Put(t, r1GateKey(), g); e != nil {

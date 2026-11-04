@@ -236,3 +236,17 @@ expiry), unchanged selector/digest and no additional staging/Finish. The unchang
 retry inspects the actual staged pack expiry and read policy at successful
 readiness. Separate tests change class during staging and cross restore expiry
 while HEAD verification is delayed; both keep readiness closed.
+
+The native final transition now carries a request-bound readiness proof and a
+fixed validity deadline through `FinishIndexInstall`. After isolation proof, gate
+and policy reads, and transaction preparation, dispatch refreshes physical facts
+and checks the horizon and earliest archive expiry again. The SDK receives that
+deadline and an explicit no-retry policy. An uncertain sent transaction still
+requires reconciliation; this is not a server-clock commit-time guarantee.
+
+Native regressions stall the final isolation proof or policy read for 100 ms
+against a 40 ms validity window, assert no Open transaction reaches the SDK and
+the gate stays Closing, then resume the identical plan with fresh readiness.
+Missing or mismatched proofs fail closed; a successful send carries the exact
+deadline and disables hidden SDK retries. Recovery also tests class drift inside
+the final installer boundary.

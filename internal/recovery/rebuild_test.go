@@ -416,10 +416,11 @@ func TestRetentionRejectsChecksummedCheckpointWithMissingReceipt(t *testing.T) {
 }
 
 type memoryInstaller struct {
-	stageHook func()
-	request   s.IndexInstall
-	records   []s.IndexRecord
-	finished  bool
+	stageHook  func()
+	finishHook func()
+	request    s.IndexInstall
+	records    []s.IndexRecord
+	finished   bool
 }
 
 type interruptedInstaller struct {
@@ -614,7 +615,13 @@ func (m *memoryInstaller) StageIndexRecord(_ context.Context, _ s.IndexInstall, 
 	}
 	return nil
 }
-func (m *memoryInstaller) FinishIndexInstall(context.Context, s.IndexInstall) error {
+func (m *memoryInstaller) FinishIndexInstall(ctx context.Context, r s.IndexInstall) error {
+	if m.finishHook != nil {
+		m.finishHook()
+	}
+	if e := s.CheckIndexReadiness(ctx, r); e != nil {
+		return e
+	}
 	m.finished = true
 	return nil
 }

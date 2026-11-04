@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"time"
 )
 
 // IndexRecord is an installation projection, never an online mutation or lease.
@@ -35,6 +36,42 @@ type IndexInstaller interface {
 	BeginIndexInstall(context.Context, IndexInstall) error
 	StageIndexRecord(context.Context, IndexInstall, IndexRecord) error
 	FinishIndexInstall(context.Context, IndexInstall) error
+}
+
+type indexReadinessKey struct{}
+type indexReadiness struct {
+	Request    IndexInstall
+	ValidUntil time.Time
+	Check      func(context.Context) error
+}
+
+// WithIndexReadiness carries trusted, request-bound readiness validity to the
+// final metadata dispatch. It is never populated from HTTP parameters.
+func WithIndexReadiness(ctx context.Context, r IndexInstall, validUntil time.Time, check func(context.Context) error) context.Context {
+	return context.WithValue(ctx, indexReadinessKey{}, indexReadiness{r, validUntil, check})
+}
+func CheckIndexReadiness(ctx context.Context, r IndexInstall) error {
+	if e := ctx.Err(); e != nil {
+		return e
+	}
+	proof, ok := ctx.Value(indexReadinessKey{}).(indexReadiness)
+	if !ok || proof.Request != r || proof.Check == nil || proof.ValidUntil.IsZero() {
+		return ErrFenced
+	}
+	if e := proof.Check(ctx); e != nil {
+		return e
+	}
+	if !time.Now().Before(proof.ValidUntil) {
+		return ErrFenced
+	}
+	return nil
+}
+func IndexReadinessDeadline(ctx context.Context, r IndexInstall) (time.Time, error) {
+	proof, ok := ctx.Value(indexReadinessKey{}).(indexReadiness)
+	if !ok || proof.Request != r || proof.ValidUntil.IsZero() || proof.Check == nil {
+		return time.Time{}, ErrFenced
+	}
+	return proof.ValidUntil, nil
 }
 
 func IndexRecordDigest(previous string, r IndexRecord) (string, error) {
