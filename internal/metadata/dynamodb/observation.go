@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -23,7 +24,7 @@ func (m *Store) ObservePage(ctx context.Context, r s.ObservationRequest) (s.Obse
 	if err := r.Validate(); err != nil {
 		return out, err
 	}
-	table := map[string]string{"buckets": "Buckets", "heads": "Objects", "packs": "Packs"}[r.Kind]
+	table := map[string]string{"buckets": "Buckets", "heads": "Objects", "packs": "Packs", "uploads": "Uploads", "chunks": "Chunks"}[r.Kind]
 	var cursor Item
 	if r.Cursor != "" {
 		body, err := base64.RawURLEncoding.Strict().DecodeString(r.Cursor)
@@ -68,6 +69,25 @@ func (m *Store) ObservePage(ctx context.Context, r s.ObservationRequest) (s.Obse
 				return out, e
 			}
 			out.Heads = append(out.Heads, v)
+		case "uploads":
+			// The table also holds the older completion projection.
+			record, ok := row["upload-record"]
+			if !ok {
+				// A legacy completion can still have an unresolved outcome.
+				// Refuse to derive GC candidates from an incomplete projection.
+				return out, s.ErrUnavailable
+			}
+			var v s.MultipartUpload
+			if e := unmarshalNative(record, reflect.ValueOf(&v).Elem()); e != nil {
+				return out, e
+			}
+			out.Uploads = append(out.Uploads, v)
+		case "chunks":
+			var v s.Chunk
+			if e := unmarshalNative(a, reflect.ValueOf(&v).Elem()); e != nil {
+				return out, e
+			}
+			out.Chunks = append(out.Chunks, v)
 		case "packs":
 			var v s.PackInfo
 			if e := unmarshalNative(a, reflect.ValueOf(&v).Elem()); e != nil {
@@ -95,4 +115,33 @@ func (m *Store) ObservePage(ctx context.Context, r s.ObservationRequest) (s.Obse
 		}
 	}
 	return out, nil
+}
+
+// ObserveUploadParts reads authoritative part heads for maintenance without S3 authorization filters.
+func (m *Store) ObserveUploadParts(ctx context.Context, id string, after uint32, limit int) (s.PartListPage, error) {
+	return (multipartBridge{m}).Parts(ctx, id, after, limit)
+}
+
+// ObservePackPins includes pins retained by closed producers until their
+// authoritative release. Expiry alone does not remove a pin from the roots.
+func (m *Store) ObservePackPins(ctx context.Context, ref s.PackRef) (bool, error) {
+	if ref.Validate() != nil {
+		return false, s.ErrInvalid
+	}
+	var pinned bool
+	err := m.view(ctx, func(t *transaction) error {
+		p, e := r1Read[r1Pins](t, r1PinKey(ref))
+		if errors.Is(e, s.ErrNotFound) {
+			return nil
+		}
+		if e != nil {
+			return e
+		}
+		if p.Pack != ref {
+			return s.ErrUnavailable
+		}
+		pinned = p.Count != 0
+		return nil
+	})
+	return pinned, err
 }
