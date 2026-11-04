@@ -145,7 +145,16 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 				return jobs.Step{Settled: true}, err
 			}
 			report["root_reasons"] = mark.Roots[source.Ref]
-			report["canonical_locations"] = len(mark.CanonicalFor(source.Ref))
+			canonical := mark.CanonicalFor(source.Ref)
+			referenced := 0
+			for _, chunk := range canonical {
+				if mark.Referenced[chunk.Key] {
+					referenced++
+				}
+			}
+			report["canonical_locations"] = len(canonical)
+			report["referenced_canonical_locations"] = referenced
+			report["unreferenced_canonical_locations"] = len(canonical) - referenced
 			report["head_live_bytes"] = mark.LiveBytes[source.Ref]
 			report["consistency"] = "observational"
 		}
@@ -176,7 +185,11 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 				if err != nil {
 					return jobs.Step{Settled: true}, err
 				}
-				plan = mark.CanonicalFor(source.Ref)
+				for _, chunk := range mark.CanonicalFor(source.Ref) {
+					if mark.Referenced[chunk.Key] {
+						plan = append(plan, chunk)
+					}
+				}
 			} else {
 				_, live, err := w.Catalog.Collect(ctx)
 				if err != nil {
@@ -254,7 +267,7 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 			}
 		}
 		if a.Kind == "gc" {
-			versions, err := w.sweepPlan(ctx, a)
+			versions, dead, err := w.sweepPlan(ctx, a)
 			if err != nil {
 				return w.abortPrepared(ctx, j, err)
 			}
@@ -263,6 +276,11 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 				return w.abortPrepared(ctx, j, s.ErrInvalid)
 			}
 			if a.Source.State == "Warm" {
+				for _, chunk := range dead {
+					if e = store.RetireCanonical(ctx, j, chunk); e != nil {
+						return jobs.Step{}, e
+					}
+				}
 				a, e = store.RetireSweep(ctx, j)
 				if e != nil {
 					return jobs.Step{}, e

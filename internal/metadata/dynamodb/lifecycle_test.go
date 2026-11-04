@@ -14,6 +14,7 @@ import (
 	opstest "github.com/KinasTomes/miles/internal/jobs/contracttest"
 	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/pack"
+	"github.com/KinasTomes/miles/internal/recovery/format"
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/fake"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -107,6 +108,15 @@ func lifeFixture(t *testing.T, kind jobs.Type, class s.StorageClass) (*Store, *l
 	if e = builder.Add(pack.Blob{Key: key, RawLength: 4, Codec: "raw", Stored: []byte("data")}); e != nil {
 		t.Fatal(e)
 	}
+	if kind == "compaction" {
+		deadKey, e := engine.HashChunk("default", []byte("dead"))
+		if e != nil {
+			t.Fatal(e)
+		}
+		if e = builder.Add(pack.Blob{Key: deadKey, RawLength: 4, Codec: "raw", Stored: []byte("dead")}); e != nil {
+			t.Fatal(e)
+		}
+	}
 	body, index, entries, e := builder.Finish()
 	if e != nil {
 		t.Fatal(e)
@@ -168,6 +178,12 @@ func lifeFixture(t *testing.T, kind jobs.Type, class s.StorageClass) (*Store, *l
 		}
 		if e := put(tx, chunkKey(key), chunk); e != nil {
 			return e
+		}
+		if kind == "compaction" {
+			dead := s.Chunk{Version: 1, Key: entries[1].Key, RawBytes: 4, Location: entries[1].Location(ref), LocationRevision: 1}
+			if e := put(tx, chunkKey(dead.Key), dead); e != nil {
+				return e
+			}
 		}
 		return put(tx, headKey(head.Object), head)
 	}); e != nil {
@@ -422,15 +438,19 @@ func TestLocalLifecycleTrustedReconcileAndImmutableRetry(t *testing.T) {
 
 type lifeAckAPI struct {
 	API
-	state  string
-	before bool
-	fired  bool
+	state     string
+	attribute string
+	before    bool
+	fired     bool
 }
 
 func (a *lifeAckAPI) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, opts ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
 	match := false
 	for _, item := range in.TransactItems {
 		if item.Put != nil {
+			if a.attribute != "" && item.Put.Item[a.attribute] != nil {
+				match = true
+			}
 			if state, ok := item.Put.Item["state"].(*types.AttributeValueMemberS); ok && state.Value == a.state {
 				match = true
 			}
@@ -828,6 +848,21 @@ func TestLocalWarmCompactionRetainsPinnedSource(t *testing.T) {
 			t.Fatal(string(data), e, closeErr)
 		}
 	}
+	index, e := physical.ReadSidecar(ctx, now.Location.Pack)
+	if e != nil {
+		t.Fatal(e)
+	}
+	expected, e := pack.NewBuilder(now.Location.Pack)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = expected.Add(pack.Blob{Key: old.Key, RawLength: 4, Codec: "raw", Stored: []byte("data")}); e != nil {
+		t.Fatal(e)
+	}
+	_, wantIndex, _, e := expected.Finish()
+	if e != nil || !bytes.Equal(index, wantIndex) {
+		t.Fatal("destination contains dead payload", e)
+	}
 	if pinned, e := m.ObservePackPins(ctx, old.Location.Pack); e != nil || !pinned {
 		t.Fatal(pinned, e)
 	}
@@ -942,5 +977,152 @@ func TestLocalGCProtectsLiveGeneration(t *testing.T) {
 	gate, gateErr := m.GetR1Gate(ctx)
 	if e != nil || gateErr != nil || rows[old.Location.Pack].State != "Warm" || gate.State != "Open" {
 		t.Fatal(rows, gate, e, gateErr)
+	}
+}
+
+func TestLocalGCRetiresLastCanonicalAndAllowsReinsertion(t *testing.T) {
+	m, w, j, policy, utc, _, old := lifeFixture(t, "gc", s.Standard)
+	ctx := t.Context()
+	headPage, e := m.ObservePage(ctx, s.ObservationRequest{Kind: "heads", Limit: 100})
+	if e != nil || len(headPage.Heads) != 1 {
+		t.Fatal(headPage, e)
+	}
+	head := headPage.Heads[0]
+	tombstone := s.ObjectHead{Version: 1, Revision: head.Revision + 1, Object: head.Object, Domain: head.Domain, OpID: head.OpID, Deleted: true}
+	if e = m.update(ctx, func(tx *transaction) error { return put(tx, headKey(head.Object), tombstone) }); e != nil {
+		t.Fatal(e)
+	}
+	w.Marker = &lifecycle.Marker{Store: m, Pinned: m.ObservePackPins, MaxRecords: 1000, MaxReferences: 1000, RecoveryRoots: func(context.Context) ([]s.PackRef, error) { return nil, nil }}
+	physical := &sweepPhysicalFixture{}
+	w.Sweep = physical
+	blocker := s.WriterFence{LeaseID: "before-gc", Epoch: 1, ServiceIncarnation: j.Worker.ServiceIncarnation}
+	if _, e = m.AcquireR1(ctx, s.R1Acquire{Fence: blocker, Owner: "writer", Kind: "writer", Object: head.Object, Deadline: utc.Now().Add(time.Minute)}); e != nil {
+		t.Fatal(e)
+	}
+	if step, e := w.Step(ctx, j, policy); e != nil || step.Done {
+		t.Fatal("GC did not defer", step, e)
+	}
+	if e = m.CloseR1(ctx, blocker); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.ReleaseR1(ctx, blocker); e != nil {
+		t.Fatal(e)
+	}
+	fault := &lifeAckAPI{API: m.api, attribute: chunkRetirementAttribute}
+	m.api = fault
+	if step, e := w.Step(ctx, j, policy); e == nil || step.Settled || !fault.fired {
+		t.Fatal("retirement ACK loss", step, e, fault.fired)
+	}
+	gate, e := m.GetR1Gate(ctx)
+	if e != nil || gate.State != "Maintenance" {
+		t.Fatal(gate, e)
+	}
+	step, e := w.Step(ctx, j, policy)
+	if e != nil || !step.Done || !step.Settled {
+		t.Fatal(step, e)
+	}
+	rows, e := m.GetChunks(ctx, []s.ChunkKey{old.Key}, true)
+	if e != nil || len(rows) != 0 {
+		t.Fatal(rows, e)
+	}
+	packs, e := m.GetPacks(ctx, []s.PackRef{old.Location.Pack})
+	if e != nil || packs[old.Location.Pack].State != "Retiring" {
+		t.Fatal(packs, e)
+	}
+	producer, e := m.LifecycleProducer(ctx, j)
+	if e != nil {
+		t.Fatal(e)
+	}
+	identity, e := old.Key.PartitionKey()
+	if e != nil {
+		t.Fatal(e)
+	}
+	retirement := s.ChildMutation(producer, "Chunks", identity, "location_retire")
+	id, e := s.EventID(producer.HistoryID, retirement.MutationID, "Chunks", "location_retire")
+	if e != nil {
+		t.Fatal(e)
+	}
+	event, e := read[s.OutboxEvent](m, ctx, key("events", id))
+	if e != nil || event.Revision != old.LocationRevision+1 {
+		t.Fatal(event, e)
+	}
+	body, e := m.Open(ctx, event.PayloadPointer)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer body.Close()
+	var input format.Input
+	if e = json.NewDecoder(body).Decode(&input); e != nil {
+		t.Fatal(e)
+	}
+	found := false
+	for _, page := range input.Pages {
+		for _, effect := range page.Effects {
+			if effect.Key == "Chunks/"+hex.EncodeToString([]byte(identity)) {
+				found = effect.Deleted && effect.Revision == old.LocationRevision+1 && effect.Value == ""
+			}
+		}
+	}
+	if !found {
+		t.Fatal("retirement event has no chunk tombstone", input)
+	}
+	if _, _, e = m.PutChunkIfAbsent(s.WithMutation(ctx, producer), old, j.Worker); !errors.Is(e, s.ErrConflict) {
+		t.Fatal("retired pack accepted as a destination", e)
+	}
+	nextPack := packs[old.Location.Pack]
+	nextPack.Ref.Generation = "new-location"
+	nextPack.State = "Warm"
+	if e = m.update(ctx, func(tx *transaction) error { return put(tx, packKey(nextPack.Ref), nextPack) }); e != nil {
+		t.Fatal(e)
+	}
+	candidate := old
+	candidate.Location.Pack = nextPack.Ref
+	got, won, e := m.PutChunkIfAbsent(s.WithMutation(ctx, producer), candidate, j.Worker)
+	if e != nil || !won || got.LocationRevision != old.LocationRevision+2 || got.Location.Pack != nextPack.Ref {
+		t.Fatal(got, won, e)
+	}
+
+	if e = m.CloseR1(ctx, j.Worker); e != nil {
+		t.Fatal(e)
+	}
+	if e = m.ReleaseR1(ctx, j.Worker); e != nil {
+		t.Fatal(e)
+	}
+	utc.Advance(25 * time.Hour)
+	node, e := m.GetNode(ctx, j.WorkerNodeID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	node.HeartbeatAt = utc.Now()
+	if _, e = m.PutNode(ctx, node.Revision, node); e != nil {
+		t.Fatal(e)
+	}
+	svc := jobs.Service{Store: m, Policies: m, Now: utc.Now}
+	sweep, e := svc.Create(ctx, jobs.Create{Type: "gc", Params: j.Params, PolicyRevision: 1})
+	if e != nil {
+		t.Fatal(e)
+	}
+	fence := s.WriterFence{LeaseID: sweep.ID, Epoch: 1, ServiceIncarnation: j.Worker.ServiceIncarnation}
+	sum := sha256.Sum256([]byte(sweep.ID))
+	if _, e = m.AcquireR1(ctx, s.R1Acquire{Fence: fence, Owner: "sweep-worker", Kind: "control", OpID: hex.EncodeToString(sum[:16]), Deadline: utc.Now().Add(time.Minute)}); e != nil {
+		t.Fatal(e)
+	}
+	sweep, e = m.ChangeJob(ctx, jobs.Change{JobID: sweep.ID, ExpectedRevision: sweep.Revision, Kind: "claim", Fence: fence, NodeID: node.ID, NodeIncarnation: node.Incarnation})
+	if e != nil {
+		t.Fatal(e)
+	}
+	sweep, e = m.ChangeJob(ctx, jobs.Change{JobID: sweep.ID, ExpectedRevision: sweep.Revision, Kind: "begin_step", Fence: fence, NodeID: node.ID, NodeIncarnation: node.Incarnation, StepID: strings.Repeat("2", 32)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	checkedCut := false
+	w.VerifyCutAfter = func(context.Context, time.Time) error { checkedCut = true; return nil }
+	step, e = w.Step(ctx, sweep, policy)
+	if e != nil || !step.Done || !step.Settled || !checkedCut || len(physical.calls) != 2 {
+		t.Fatal(step, e, checkedCut, physical.calls)
+	}
+	rows, e = m.GetChunks(ctx, []s.ChunkKey{old.Key}, true)
+	if e != nil || rows[old.Key] != got {
+		t.Fatal(rows, e)
 	}
 }

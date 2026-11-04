@@ -27,11 +27,12 @@ const (
 )
 
 type Mark struct {
-	Packs     map[s.PackRef]s.PackInfo
-	Roots     map[s.PackRef]RootReason
-	Locations map[s.ChunkKey]s.Chunk
-	Refcounts map[s.ChunkKey]uint64
-	LiveBytes map[s.PackRef]int64
+	Packs      map[s.PackRef]s.PackInfo
+	Roots      map[s.PackRef]RootReason
+	Locations  map[s.ChunkKey]s.Chunk
+	Refcounts  map[s.ChunkKey]uint64
+	Referenced map[s.ChunkKey]bool
+	LiveBytes  map[s.PackRef]int64
 }
 
 // Marker is read-only. Its report becomes stable for mutation only while
@@ -47,7 +48,7 @@ func (m Marker) Collect(ctx context.Context) (*Mark, error) {
 	if m.Store == nil || m.Pinned == nil || m.RecoveryRoots == nil || m.MaxRecords < 1 || m.MaxReferences < 1 {
 		return nil, s.ErrInvalid
 	}
-	out := &Mark{Packs: map[s.PackRef]s.PackInfo{}, Roots: map[s.PackRef]RootReason{}, Locations: map[s.ChunkKey]s.Chunk{}, Refcounts: map[s.ChunkKey]uint64{}, LiveBytes: map[s.PackRef]int64{}}
+	out := &Mark{Packs: map[s.PackRef]s.PackInfo{}, Roots: map[s.PackRef]RootReason{}, Locations: map[s.ChunkKey]s.Chunk{}, Refcounts: map[s.ChunkKey]uint64{}, Referenced: map[s.ChunkKey]bool{}, LiveBytes: map[s.PackRef]int64{}}
 	buckets := map[string]s.Bucket{}
 	records, refs := 0, 0
 	reserve := func(n int) error {
@@ -73,6 +74,7 @@ func (m Marker) Collect(ctx context.Context) (*Mark, error) {
 		if !ok || chunk.RawBytes != ref.RawBytes {
 			return fmt.Errorf("%w: missing or inconsistent canonical chunk", s.ErrUnavailable)
 		}
+		out.Referenced[ref.Key] = true
 		if reason == LiveHead {
 			if out.Refcounts[ref.Key] == 0 {
 				out.LiveBytes[chunk.Location.Pack] += chunk.Location.Range.Length
