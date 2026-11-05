@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -82,11 +84,27 @@ func s3Handler(region, nodeID string, d app.Dependencies, a *app.Admission) http
 		}
 	}
 	rt := &api.Router{Region: region, Now: now, Credentials: devCredentials{d}, Access: auth.NewSnapshots(d.Metadata, clk), Handlers: handlers, NodeID: nodeID}
-	return requestGate(a, RequestTimeout, rt, s3Unavailable)
+	return requestGate(a, RequestTimeout, rt, s3UnavailableNode(nodeID))
 }
 
 func s3Unavailable(w http.ResponseWriter, r *http.Request) {
-	_ = api.WriteError(w, r, &api.Error{Code: api.ErrServiceUnavailable}, api.NewRequestID())
+	s3UnavailableNode("")(w, r)
+}
+
+func s3UnavailableNode(nodeID string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := api.NewRequestID()
+		class := "draining"
+		if errors.Is(r.Context().Err(), context.DeadlineExceeded) {
+			class = "deadline_exceeded"
+		} else if errors.Is(r.Context().Err(), context.Canceled) {
+			class = "canceled"
+		}
+		slog.WarnContext(r.Context(), "s3 service unavailable",
+			"request_id", id, "node_id", nodeID, "method", r.Method,
+			"operation", "unknown", "stage", "admission_gate", "failure_class", class)
+		_ = api.WriteError(w, r, &api.Error{Code: api.ErrServiceUnavailable}, id)
+	}
 }
 
 // Admission does not consult cached readiness. Each handler still owns auth,

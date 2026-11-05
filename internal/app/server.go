@@ -50,6 +50,7 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 		d.Operations.Cluster.Gate = admission
 	}
 	logger := slog.New(slog.NewJSONHandler(output, nil))
+	slog.SetDefault(logger)
 	h := observability.NewHealth(d.Probe, admission.Draining, c.Mode != "runtime")
 	var operationalReady func() bool
 	var operationMetrics *observability.Operations

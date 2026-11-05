@@ -41,6 +41,8 @@ func safeFailureClass(err error) string {
 		return "canceled"
 	case errors.Is(err, storage.ErrConflict):
 		return "metadata_conflict"
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		return "quota_exceeded"
 	case errors.Is(err, storage.ErrInvalid):
 		return "invalid_state"
 	default:

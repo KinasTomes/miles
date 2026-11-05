@@ -215,6 +215,7 @@ func (o *Objects) GetObject(w http.ResponseWriter, r *Request) error {
 			// (API v2 4.2), never to append an XML error to object bytes.
 			panic(http.ErrAbortHandler)
 		}
+		r.recordFailure("object_get", err)
 		return objectError(err, r.Bucket, r.Key)
 	}
 	return nil
@@ -230,6 +231,7 @@ func (o *Objects) HeadObject(w http.ResponseWriter, r *Request) error {
 	ctx := r.HTTP.Context()
 	stat, err := o.Reader.Stat(ctx, object.GetRequest{Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID})
 	if err != nil {
+		r.recordFailure("object_head", err)
 		return objectError(err, r.Bucket, r.Key)
 	}
 	_, length, hasRange, ok := parseObjectRange(r.HTTP.Header.Get("Range"), stat.Info.Size)
@@ -270,6 +272,7 @@ func (o *Objects) DeleteObject(w http.ResponseWriter, r *Request) error {
 		Bucket: r.Access.Bucket, Key: r.Key, UserID: r.Caller.UserID, CredentialID: r.Caller.AccessKeyID,
 	})
 	if err != nil {
+		r.recordFailure("object_delete", err)
 		return objectError(err, r.Bucket, r.Key)
 	}
 	w.WriteHeader(http.StatusNoContent)
