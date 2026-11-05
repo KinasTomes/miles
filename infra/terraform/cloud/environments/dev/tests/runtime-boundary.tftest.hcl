@@ -46,3 +46,27 @@ run "fleet_gateway_permissions" {
     error_message = "Gateway must be limited to its own ASG and pinned release prefix."
   }
 }
+
+run "physical_inventory_permissions" {
+  command = plan
+  module { source = "../../modules/iam" }
+  variables {
+    edge_ca_pem = "mock-public-ca; mock provider does not validate a real certificate"
+  }
+  assert {
+    condition = length(aws_iam_role_policy.runtime) == 3 && alltrue([
+      for policy in aws_iam_role_policy.runtime : length([
+        for statement in jsondecode(policy.policy).Statement : statement
+        if try(statement.Sid == "ListData" && contains(statement.Action, "s3:ListBucketVersions") && statement.Resource == "arn:aws:s3:::${var.data_bucket_name}", false)
+      ]) == 1
+    ])
+    error_message = "Cloud, Edge and jobs need version inventory permission on their data bucket."
+  }
+  assert {
+    condition = length([
+      for statement in jsondecode(file("${path.module}/../../bootstrap/operator/runtime-boundary.json.tmpl")).Statement : statement
+      if statement.Sid == "ListDevData" && contains(statement.Action, "s3:ListBucketVersions") && statement.Resource == ["arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1"]
+    ]) == 1
+    error_message = "The operator bootstrap boundary must permit the same bucket-scoped version inventory."
+  }
+}
