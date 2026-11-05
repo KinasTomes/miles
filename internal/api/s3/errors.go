@@ -96,6 +96,22 @@ type Error struct {
 	Message string
 	Bucket  string
 	Key     string
+	// failureClass is a fixed, server-only diagnostic enum. Do not expose
+	// raw backend errors, object keys or credentials to operator logs.
+	failureClass string
+}
+
+func availabilityFailureClass(err error) string {
+	switch {
+	case errors.Is(err, storage.ErrR1Busy):
+		return "r1_gate_busy"
+	case errors.Is(err, storage.ErrFenced):
+		return "fenced"
+	case errors.Is(err, storage.ErrUnavailable):
+		return "backend_unavailable"
+	default:
+		return "unknown"
+	}
 }
 
 // MetadataWriteError maps the dev metadata publication result to the frozen
@@ -117,6 +133,9 @@ func MetadataWriteError(err error) *Error {
 		code = ErrInvalidRequest
 	default:
 		code = ErrInternalError
+	}
+	if code == ErrServiceUnavailable {
+		return &Error{Code: code, failureClass: availabilityFailureClass(err)}
 	}
 	return &Error{Code: code}
 }

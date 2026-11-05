@@ -361,6 +361,9 @@ func objectError(err error, bucket, key string) error {
 	case errors.Is(err, storage.ErrInvalid):
 		code = ErrInvalidRequest
 	}
+	if code == ErrServiceUnavailable {
+		return &Error{Code: code, Bucket: bucket, Key: key, failureClass: availabilityFailureClass(err)}
+	}
 	return &Error{Code: code, Bucket: bucket, Key: key}
 }
 

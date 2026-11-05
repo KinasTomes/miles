@@ -62,6 +62,15 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(r.Context(), "s3 request failed", "request_id", id, "err", err)
 		e = &Error{Code: ErrInternalError}
 	}
+	if e.Code == ErrServiceUnavailable {
+		class := e.failureClass
+		if class == "" {
+			class = "unknown"
+		}
+		// Correlate 503s by the generated response request ID. Never log raw
+		// backend errors, object keys, signed URLs or authorization headers.
+		slog.WarnContext(r.Context(), "s3 service unavailable", "request_id", id, "method", r.Method, "failure_class", class)
+	}
 	if err := WriteError(w, r, e, id); err != nil {
 		slog.WarnContext(r.Context(), "s3 error response not delivered", "request_id", id, "code", e.Code, "err", err)
 	}

@@ -281,6 +281,24 @@ func (s *server) fail(c *call, err error) {
 		s.Logger.ErrorContext(c.r.Context(), "admin request failed", "request_id", c.id, "err", err)
 		e = &apiError{http.StatusInternalServerError, "internal_error", "internal error"}
 	}
+	if e.status == http.StatusServiceUnavailable {
+		// Fixed categories only. A raw metadata error may contain IDs, query
+		// parameters or backend details and must not enter operator logs.
+		class := "unknown"
+		switch {
+		case errors.Is(err, storage.ErrR1Busy):
+			class = "r1_gate_busy"
+		case errors.Is(err, storage.ErrFenced):
+			class = "fenced"
+		case errors.Is(err, context.DeadlineExceeded):
+			class = "deadline_exceeded"
+		case errors.Is(err, context.Canceled):
+			class = "canceled"
+		case errors.Is(err, storage.ErrUnavailable):
+			class = "backend_unavailable"
+		}
+		s.Logger.WarnContext(c.r.Context(), "admin service unavailable", "request_id", c.id, "action", c.r.Pattern, "failure_class", class)
+	}
 	if e.status == http.StatusUnauthorized {
 		c.w.Header().Set("WWW-Authenticate", "Bearer")
 	}

@@ -46,6 +46,13 @@ the S3 gateway endpoint were corrected to allow data-bucket version inventory.
   transitions with native alarm history. `SetAlarmState` was not used.
 - Cloud concurrency-4 PUT failed twice with `ServiceUnavailable`. An earlier
   Edge concurrency-1 trial had one GET 503. The initiating causes remain open.
+  A subsequent release logs a bounded, server-only 503 failure class
+  (`r1_gate_busy`, `fenced`, `backend_unavailable` or `unknown`) with the response
+  request ID and HTTP method, never raw backend messages, object keys or
+  credentials. The Admin 503 handler similarly records its route pattern,
+  request ID and fixed failure class, including cancellation and deadline.
+  This makes a future recurrence easier to diagnose; it is **not** a fix or
+  retrospective explanation for the old failures.
 - The scheduled cut could not seal epoch zero. A failed PUT retained a closed
   writer with pending `insert/...`, which the existing commit-only reconciler
   could not settle. The subsequent slow-operation preparation received Admin
