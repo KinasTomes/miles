@@ -44,6 +44,8 @@ type Sample struct {
 	PayloadBytes int64  `json:"payload_bytes"`
 	SHA256       string `json:"sha256,omitempty"`
 	Error        string `json:"error,omitempty"`
+	HTTPStatus   int    `json:"http_status,omitempty"`
+	RequestID    string `json:"request_id,omitempty"`
 }
 
 type Phase struct {
@@ -196,8 +198,11 @@ func fileOperation(ctx context.Context, client *awss3.Client, root *os.Root, c C
 	var err error
 	defer func() {
 		sample.LatencyNS = time.Since(start).Nanoseconds()
-		if err != nil && sample.Error == "" {
-			sample.Error = errorCode(err)
+		if err != nil {
+			sample.HTTPStatus, sample.RequestID = responseDiagnostics(err)
+			if sample.Error == "" {
+				sample.Error = errorCode(err)
+			}
 		}
 	}()
 	switch phase {
@@ -263,7 +268,8 @@ func listPhase(ctx context.Context, client *awss3.Client, bucket, phase string, 
 		callCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 		out, err := client.ListObjectsV2(callCtx, &awss3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(r.Prefix), ContinuationToken: token, MaxKeys: aws.Int32(1000)})
 		cancel()
-		s := Sample{Phase: phase, Operation: "ListObjectsV2", LatencyNS: time.Since(t).Nanoseconds(), Error: errorCode(err)}
+		status, requestID := responseDiagnostics(err)
+		s := Sample{Phase: phase, Operation: "ListObjectsV2", LatencyNS: time.Since(t).Nanoseconds(), Error: errorCode(err), HTTPStatus: status, RequestID: requestID}
 		if err == nil {
 			for _, object := range out.Contents {
 				key := aws.ToString(object.Key)
