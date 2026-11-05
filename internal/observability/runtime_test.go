@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -99,8 +100,8 @@ func TestHTTPBodyCountersMeasureConsumedBytesAndStreaming(t *testing.T) {
 		http.NewResponseController(w).Flush()
 	})))
 	defer server.Close()
-	var sent, received int
-	client := CountHTTPClient(server.Client(), func(n int) { sent += n }, func(n int) { received += n })
+	var sent, received atomic.Int64
+	client := CountHTTPClient(server.Client(), func(n int) { sent.Add(int64(n)) }, func(n int) { received.Add(int64(n)) })
 	req, _ := http.NewRequest("POST", server.URL, strings.NewReader("xyz"))
 	out, err := client.Do(req)
 	if err != nil {
@@ -111,8 +112,8 @@ func TestHTTPBodyCountersMeasureConsumedBytesAndStreaming(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Body.Close()
-	if sent != 3 || received != 2 {
-		t.Fatal(sent, received)
+	if sent.Load() != 3 || received.Load() != 2 {
+		t.Fatal(sent.Load(), received.Load())
 	}
 	samples := m.Snapshot(time.Now())
 	if valueOf(t, samples, "miles_client_gateway_body_bytes_total") != 3 || valueOf(t, samples, "miles_gateway_client_body_bytes_total") != 4 {
