@@ -63,11 +63,23 @@ The pause apply completed at 04:10 UTC. The following plan had zero pending
 changes and retained 83 foundation resources, including both S3 buckets, 20
 tables, KMS and the runtime secret. ASG/ALB absence and Edge/client termination
 were checked separately; Terraform removed the interface endpoints and alarms.
-Full data teardown and independent root-volume absence verification remain
-outstanding. Retained storage and security resources can continue to accrue cost.
-The five temporary managed-policy defaults were restored and the temporary
-deploy-role inline grant was removed. Raw identifiers, credentials, native plans
-and request artifacts remain in private operator evidence.
+Full teardown subsequently completed at 08:54 UTC. All 4,542 retained S3 versions
+were removed, both test buckets and all 20 tables were deleted, and the workload
+Terraform state became empty. Independent API checks confirmed absence of the
+four root disks, fleet, ALB, network/endpoints, certificate, provider and audited
+session document. The runtime KMS key and secret were scheduled for deletion
+with 30-day windows. Twenty automatic SYSTEM backups remain under AWS retention.
+Bootstrap/state resources were preserved.
+
+The renewed IAM grant was withdrawn after cleanup, all five managed-policy
+defaults were restored, and the temporary policy versions and owned service-linked
+roles were removed. Test private keys, bearer tokens and synthetic credentials
+were removed from the operator files and the root CLI session was logged out.
+Native plans and diagnostic metadata remain in private operator evidence.
+
+The interrupted run was not restarted. Its only Admin token had expired, and
+the operator selected evidence export followed by a fresh installation. Cleanup
+finished before a replacement installation or a new VM was created.
 
 The insert reconciliation and policy-read ordering fixes have local regression
 proof. They require a new live release before they can certify the retained
