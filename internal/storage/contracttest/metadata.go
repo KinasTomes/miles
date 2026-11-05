@@ -520,11 +520,55 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 		if _, err := h.Store.CommitObject(ctx, a); err != nil {
 			t.Fatal(err)
 		}
+		staleOverwrite := f.Request("stale-overwrite", 1)
+		Prepare(t, h.Store, f, staleOverwrite, 0)
 		b := f.Request("overwrite", 1)
 		Prepare(t, h.Store, f, b, 0)
 		if _, err := h.Store.CommitObject(ctx, b); err != nil {
 			t.Fatal("same-size overwrite at full quota", err)
 		}
+		again, err := h.Store.CommitObject(ctx, b)
+		if err != nil || !again.AlreadyCommitted || again.Head.Revision != 2 {
+			t.Fatal("overwrite retry", again, err)
+		}
+		outbox, err := h.Store.GetOutbox(ctx, b.Event.ID)
+		if err != nil || outbox.OpID != b.Head.OpID || outbox.Revision != 2 {
+			t.Fatal("overwrite outbox", outbox, err)
+		}
+		if _, err := h.Store.CommitObject(ctx, staleOverwrite); !errors.Is(err, s.ErrConflict) {
+			t.Fatal("stale overwrite", err)
+		}
+		if _, err := h.Store.GetCommitOutcome(ctx, staleOverwrite.Head.OpID); !errors.Is(err, s.ErrNotFound) {
+			t.Fatal("stale outcome", err)
+		}
+		if _, err := h.Store.GetOutbox(ctx, staleOverwrite.Event.ID); !errors.Is(err, s.ErrNotFound) {
+			t.Fatal("stale outbox", err)
+		}
+		release := s.ReservationRelease{ID: staleOverwrite.ReservationID, OpID: b.Head.OpID, ExpectedRevision: 1, Writer: staleOverwrite.Writer}
+		requireError(t, h.Store.ReleaseLogicalQuota(ctx, release), s.ErrConflict)
+		release.OpID = staleOverwrite.Head.OpID
+		for i := 0; i < 2; i++ {
+			if err := h.Store.ReleaseLogicalQuota(ctx, release); err != nil {
+				t.Fatal("stale cleanup", err)
+			}
+		}
+		ledger, err := h.Store.GetReservation(ctx, staleOverwrite.ReservationID)
+		if err != nil || ledger.State != s.ReservationReleased || ledger.Revision != 2 {
+			t.Fatal("stale ledger", ledger, err)
+		}
+		winner, err := h.Store.GetObject(ctx, b.Head.Object)
+		if err != nil || winner.OpID != b.Head.OpID || winner.Revision != 2 {
+			t.Fatal("winner head", winner, err)
+		}
+		q, err := h.Store.GetQuota(ctx, f.Bucket.OwnerID)
+		if err != nil || q.Used != 4 || q.Reserved != 0 || q.Staged != 0 {
+			t.Fatal("quota after cleanup", q, err)
+		}
+		grow := f.Request("over-quota", 2)
+		requireError(t, h.Store.ReserveLogicalQuota(ctx, s.Reservation{
+			Version: s.ModelVersion, ID: grow.ReservationID, OpID: grow.Head.OpID, OwnerID: f.Bucket.OwnerID, Object: grow.Head.Object,
+			Bytes: 1, StagedBytes: 5, BaseRevision: 2, BaseSize: 4, Revision: 1, State: s.ReservationActive, Deadline: f.Now.Add(time.Minute), Writer: grow.Writer,
+		}), s.ErrQuotaExceeded)
 		del := f.Request("delete", 2)
 		del.Head.Deleted = true
 		del.Head.ManifestID = ""
@@ -540,13 +584,13 @@ func RunMetadata(t *testing.T, newStore MetadataFactory) {
 		if !head.Deleted || head.Revision != 3 {
 			t.Fatal("delete lost tombstone revision")
 		}
-		q, _ := h.Store.GetQuota(ctx, "owner")
+		q, _ = h.Store.GetQuota(ctx, "owner")
 		if q.Used != 0 || q.Reserved != 0 || q.Staged != 0 {
 			t.Fatal(q)
 		}
 		stale := f.Request("stale-create", 0)
 		Prepare(t, h.Store, f, stale, 4)
-		_, err := h.Store.CommitObject(ctx, stale)
+		_, err = h.Store.CommitObject(ctx, stale)
 		requireError(t, err, s.ErrConflict)
 	})
 	t.Run("reservation release idempotent and bounded", func(t *testing.T) {

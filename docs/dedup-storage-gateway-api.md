@@ -540,7 +540,7 @@ Part upload song song/sai thứ tự được hỗ trợ; cùng partNumber CAS h
 - Active: input chuẩn hóa ghi page kind 3 rồi `FreezeCompletion` (CAS revision, thử lại khi publish part chen giữa). Lần đầu freeze sinh `completion_op_id`; mọi lần sau (sau reopen, takeover, recover) admit lại đúng op đó với fence mới, nên outcome/receipt/event chỉ có một. Publisher còn `Open` bị `CancelPartPublisher` (CAS candidate + upload chặn publish muộn, trả provisional bytes) trước snapshot. Part head hiện hành của mỗi part được chọn (`GetPart`, quyền write ∧ initiator) qua `core.Assemble` (dòng 6–11), ghi snapshot kind 4, rồi `WriteSession.PrepareCompletion` bind root manifest và dispatch `PrepareCompletion` qua writer R1.
 - Lease: từ freeze/claim tới trước commit, heartbeat gọi `RenewCompletion` mỗi 15 giây (lease 60 giây, kiểm lại quyền initiator). `PrepareCompletion` điều kiện theo fence của attempt (cùng state Completing, writer, lease còn), không theo revision upload, nên renewal của chính attempt trong lúc prepare dài không làm prepare thất bại; attempt cũ (fence nhỏ hơn) vẫn bị từ chối. Renewal thua CAS vì cancel/prepare của cùng attempt đọc lại upload và thử lại khi fence chưa đổi. Trước commit heartbeat dừng, một renewal cuối chốt revision mà transaction cần.
 - Commit: `WriteSession.Commit` với head đã prepare, ledger revision, `MultipartAttempt` = fence, projection Completing và receipt 7 ngày; backend ghi head/quota/outbox/Completed/full receipt một transaction. Kết quả chưa rõ (kể cả từ chối mà writer báo unknown) đối chiếu outcome theo op rồi receipt; đã commit thì trả head, không commit lại. Chỉ khi outcome chứng minh vắng mới xét lỗi đã biết: dòng 6–13 và head CAS conflict `ReopenUpload` (đóng op trước nên commit muộn không thể thắng). Reopen từ chối upload đã quá `expires_at` (Active hết hạn là `NoSuchUpload`), khi đó và khi takeover bị `AccessDenied` thì `ResolveCompletion` → Aborting/Aborted, release một lần. Lỗi khác giữ Completing cùng roots/reservation.
-- Completing: Complete cùng input sau lease + grace (hoặc `object.Service.RecoverUpload`, đầu vào cho `recover_uploads`, đọc input kind 3 đã freeze) `ClaimCompletion` fence mới rồi chạy lại snapshot/prepare/commit cùng op, kể cả quá `expires_at` như bảng state 4.3.1. Không TTL nào xóa Completing; lịch chạy sweeper 60 giây chưa có.
+- Completing: Complete cùng input sau lease + grace (hoặc `object.Service.RecoverUpload`, đầu vào cho `recover_uploads`, đọc input kind 3 đã freeze) `ClaimCompletion` fence mới rồi chạy lại snapshot/prepare/commit cùng op, kể cả quá `expires_at` như bảng state 4.3.1. Không TTL nào xóa Completing. Runtime Cloud/Edge chạy `recover_uploads` và `purge_uploads` mỗi 60 giây ([cluster operations](development/cluster-operations.md)): `purge_uploads` không đụng Completing; `recover_uploads` bỏ qua upload còn lease/grace, để Aborting cho `purge_uploads`; kết quả chưa rõ giữ step, lỗi không retry được (input đã freeze hỏng) chỉ hoãn đúng upload đó và job báo `uploads_deferred`. Mode local/benchmark một node không chạy job: Completing chỉ được resume khi client retry.
 - LastModified của object multipart là lúc CreateMultipartUpload (như S3), lưu trong metadata nội bộ của upload. Local authority cấp lease mới cho mỗi lần admit (không còn một lease cố định theo op) để admit lại completion op.
 
 #### 4.3.1 Complete: input chuẩn hóa, receipt và lỗi — hợp đồng W1
@@ -827,6 +827,19 @@ Không trả dedup/physical bytes, dù user-b là chủ bucket. Ví dụ user-b 
 
 See [storage statistics](contracts/storage-statistics.md) for the measured scope.
 `bytes_stored` is retained listed durable bytes (including noncurrent versions).
+
+For global stats, `listed_bytes_by_pack_lifecycle` and
+`listed_bytes_by_storage_class` partition the same listed bytes independently.
+A current pack or sidecar can be classified as `head_live`, `no_live_head`,
+`retired`, `orphan` or `unsettled`. The first two categories describe the
+observed generation as a whole, including its overhead. Cold generations with
+no observed live head remain in the totals. Older pack and sidecar versions
+are counted as `noncurrent`. Other objects are counted as `other`.
+`listed_known_protected_bytes` overlaps those categories. It includes current
+objects with an observed protection deadline or a supplied generation root.
+It is a lower bound from approximate observations and cannot establish GC
+eligibility. None of these fields changes bucket allocation or logical quota.
+
 Temporary restored billed bytes and revival counters without verified sources
 are null, not zero. Cached observations include timestamps, version scope,
 allocation methodology and consistency=approximate. Layout is metadata-only,

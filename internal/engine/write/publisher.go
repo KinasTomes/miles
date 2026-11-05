@@ -47,6 +47,10 @@ type StorePublisher struct {
 var _ Publisher = (*StorePublisher)(nil)
 
 func (p *StorePublisher) Reuse(ctx context.Context, row storage.Chunk) (bool, error) {
+	return p.reuse(ctx, row, time.Time{})
+}
+
+func (p *StorePublisher) reuse(ctx context.Context, row storage.Chunk, restoreRequiredUntil time.Time) (bool, error) {
 	if p == nil || p.Metadata == nil || p.Guard == nil || p.ProtectedUntil.IsZero() {
 		return false, storage.ErrInvalid
 	}
@@ -64,22 +68,34 @@ func (p *StorePublisher) Reuse(ctx context.Context, row storage.Chunk) (bool, er
 	if info.Ref != row.Location.Pack || row.Location.Range.Validate(info.Size) != nil {
 		return false, storage.ErrInvalid
 	}
-	reusable, err := policy.WriteReuseCandidate(info.State, info.Class)
+	reusable, err := policy.CopyReuseCandidate(info, restoreRequiredUntil)
 	if err != nil || !reusable {
 		return false, err
 	}
-	pinned, err := p.Guard.Pin(ctx, row)
+	pin := p.Guard.Pin
+	if info.State == "Restored" {
+		guard, ok := p.Guard.(interface {
+			PinCopy(context.Context, storage.Chunk, time.Time) (bool, error)
+		})
+		if !ok {
+			return false, storage.ErrUnavailable
+		}
+		pin = func(ctx context.Context, row storage.Chunk) (bool, error) {
+			return guard.PinCopy(ctx, row, restoreRequiredUntil)
+		}
+	}
+	pinned, err := pin(ctx, row)
 	if err != nil || !pinned {
 		return false, err
 	}
 	// Retain the exact generation pin while the backend atomically validates
 	// location/state/fence and persists max(existing, required). Unknown outcome
 	// aborts reuse; never remove the check or silently relabel a new generation.
-	protected, err := p.Metadata.ExtendPackProtection(ctx, storage.PackProtectionUpdate{Chunk: row, ExpectedStateRevision: info.StateRevision, RequiredUntil: p.ProtectedUntil, Writer: p.Writer})
+	protected, err := p.Metadata.ExtendPackProtection(ctx, storage.PackProtectionUpdate{Chunk: row, ExpectedStateRevision: info.StateRevision, RequiredUntil: p.ProtectedUntil, RestoreRequiredUntil: restoreRequiredUntil, Writer: p.Writer})
 	if err != nil {
 		return false, err
 	}
-	canReuse, err := policy.WriteReuseCandidate(protected.State, protected.Class)
+	canReuse, err := policy.CopyReuseCandidate(protected, restoreRequiredUntil)
 	if err != nil || !canReuse || protected.Ref != info.Ref || protected.ProtectedUntil.Before(p.ProtectedUntil) {
 		return false, storage.ErrUnavailable
 	}
@@ -87,6 +103,10 @@ func (p *StorePublisher) Reuse(ctx context.Context, row storage.Chunk) (bool, er
 }
 
 func (p *StorePublisher) Publish(ctx context.Context, ref storage.PackRef, data, sidecar []byte, entries []pack.Entry, prior map[storage.ChunkKey]storage.Chunk) (map[storage.ChunkKey]storage.Chunk, error) {
+	return p.publish(ctx, ref, data, sidecar, entries, prior, time.Time{})
+}
+
+func (p *StorePublisher) publish(ctx context.Context, ref storage.PackRef, data, sidecar []byte, entries []pack.Entry, prior map[storage.ChunkKey]storage.Chunk, restoreRequiredUntil time.Time) (map[storage.ChunkKey]storage.Chunk, error) {
 	if p == nil || p.Metadata == nil || p.Packs == nil || p.Guard == nil || p.Writer.LeaseID == "" || p.ProtectedUntil.IsZero() {
 		return nil, storage.ErrInvalid
 	}
@@ -131,7 +151,7 @@ func (p *StorePublisher) Publish(ctx context.Context, ref storage.PackRef, data,
 	for _, entry := range entries {
 		row := storage.Chunk{Version: storage.ModelVersion, Key: entry.Key, RawBytes: int64(entry.RawLength), Location: entry.Location(ref), LocationRevision: 1}
 		old, found := prior[entry.Key]
-		resolved, err := p.canonicalize(ctx, row, old, found)
+		resolved, err := p.canonicalize(ctx, row, old, found, restoreRequiredUntil)
 		if err != nil {
 			return nil, err
 		}
@@ -146,7 +166,7 @@ func (p *StorePublisher) Publish(ctx context.Context, ref storage.PackRef, data,
 	return out, nil
 }
 
-func (p *StorePublisher) canonicalize(ctx context.Context, desired, old storage.Chunk, found bool) (storage.Chunk, error) {
+func (p *StorePublisher) canonicalize(ctx context.Context, desired, old storage.Chunk, found bool, restoreRequiredUntil time.Time) (storage.Chunk, error) {
 	for attempt := 0; attempt < 8; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return storage.Chunk{}, err
@@ -179,7 +199,7 @@ func (p *StorePublisher) canonicalize(ctx context.Context, desired, old storage.
 		if old.Location == desired.Location {
 			return old, nil
 		}
-		accepted, err := p.Reuse(ctx, old)
+		accepted, err := p.reuse(ctx, old, restoreRequiredUntil)
 		if err != nil {
 			return storage.Chunk{}, err
 		}

@@ -264,6 +264,14 @@ func TestRetentionKeepsProtectedCutsPinsAndImmutableAnchors(t *testing.T) {
 	if e != nil || len(catalog.Cuts) != 2 {
 		t.Fatal(catalog, e)
 	}
+	inventory, e := r.EnumerateProtectedData(t.Context(), 4)
+	if e != nil || len(inventory) != 2 || len(inventory[0].Locations) != 1 || len(inventory[1].Locations) != 1 ||
+		inventory[1].Snapshot.Base != root || inventory[0].Locations[0] != inventory[1].Locations[0] {
+		t.Fatal(inventory, e)
+	}
+	if partial, e := r.EnumerateProtectedData(t.Context(), 3); partial != nil || !errors.Is(e, s.ErrUnavailable) {
+		t.Fatal(partial, e)
+	}
 	start := time.Date(2026, 11, 4, 0, 0, 0, 0, time.UTC)
 	edge := start.Add(ProtectedWindow + RetentionBuffer)
 	b := s.R1Bounds{Lower: edge, Upper: edge, Horizon: edge.Add(time.Hour)}

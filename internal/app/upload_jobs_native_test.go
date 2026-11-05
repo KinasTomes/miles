@@ -116,4 +116,55 @@ func nativeUploadJobs(t *testing.T, ctx context.Context, nodes []Dependencies, c
 	if out := wait(j.ID); out.State != jobs.Succeeded {
 		t.Fatal(out)
 	}
+
+	// A Completing upload past expires_at belongs to recovery, never to purge:
+	// purge keeps its reservation, recovery waits for lease plus grace, then
+	// takes it over from the frozen input and charges the object once.
+	metadata := nodes[0].Metadata.(*sharedMetadata)
+	c, e := svc.CreateUpload(ctx, object.CreateUploadRequest{Bucket: bucket, Key: "job-completing", CredentialID: "RUNTIMEKEY00000000001", ChecksumAlgorithm: "SHA256", ChecksumType: "COMPOSITE"})
+	if e != nil {
+		t.Fatal(e)
+	}
+	part, e := svc.UploadPart(ctx, object.PartRequest{Upload: c, Number: 1, CredentialID: c.Credential, ContentLength: int64(len(payload)), Body: bodyForNative(payload)})
+	if e != nil {
+		t.Fatal(e)
+	}
+	nativeFreezeForSweep(t, ctx, metadata, c, part)
+	backdate := func(field, token string) {
+		_, e := clients.metadata.UpdateItem(ctx, &ddb.UpdateItemInput{TableName: aws.String(prefix + "Uploads"), Key: map[string]types.AttributeValue{"upload_id": &types.AttributeValueMemberS{Value: c.ID}}, UpdateExpression: aws.String("SET #upload.#time=:past, #revision=:token"), ExpressionAttributeNames: map[string]string{"#upload": "upload-record", "#time": field, "#revision": "record_revision"}, ExpressionAttributeValues: map[string]types.AttributeValue{":past": &types.AttributeValueMemberS{Value: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339Nano)}, ":token": &types.AttributeValueMemberS{Value: strings.Repeat(token, 64)}}})
+		if e != nil {
+			t.Fatal(e)
+		}
+	}
+	backdate("expires_at", "d")
+	held, e := metadata.GetQuota(ctx, bucket.OwnerID)
+	if e != nil || held.ActiveUploads != 1 || held.Staged != int64(len(payload)) {
+		t.Fatal(held, e)
+	}
+	sweep := func(kind jobs.Type, state string, completed uint64) {
+		t.Helper()
+		j, e := nodes[1].Operations.Cluster.Create(ctx, jobs.Create{Type: kind})
+		if e != nil {
+			t.Fatal(e)
+		}
+		out := wait(j.ID)
+		var counts uploadCheckpoint
+		if out.State != jobs.Succeeded || json.Unmarshal(out.Result, &counts) != nil || counts.Completed != completed || counts.Aborted != 0 {
+			t.Fatal(kind, out.State, string(out.Result))
+		}
+		if raw, e := metadata.GetUpload(ctx, c.ID); e != nil || raw.State != state {
+			t.Fatal(kind, raw.State, e)
+		}
+	}
+	sweep("purge_uploads", "Completing", 0)
+	sweep("recover_uploads", "Completing", 0) // inside the completion lease
+	if q, e := metadata.GetQuota(ctx, bucket.OwnerID); e != nil || q != held {
+		t.Fatal("sweeps released a Completing upload", q, e)
+	}
+	backdate("lease_until", "c")
+	sweep("recover_uploads", "Completed", 1)
+	quota, e = metadata.GetQuota(ctx, bucket.OwnerID)
+	if e != nil || quota.Used != held.Used+int64(len(payload)) || quota.Reserved != 0 || quota.Staged != 0 || quota.ActiveUploads != 0 {
+		t.Fatal("recovered upload charged", quota, held, e)
+	}
 }

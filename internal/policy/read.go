@@ -35,36 +35,16 @@ func EvaluateRead(in ReadInput) (Decision, error) {
 		if !ok {
 			return d, err
 		}
-		if !in.UTC.Trusted || !in.UTC.validated {
-			d.Reason = MissingEvidence
-			return d, nil
-		}
-		u := in.UTC
-		if !validUTC(u.Lower) || !validUTC(u.Upper) || u.Lower.After(u.Upper) || !validUTC(p.RestoredUntil) {
-			d.Reason = InvalidEvidence
-			return d, ErrEvidence
-		}
-		cmp, e := u.Horizon.Compare(in.Request.Deadline)
-		if e != nil {
-			d.Reason = InvalidEvidence
-			return d, e
-		}
-		if cmp < 0 {
-			d.Reason = MissingEvidence
-			return d, nil
-		}
-		remaining, e := in.Request.Deadline.Sub(in.Request.Now)
-		if e != nil {
-			d.Reason = InvalidEvidence
-			return d, e
-		}
-		// Separate additions avoid duration overflow in remaining+margin.
-		if err := validateUTCBinding(u, in.Request); err != nil {
+		required, err := RestoreRequiredUntil(in.Request, in.UTC)
+		if err != nil {
 			d.Reason = InvalidEvidence
 			return d, err
 		}
-		required := u.Upper.UTC().Add(remaining).Add(120 * time.Second)
-		if !validUTC(required) {
+		if required.IsZero() {
+			d.Reason = MissingEvidence
+			return d, nil
+		}
+		if !validUTC(p.RestoredUntil) {
 			d.Reason = InvalidEvidence
 			return d, ErrEvidence
 		}
@@ -87,3 +67,44 @@ func EvaluateRead(in ReadInput) (Decision, error) {
 }
 
 func validUTC(t time.Time) bool { return !t.IsZero() && t.UTC().Year() >= 1 && t.UTC().Year() <= 9999 }
+
+// RestoreRequiredUntil returns the conservative expiry threshold for GET/Copy.
+// A zero threshold means there is no trusted proof covering the request.
+func RestoreRequiredUntil(request Request, u UTCProof) (time.Time, error) {
+	if !u.Trusted || !u.validated {
+		return time.Time{}, nil
+	}
+	if !validUTC(u.Lower) || !validUTC(u.Upper) || u.Lower.After(u.Upper) {
+		return time.Time{}, ErrEvidence
+	}
+	cmp, err := u.Horizon.Compare(request.Deadline)
+	if err != nil || cmp < 0 {
+		return time.Time{}, err
+	}
+	remaining, err := request.Deadline.Sub(request.Now)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if remaining <= 0 {
+		return time.Time{}, ErrEvidence
+	}
+	if err := validateUTCBinding(u, request); err != nil {
+		return time.Time{}, err
+	}
+	required := u.Upper.UTC().Add(remaining).Add(120 * time.Second)
+	if !validUTC(required) {
+		return time.Time{}, ErrEvidence
+	}
+	return required, nil
+}
+
+// CopyReuseCandidate extends write reuse with temporary restore eligibility.
+func CopyReuseCandidate(p storage.PackInfo, restoreRequiredUntil time.Time) (bool, error) {
+	if p.State == "Restored" && p.Class == storage.Glacier && !restoreRequiredUntil.IsZero() {
+		if !validUTC(restoreRequiredUntil) || !validUTC(p.RestoredUntil) {
+			return false, ErrEvidence
+		}
+		return !p.RestoredUntil.Before(restoreRequiredUntil), nil
+	}
+	return WriteReuseCandidate(p.State, p.Class)
+}

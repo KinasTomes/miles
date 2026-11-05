@@ -78,6 +78,11 @@ func (w Checkpointer) Rebuild(ctx context.Context, root AttachmentReference) (Re
 	if err != nil {
 		return zero, err
 	}
+	return w.rebuildImage(ctx, image)
+}
+
+func (w Checkpointer) rebuildImage(ctx context.Context, image Image) (Rebuilt, error) {
+	var zero Rebuilt
 	out := Rebuilt{Chunks: map[s.ChunkKey]s.Chunk{}, Packs: map[s.PackRef]s.PackInfo{}, Live: map[s.ChunkKey]bool{}, Manifests: map[string][]s.ManifestPage{}}
 	users := map[string]s.User{}
 	buckets := map[string]s.Bucket{}
