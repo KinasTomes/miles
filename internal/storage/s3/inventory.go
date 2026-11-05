@@ -41,7 +41,7 @@ func (v VersionInventory) CollectInventory(ctx context.Context, limit int) (s.Ph
 			if len(out.Objects) >= limit || item.Key == nil || item.Size == nil || *item.Size < 0 || item.IsLatest == nil {
 				return out, s.ErrUnavailable
 			}
-			o := s.PhysicalObject{Key: *item.Key, VersionID: aws.ToString(item.VersionId), Size: *item.Size, Current: *item.IsLatest, Category: "other"}
+			o := s.PhysicalObject{Key: *item.Key, VersionID: aws.ToString(item.VersionId), Size: *item.Size, Current: *item.IsLatest, Category: "other", Class: s.StorageClass(item.StorageClass)}
 			parts := strings.Split(o.Key, "/")
 			if len(parts) == 4 && (parts[0] == "packs" || parts[0] == "packs-index") {
 				o.Pack = s.PackRef{ID: parts[2], Generation: strings.TrimSuffix(parts[3], ".idx")}

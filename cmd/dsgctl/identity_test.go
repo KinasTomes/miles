@@ -106,7 +106,7 @@ func TestIdentityInvalidArgumentsNeverReachTransport(t *testing.T) {
 	} {
 		var out bytes.Buffer
 		err := run(context.Background(), args, &out, io.Discard)
-		if err == nil || err.Error() == "--token-file is required" || out.Len() != 0 {
+		if err == nil || err.Error() == "--token-file or DSGCTL_TOKEN_FILE is required" || out.Len() != 0 {
 			t.Fatal(args, err)
 		}
 	}

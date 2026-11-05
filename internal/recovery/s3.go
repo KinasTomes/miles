@@ -38,6 +38,10 @@ func (o *S3Objects) Read(ctx context.Context, key string) ([]byte, error) {
 	}
 	got, err := o.client.GetObject(ctx, &awss3.GetObjectInput{Bucket: aws.String(o.bucket), Key: aws.String(o.prefix + key)})
 	if err != nil {
+		var api smithy.APIError
+		if errors.As(err, &api) && (api.ErrorCode() == "NoSuchKey" || api.ErrorCode() == "NotFound") {
+			return nil, s.ErrNotFound
+		}
 		return nil, err
 	}
 	if got == nil || got.Body == nil {
@@ -77,7 +81,7 @@ func (o *S3Objects) Create(ctx context.Context, key string, b []byte) error {
 	got, readErr := o.Read(ctx, key)
 	if readErr != nil {
 		if err != nil {
-			return err
+			return errors.Join(err, readErr)
 		}
 		return readErr
 	}

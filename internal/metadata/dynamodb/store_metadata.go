@@ -191,6 +191,14 @@ func (m *Store) PutChunkIfAbsent(ctx context.Context, c s.Chunk, w s.WriterFence
 			if json.Unmarshal(replay.Value, &out) != nil {
 				return s.ErrUnavailable
 			}
+			// A historical outcome cannot return a location GC has retired.
+			current, err := get[s.Chunk](t, chunkKey(out.Key))
+			if errors.Is(err, s.ErrNotFound) || err == nil && current != out {
+				return s.ErrConflict
+			}
+			if err != nil {
+				return err
+			}
 			won = false
 			return nil
 		}
@@ -214,15 +222,26 @@ func (m *Store) PutChunkIfAbsent(ctx context.Context, c s.Chunk, w s.WriterFence
 		if c.LocationRevision != 1 {
 			return s.ErrInvalid
 		}
-		if err := validateCanonicalDestination(t, c.Location); err != nil {
+		candidate := c
+		revision, err := chunkRetirementRevision(t, candidate.Key)
+		if err != nil {
 			return err
 		}
-		if err := put(t, chunkKey(c.Key), c); err != nil {
+		if revision != 0 {
+			if revision >= s.MaxPolicyRevision {
+				return s.ErrConflict
+			}
+			candidate.LocationRevision = revision + 1
+		}
+		if err := validateCanonicalDestination(t, candidate.Location); err != nil {
 			return err
 		}
-		out = c
+		if err := put(t, chunkKey(candidate.Key), candidate); err != nil {
+			return err
+		}
+		out = candidate
 		won = true
-		_, journalErr := operations.Journal(multipartTx{t}, ctx, m.requireProducers, w, "Chunks", "location_set", identity, c.LocationRevision, c.Key, c)
+		_, journalErr := operations.Journal(multipartTx{t}, ctx, m.requireProducers, w, "Chunks", "location_set", identity, candidate.LocationRevision, candidate.Key, candidate)
 		return journalErr
 	})
 	if err != nil {
@@ -245,6 +264,14 @@ func (m *Store) CompareAndSwapChunkLocation(ctx context.Context, k s.ChunkKey, r
 		if replayErr == nil {
 			if json.Unmarshal(replay.Value, &out) != nil {
 				return s.ErrUnavailable
+			}
+			// A historical outcome cannot return a location GC has retired.
+			current, err := get[s.Chunk](t, chunkKey(out.Key))
+			if errors.Is(err, s.ErrNotFound) || err == nil && current != out {
+				return s.ErrConflict
+			}
+			if err != nil {
+				return err
 			}
 			return nil
 		}

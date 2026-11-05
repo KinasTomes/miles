@@ -24,3 +24,21 @@ func TestJobNativeRoundTrip(t *testing.T) {
 		t.Fatalf("invalid fixture round trip: %+v: %v", decoded, e)
 	}
 }
+
+func TestLegacyNodeHasNoInventedDrainProof(t *testing.T) {
+	n := opstest.Node("node-a")
+	n.Revision = 1
+	item, e := nativeItem(n)
+	if e != nil {
+		t.Fatal(e)
+	}
+	delete(item, "drain_applied")
+	delete(item, "drain_state")
+	var decoded jobs.Node
+	if e = unmarshalNative(&types.AttributeValueMemberM{Value: item}, reflect.ValueOf(&decoded).Elem()); e != nil {
+		t.Fatal(e)
+	}
+	if e = decoded.Validate(); e != nil || decoded.DrainApplied || decoded.DrainState != "" {
+		t.Fatal(decoded, e)
+	}
+}

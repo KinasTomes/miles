@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/clock"
+	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
 	"github.com/KinasTomes/miles/internal/recovery"
 	"github.com/KinasTomes/miles/internal/storage"
@@ -14,47 +16,44 @@ import (
 // One supervisor per gateway; immutable writes and shared CAS arbitrate peers.
 // A new hard lease never resets the durable hourly epoch deadline.
 type journalRuntime struct {
-	store   *dynamodb.Store
-	objects *recovery.S3Objects
-	catalog recovery.Catalog
-	clock   clock.Clock
-	utc     storage.R1TimeSource
-	owner   string
+	store     *dynamodb.Store
+	objects   *recovery.S3Objects
+	catalog   recovery.Catalog
+	clock     clock.Clock
+	authority jobs.Authority
 }
 
-func (j *journalRuntime) once(ctx context.Context, flush bool) (err error) {
-	id, err := storage.NewBucketID()
-	if err != nil {
-		return err
+func (j *journalRuntime) once(ctx context.Context, flush bool) (workErr, cleanupErr error) {
+	id := "recovery_supervisor"
+	if flush {
+		suffix, e := storage.NewBucketID()
+		if e != nil {
+			return e, nil
+		}
+		id = "shutdown_" + suffix
 	}
-	b, err := j.utc.Bounds(ctx)
+	f, err := j.authority.Acquire(ctx, id, "recovery")
 	if err != nil {
-		return err
-	}
-	f := storage.WriterFence{LeaseID: id, ServiceIncarnation: j.catalog.Incarnation, Epoch: 1}
-	_, err = j.store.AcquireR1(ctx, storage.R1Acquire{Fence: f, Kind: "recovery", Owner: j.owner, Deadline: b.Upper.Add(9 * time.Minute)})
-	if err != nil {
-		return err
+		return fmt.Errorf("acquire recovery authority: %w", err), nil
 	}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		e := j.store.CloseR1(cleanup, f)
-		if e == nil {
-			e = j.store.ReleaseR1(cleanup, f)
+		cleanupErr = j.authority.Close(cleanup, f)
+		if cleanupErr != nil {
+			cleanupErr = fmt.Errorf("release recovery authority: %w", cleanupErr)
 		}
-		err = errors.Join(err, e)
 	}()
 	w := recovery.Worker{Store: j.store, Payloads: j.store, Objects: j.objects, Catalog: j.catalog, Clock: j.clock, Fence: f}
 	if flush {
-		return w.Flush(ctx)
+		return w.FlushSupervised(ctx), nil
 	}
-	return w.Run(ctx)
+	return w.RunCuts(ctx), nil
 }
 
 func (j *journalRuntime) run(ctx context.Context) error {
 	for ctx.Err() == nil {
-		_ = j.once(ctx, false)
+		_, _ = j.once(ctx, false)
 		if err := j.clock.Sleep(ctx, time.Second); err != nil {
 			return err
 		}
@@ -62,8 +61,18 @@ func (j *journalRuntime) run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (j *journalRuntime) flush() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+func (j *journalRuntime) flush(parent context.Context) error {
+	ctx, cancel := context.WithTimeout(parent, 8*time.Minute)
 	defer cancel()
-	return j.once(ctx, true)
+	for {
+		workErr, cleanupErr := j.once(ctx, true)
+		if cleanupErr != nil || !errors.Is(workErr, storage.ErrR1Busy) {
+			return errors.Join(workErr, cleanupErr)
+		}
+		// A peer may still own a closed epoch's seal. Keep its authority intact
+		// and retry discovery within this shutdown's original flush deadline.
+		if err := j.clock.Sleep(ctx, time.Second); err != nil {
+			return err
+		}
+	}
 }

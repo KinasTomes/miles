@@ -9,6 +9,7 @@ import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -192,6 +193,78 @@ class DrainTests(unittest.TestCase):
             return {"TargetHealthDescriptions": [{"TargetHealth": {
                 "State": "unused" if self.now >= self.unused_after else "draining"}}]}
         return {}
+
+    def test_manual_drain_publishes_only_after_process_and_alb_proof(self):
+        request = {"node_id": "cloud-node", "incarnation": "boot-a",
+                   "service_incarnation": "history-a", "invocation": "b" * 32}
+        self.controller.config["table_prefix"] = "fixture-"
+        row = {"incarnation": {"S": "boot-a"}, "service_incarnation": {"S": "history-a"},
+               "draining": {"BOOL": True}, "drain_applied": {"BOOL": True},
+               "revision": {"N": "4"}, "record_revision": {"S": "a" * 64},
+               "drain_state": {"S": "gated"}}
+        updates = []
+        original = self.aws
+        def aws(service, operation, *args):
+            if operation == "get-item":
+                return {"Item": row}
+            if operation == "update-item":
+                self.assertGreaterEqual(self.now, self.unused_after)
+                self.assertGreaterEqual(self.now, self.stop_after)
+                self.assertIn("#token=:old", args[args.index("--condition-expression") + 1])
+                updates.append(self.now)
+                row["drain_state"] = {"S": "complete"}
+                if len(updates) == 1:
+                    raise RuntimeError("lost update acknowledgement")
+                return {}
+            return original(service, operation, *args)
+        self.controller.aws.side_effect = aws
+        self.controller.drain(manual=True, request=request)
+        self.assertEqual(len(updates), 1)  # retry reconciles the committed proof
+        names = [name for name, _ in self.actions]
+        self.assertNotIn("record-lifecycle-action-heartbeat", names)
+        self.assertNotIn("complete-lifecycle-action", names)
+        self.assertEqual(names.count("systemctl stop"), 1)
+
+    def test_manual_drain_adopts_asg_hook_during_replacement(self):
+        def metadata(path):
+            if path == "meta-data/autoscaling/target-lifecycle-state":
+                return "Terminated" if self.now >= 30 else "InService"
+            return json.dumps(self.identity)
+        self.controller.metadata.side_effect = metadata
+        self.controller.drain(manual=True)
+        self.assertEqual([t for name, t in self.actions if name == "record-lifecycle-action-heartbeat"], [30, 60])
+        self.assertEqual([t for name, t in self.actions if name == "complete-lifecycle-action"], [65])
+
+    def test_manual_drain_timeout_never_publishes_node_completion(self):
+        request = {"node_id": "cloud-node", "incarnation": "boot-a",
+                   "service_incarnation": "history-a", "invocation": "b" * 32}
+        self.stop_after = 999
+        with patch.object(lifecycle, "TOTAL_SECONDS", 20):
+            with self.assertRaises(lifecycle.IncompleteDrain):
+                self.controller.drain(manual=True, request=request)
+        self.assertNotIn("update-item", [name for name, _ in self.actions])
+
+    def test_request_is_private_bounded_and_bound_to_invocation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "request.json"
+            request = {"node_id": "cloud-node", "incarnation": "boot-a",
+                       "service_incarnation": "history-a", "invocation": "b" * 32}
+            path.write_text(json.dumps(request))
+            path.chmod(0o600)
+            with patch.object(lifecycle, "REQUEST", path), patch.object(lifecycle.pwd, "getpwnam", return_value=SimpleNamespace(pw_uid=os.getuid())):
+                self.assertEqual(self.controller.requested(), request)
+                path.chmod(0o644)
+                with self.assertRaises(lifecycle.IncompleteDrain):
+                    self.controller.requested()
+                path.chmod(0o600)
+                path.unlink()
+                path.symlink_to(Path(directory) / "foreign")
+                with self.assertRaises(OSError):
+                    self.controller.requested()
+        request["invocation"] = "c" * 32
+        with self.assertRaisesRegex(lifecycle.IncompleteDrain, "another invocation"):
+            self.controller.drain(manual=True, request=request)
+        self.assertNotIn("systemctl stop", [name for name, _ in self.actions])
 
     def test_completion_waits_for_process_proof_and_alb_and_keeps_heartbeat(self):
         self.controller.drain()

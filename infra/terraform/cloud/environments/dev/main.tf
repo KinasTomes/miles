@@ -87,14 +87,15 @@ module "compute" {
   architecture      = var.release_architecture
 }
 module "alb" {
-  source            = "../../modules/alb"
-  name              = local.name
-  enabled           = !var.paused && var.enable_alb
-  vpc_id            = module.network.vpc_id
-  subnet_ids        = values(module.network.public_subnets)
-  security_group_id = module.network.security_groups.alb
-  certificate_arn   = var.certificate_arn
-  client_cidrs      = var.client_cidrs
+  source                       = "../../modules/alb"
+  name                         = local.name
+  enabled                      = !var.paused && var.enable_alb
+  vpc_id                       = module.network.vpc_id
+  subnet_ids                   = values(module.network.public_subnets)
+  security_group_id            = module.network.security_groups.alb
+  certificate_arn              = var.certificate_arn
+  client_cidrs                 = var.client_cidrs
+  deregistration_delay_seconds = var.alb_deregistration_delay_seconds
 }
 
 # The retained single-node data disk never belongs to an interchangeable fleet.

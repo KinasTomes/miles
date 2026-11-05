@@ -53,9 +53,11 @@ type fakeService struct {
 	listed       object.ListPartsRequest
 	parts        storage.PartListPage
 	aborted      int
+	abortErr     error
 	completed    []object.CompleteRequest
 	completeHead storage.ObjectHead
 	completeErr  error
+	onLost       func() // the state that won against a failed Abort or Complete
 }
 
 func (f *fakeService) CreateUpload(_ context.Context, r object.CreateUploadRequest) (storage.MultipartUpload, error) {
@@ -113,13 +115,19 @@ func (f *fakeService) AbortUpload(context.Context, object.AbortRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.aborted++
-	return nil
+	if f.abortErr != nil && f.onLost != nil {
+		f.onLost()
+	}
+	return f.abortErr
 }
 
 func (f *fakeService) CompleteUpload(_ context.Context, r object.CompleteRequest) (storage.ObjectHead, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.completed = append(f.completed, r)
+	if f.completeErr != nil && f.onLost != nil {
+		f.onLost()
+	}
 	return f.completeHead, f.completeErr
 }
 
@@ -331,6 +339,41 @@ func TestLostPublishAnswersWinningState(t *testing.T) {
 			}
 			if _, err := uploadPart(w.clients["writer-key"], u.ID, "key", 1, []byte("x"), ""); code(err) != want {
 				t.Fatalf("got %v, want %s", err, want)
+			}
+		})
+	}
+}
+
+// Abort and Complete race on one Active upload: the loser answers from the
+// state that won, never as a success of its own.
+func TestAbortCompleteLoserAnswersWinningState(t *testing.T) {
+	etag := `"0123456789abcdef0123456789abcdef"`
+	for _, tc := range []struct {
+		name, won, want string
+		complete        bool
+	}{
+		{name: "complete lost to abort", won: "Aborted", want: "NoSuchUpload", complete: true},
+		{name: "abort lost to complete", won: "Completing", want: "OperationAborted"},
+		{name: "abort lost to completed", won: "Completed", want: "OperationAborted"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWorld(t)
+			u := w.upload("Active")
+			w.svc.abortErr, w.svc.completeErr = storage.ErrConflict, storage.ErrConflict
+			w.svc.onLost = func() {
+				won := u
+				won.State, won.LeaseUntil = tc.won, w.now.Add(time.Minute)
+				w.svc.uploads[u.ID] = won
+				w.svc.receipts[u.ID] = w.now.Add(time.Hour)
+			}
+			var err error
+			if tc.complete {
+				_, err = completeParts(w.clients["writer-key"], u.ID, etag)
+			} else {
+				_, err = w.clients["writer-key"].AbortMultipartUpload(context.Background(), &awss3.AbortMultipartUploadInput{Bucket: aws.String("demo"), Key: aws.String("key"), UploadId: aws.String(u.ID)})
+			}
+			if code(err) != tc.want {
+				t.Fatalf("got %v, want %s", err, tc.want)
 			}
 		})
 	}

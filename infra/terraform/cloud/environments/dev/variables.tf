@@ -137,6 +137,12 @@ variable "enable_alb" {
     error_message = "Enabling ALB requires a real ACM certificate and client CIDR allowlist."
   }
 }
+variable "alb_deregistration_delay_seconds" {
+  type        = number
+  default     = 1800
+  nullable    = false
+  description = "ALB drain wait in whole seconds (0..1800). Use 300 for bounded dev/test requests; default preserves the 30-minute drain."
+}
 variable "certificate_arn" {
   type    = string
   default = null

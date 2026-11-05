@@ -33,7 +33,7 @@ const (
 )
 
 func Types() []Type {
-	return []Type{"tiering", "gc", "compaction", "scrub", "purge_uploads", "recover_uploads", "journal_flush", "recovery_checkpoint", "cache_purge", "drain"}
+	return []Type{"tiering", "pack_restore", "pack_promote", "gc", "compaction", "scrub", "purge_uploads", "recover_uploads", "journal_flush", "recovery_checkpoint", "cache_purge", "drain"}
 }
 func States() []State          { return []State{Queued, Running, Cancelling, Succeeded, Failed, Cancelled} }
 func (s State) Terminal() bool { return s == Succeeded || s == Failed || s == Cancelled }
@@ -203,7 +203,10 @@ func Apply(old Job, c Change, now time.Time) (Job, error) {
 	switch c.Kind {
 	case "claim":
 		if j.State != Queued {
-			if j.PendingStep != "" {
+			// Cache eviction, sticky drain and immutable journal export can
+			// retry the same step after authority transfer. Physical GC/tiering
+			// steps retain the reconciliation barrier for unknown outcomes.
+			if j.PendingStep != "" && j.Type != "cache_purge" && j.Type != "drain" && j.Type != "journal_flush" && j.Type != "purge_uploads" && j.Type != "recover_uploads" {
 				return Job{}, ErrReconciliation
 			}
 			if c.Fence == j.Worker && c.NodeID == j.WorkerNodeID && c.NodeIncarnation == j.WorkerNodeIncarnation {
@@ -220,6 +223,9 @@ func Apply(old Job, c Change, now time.Time) (Job, error) {
 		if j.State == Queued {
 			j.State = Running
 			j.StartedAt = now.UTC()
+			if j.Type == "cache_purge" || j.Type == "drain" || j.Type == "journal_flush" || j.Type == "purge_uploads" || j.Type == "recover_uploads" {
+				j.Checkpoint = json.RawMessage(`{}`)
+			}
 		}
 	case "heartbeat", "begin_step", "checkpoint", "finish":
 		if j.Worker != c.Fence || j.WorkerNodeID != c.NodeID || j.WorkerNodeIncarnation != c.NodeIncarnation {
@@ -288,21 +294,33 @@ func Apply(old Job, c Change, now time.Time) (Job, error) {
 }
 
 type Node struct {
-	ID                    string    `json:"node_id"`
-	Incarnation           string    `json:"incarnation"`
-	ServiceIncarnation    string    `json:"service_incarnation"`
-	Revision              uint64    `json:"revision"`
-	Profile               string    `json:"profile"`
-	Address               string    `json:"address"`
-	HeartbeatAt           time.Time `json:"heartbeat_at"`
-	Ready                 bool      `json:"ready"`
-	Draining              bool      `json:"draining"`
-	ActiveRequests        int64     `json:"active_requests"`
-	AppliedPolicyRevision uint64    `json:"applied_policy_revision"`
+	Cache                 CacheSample `json:"cache,omitzero"`
+	ID                    string      `json:"node_id"`
+	Incarnation           string      `json:"incarnation"`
+	ServiceIncarnation    string      `json:"service_incarnation"`
+	Revision              uint64      `json:"revision"`
+	Profile               string      `json:"profile"`
+	Address               string      `json:"address"`
+	HeartbeatAt           time.Time   `json:"heartbeat_at"`
+	Ready                 bool        `json:"ready"`
+	Draining              bool        `json:"draining"`
+	DrainApplied          bool        `json:"drain_applied"`
+	DrainState            string      `json:"drain_state"`
+	ActiveRequests        int64       `json:"active_requests"`
+	AppliedPolicyRevision uint64      `json:"applied_policy_revision"`
 }
 
 func (n Node) Validate() error {
+	if !n.Cache.SampledAt.IsZero() && (n.Cache.Validate() != nil || n.Cache.SampledAt.After(n.HeartbeatAt)) {
+		return storage.ErrInvalid
+	}
 	a, e := netip.ParseAddrPort(n.Address)
+	if n.DrainState != "" && n.DrainState != "gated" && n.DrainState != "complete" && n.DrainState != "incomplete" {
+		return storage.ErrInvalid
+	}
+	if (n.DrainApplied && !n.Draining) || (n.DrainState != "" && (!n.Draining || !n.DrainApplied)) {
+		return storage.ErrInvalid
+	}
 	if !ValidID(n.ID) || !ValidID(n.Incarnation) || !ValidID(n.ServiceIncarnation) || n.Revision == 0 || n.Revision > storage.MaxPolicyRevision || (n.Profile != "cloud" && n.Profile != "edge") || e != nil || a.Port() != 9000 || (!a.Addr().IsPrivate() && !a.Addr().IsLoopback()) || n.HeartbeatAt.IsZero() || n.ActiveRequests < 0 || n.AppliedPolicyRevision > storage.MaxPolicyRevision || (n.Draining && n.Ready) || !bounded(n) {
 		return storage.ErrInvalid
 	}
@@ -317,6 +335,18 @@ type NodeResult struct {
 	ErrorCode string          `json:"error_code,omitempty"`
 	Result    json.RawMessage `json:"result"`
 }
+
+func (n NodeResult) MarshalJSON() ([]byte, error) {
+	type wire NodeResult
+	v := wire(n)
+	// Native empty B attributes decode as an owned empty slice. Optional
+	// results still encode as null, including cancelled/unavailable children.
+	if len(v.Result) == 0 {
+		v.Result = nil
+	}
+	return json.Marshal(v)
+}
+
 type Result struct {
 	Scope string       `json:"scope"`
 	Nodes []NodeResult `json:"nodes"`
@@ -337,8 +367,9 @@ func (r Result) Validate() error {
 }
 
 type PageRequest struct {
-	Limit  int
-	Cursor string
+	ActiveOnly bool // internal worker discovery, never an HTTP filter
+	Limit      int
+	Cursor     string
 }
 
 func (p PageRequest) Validate() error {

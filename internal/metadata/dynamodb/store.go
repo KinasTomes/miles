@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	"reflect"
 	"sort"
 	"strconv"
@@ -30,6 +31,7 @@ type WriterAuthority interface {
 	Check(context.Context, s.WriterFence, Observe) error
 }
 type Options struct {
+	OfflineRecovery  OfflineRecoveryGuard
 	API              API
 	Tables           map[string]string
 	Now              func() time.Time
@@ -38,6 +40,7 @@ type Options struct {
 	RequireProducers bool
 }
 type Store struct {
+	offlineRecovery                        OfflineRecoveryGuard
 	api                                    API
 	tables                                 map[string]string
 	now                                    func() time.Time
@@ -78,7 +81,7 @@ func New(options Options) (*Store, error) {
 			return nil, s.ErrInvalid
 		}
 	}
-	return &Store{api: options.API, tables: tables, now: options.Now, authority: options.Authority, maxAttempts: options.MaxAttempts, requireProducers: options.RequireProducers}, nil
+	return &Store{offlineRecovery: options.OfflineRecovery, api: options.API, tables: tables, now: options.Now, authority: options.Authority, maxAttempts: options.MaxAttempts, requireProducers: options.RequireProducers}, nil
 }
 
 type outcome struct {
@@ -281,14 +284,16 @@ type observedRow struct {
 	dirty         bool
 }
 type transaction struct {
-	r1Fences        map[s.WriterFence]bool
-	recoveryFences  map[s.WriterFence]bool
-	store           *Store
-	ctx             context.Context
-	rows            map[string]*observedRow
-	operationID     string
-	operationDigest [32]byte
-	dispatchRequest *s.CommitRequest
+	beforeDispatch   func(context.Context) error
+	dispatchDeadline time.Time
+	r1Fences         map[s.WriterFence]bool
+	recoveryFences   map[s.WriterFence]bool
+	store            *Store
+	ctx              context.Context
+	rows             map[string]*observedRow
+	operationID      string
+	operationDigest  [32]byte
+	dispatchRequest  *s.CommitRequest
 }
 
 func (m *Store) transaction(ctx context.Context) *transaction {
@@ -447,6 +452,18 @@ func (t *transaction) commit() error {
 	if err := t.revalidateR1(); err != nil {
 		return err
 	}
+	if t.beforeDispatch != nil {
+		if err := t.beforeDispatch(t.ctx); err != nil {
+			return err
+		}
+		dispatchCtx, cancel := context.WithDeadline(t.ctx, t.dispatchDeadline)
+		defer cancel()
+		if dispatchCtx.Err() != nil {
+			return s.ErrFenced
+		}
+		_, err := t.store.api.TransactWriteItems(dispatchCtx, input, func(o *ddb.Options) { o.Retryer = aws.NopRetryer{} })
+		return backend(err)
+	}
 	var err error
 	if _, shared := t.store.authority.(*SharedAuthority); shared {
 		_, err = t.store.api.TransactWriteItems(t.ctx, input, func(o *ddb.Options) { o.Retryer = aws.NopRetryer{} })
@@ -477,6 +494,12 @@ func get[T any](t *transaction, k string) (T, error) {
 		if actual.Value != a.incarnation {
 			return out, s.ErrNotFound
 		}
+	}
+	if _, chunk := any(out).(s.Chunk); chunk && row.after[chunkRetirementAttribute] != nil {
+		if _, err := decodeChunkRetirement(row.after); err != nil {
+			return out, err
+		}
+		return out, s.ErrNotFound
 	}
 	var attr types.AttributeValue = &types.AttributeValueMemberM{Value: row.after}
 	if a.scope != "" && a.scope != "users" && a.scope != "quotas" {
@@ -593,6 +616,14 @@ func (t *transaction) setPage(k string, body []byte) error {
 }
 
 func (m *Store) fence(t *transaction, w s.WriterFence) error {
+	if j, ok := lifecycle.JobFromContext(t.ctx); ok {
+		if j.Worker != w {
+			return s.ErrFenced
+		}
+		if e := m.lifecycleJob(t, j, true); e != nil {
+			return e
+		}
+	}
 	if _, ok := m.authority.(*SharedAuthority); ok {
 		if t.r1Fences == nil {
 			t.r1Fences = map[s.WriterFence]bool{}

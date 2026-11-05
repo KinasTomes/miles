@@ -15,6 +15,9 @@ func (m *Store) ObservePage(ctx context.Context, r s.ObservationRequest) (s.Obse
 		return out, err
 	}
 	prefix := r.Kind + "/"
+	if r.Kind == "uploads" {
+		prefix = "upload-record/"
+	}
 	if r.Cursor != "" && !strings.HasPrefix(r.Cursor, prefix) {
 		return out, s.ErrInvalid
 	}
@@ -54,6 +57,18 @@ func (m *Store) ObservePage(ctx context.Context, r s.ObservationRequest) (s.Obse
 					return e
 				}
 				out.Heads = append(out.Heads, v)
+			case "uploads":
+				v, e := get[s.MultipartUpload](t, k)
+				if e != nil {
+					return e
+				}
+				out.Uploads = append(out.Uploads, v)
+			case "chunks":
+				v, e := get[s.Chunk](t, k)
+				if e != nil {
+					return e
+				}
+				out.Chunks = append(out.Chunks, v)
 			case "packs":
 				v, e := get[s.PackInfo](t, k)
 				if e != nil {
@@ -67,4 +82,9 @@ func (m *Store) ObservePage(ctx context.Context, r s.ObservationRequest) (s.Obse
 		return nil
 	})
 	return out, err
+}
+
+// ObserveUploadParts reads authoritative part heads for maintenance without S3 authorization filters.
+func (m *Store) ObserveUploadParts(ctx context.Context, id string, after uint32, limit int) (s.PartListPage, error) {
+	return (multipartBridge{m}).Parts(ctx, id, after, limit)
 }

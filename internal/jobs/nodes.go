@@ -26,6 +26,7 @@ type NodeStatus struct {
 	AppliedPolicyRevision uint64
 }
 type Registry struct {
+	CacheSnapshot    func() CacheSample
 	Store            Store
 	Identity         Node
 	Clock            clock.Clock
@@ -76,8 +77,17 @@ func (r *Registry) tick(ctx context.Context, gate Gate, status NodeStatus) error
 		n := r.Identity
 		n.Revision = old.Revision
 		n.HeartbeatAt = r.Clock.Now().WallUTC
+		if r.CacheSnapshot != nil {
+			n.Cache = r.CacheSnapshot()
+			n.Cache.SampledAt = n.HeartbeatAt
+		}
 		n.ActiveRequests = active
 		n.Draining = draining || status.Draining || old.Draining
+		n.DrainApplied = draining
+		n.DrainState = old.DrainState
+		if draining && n.DrainState == "" {
+			n.DrainState = "gated"
+		}
 		n.Ready = status.Ready && !n.Draining
 		n.AppliedPolicyRevision = status.AppliedPolicyRevision
 		_, e = r.Store.PutNode(ctx, old.Revision, n)
@@ -88,13 +98,37 @@ func (r *Registry) tick(ctx context.Context, gate Gate, status NodeStatus) error
 	}
 	return storage.ErrConflict
 }
+
+// ObserveDrain closes the local gate before publishing the target's ACK.
+func (r *Registry) ObserveDrain(ctx context.Context, gate Gate) error {
+	n, e := r.Store.GetNode(ctx, r.Identity.ID)
+	if e != nil {
+		return e
+	}
+	if n.Incarnation != r.Identity.Incarnation {
+		return storage.ErrFenced
+	}
+	if !n.Draining {
+		return nil
+	}
+	gate.Drain()
+	return r.Tick(ctx, gate, NodeStatus{Draining: true, AppliedPolicyRevision: n.AppliedPolicyRevision})
+}
 func (r *Registry) Run(ctx context.Context, gate Gate, status func() NodeStatus) error {
 	if r == nil || r.Clock == nil || status == nil {
 		return storage.ErrInvalid
 	}
 	for ctx.Err() == nil {
-		_ = r.Tick(ctx, gate, status()) // A failed heartbeat closes readiness via Healthy.
-		if e := r.Clock.Sleep(ctx, HeartbeatInterval); e != nil {
+		r.mu.RLock()
+		last, has := r.last, r.hasLast
+		r.mu.RUnlock()
+		age, e := r.Clock.Now().Instant.Sub(last)
+		if !has || e != nil || age >= HeartbeatInterval {
+			_ = r.Tick(ctx, gate, status())
+		} else {
+			_ = r.ObserveDrain(ctx, gate)
+		}
+		if e := r.Clock.Sleep(ctx, time.Second); e != nil {
 			return e
 		}
 	}
@@ -108,7 +142,11 @@ func (r *Registry) RequestDrain(ctx context.Context, id string, gate Gate) (Node
 		if gate == nil {
 			return Node{}, storage.ErrInvalid
 		}
-		gate.Drain()
+		// Process shutdown fails closed even when persistence is unavailable.
+		// An HTTP request must first pass the transactional actor check.
+		if _, adminRequest := AdminActorFromContext(ctx); !adminRequest {
+			gate.Drain()
+		}
 	}
 	for range 4 {
 		n, e := r.Store.GetNode(ctx, id)
@@ -116,6 +154,9 @@ func (r *Registry) RequestDrain(ctx context.Context, id string, gate Gate) (Node
 			return Node{}, e
 		}
 		if n.Draining {
+			if id == r.Identity.ID {
+				gate.Drain()
+			}
 			return n, nil
 		}
 		n.Draining = true
@@ -123,6 +164,9 @@ func (r *Registry) RequestDrain(ctx context.Context, id string, gate Gate) (Node
 		out, e := r.Store.PutNode(ctx, n.Revision, n)
 		if errors.Is(e, storage.ErrConflict) {
 			continue
+		}
+		if e == nil && id == r.Identity.ID {
+			gate.Drain()
 		}
 		return out, e
 	}

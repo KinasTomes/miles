@@ -15,6 +15,8 @@ type ObservationPage struct {
 	Buckets []Bucket
 	Heads   []ObjectHead
 	Packs   []PackInfo
+	Uploads []MultipartUpload
+	Chunks  []Chunk
 	Next    string
 }
 
@@ -23,7 +25,7 @@ func (r ObservationRequest) Validate() error {
 		return ErrInvalid
 	}
 	switch r.Kind {
-	case "buckets", "heads", "packs":
+	case "buckets", "heads", "packs", "uploads", "chunks":
 		return nil
 	}
 	return ErrInvalid
@@ -33,6 +35,7 @@ type PhysicalObject struct {
 	Key, VersionID, Category string
 	Size                     int64
 	Current                  bool
+	Class                    StorageClass
 	Pack                     PackRef
 	// Nil means no verified index: only canonical payload can be attributed;
 	// unknown structural/dead overhead stays in the global pool.

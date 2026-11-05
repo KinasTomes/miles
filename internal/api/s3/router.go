@@ -76,6 +76,26 @@ func (rt *Router) serve(w http.ResponseWriter, r *http.Request, id string) error
 	if err != nil {
 		return err
 	}
+	// Presigning can move x-amz-* headers into the signed query. They must
+	// retain their semantics: a query signature cannot bypass checksum,
+	// metadata or unsupported-feature validation. Verify the original wire
+	// request first, then expose the effective headers to the handlers.
+	original := r
+	r, e = presignedHeaders(r, route.Query)
+	if e != nil {
+		return e
+	}
+	if r != original {
+		if values, present := r.Header["X-Amz-Content-Sha256"]; present && (len(values) != 1 || !validPayloadHash(values[0])) {
+			return &Error{Code: ErrInvalidArgument, Message: "invalid presigned payload hash mode"}
+		}
+		// A hoisted copy-source selects CopyObject rather than PutObject;
+		// route and header validation must use the effective request too.
+		route, e = Resolve(r)
+		if e != nil {
+			return e
+		}
+	}
 	access, err := rt.authorize(r.Context(), route, caller)
 	if err != nil {
 		return err

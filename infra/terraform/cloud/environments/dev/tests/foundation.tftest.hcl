@@ -52,12 +52,13 @@ run "reject_alb_without_tls" {
 run "https_alb_plan" {
   command = plan
   variables {
-    enable_alb      = true
-    certificate_arn = "arn:aws:acm:ap-southeast-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
-    client_cidrs    = ["192.0.2.1/32"]
+    enable_alb                       = true
+    alb_deregistration_delay_seconds = 300
+    certificate_arn                  = "arn:aws:acm:ap-southeast-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+    client_cidrs                     = ["192.0.2.1/32"]
   }
   assert {
-    condition     = output.alb_contract.preserve_host_header && output.alb_contract.idle_timeout == 120 && output.alb_contract.listener_protocol == "HTTPS" && output.alb_contract.listener_port == 443 && output.alb_contract.target_port == 8080 && output.alb_contract.health_port == "9100" && output.alb_contract.health_path == "/readyz" && tonumber(output.alb_contract.drain_seconds) == 1800
+    condition     = output.alb_contract.preserve_host_header && output.alb_contract.idle_timeout == 120 && output.alb_contract.listener_protocol == "HTTPS" && output.alb_contract.listener_port == 443 && output.alb_contract.target_port == 8080 && output.alb_contract.health_port == "9100" && output.alb_contract.health_path == "/readyz" && tonumber(output.alb_contract.drain_seconds) == 300
     error_message = "ALB with test certificate should plan its target group."
   }
 }

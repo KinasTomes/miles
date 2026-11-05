@@ -20,8 +20,10 @@ type Store interface {
 	GetBucket(context.Context, string) (s.Bucket, error)
 }
 type Options struct {
-	Store                                         Store
-	Inventory                                     s.PhysicalInventorySource
+	Store     Store
+	Inventory s.PhysicalInventorySource
+	// ProtectedRoots may supply exact upload, reader and recovery generations.
+	ProtectedRoots                                func(context.Context) (map[s.PackRef]bool, error)
 	Now                                           func() time.Time
 	MaxRecords, MaxReferences, MaxPhysicalObjects int
 	Timeout, MaxAge, Interval                     time.Duration
@@ -187,6 +189,14 @@ func (m *Service) Refresh(ctx context.Context) error {
 	}
 	if err = verify(); err != nil {
 		return err
+	}
+	in.ObservedAt = started
+	if m.o.ProtectedRoots != nil {
+		protected, err := m.o.ProtectedRoots(ctx)
+		if err != nil {
+			return err
+		}
+		in.Protected = protected
 	}
 	r, err := Calculate(in)
 	if err != nil {

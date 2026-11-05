@@ -11,6 +11,7 @@ nat_per_az = false
 # For dev runtime select nat; single NAT is not HA across AZ failure.
 # Or select interface (nine services * two AZs, including ssmmessages), bake dependencies into AMI.
 enable_alb = false
+alb_deregistration_delay_seconds = 300 # Dev/test override; default is 1800.
 client_cidrs = []
 admin_ssh_cidrs = []
 # enable_alb=true needs an ISSUED ACM cert in the same account/Region.

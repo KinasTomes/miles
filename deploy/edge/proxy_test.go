@@ -19,6 +19,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,6 +56,7 @@ func (identity) Authorize(_ context.Context, id, bucket string) (storage.Authori
 
 type observed struct {
 	Host, URI, Metadata, SHA256 string
+	Operation                   api.Operation
 }
 
 // Opt-in: real nginx/TLS and the native SigV4 router, no AWS or storage traffic.
@@ -64,7 +66,7 @@ func TestEdgeTLSProxyPreservesSignedRequests(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	echo := func(w http.ResponseWriter, request *api.Request) error {
-		if request.Key == "slow-response" {
+		if request.Key == "slow-response" || request.Key == "slow-complete" {
 			time.Sleep(65 * time.Second)
 		}
 		body, err := io.ReadAll(request.Body)
@@ -74,11 +76,14 @@ func TestEdgeTLSProxyPreservesSignedRequests(t *testing.T) {
 		sum := sha256.Sum256(body)
 		w.Header().Set("Content-Type", "application/json")
 		return json.NewEncoder(w).Encode(observed{Host: request.HTTP.Host, URI: request.HTTP.RequestURI,
-			Metadata: request.HTTP.Header.Get("X-Amz-Meta-With_Underscore"), SHA256: hex.EncodeToString(sum[:])})
+			Metadata: request.HTTP.Header.Get("X-Amz-Meta-With_Underscore"), SHA256: hex.EncodeToString(sum[:]), Operation: request.Op})
 	}
 	router := &api.Router{Region: "ap-southeast-1", Credentials: identity{}, Access: identity{},
 		Now: func() time.Time { return now }, Handlers: map[api.Operation]api.Handler{
-			api.GetObject: echo, api.PutObject: echo, api.ListObjectsV2: echo}}
+			api.GetObject: echo, api.PutObject: echo, api.ListObjectsV2: echo,
+			api.CopyObject: echo, api.DeleteObject: echo, api.DeleteObjects: echo,
+			api.CreateMultipartUpload: echo, api.UploadPart: echo,
+			api.ListParts: echo, api.CompleteMultipartUpload: echo, api.AbortMultipartUpload: echo}}
 	backend := httptest.NewServer(router)
 	t.Cleanup(backend.Close)
 	directory := t.TempDir()
@@ -145,7 +150,7 @@ func TestEdgeTLSProxyPreservesSignedRequests(t *testing.T) {
 	t.Cleanup(transport.CloseIdleConnections)
 	client := &http.Client{Transport: transport, Timeout: 80 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	sign := func(method, uri string, body []byte) *http.Request {
+	sign := func(method, uri string, body []byte, presigned bool) *http.Request {
 		request, err := http.NewRequest(method, "https://"+address+uri, bytes.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
@@ -159,6 +164,28 @@ func TestEdgeTLSProxyPreservesSignedRequests(t *testing.T) {
 		// the SDK's default-port cleanup, then send the request over real TLS.
 		originalQuery := request.URL.RawQuery
 		request.URL.Scheme = "http"
+		if presigned {
+			request.Header.Del("X-Amz-Content-Sha256")
+			q := request.URL.Query()
+			q.Set("X-Amz-Expires", "604800")
+			request.URL.RawQuery = q.Encode()
+			uri, headers, err := v4.NewSigner().PresignHTTP(context.Background(),
+				aws.Credentials{AccessKeyID: accessKey, SecretAccessKey: secret}, request,
+				"UNSIGNED-PAYLOAD", "s3", "ap-southeast-1", now,
+				func(o *v4.SignerOptions) { o.DisableURIPathEscaping = true })
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := url.Parse(uri)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.URL = parsed
+			request.URL.Scheme = "https"
+			request.Header = headers
+			request.Header.Del("Host")
+			return request
+		}
 		if err := v4.NewSigner().SignHTTP(context.Background(),
 			aws.Credentials{AccessKeyID: accessKey, SecretAccessKey: secret},
 			request, hash, "s3", "ap-southeast-1", now,
@@ -169,24 +196,37 @@ func TestEdgeTLSProxyPreservesSignedRequests(t *testing.T) {
 		request.URL.RawQuery = originalQuery // Canonically equivalent; test the original wire bytes.
 		return request
 	}
-	cases := []struct {
+	type proxyCase struct {
 		method, uri string
 		body        []byte
-	}{
-		{"GET", "/proxy-bucket/a//b/../c+%2F%252F.txt", nil},
-		{"GET", "/proxy-bucket/%E1%BB%A9ng%20d%E1%BB%A5ng/%25+//key", nil},
-		{"GET", "/proxy-bucket?list-type=2&prefix=a%2Fb+z&max-keys=7&continuation-token=a%2Bb%2520", nil},
-		{"PUT", "/proxy-bucket/signed-body", []byte("binary\x00payload\nwith bytes")},
+		presigned   bool
+	}
+	cases := []proxyCase{
+		{"GET", "/proxy-bucket/a//b/../c+%2F%252F.txt", nil, false},
+		{"GET", "/proxy-bucket/%E1%BB%A9ng%20d%E1%BB%A5ng/%25+//key", nil, false},
+		{"GET", "/proxy-bucket?list-type=2&prefix=a%2Fb+z&max-keys=7&continuation-token=a%2Bb%2520", nil, false},
+		{"PUT", "/proxy-bucket/signed-body", []byte("binary\x00payload\nwith bytes"), false},
+		{"GET", "/proxy-bucket/a//b/../c+%2F%252F.txt", nil, true},
+		{"PUT", "/proxy-bucket/%E1%BB%A9ng%20d%E1%BB%A5ng/%25+//key", []byte("presigned bytes"), true},
+		{"PUT", "/proxy-bucket/copy?X-Amz-Copy-Source=%2Fproxy-bucket%2Fsource", nil, true},
+		{"DELETE", "/proxy-bucket/delete", nil, false},
+		{"POST", "/proxy-bucket?delete", []byte("<Delete><Object><Key>key</Key></Object></Delete>"), false},
+		{"POST", "/proxy-bucket/multipart?uploads", nil, false},
+		{"PUT", "/proxy-bucket/multipart?uploadId=fixture%2Bid&partNumber=1", []byte("part"), false},
+		{"GET", "/proxy-bucket/multipart?uploadId=fixture%2Bid", nil, false},
+		{"POST", "/proxy-bucket/multipart?uploadId=fixture%2Bid", []byte("<CompleteMultipartUpload/>"), false},
+		{"DELETE", "/proxy-bucket/multipart?uploadId=fixture%2Bid", nil, false},
 	}
 	if os.Getenv("MILES_EDGE_PROXY_SLOW_TEST") == "1" {
-		cases = append(cases, struct {
-			method, uri string
-			body        []byte
-		}{"GET", "/proxy-bucket/slow-response", nil})
+		cases = append(cases, proxyCase{"GET", "/proxy-bucket/slow-response", nil, true},
+			proxyCase{"POST", "/proxy-bucket/slow-complete?uploadId=fixture", []byte("<CompleteMultipartUpload/>"), false})
 	}
 	for _, test := range cases {
 		t.Run(test.uri, func(t *testing.T) {
-			response, err := client.Do(sign(test.method, test.uri, test.body))
+			request := sign(test.method, test.uri, test.body, test.presigned)
+			wantURI := request.URL.RequestURI()
+			started := time.Now()
+			response, err := client.Do(request)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -200,12 +240,18 @@ func TestEdgeTLSProxyPreservesSignedRequests(t *testing.T) {
 				t.Fatal(err)
 			}
 			sum := sha256.Sum256(test.body)
-			if got.Host != "edge.example:443" || got.URI != test.uri || got.Metadata != "signed-value" || got.SHA256 != hex.EncodeToString(sum[:]) {
+			if got.Host != "edge.example:443" || got.URI != wantURI || got.Metadata != "signed-value" || got.SHA256 != hex.EncodeToString(sum[:]) {
 				t.Fatalf("proxy altered signed request: %+v", got)
+			}
+			if strings.Contains(test.uri, "X-Amz-Copy-Source") && got.Operation != api.CopyObject {
+				t.Fatal("hoisted copy source reached the wrong operation")
+			}
+			if strings.Contains(test.uri, "/slow-") && time.Since(started) < 65*time.Second {
+				t.Fatal("slow fixture did not exercise >60s")
 			}
 		})
 	}
-	request := sign("GET", "/proxy-bucket/negative-control", nil)
+	request := sign("GET", "/proxy-bucket/negative-control", nil, false)
 	request.Host = "tampered.example:443"
 	response, err := client.Do(request)
 	if err != nil {

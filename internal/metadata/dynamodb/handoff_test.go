@@ -92,11 +92,16 @@ type handoffGuard struct{}
 func (handoffGuard) Pin(context.Context, storage.Chunk) (bool, error) { return true, nil }
 
 func TestLocalWriteCommitWarmReadHandoff(t *testing.T) {
-	ctx := context.Background()
 	f := contracttest.NewFixture()
 	f.Quota.Limit = 1 << 20
 	m, _ := fixtureStore(t, f)
-	physical, err := packs3.New(&handoffS3{objects: map[string][]byte{}}, "dev-bucket", "")
+	runWriteCommitWarmReadHandoff(t, f, m, &handoffS3{objects: map[string][]byte{}}, "dev-bucket", "")
+}
+
+func runWriteCommitWarmReadHandoff(t *testing.T, f contracttest.Fixture, m *Store, client packs3.API, bucketName, kms string) {
+	t.Helper()
+	ctx := t.Context()
+	physical, err := packs3.New(client, bucketName, kms)
 	if err != nil {
 		t.Fatal(err)
 	}

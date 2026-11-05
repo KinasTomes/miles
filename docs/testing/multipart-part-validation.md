@@ -88,6 +88,7 @@ Client: AWS CLI 2.36.41 (bản pin) và boto3 1.43.122 không awscrt.
 - Part head không lưu thời gian publish nên ListParts không trả `LastModified`.
 - boto3 không awscrt phải chọn algorithm nó gửi được (ví dụ CRC32) lúc Create; part
   CRC32 trên upload CRC64NVME bị từ chối như S3.
-- Publish chưa rõ kết quả giữ publisher mở; sweeper recovery tự động (`recover_uploads`)
-  chưa có, Abort sau đó resolve được. Đường HTTP chỉ chạy trên Badger; DynamoDB pass
-  contract multipart, gồm quyền ListParts/GetPart.
+- Publish chưa rõ kết quả giữ publisher mở cho tới khi Abort, Complete (hủy publisher sau
+  freeze) hoặc `purge_uploads` sau `expires_at` resolve được
+  ([sweeper](multipart-sweeper-validation.md)). Đường HTTP chỉ chạy trên Badger; DynamoDB
+  pass contract multipart, gồm quyền ListParts/GetPart.

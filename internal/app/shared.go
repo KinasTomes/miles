@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"path/filepath"
 	"time"
@@ -14,8 +16,10 @@ import (
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/engine"
 	"github.com/KinasTomes/miles/internal/jobs"
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
 	"github.com/KinasTomes/miles/internal/object"
+	"github.com/KinasTomes/miles/internal/observability"
 	"github.com/KinasTomes/miles/internal/recovery"
 	"github.com/KinasTomes/miles/internal/storage"
 	packs3 "github.com/KinasTomes/miles/internal/storage/s3"
@@ -79,7 +83,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	if err != nil {
 		return d, err
 	}
-	catalog, err := recovery.LoadCatalog(ctx, journalObjects)
+	catalog, err := recovery.LoadSelectedCatalog(ctx, journalObjects, g.HistoryID, g.Incarnation)
 	if err != nil {
 		return d, err
 	}
@@ -120,7 +124,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 		return d, err
 	}
 	metadata := &sharedMetadata{Store: m, utc: utc, owner: c.RuntimeNodeID + "-" + id}
-	journal := &journalRuntime{store: m, objects: journalObjects, catalog: catalog, clock: clk, utc: utc, owner: metadata.owner}
+	journal := &journalRuntime{store: m, objects: journalObjects, catalog: catalog, clock: clk, authority: sharedJobAuthority{metadata}}
 	v, err := config.NewPolicyValidator(config.DSGPolicyLimits())
 	if err != nil {
 		return d, err
@@ -202,15 +206,88 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	if err != nil {
 		return d, err
 	}
+	metrics := new(observability.Operations)
+	identity := jobs.Node{ID: c.RuntimeNodeID + "-" + id, Incarnation: id, ServiceIncarnation: g.Incarnation, Profile: c.Profile, Address: c.AdminAddress, AppliedPolicyRevision: 1}
+	nodeRegistry := &jobs.Registry{Store: m, Clock: clk, Identity: identity}
+	nodeRegistry.CacheSnapshot = func() jobs.CacheSample {
+		s := resident.Stats()
+		tier := func(t cache.TierStats) jobs.CacheTier {
+			return jobs.CacheTier{UsedBytes: t.UsedBytes, CapacityBytes: t.CapacityBytes, Entries: t.Entries, MaxEntries: t.MaxEntries, Evictions: t.Evictions}
+		}
+		return jobs.CacheSample{Hits: s.Hits, Misses: s.Misses, Errors: s.Errors, Lookups: s.Lookups, Puts: s.Puts, Memory: tier(s.Memory), Disk: tier(s.Disk)}
+	}
+	runner := &jobs.Runner{Service: jobs.Service{Store: m, Policies: m, Now: func() time.Time { return clk.Now().WallUTC }, Observe: metrics.JobUpdate}, Authority: sharedJobAuthority{metadata}, Node: identity, Clock: clk, Executors: map[jobs.Type]jobs.Executor{}}
+	cluster := &jobs.Cluster{Runner: runner, Registry: nodeRegistry}
+	runner.ObserveError = metrics.DispatchFailure
+	runner.Executors["cache_purge"] = cluster.CacheExecutor(resident.PurgeNode)
+	runner.Executors["journal_flush"] = jobs.Executor{Kind: "recovery", Periodic: time.Minute, Validate: func(p json.RawMessage) error {
+		var params map[string]json.RawMessage
+		if json.Unmarshal(p, &params) != nil || params == nil || len(params) != 0 {
+			return storage.ErrInvalid
+		}
+		return nil
+	}, Step: func(ctx context.Context, j jobs.Job, _ config.GlobalSnapshot) (jobs.Step, error) {
+		if j.DryRun || j.State == jobs.Cancelling {
+			return jobs.Step{Settled: true, Done: true, Result: json.RawMessage(`{"exported":false}`)}, nil
+		}
+		w := recovery.Worker{Store: m, Payloads: m, Objects: journalObjects, Catalog: catalog, Clock: clk, Fence: j.Worker}
+		e := w.Flush(ctx)
+		if e != nil {
+			return jobs.Step{}, e
+		}
+		return jobs.Step{Settled: true, Done: true, Result: json.RawMessage(`{"exported":true}`)}, nil
+	}}
+	runner.Executors["drain"] = cluster.DrainExecutor()
+	// Opaque prototype bases cannot establish checkpoint completeness. Keep
+	// this capability unavailable until an audited typed base is provisioned.
+	if _, e := (recovery.Checkpointer{Objects: journalObjects, Catalog: catalog}).Load(ctx, recovery.AttachmentReference{Key: "recovery/histories/" + catalog.History + "/genesis-" + catalog.Genesis.SHA256 + ".json", Reference: catalog.Genesis}); e == nil {
+		retention := recovery.Retention{Store: m, Checkpointer: recovery.Checkpointer{Objects: journalObjects, Catalog: catalog}}
+		marker := &lifecycle.Marker{Store: m, Pinned: m.ObservePackPins, RecoveryRoots: retention.ProtectedRoots, MaxRecords: 10000, MaxReferences: 32768}
+		gcWorker := &lifecycle.Worker{Store: m, Packs: packs, Catalog: &lifecycle.Catalog{Store: m, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 32768}, UTC: utc, Marker: marker, Sweep: packs, VerifyCutAfter: retention.VerifyCutAfter}
+		runner.Executors["compaction"] = gcWorker.Executor("compaction")
+		runner.Executors["gc"] = gcWorker.Executor("gc")
+		runner.Executors["recovery_checkpoint"] = (recovery.CheckpointWorker{Store: m, Objects: journalObjects, Packs: packs, Catalog: catalog}).Executor()
+	} else if !errors.Is(e, storage.ErrInvalid) {
+		return d, e
+	}
+	uploads := uploadJobs{store: m, utc: utc, objects: func(ctx context.Context, bucket string) (uploadRecovery, error) { return objects(ctx, bucket) }}
+	runner.Executors["purge_uploads"] = uploads.executor("purge_uploads")
+	runner.Executors["recover_uploads"] = uploads.executor("recover_uploads")
+	packCatalog := &lifecycle.Catalog{Store: m, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 32768}
+	lifecycleWorker := &lifecycle.Worker{Store: m, Packs: packs, Catalog: packCatalog, UTC: utc}
+	for _, kind := range []jobs.Type{"tiering", "pack_restore", "pack_promote"} {
+		runner.Executors[kind] = lifecycleWorker.Executor(kind)
+	}
+	a.PackInventory = packCatalog
+	a.Operations = cluster
+	a.CacheStatistics = cluster
+	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Cluster: cluster}
+	if clients.metrics != nil {
+		operational.CloudWatch, err = observability.NewCloudWatch(clients.metrics, c.Profile)
+		if err != nil {
+			return d, err
+		}
+	}
+	if c.Profile == "cloud" {
+		operational.OnDrain = func(ctx context.Context) error { return requestCloudDrain(ctx, c.LocalDataPath, identity) }
+	}
+	closeRuntime := func(ctx context.Context) error {
+		e := registry.Quiescent()
+		if e != nil {
+			e = fmt.Errorf("shutdown writer reconciliation: %w", e)
+		}
+		flushErr := journal.flush(ctx)
+		if flushErr != nil {
+			flushErr = fmt.Errorf("shutdown journal flush: %w", flushErr)
+		}
+		registry.Invalidate()
+		clients.transport.CloseIdleConnections()
+		return errors.Join(e, flushErr, metadata.closeError(), resident.Close())
+	}
 	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
-		Operations: &Operational{Registry: &jobs.Registry{Store: m, Clock: clk, Identity: jobs.Node{ID: c.RuntimeNodeID + "-" + id, Incarnation: id, ServiceIncarnation: g.Incarnation, Profile: c.Profile, Address: c.AdminAddress}}},
-		Close: func() error {
-			e := registry.Quiescent()
-			flushErr := journal.flush()
-			registry.Invalidate()
-			clients.transport.CloseIdleConnections()
-			return errors.Join(e, flushErr, metadata.closeError(), resident.Close())
-		}}, nil
+		Operations:       operational,
+		closeWithContext: closeRuntime,
+		Close:            func() error { return closeRuntime(context.Background()) }}, nil
 }
 
 func maxTime(a, b time.Time) time.Time {

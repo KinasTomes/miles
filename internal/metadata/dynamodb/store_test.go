@@ -3,6 +3,8 @@ package dynamodb
 import (
 	"context"
 	"errors"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/smithy-go"
 	"math"
 	"reflect"
 	"testing"
@@ -29,6 +31,46 @@ func TestTypedNativeCodecPreservesIntegersAndRejectsMissingFields(t *testing.T) 
 	}
 }
 
+type splitBatch struct {
+	API
+	t       *testing.T
+	calls   int
+	pending map[string]types.KeysAndAttributes
+}
+
+func (p *splitBatch) BatchGetItem(ctx context.Context, in *ddb.BatchGetItemInput, options ...func(*ddb.Options)) (*ddb.BatchGetItemOutput, error) {
+	p.calls++
+	if p.calls == 1 {
+		first := map[string]types.KeysAndAttributes{}
+		p.pending = map[string]types.KeysAndAttributes{}
+		for table, group := range in.RequestItems {
+			if len(group.Keys) != 2 || !aws.ToBool(group.ConsistentRead) {
+				p.t.Fatal("expected two distinct consistent keys", group)
+			}
+			firstGroup := group
+			firstGroup.Keys = group.Keys[:1]
+			group.Keys = group.Keys[1:]
+			first[table], p.pending[table] = firstGroup, group
+		}
+		out, err := p.API.BatchGetItem(ctx, &ddb.BatchGetItemInput{RequestItems: first}, options...)
+		if err != nil {
+			return nil, err
+		}
+		if len(out.UnprocessedKeys) != 0 {
+			p.t.Fatal("backend returned unexpected unprocessed keys before injection")
+		}
+		out.UnprocessedKeys = p.pending
+		return out, nil
+	}
+	if !reflect.DeepEqual(p.pending, in.RequestItems) {
+		p.t.Fatal("retry included a processed key or lost consistency")
+	}
+	if p.calls == 2 {
+		return nil, &smithy.GenericAPIError{Code: "ThrottlingException", Message: "injected throttle"}
+	}
+	return p.API.BatchGetItem(ctx, in, options...)
+}
+
 type partialBatch struct {
 	API
 	calls   int
@@ -45,11 +87,29 @@ func (p *partialBatch) BatchGetItem(ctx context.Context, in *ddb.BatchGetItemInp
 func TestLocalBatchNeverTreatsUnprocessedAsMissing(t *testing.T) {
 	f := contracttest.NewFixture()
 	m, _ := fixtureStore(t, f)
+	runBatchContract(t, f, m)
+}
+
+func runBatchContract(t *testing.T, f contracttest.Fixture, m *Store) {
+	t.Helper()
 	c := f.Chunk("default")
 	if _, _, err := m.PutChunkIfAbsent(context.Background(), c, f.Lease.Fence); err != nil {
 		t.Fatal(err)
 	}
-	wrapper := &partialBatch{API: m.api}
+	base := m.api
+	defer func() { m.api = base }()
+	other := f.Chunk("isolated")
+	if _, _, err := m.PutChunkIfAbsent(t.Context(), other, f.Lease.Fence); err != nil {
+		t.Fatal(err)
+	}
+	split := &splitBatch{API: base, t: t}
+	m.api = split
+	got, err := m.GetChunks(t.Context(), []s.ChunkKey{c.Key, other.Key, c.Key}, true)
+	if err != nil || got[c.Key] != c || got[other.Key] != other || split.calls != 3 {
+		t.Fatal("injected partial then throttle did not finish both real reads", len(got), split.calls, err)
+	}
+	t.Log("verified partial response, pending-only retry, and injected throttle recovery")
+	wrapper := &partialBatch{API: base}
 	m.api = wrapper
 	chunks, err := m.GetChunks(context.Background(), []s.ChunkKey{c.Key, c.Key}, true)
 	if err != nil || len(chunks) != 1 || wrapper.calls != 2 {

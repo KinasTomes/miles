@@ -49,11 +49,14 @@ hợp trước Jobs/Nodes integration. Object service assembler truyền cùng N
 WarmReader.Cache và object.Options.Cache để có read/write admission chung.
 
 Disk directory là dedicated disposable directory, không dùng chung user data.
-Exclusive `owner.lock` ngăn hai process cùng sở hữu. Entry filename chỉ là hash
-của key, không path từ object/user. Startup validate directory inventory trước
-khi bỏ old hash-named entries; unknown files/symlinks reject. Close xóa entries
-và owner marker. Crash để lại marker thì startup fail closed: operator chỉ được
-bỏ marker sau khi xác nhận process cũ đã dừng. Không tự suy PID/timeout là proof.
+Kernel `flock` trên `owner.flock` ngăn hai process cùng sở hữu và tự nhả khi
+process thoát, kể cả SIGKILL. File khóa giữ cùng inode qua các lần mở. Entry
+filename chỉ là hash của key. Startup validate directory inventory trước khi
+bỏ old hash-named entries; unknown files/symlinks reject. Close xóa entries và
+đóng file descriptor để nhả khóa. Marker `owner.lock` của bản cũ vẫn fail closed,
+operator chỉ được bỏ sau khi xác nhận process cũ đã dừng. Không suy PID/timeout
+là proof. Test subprocess kiểm tra live owner, SIGKILL, reopen, legacy marker
+và symlink.
 Cache không fsync hoặc claim persisted recovery; crash không ảnh hưởng durable
 object. Cache directory cần ở private data path và không được process khác sửa.
 

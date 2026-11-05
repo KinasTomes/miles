@@ -95,7 +95,7 @@ func (e OutboxEvent) Validate() error {
 		if validPolicyEntityID(e.EntityID) && e.Object == (ObjectKey{}) {
 			return nil
 		}
-	case "Chunks", "PackProtection":
+	case "Chunks", "PackProtection", "PackLifecycle":
 		if e.EntityID != "" && e.Object == (ObjectKey{}) {
 			return nil
 		}

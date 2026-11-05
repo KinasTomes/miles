@@ -3,19 +3,43 @@ package badger
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/KinasTomes/miles/internal/jobs"
+	"github.com/KinasTomes/miles/internal/metadata/operations"
 	s "github.com/KinasTomes/miles/internal/storage"
 	db "github.com/dgraph-io/badger/v4"
 )
 
 var _ jobs.Store = (*Store)(nil)
 
+func (m *Store) jobAdmin(t *db.Txn, ctx context.Context) error {
+	actor, ok := jobs.AdminActorFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	if err := m.fence(t, actor.Writer); err != nil {
+		return err
+	}
+	return operations.SystemActor(multipartTx{m: m, t: t, ctx: ctx}, m.now(), "", actor.TokenID)
+}
+
 func (m *Store) CreateJob(ctx context.Context, j jobs.Job) error {
 	if j.Validate() != nil || j.State != jobs.Queued || j.Revision != 1 {
 		return s.ErrInvalid
 	}
 	return m.update(ctx, func(t *db.Txn) error {
+		if err := m.jobAdmin(t, ctx); err != nil {
+			return err
+		}
+		if creator, ok := jobs.CreationFence(ctx); ok {
+			if e := m.fence(t, creator); e != nil {
+				return e
+			}
+		} else if strings.HasPrefix(j.ID, "periodic_") || strings.HasPrefix(j.ID, "child_") {
+			return s.ErrFenced
+		}
+
 		if _, e := get[s.PolicySnapshot](t, policyKey(j.PolicyRevision)); e != nil {
 			return e
 		}
@@ -45,6 +69,9 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 		return out, s.ErrInvalid
 	}
 	e := m.update(ctx, func(t *db.Txn) error {
+		if err := m.jobAdmin(t, ctx); err != nil {
+			return err
+		}
 		old, e := get[jobs.Job](t, key("jobs", c.JobID))
 		if e != nil {
 			return e
@@ -60,7 +87,7 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 			if n.Incarnation != c.NodeIncarnation || n.ServiceIncarnation != c.Fence.ServiceIncarnation {
 				return s.ErrFenced
 			}
-			if (c.Kind == "claim" && !n.Ready) || ((c.Kind == "claim" || c.Kind == "begin_step") && n.Draining) {
+			if old.Type != "drain" && old.State != jobs.Cancelling && ((c.Kind == "claim" && !n.Ready) || ((c.Kind == "claim" || c.Kind == "begin_step") && n.Draining)) {
 				return s.ErrConflict
 			}
 			if _, e = get[s.PolicySnapshot](t, policyKey(old.PolicyRevision)); e != nil {
@@ -97,6 +124,9 @@ func (m *Store) PutNode(ctx context.Context, expected uint64, n jobs.Node) (jobs
 		return jobs.Node{}, s.ErrInvalid
 	}
 	e := m.update(ctx, func(t *db.Txn) error {
+		if err := m.jobAdmin(t, ctx); err != nil {
+			return err
+		}
 		old, e := get[jobs.Node](t, key("nodes", n.ID))
 		if e != nil && !errors.Is(e, s.ErrNotFound) {
 			return e
@@ -156,6 +186,9 @@ func listOperational[T any](m *Store, ctx context.Context, kind string, p jobs.P
 				if x.Validate() != nil {
 					return s.ErrUnavailable
 				}
+				if p.ActiveOnly && x.State.Terminal() {
+					continue
+				}
 				last = x.ID
 			case jobs.Node:
 				if x.Validate() != nil {
@@ -174,6 +207,9 @@ func (m *Store) ListJobs(ctx context.Context, p jobs.PageRequest) (jobs.JobPage,
 	return jobs.JobPage{Jobs: v, Next: n}, e
 }
 func (m *Store) ListNodes(ctx context.Context, p jobs.PageRequest) (jobs.NodePage, error) {
+	if p.ActiveOnly {
+		return jobs.NodePage{}, s.ErrInvalid
+	}
 	v, n, e := listOperational[jobs.Node](m, ctx, "nodes", p)
 	return jobs.NodePage{Nodes: v, Next: n}, e
 }

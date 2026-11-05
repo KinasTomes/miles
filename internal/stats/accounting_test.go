@@ -2,7 +2,9 @@ package stats
 
 import (
 	s "github.com/KinasTomes/miles/internal/storage"
+	"reflect"
 	"testing"
+	"time"
 )
 
 func accountingInput() Input {
@@ -85,5 +87,34 @@ func TestCorruptCanonicalAccountingRejected(t *testing.T) {
 	in.References[old][0].Key = other
 	if _, err := Calculate(in); err == nil {
 		t.Fatal("cross-domain identities aliased to overlapping range")
+	}
+}
+
+func TestPhysicalLifecycleIncludesColdDeadAndProtectedRetired(t *testing.T) {
+	in := accountingInput()
+	in.ObservedAt = time.Unix(100, 0)
+	cold := s.PackRef{ID: "bb", Generation: "g"}
+	retired := s.PackRef{ID: "cc", Generation: "g"}
+	orphan := s.PackRef{ID: "dd", Generation: "g"}
+	in.Packs[cold] = s.PackInfo{Ref: cold, Size: 20, Class: s.Glacier, State: "Cold"}
+	in.Packs[retired] = s.PackInfo{Ref: retired, Size: 30, State: "Retired"}
+	in.Protected = map[s.PackRef]bool{retired: true}
+	in.Physical.Objects = append(in.Physical.Objects,
+		s.PhysicalObject{Key: "cold", VersionID: "new", Category: "pack", Class: s.Glacier, Current: true, Pack: cold, Size: 20},
+		s.PhysicalObject{Key: "cold", VersionID: "old", Category: "pack", Class: s.Standard, Pack: cold, Size: 15},
+		s.PhysicalObject{Key: "retired", Category: "pack", Class: s.Standard, Current: true, Pack: retired, Size: 30},
+		s.PhysicalObject{Key: "orphan-pack", Category: "pack", Current: true, Pack: orphan, Size: 5},
+	)
+	report, err := Calculate(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := report.Global
+	if g.BytesLogical != 300 || *g.BytesStored != 167 || *g.KnownProtectedBytes != 30 || g.PhysicalClasses[string(s.Glacier)] != 20 ||
+		!reflect.DeepEqual(g.PhysicalLifecycle, map[string]int64{"head_live": 90, "no_live_head": 20, "noncurrent": 15, "retired": 30, "orphan": 5, "other": 7}) {
+		t.Fatal(g)
+	}
+	if b := report.Buckets["a"]; b.KnownProtectedBytes != nil || b.PhysicalLifecycle != nil || b.BytesLogical != 200 {
+		t.Fatal(b)
 	}
 }

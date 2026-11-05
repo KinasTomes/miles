@@ -6,6 +6,7 @@ paused                           = true
 enable_compute                   = false
 enable_asg                       = true
 enable_alb                       = true
+alb_deregistration_delay_seconds  = 300 # Dev/test override; default is 1800.
 egress_mode                      = "interface"
 availability_zones               = ["ap-southeast-1a", "ap-southeast-1b"]
 ami_id                           = "ami-0123456789abcdef0" # Reviewed AL2023 Amazon ARM64 image.

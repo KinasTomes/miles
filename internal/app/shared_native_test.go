@@ -51,7 +51,7 @@ func nativeEndpoint(t *testing.T, name string) string {
 	t.Helper()
 	value := os.Getenv(name)
 	if value == "" {
-		if os.Getenv("MILES_DDB_LOCAL_REQUIRED") == "1" {
+		if os.Getenv(strings.TrimSuffix(name, "_ENDPOINT")+"_REQUIRED") == "1" || os.Getenv("MILES_DDB_LOCAL_REQUIRED") == "1" {
 			t.Fatal(name + " required")
 		}
 		t.Skip(name + " not configured")
@@ -64,8 +64,20 @@ func nativeEndpoint(t *testing.T, name string) string {
 }
 
 func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
+	runNativeSharedRuntime(t, false)
+}
+
+func TestNativeWarmGCObjectFlows(t *testing.T) {
+	runNativeSharedRuntime(t, true)
+}
+
+func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 	dEndpoint, sEndpoint := nativeEndpoint(t, "MILES_DDB_LOCAL_ENDPOINT"), nativeEndpoint(t, "MILES_RECOVERY_S3_ENDPOINT")
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	timeout := 90 * time.Second
+	if gcFlows {
+		timeout = 4 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
@@ -117,24 +129,19 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 	if _, e = clients.packs.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(c.PackBucket), CreateBucketConfiguration: &stypes.CreateBucketConfiguration{LocationConstraint: stypes.BucketLocationConstraintApSoutheast1}}); e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() {
-		page, e := clients.packs.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{Bucket: aws.String(c.PackBucket)})
+	if gcFlows {
+		_, e = clients.packs.PutBucketVersioning(ctx, &s3.PutBucketVersioningInput{Bucket: aws.String(c.PackBucket), VersioningConfiguration: &stypes.VersioningConfiguration{Status: stypes.BucketVersioningStatusEnabled}})
 		if e != nil {
-			t.Error(e)
-			return
+			t.Fatal(e)
 		}
-		for _, o := range page.Contents {
-			_, e = clients.packs.DeleteObject(context.Background(), &s3.DeleteObjectInput{Bucket: aws.String(c.PackBucket), Key: o.Key})
-			if e != nil {
-				t.Error(e)
-			}
-		}
-		_, e = clients.packs.DeleteBucket(context.Background(), &s3.DeleteBucketInput{Bucket: aws.String(c.PackBucket)})
-		if e != nil {
-			t.Error(e)
-		}
-	})
-	m, e := sharedStore(c, clients, nativeUTC{})
+	}
+	t.Cleanup(func() { cleanupNativePackBucket(t, clients.packs, c.PackBucket, gcFlows) })
+	testClock := &gcFlowClock{Clock: clock.NewReal()}
+	var utc storage.R1TimeSource = nativeUTC{}
+	if gcFlows {
+		utc = testClock
+	}
+	m, e := sharedStore(c, clients, utc)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -162,7 +169,15 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 		if e = os.Chmod(c.LocalDataPath, 0700); e != nil {
 			t.Fatal(e)
 		}
-		d, e := composeShared(ctx, c, clients, clock.NewReal(), nativeUTC{}, "cluster-v1", bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32))
+		// Real gateways own independent transports. Sharing one here lets one
+		// node's CloseIdleConnections interfere with another node's cleanup.
+		nodeTransport := transport.Clone()
+		nodeHTTP := &http.Client{Transport: nodeTransport}
+		if gcFlows {
+			nodeHTTP.Transport = gcFlowTransport{nodeTransport}
+		}
+		nodeClients := runtimeClients{metadata: ddb.New(ddb.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(dEndpoint), Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(sEndpoint), UsePathStyle: true, Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), transport: nodeTransport}
+		d, e := composeShared(ctx, c, nodeClients, testClock, utc, "cluster-v1", bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32))
 		if e != nil {
 			t.Fatal(e)
 		}
@@ -172,6 +187,10 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 				t.Error(e)
 			}
 		})
+	}
+	if !gcFlows {
+		nativeShutdownDuringPeerRecovery(t, ctx, nodes)
+		nativeProvisionedCheckpoint(t, ctx, nodes[0])
 	}
 	mutation, e := nodes[0].Admin.Admit(ctx, tokenID)
 	if e != nil {
@@ -197,6 +216,7 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+
 	cacheDoc, _ := json.Marshal(map[string]any{"cache": config.DefaultCachePolicy()})
 	mutation, e = nodes[1].Admin.Admit(ctx, tokenID)
 	if e != nil {
@@ -206,6 +226,10 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 	nodes[1].Admin.Finish(ctx, mutation)
 	if e != nil {
 		t.Fatal(e)
+	}
+	if gcFlows {
+		nativeWarmGCFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, global)
+		return
 	}
 	key := "Unicode/tiếng Việt//plus+percent%2F"
 	for i := 0; i < 3; i++ {
@@ -297,5 +321,65 @@ func TestNativeSharedCloudEdgeRuntime(t *testing.T) {
 	q, e := m.ListOutbox(ctx, storage.OutboxQuery{HistoryID: g.HistoryID, Epoch: g.Epoch, Limit: 128})
 	if e != nil || len(q.Events) < 5 {
 		t.Fatal("native producer events missing", q, e)
+	}
+	nativeUploadJobs(t, ctx, nodes, clients, c.DDBTablePrefix, bucket)
+	nativeSweepDuringCut(t, ctx, nodes, clients, c.DDBTablePrefix, bucket)
+	beforePurgeQuota, e := m.GetQuota(ctx, bucket.OwnerID)
+	if e != nil {
+		t.Fatal(e)
+	}
+	nativeClusterOperations(t, ctx, nodes, tokenID+"."+tokenSecret)
+	afterPurgeQuota, e := m.GetQuota(ctx, bucket.OwnerID)
+	if e != nil || afterPurgeQuota != beforePurgeQuota {
+		t.Fatal("cache purge changed durable quota", e)
+	}
+	got.Reset()
+	_, e = cloud.GetObject(ctx, object.GetRequest{Bucket: bucket.Name, BucketID: bucket.ID, Key: u.Object.Key, CredentialID: "RUNTIMEKEY00000000001", Range: &storage.ByteRange{Offset: 7, Length: 51}, Emit: func(_ context.Context, p []byte) error { _, e := got.Write(p); return e }})
+	if e != nil || !bytes.Equal(got.Bytes(), partData[7:58]) {
+		t.Fatal("cache purge changed durable object or prevented refill", e)
+	}
+
+}
+
+func cleanupNativePackBucket(t *testing.T, client *s3.Client, bucket string, versioned bool) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	remove := func(key, version *string) {
+		if _, e := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: key, VersionId: version}); e != nil {
+			t.Error(e)
+		}
+	}
+	if versioned {
+		pages := s3.NewListObjectVersionsPaginator(client, &s3.ListObjectVersionsInput{Bucket: &bucket})
+		var versions []stypes.ObjectVersion
+		var markers []stypes.DeleteMarkerEntry
+		for pages.HasMorePages() {
+			page, e := pages.NextPage(ctx)
+			if e != nil {
+				t.Error(e)
+				return
+			}
+			versions = append(versions, page.Versions...)
+			markers = append(markers, page.DeleteMarkers...)
+		}
+		for _, version := range versions {
+			remove(version.Key, version.VersionId)
+		}
+		for _, marker := range markers {
+			remove(marker.Key, marker.VersionId)
+		}
+	} else {
+		page, e := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: &bucket})
+		if e != nil {
+			t.Error(e)
+			return
+		}
+		for _, object := range page.Contents {
+			remove(object.Key, nil)
+		}
+	}
+	if _, e := client.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: &bucket}); e != nil {
+		t.Error(e)
 	}
 }

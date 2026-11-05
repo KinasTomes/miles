@@ -22,7 +22,7 @@ resource "aws_lb_target_group" "s3" {
   protocol             = "HTTP"
   target_type          = "instance"
   vpc_id               = var.vpc_id
-  deregistration_delay = 1800
+  deregistration_delay = var.deregistration_delay_seconds
   health_check {
     path     = "/readyz"
     port     = "9100"

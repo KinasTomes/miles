@@ -116,6 +116,7 @@ Hợp đồng của parser/xác thực S3. `tests/fixtures/s3/transport.json` gi
 **Presigned (query)**
 
 - Tham số `X-Amz-Algorithm=AWS4-HMAC-SHA256`, `X-Amz-Credential`, `X-Amz-Date`, `X-Amz-Expires`, `X-Amz-SignedHeaders` (có `host`), `X-Amz-Signature`. Thiếu tham số hoặc `X-Amz-Expires` ngoài 1..604800 trả `InvalidArgument` (S3 dùng `AuthorizationQueryParametersError`, ngoài bảng 2.4). URL hợp lệ khi now ≤ X-Amz-Date + X-Amz-Expires; quá hạn trả `AccessDenied`.
+- Header `x-amz-*` nằm trong query đã ký vẫn giữ ngữ nghĩa của header: checksum đi qua decoder, metadata được lưu, copy-source chọn CopyObject và vẫn cần read nguồn. Sau khi xác thực byte request gốc, router materialize các header này trên bản sao request rồi resolve/kiểm header lại; không chuyển các tham số xác thực thành operation header. Giá trị query/header khác nhau hoặc nhiều query key chỉ khác hoa/thường trả `InvalidArgument`; không chọn tùy ý một giá trị. Feature không hỗ trợ vẫn trả lỗi như khi gửi bằng header. Xem [kiểm thử presigned](testing/presigned-compatibility-validation.md).
 - Không hỗ trợ SigV2 (`AWSAccessKeyId`/`Signature`/`Expires`): router trả `NotImplemented`. boto3 1.43.114 mặc định presign bằng SigV2, client phải đặt `Config(signature_version="s3v4")`; `aws s3 presign` đã dùng SigV4.
 
 **aws-chunked**
@@ -539,7 +540,7 @@ Part upload song song/sai thứ tự được hỗ trợ; cùng partNumber CAS h
 - Active: input chuẩn hóa ghi page kind 3 rồi `FreezeCompletion` (CAS revision, thử lại khi publish part chen giữa). Lần đầu freeze sinh `completion_op_id`; mọi lần sau (sau reopen, takeover, recover) admit lại đúng op đó với fence mới, nên outcome/receipt/event chỉ có một. Publisher còn `Open` bị `CancelPartPublisher` (CAS candidate + upload chặn publish muộn, trả provisional bytes) trước snapshot. Part head hiện hành của mỗi part được chọn (`GetPart`, quyền write ∧ initiator) qua `core.Assemble` (dòng 6–11), ghi snapshot kind 4, rồi `WriteSession.PrepareCompletion` bind root manifest và dispatch `PrepareCompletion` qua writer R1.
 - Lease: từ freeze/claim tới trước commit, heartbeat gọi `RenewCompletion` mỗi 15 giây (lease 60 giây, kiểm lại quyền initiator). `PrepareCompletion` điều kiện theo fence của attempt (cùng state Completing, writer, lease còn), không theo revision upload, nên renewal của chính attempt trong lúc prepare dài không làm prepare thất bại; attempt cũ (fence nhỏ hơn) vẫn bị từ chối. Renewal thua CAS vì cancel/prepare của cùng attempt đọc lại upload và thử lại khi fence chưa đổi. Trước commit heartbeat dừng, một renewal cuối chốt revision mà transaction cần.
 - Commit: `WriteSession.Commit` với head đã prepare, ledger revision, `MultipartAttempt` = fence, projection Completing và receipt 7 ngày; backend ghi head/quota/outbox/Completed/full receipt một transaction. Kết quả chưa rõ (kể cả từ chối mà writer báo unknown) đối chiếu outcome theo op rồi receipt; đã commit thì trả head, không commit lại. Chỉ khi outcome chứng minh vắng mới xét lỗi đã biết: dòng 6–13 và head CAS conflict `ReopenUpload` (đóng op trước nên commit muộn không thể thắng). Reopen từ chối upload đã quá `expires_at` (Active hết hạn là `NoSuchUpload`), khi đó và khi takeover bị `AccessDenied` thì `ResolveCompletion` → Aborting/Aborted, release một lần. Lỗi khác giữ Completing cùng roots/reservation.
-- Completing: Complete cùng input sau lease + grace (hoặc `object.Service.RecoverUpload`, đầu vào cho `recover_uploads`, đọc input kind 3 đã freeze) `ClaimCompletion` fence mới rồi chạy lại snapshot/prepare/commit cùng op, kể cả quá `expires_at` như bảng state 4.3.1. Không TTL nào xóa Completing; lịch chạy sweeper 60 giây chưa có.
+- Completing: Complete cùng input sau lease + grace (hoặc `object.Service.RecoverUpload`, đầu vào cho `recover_uploads`, đọc input kind 3 đã freeze) `ClaimCompletion` fence mới rồi chạy lại snapshot/prepare/commit cùng op, kể cả quá `expires_at` như bảng state 4.3.1. Không TTL nào xóa Completing. Runtime Cloud/Edge chạy `recover_uploads` và `purge_uploads` mỗi 60 giây ([cluster operations](development/cluster-operations.md)): `purge_uploads` không đụng Completing; `recover_uploads` bỏ qua upload còn lease/grace, để Aborting cho `purge_uploads`; kết quả chưa rõ giữ step, lỗi không retry được (input đã freeze hỏng) chỉ hoãn đúng upload đó và job báo `uploads_deferred`. Mode local/benchmark một node không chạy job: Completing chỉ được resume khi client retry.
 - LastModified của object multipart là lúc CreateMultipartUpload (như S3), lưu trong metadata nội bộ của upload. Local authority cấp lease mới cho mỗi lần admit (không còn một lease cố định theo op) để admit lại completion op.
 
 #### 4.3.1 Complete: input chuẩn hóa, receipt và lỗi — hợp đồng W1
@@ -826,6 +827,19 @@ Không trả dedup/physical bytes, dù user-b là chủ bucket. Ví dụ user-b 
 
 See [storage statistics](contracts/storage-statistics.md) for the measured scope.
 `bytes_stored` is retained listed durable bytes (including noncurrent versions).
+
+For global stats, `listed_bytes_by_pack_lifecycle` and
+`listed_bytes_by_storage_class` partition the same listed bytes independently.
+A current pack or sidecar can be classified as `head_live`, `no_live_head`,
+`retired`, `orphan` or `unsettled`. The first two categories describe the
+observed generation as a whole, including its overhead. Cold generations with
+no observed live head remain in the totals. Older pack and sidecar versions
+are counted as `noncurrent`. Other objects are counted as `other`.
+`listed_known_protected_bytes` overlaps those categories. It includes current
+objects with an observed protection deadline or a supplied generation root.
+It is a lower bound from approximate observations and cannot establish GC
+eligibility. None of these fields changes bucket allocation or logical quota.
+
 Temporary restored billed bytes and revival counters without verified sources
 are null, not zero. Cached observations include timestamps, version scope,
 allocation methodology and consistency=approximate. Layout is metadata-only,
@@ -863,6 +877,15 @@ Reject tiering/compression/chunking/dedup_domain fields tại endpoint bucket; k
 ```json
 { "type": "tiering", "dry_run": true, "params": {}, "policy_revision": 4 }
 ```
+
+`recovery_checkpoint` yêu cầu `params={"target_epoch":0}` (safe integer không âm,
+không nhận unknown fields/null/missing target). Target phải có contiguous sealed
+chain; không tự đổi sang epoch mới hơn khi target thiếu seal. Executor shared
+runtime dựng checkpoint từ audited genesis/checkpoint trước + replay, rồi công bố
+support catalog bằng immutable completion marker và fenced metadata CAS. Dry run
+chỉ verify chain, không công bố recovery target. Receipt/counter/security, retention
+window và quy trình offline new-history install được mô tả trong
+[checkpoint/rebuild validation](testing/checkpoint-rebuild-validation.md).
 
 → 202, Location /admin/v1/jobs/job_example:
 
@@ -937,6 +960,29 @@ Shared được xác định bằng refcount occurrences đã đối soát trừ
 
 Đây là mô hình chi phí quản trị, không quota/hóa đơn người dùng. Giá nhân byte-thời-gian, không chỉ dung lượng cuối kỳ. Cloud cache không làm giảm logical Internet bytes; Edge cache có thể giảm S3 → Edge download theo đo thực.
 
+**Pack administration**: `GET /admin/v1/packs` accepts `state`,
+`storage_class`, decimal `live_ratio_lt` (0..1), `limit` and signed `cursor`.
+`GET /admin/v1/packs/{id}` pages all generations of that ID; both return
+`items`/`next_cursor`. Fields include `pack_id`, `generation`, `state`,
+`storage_class`, `state_revision`, `bytes`, `live_bytes`, `live_ratio`,
+`protected_until`, `min_retention_until`, `restored_until`, observational
+`readable`, `as_of` and `consistency`. Head-live bytes count unique canonical
+stored blobs reached by current object heads; they exclude staging/historical
+roots and are not GC eligibility or an atomic snapshot. IR is readable in Cold.
+
+`POST /admin/v1/packs/{id}/{generation}/restore` accepts
+`{"days":1,"tier":"Standard"}` (1..30 days; Standard/Bulk/Expedited).
+`/promote` accepts `{}`. System admin only, transactional actor recheck,
+exact-generation 404 `pack_not_found`, and 202 job detail/Location. Job types are
+`pack_restore`, `pack_promote`; explicit `tiering` jobs take
+`{"pack_id":"...","generation":"..."}` params and pin policy revision.
+Restore acceptance is not readiness; job/pack states track observed completion.
+Promotion writes a new verified Warm generation, conditionally moves the frozen
+head-live plan, keeps concurrent winners and retains source bytes. It does not
+promise to delete or atomically move the whole generation. Ambiguous mutable
+COPY remains protected until trusted terminal/isolation reconciliation; no public
+force-complete route exists. Live Cold acceptance remains a separate gate.
+
 **POST /admin/v1/cache/purge**:
 
 ```json
@@ -944,6 +990,34 @@ Shared được xác định bằng refcount occurrences đã đối soát trừ
 ```
 
 Scope=node cần node_id. Cluster job kết quả từng node/partial failure, không giả định gọi node bất kỳ đã xóa cache toàn cluster.
+
+Trả `202` với job detail và `Location: /admin/v1/jobs/{id}`; status/result đọc
+được qua gateway khác trong cùng shared installation. Auth system admin và
+transactional actor check áp dụng trước khi tạo job. Purge chỉ evict memory/disk
+resident bytes; không sửa object, pack hoặc quota. Fill mới có thể chạy sau purge.
+
+**GET /admin/v1/cache/stats?scope=node&node_id=...** hoặc `?scope=cluster`:
+
+System admin only. Scope bắt buộc; cluster không nhận node_id. Response `200`
+gồm `scope`, `complete`, `observed_at`, `nodes`, `included_nodes`, `hits`, `misses`,
+`denominator`, `hit_ratio`. Mỗi node có node_id/incarnation, state/error_code,
+sample timestamp, counters và occupancy/capacity/evictions memory/disk.
+
+Samples publish cùng Nodes heartbeat mỗi 15s, gắn boot/service incarnation;
+không forward bearer hoặc mở peer Admin port. Snapshot age phải <30s; node stale,
+clock future quá 2s hoặc thiếu sample trả state=unavailable, sample/ratio=null.
+Node không tồn tại trả404. Cluster discovery tối đa64node cùng service trong
+2phút gần đây; historical boots bị loại, node mới sau discovery không được hứa
+nằm trong kết quả. Lookup budget5s, tối đa100pages; read error không thành số0.
+
+Denominator = hits + misses (successful logical cache lookups, một disk promotion
+chỉ tính một hit). `errors` gồm failed gets/puts, bị loại khỏi denominator.
+Aggregate ratio = sum(hits)/sum(denominator) trên node sample hợp lệ, **không**
+trung bình node ratios. Denominator0 trả ratio=null. Khi partial, complete=false,
+aggregate chỉ mô tả included_nodes; kết quả từng node vẫn giữ lỗi rõ ràng.
+Counters tích lũy theo boot, purge không reset; đây là các heartbeat samples khác
+thời điểm, không phải atomic cluster snapshot hoặc ratio trong một time window.
+Legacy/local runtime chưa có shared cache service trả503, không giả lập cluster.
 
 **POST /admin/v1/faults** (chỉ enabled + system admin):
 
@@ -1096,7 +1170,7 @@ Kiểu: `string`, `bool`, `int` (JSON integer 0..2^53−1); thời gian RFC 3339
 | rebuild-index [--dry-run] | Offline với S3/DDB/KMS; không qua gateway khi metadata mất |
 | sim run --trace ... --policies A,B,C,D | Offline, package policy/Clock/pricing chung |
 
-dsgctl phân biệt bearer Admin API và SigV4 key để debug S3; không chuyển bearer thành header Authorization S3. Token/log không in secret. CLI đã nối bearer transport cho `stats`, `pack ls`, `user create/ls/show/set`, `usage`, `bucket show`, `grant ls/set/rm`, `policy get/set`, `bucket-policy get/set`, `credentials create/ls/rm`, `admin-token create/ls/revoke`, `job ls/show/run/cancel`, `node ls/drain`; secret/token của create chỉ ghi vào file `--out` mới (O_EXCL, 0600) và bị che trên stdout. `admin-token bootstrap` chạy offline trên Badger (`--local-data-path`, gateway phải dừng) hoặc DynamoDB (`--ddb-table-prefix --region`, credential provisioning từ env `AWS_*`), ghi token vào `--token-file` mới, chạy lần hai bị từ chối; `--recover` báo lỗi (R2 chưa có). Command còn lại chưa hiện thực thì báo lỗi/unsupported, không giả success. Schema endpoint vẫn theo hợp đồng R4. Token file đọc cục bộ permission 0600; không nhận raw bearer làm argument in history. [Jobs/Nodes backend và handoff](contracts/jobs-and-nodes.md).
+dsgctl phân biệt bearer Admin API và SigV4 key để debug S3; không chuyển bearer thành header Authorization S3. Token/log không in secret. CLI đã nối bearer transport cho `stats [--bucket b]`, `layout <bucket> <key>` (bucket/key là query encode một lần), `pack ls [--state --storage-class --live-ratio-lt]/show/restore [--days --tier]/promote`, `cache stats/purge --scope cluster|node --node id`, `user create/ls/show/set`, `usage`, `bucket show`, `grant ls/set/rm`, `policy get/set`, `bucket-policy get/set`, `credentials create/ls/rm`, `admin-token create/ls/revoke`, `job ls/show/run/cancel`, `node ls/drain`; mọi list (`ls`, `pack show`) nhận `--limit 1..1000 --cursor <next_cursor>`. Scope cache sai (thiếu `--scope`, `node` thiếu `--node`, `cluster` kèm `--node`) và tham số không hợp lệ bị từ chối cục bộ, không gửi request. Scope token không đủ là 403 từ gateway; CLI chỉ in status, `error.code` đã kiểm và `request_id` (để tra audit log), không in `message` vì có thể echo input. 404/501 có envelope là lỗi gateway (vd. 501 `job_type_unavailable` khi executor chưa cài); router 404/405 và 501 không envelope là unsupported. Endpoint và token file có thể đặt bằng env `DSGCTL_ENDPOINT` / `DSGCTL_TOKEN_FILE` (flag thắng), hợp với SSH tunnel cố định `127.0.0.1:<port>`; help không in giá trị env. Secret/token của create chỉ ghi vào file `--out` mới (O_EXCL, 0600) và bị che trên stdout. `admin-token bootstrap` chạy offline trên Badger (`--local-data-path`, gateway phải dừng) hoặc DynamoDB (`--ddb-table-prefix --region`, credential provisioning từ env `AWS_*`), ghi token vào `--token-file` mới, chạy lần hai bị từ chối; `--recover` báo lỗi (R2 chưa có). `cost report`, `fault`, `rebuild-index`, `sim run` chưa hiện thực thì báo unsupported, không giả success. Schema endpoint vẫn theo hợp đồng R4. Token file đọc cục bộ permission 0600; không nhận raw bearer làm argument hay biến môi trường in history. [Jobs/Nodes backend và handoff](contracts/jobs-and-nodes.md), [kiểm thử CLI theo vai trò](testing/admin-cli-validation.md).
 
 ---
 

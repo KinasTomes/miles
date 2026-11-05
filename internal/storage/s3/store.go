@@ -121,7 +121,10 @@ func (s *Store) putImmutable(ctx context.Context, key string, size int64, body i
 		in.ServerSideEncryption = types.ServerSideEncryptionAwsKms
 		in.SSEKMSKeyId = aws.String(s.kmsKey)
 	}
-	_, err = s.client.PutObject(ctx, in)
+	if err := storage.CheckPhysicalDispatch(ctx); err != nil {
+		return err
+	}
+	_, err = s.client.PutObject(ctx, in, func(o *awss3.Options) { o.Retryer = aws.NopRetryer{} })
 	if err == nil {
 		return nil
 	}
@@ -272,7 +275,10 @@ func (s *Store) ChangeStorageClass(ctx context.Context, ref storage.PackRef, nex
 		in.ServerSideEncryption = types.ServerSideEncryptionAwsKms
 		in.SSEKMSKeyId = aws.String(s.kmsKey)
 	}
-	_, err = s.client.CopyObject(ctx, in)
+	if err := storage.CheckPhysicalDispatch(ctx); err != nil {
+		return err
+	}
+	_, err = s.client.CopyObject(ctx, in, func(o *awss3.Options) { o.Retryer = aws.NopRetryer{} })
 	return mapError(err)
 }
 
@@ -289,8 +295,11 @@ func (s *Store) Restore(ctx context.Context, ref storage.PackRef, request storag
 		return storage.ErrInvalid
 	}
 	key, _, _ := keys(ref)
+	if err := storage.CheckPhysicalDispatch(ctx); err != nil {
+		return err
+	}
 	_, err = s.client.RestoreObject(ctx, &awss3.RestoreObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key),
-		RestoreRequest: &types.RestoreRequest{Days: aws.Int32(int32(request.Days)), GlacierJobParameters: &types.GlacierJobParameters{Tier: types.Tier(request.Tier)}}})
+		RestoreRequest: &types.RestoreRequest{Days: aws.Int32(int32(request.Days)), GlacierJobParameters: &types.GlacierJobParameters{Tier: types.Tier(request.Tier)}}}, func(o *awss3.Options) { o.Retryer = aws.NopRetryer{} })
 	return mapError(err)
 }
 
@@ -299,7 +308,10 @@ func (s *Store) DeletePack(ctx context.Context, ref storage.PackRef) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.client.DeleteObject(ctx, &awss3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
+	if err := storage.CheckPhysicalDispatch(ctx); err != nil {
+		return err
+	}
+	_, err = s.client.DeleteObject(ctx, &awss3.DeleteObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)}, func(o *awss3.Options) { o.Retryer = aws.NopRetryer{} })
 	return mapError(err)
 }
 
