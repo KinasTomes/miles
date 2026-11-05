@@ -31,12 +31,16 @@ func runtimeCredentials(ctx context.Context, c config.Startup, h *http.Client) (
 			o.Client = imds.New(imds.Options{Endpoint: "http://169.254.169.254", EnableFallback: aws.FalseTernary, HTTPClient: h})
 		})
 	} else {
-		profile, err := awsconfig.LoadSharedConfigProfile(ctx, "miles-runtime", func(o *awsconfig.LoadSharedConfigOptions) {
+		name := c.AWSProfile
+		if name == "" {
+			name = "miles-runtime"
+		}
+		profile, err := awsconfig.LoadSharedConfigProfile(ctx, name, func(o *awsconfig.LoadSharedConfigOptions) {
 			o.ConfigFiles = []string{c.AWSConfigFile}
 			o.CredentialsFiles = []string{}
 		})
 		if err != nil || profile.CredentialProcess == "" || profile.Credentials.AccessKeyID != "" || profile.RoleARN != "" || profile.SourceProfileName != "" || profile.CredentialSource != "" || profile.WebIdentityTokenFile != "" || profile.SSOSessionName != "" {
-			return nil, errors.New("Edge requires only credential_process in miles-runtime profile")
+			return nil, errors.New("Edge requires only credential_process in its configured AWS profile")
 		}
 		provider = processcreds.NewProvider(profile.CredentialProcess, func(o *processcreds.Options) { o.Timeout = 10 * time.Second })
 	}

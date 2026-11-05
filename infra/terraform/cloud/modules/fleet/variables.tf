@@ -23,3 +23,12 @@ variable "owner_ssh_public_key" {
     error_message = "Owner SSH uses one reviewed ed25519 public key, never a private key."
   }
 }
+
+variable "environment" {
+  type    = string
+  default = "dev"
+}
+variable "owner" {
+  type    = string
+  default = "operator"
+}

@@ -10,7 +10,7 @@
         "s3:ListBucketMultipartUploads"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1"
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}"
       ]
     },
     {
@@ -20,7 +20,7 @@
         "s3:GetObject"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/*"
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/*"
       ]
     },
     {
@@ -34,10 +34,10 @@
         "s3:ListMultipartUploadParts"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/packs/*",
-        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/packs-index/*",
-        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/journal/*",
-        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/checkpoints/*"
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/packs/*",
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/packs-index/*",
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/journal/*",
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/checkpoints/*"
       ]
     },
     {
@@ -56,7 +56,7 @@
         "dynamodb:ConditionCheckItem"
       ],
       "Resource": [
-        "arn:aws:dynamodb:ap-southeast-1:ACCOUNT_ID:table/miles-dev-*"
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-*"
       ]
     },
     {
@@ -69,12 +69,13 @@
         "kms:DescribeKey"
       ],
       "Resource": [
-        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:key/*"
       ],
       "Condition": {
         "StringEquals": {
           "aws:ResourceTag/Project": "Miles",
-          "aws:ResourceTag/Environment": "dev"
+          "aws:ResourceTag/Environment": "{{ENVIRONMENT}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
         }
       }
     },
@@ -85,7 +86,7 @@
         "ssm:GetParameter"
       ],
       "Resource": [
-        "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/miles-dev/bootstrap-config"
+        "arn:aws:ssm:{{REGION}}:{{ACCOUNT_ID}}:parameter/{{INSTALLATION_NAME}}/bootstrap-config"
       ]
     },
     {
@@ -95,7 +96,7 @@
         "secretsmanager:GetSecretValue"
       ],
       "Resource": [
-        "arn:aws:secretsmanager:ap-southeast-1:ACCOUNT_ID:secret:miles-dev/runtime-secrets-*"
+        "arn:aws:secretsmanager:{{REGION}}:{{ACCOUNT_ID}}:secret:{{RUNTIME_SECRET_NAME}}-*"
       ]
     },
     {
@@ -107,7 +108,7 @@
         "logs:DescribeLogStreams"
       ],
       "Resource": [
-        "arn:aws:logs:ap-southeast-1:ACCOUNT_ID:log-group:/miles-dev/runtime:*"
+        "arn:aws:logs:{{REGION}}:{{ACCOUNT_ID}}:log-group:/{{INSTALLATION_NAME}}/runtime:*"
       ]
     },
     {
@@ -132,7 +133,7 @@
         "elasticloadbalancing:DeregisterTargets"
       ],
       "Resource": [
-        "arn:aws:elasticloadbalancing:ap-southeast-1:ACCOUNT_ID:targetgroup/miles-dev-s3/*"
+        "arn:aws:elasticloadbalancing:{{REGION}}:{{ACCOUNT_ID}}:targetgroup/{{INSTALLATION_NAME}}-s3/*"
       ]
     },
     {
@@ -143,7 +144,7 @@
         "autoscaling:CompleteLifecycleAction"
       ],
       "Resource": [
-        "arn:aws:autoscaling:ap-southeast-1:ACCOUNT_ID:autoScalingGroup:*:autoScalingGroupName/miles-dev-*"
+        "arn:aws:autoscaling:{{REGION}}:{{ACCOUNT_ID}}:autoScalingGroup:*:autoScalingGroupName/{{INSTALLATION_NAME}}-*"
       ]
     },
     {
@@ -153,11 +154,11 @@
         "ssm:UpdateInstanceInformation"
       ],
       "Resource": [
-        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:instance/*"
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:instance/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1"
+          "aws:RequestedRegion": "{{REGION}}"
         }
       }
     },
@@ -175,7 +176,7 @@
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1"
+          "aws:RequestedRegion": "{{REGION}}"
         }
       }
     },
@@ -190,7 +191,7 @@
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1"
+          "aws:RequestedRegion": "{{REGION}}"
         }
       }
     },
@@ -201,7 +202,7 @@
         "s3:GetObjectVersion"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1/releases/*"
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/releases/*"
       ]
     },
     {
@@ -215,9 +216,25 @@
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1"
+          "aws:RequestedRegion": "{{REGION}}"
         }
       }
+    },
+    {
+      "Sid": "EdgeBootstrapMaterial",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": "arn:aws:secretsmanager:{{REGION}}:{{ACCOUNT_ID}}:secret:{{INSTALLATION_NAME}}/edge-bootstrap-*"
+    },
+    {
+      "Sid": "ReadPinnedHelper",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObjectVersion"
+      ],
+      "Resource": "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/deployment/helper/*"
     }
   ]
 }

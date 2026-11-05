@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import re
 import shutil
 
 
@@ -20,7 +21,9 @@ def _readable_directory(path):
         directory.chmod(0o755)  # Service users must traverse releases even with umask 077.
 
 
-def install(bundle, root, profile, address):
+def install(bundle, root, profile, address, region="ap-southeast-1"):
+    if not re.fullmatch(r"(af|ap|ca|eu|il|me|mx|sa|us)-[a-z]+-[0-9]+", region):
+        raise ValueError("invalid commercial AWS Region")
     manifest_bytes = (bundle / "manifest.json").read_bytes()
     manifest = json.loads(manifest_bytes)
     native = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
@@ -58,10 +61,11 @@ def install(bundle, root, profile, address):
     _readable_directory(config)
     startup = json.loads((release / ("configs/" + profile + ".example.json")).read_text())
     startup["health_address"] = address + ":9100"
+    startup["region"] = region
     initial = {
         "startup.json": (json.dumps(startup, indent=2) + "\n").encode(),
-        "aws-config": (release / ("deploy/" + profile + "/aws-config.example")).read_bytes(),
-        "runtime.env": (release / ("deploy/" + profile + "/runtime.env.example")).read_bytes(),
+        "aws-config": (release / ("deploy/" + profile + "/aws-config.example")).read_text().replace("ap-southeast-1", region).encode(),
+        "runtime.env": (release / ("deploy/" + profile + "/runtime.env.example")).read_text().replace("ap-southeast-1", region).encode(),
     }
     for name, data in initial.items():
         target = config / name
@@ -94,6 +98,7 @@ if __name__ == "__main__":
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--profile", choices=["cloud", "edge"], required=True)
     parser.add_argument("--address", required=True)
+    parser.add_argument("--region", default="ap-southeast-1")
     parser.add_argument("--root", type=Path, default=Path("/"), help="Staging root; does not start services")
     args = parser.parse_args()
-    print(install(args.bundle, args.root, args.profile, args.address))
+    print(install(args.bundle, args.root, args.profile, args.address, args.region))

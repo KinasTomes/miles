@@ -1,189 +1,123 @@
-# Danh tính deploy dev
+# IAM cho từng installation
 
-Bootstrap IAM một lần bằng danh tính quản trị hiện có. Terraform workload chạy bằng
-role `miles-dev-deploy`; không apply bằng root. Các template dùng `ACCOUNT_ID`,
-không chứa thông tin account thật. Config, plan và credential nằm ngoài Git.
+IAM bootstrap do chủ account hoặc danh tính quản trị IAM thực hiện. Workload chạy
+bằng deploy role đã kiểm STS/identity gate. Runtime dùng instance profile hoặc
+Roles Anywhere. Thư mục này chứa policy templates cần render và review trước khi gắn.
 
-## Operator và role
+## Một file cấu hình cho mỗi installation
 
-- User `hung-deploy`, path `/miles/operators/`, đăng nhập console bằng mật khẩu và
-  MFA `hung-deploy`. Không tạo access key; user policy còn explicit-deny thao tác này.
-- Role `miles-dev-deploy`, path `/miles/bootstrap/`, session tối đa 3.600 giây.
-  Trust đúng user trên và yêu cầu `aws:MultiFactorAuthPresent=true`.
-- User nhận inline `user-policy.json.tmpl`. User và deploy role nhận managed policy
-  AWS `SignInLocalDevelopmentAccess` để dùng `aws login`.
-- Bootstrap tạo các managed policy dưới `/miles/bootstrap/`. Deploy role không có
-  quyền sửa chính nó, operator hoặc các managed policy bootstrap.
-
-| Managed policy | Template | Gắn vào |
-|---|---|---|
-| MilesDevDeployNetworkCreate | deploy-network-create.json.tmpl | deploy role |
-| MilesDevDeployNetwork | deploy-network.json.tmpl | deploy role |
-| MilesDevDeployRuntimeRoles | deploy-runtime-roles.json.tmpl | deploy role |
-| MilesDevDeployServices | deploy-services.json.tmpl | deploy role |
-| MilesDevDeployState | deploy-state.json.tmpl | deploy role |
-| MilesDevDeployData | deploy-data.json.tmpl | deploy role (review draft) |
-| MilesDevDeployCompute | deploy-compute.json.tmpl | deploy role (review draft) |
-| MilesDevDeploySessions | deploy-sessions.json.tmpl | deploy role (review draft) |
-| MilesDevDeployTeardown | deploy-teardown.json.tmpl | deploy role (review draft) |
-| MilesDevRuntimeBoundary | runtime-boundary.json.tmpl | boundary của gateway/jobs |
-
-Boundary không phải identity policy cấp quyền cho deploy role. Nó giới hạn các
-quyền runtime dù operator có thể sửa inline policy của hai runtime role.
-`iam:CreateRole` chỉ được phép cho đúng hai role `/miles/dev/miles-dev-gateway`
-và `/miles/dev/miles-dev-jobs` khi kèm boundary đã duyệt. Không cấp quyền gỡ boundary.
-`iam:PassRole` chỉ hai role này, tới EC2.
-
-Network create cần request tags `Project=Miles`, `Environment=dev`; các dependency
-đã tồn tại phải có resource tags tương ứng. Quyền tag lúc tạo yêu cầu
-`ec2:CreateAction` hiện diện, tránh nhận mạng có sẵn bằng cách tự gắn nhãn Miles.
-Network read/write giới hạn Singapore. Backend state chỉ đúng bucket/key dev;
-DeleteObject chỉ cho `.tflock`, không cho state object.
-
-## Nguồn policy và kiểm tra
-
-Baseline foundation/state và full Warm sinh từ private empty-state plans bằng
-[iam-policy-autopilot](https://github.com/awslabs/iam-policy-autopilot) **0.3.0**:
+Copy [installation example](../../environments/dev/installation.example.json) ra
+thư mục private ngoài Git. Điền account/Region, `installation_name`, `environment`,
+`owner`, `runtime_iam_path`, boundary ARN, AMI/type, Edge certificate CN và operator.
+Các ARN user/MFA/deploy role/boundary phải thuộc cùng account. `operator.terraform_profile`
+là profile phụ đọc CLI login qua credential_process.
 
 ```bash
-# Thư mục và plan phải nằm ngoài checkout; umask 077 trước khi tạo file.
-python3 infra/terraform/cloud/scripts/plan-local.py --mode nat \
-  --policy-plan-json "$PRIVATE_DIR/foundation-plan.json"
-python3 infra/terraform/cloud/scripts/plan-local.py --stack state \
-  --policy-plan-json "$PRIVATE_DIR/state-plan.json"
-uvx iam-policy-autopilot@0.3.0 generate-policies "$PRIVATE_DIR/foundation-plan.json" \
-  --region ap-southeast-1 --account "$AWS_ACCOUNT_ID" --resource-cutoff 100 --pretty
-uvx iam-policy-autopilot@0.3.0 generate-policies "$PRIVATE_DIR/state-plan.json" \
-  --region ap-southeast-1 --account "$AWS_ACCOUNT_ID" --resource-cutoff 100 --pretty
-python3 infra/terraform/cloud/scripts/plan-local.py --mode nat --var-file "$DEV_VARS" \
-  --policy-plan-json "$PRIVATE_DIR/warm-active-plan.json"
-uvx iam-policy-autopilot@0.3.0 generate-policies "$PRIVATE_DIR/warm-active-plan.json" \
-  --region ap-southeast-1 --account "$AWS_ACCOUNT_ID" --resource-cutoff 100 --pretty
+umask 077
+python3 infra/terraform/cloud/scripts/render-installation.py \
+  --config "$PRIVATE_DIR/installation.json" --out "$PRIVATE_DIR/rendered"
 ```
 
-Baseline được review lại: bỏ quyền service tùy chọn không dùng, sửa IAM path,
-KMS alias và SSM parameter ARN; thêm giới hạn tags/Region, runtime boundary và
-state/lock access theo hợp đồng backend. Boundary lấy trần quyền của module IAM
-runtime hiện có. Tách managed policy để từng document dưới quota 6.144 ký tự.
+Output directory phải mới, nằm ngoài checkout. Renderer dùng standard library,
+không gọi AWS, tạo directory 0700/file 0600 và từ chối trường cấu hình lạ.
+Mỗi lần đổi input tạo output directory mới để review diff trước khi sử dụng.
 
-Render `ACCOUNT_ID` thành account từ STS và `AMI_ID` thành AMI đã pin/review trong thư mục riêng có quyền 0700,
-file 0600. Chạy `aws accessanalyzer validate-policy` với `IDENTITY_POLICY` trên
-các policy; trust dùng `RESOURCE_POLICY` và resource type
-`AWS::IAM::AssumeRolePolicyDocument`. Chỉ gắn document đã kiểm tra; nếu policy
-cùng tên đã tồn tại nhưng khác nội dung thì dừng để review thay vì ghi đè.
+| Output | Cách dùng |
+| --- | --- |
+| `installation.tfvars.json` | Private var-file cho dev stack, có thể dùng foundation hoặc fleet theo input |
+| `bootstrap-state.tfvars.json` | Var-file cho bootstrap state |
+| `backend.hcl` | Backend bucket/key/Region/profile cùng installation |
+| `iam/user-policy.json`, `iam/trust-policy.json` | Quyền operator và trust deploy role |
+| `iam/runtime-boundary.json` | Permissions boundary của runtime roles |
+| `iam/deploy-*.json` | Baseline deploy permissions, cần đối chiếu plan thật |
 
-Ngày 2026-10-22: Access Analyzer không có findings cho các document. IAM simulator
-đã kiểm tra ca cho phép/từ chối: role có/thiếu boundary; sửa deploy role; PassRole
-tới EC2/Lambda; gắn nhãn chiếm VPC chưa thuộc Miles; tạo subnet trong VPC ngoài
-phạm vi; sửa VPC chưa có owner tags; xóa state object. Simulation và plan không
-chứng minh mọi API apply đã được cấp đủ quyền.
+Templates dùng các marker `{{ACCOUNT_ID}}`, `{{REGION}}`, `{{INSTALLATION_NAME}}`,
+`{{ENVIRONMENT}}`, `{{RUNTIME_IAM_PATH}}` và ARN từ operator config. Renderer giữ
+state DeleteObject chỉ trên `.tflock`. Runtime role creation bắt buộc boundary đúng
+ARN đã chọn. PassRole tới EC2 chỉ cho gateway/jobs và Edge bootstrap role. Edge có cùng bounded role-management
+contract, provider dùng trust anchor và certificate CN cấu hình trong Terraform.
 
-## Phiên làm việc thường ngày
+State bucket là `<installation>-tfstate-<account>-<region>`, data bucket là
+`<installation>-data-<account>-<region>`, table prefix `<installation>-`.
+Grant dựa trên tags dùng cả `Environment` và `Installation`. Khi nâng cấp installation
+cũ, review plan gắn tag Installation bằng quyền quản trị đã được duyệt trước khi
+gắn các policy mới có điều kiện tag này. State/session outputs mới cũng cần được
+review trong một plan riêng trước khi dùng gate pause/resume.
 
-### Cloud fleet W4 — chỉ chuẩn bị, chưa gắn quyền
+Đổi `installation_name`, Region hoặc IAM path của installation có dữ liệu cần
+migration plan riêng vì nhiều tài nguyên sẽ thay tên hoặc bị replace.
 
-Boundary draft thêm `GetObjectVersion` cho `data/releases/*` và
-`DescribeTargetHealth` (API không hỗ trợ resource ARN, giới hạn RequestedRegion).
-Gateway identity chỉ bật quyền release/drain khi `enable_asg=true`, prefix release
-SHA đã pin, đúng ASG/TG. KMS key policy thêm đúng custom ASG service-linked role,
-không mở quyền cho mọi role/instance. Không cập nhật IAM live bằng lượt này.
+## Bộ dựng account mới
 
-Autopilot 0.3.0 đã chạy trên **offline synthetic** empty-state fleet plan (AMI lookup
-thay literal fixture, provider không gọi AWS). Kết quả là baseline, không phải
-policy được phép gắn: có wildcard PassRole/tagging và quyền warm pool không dùng;
-không chứng minh read/update/delete/refresh đã đầy đủ. AWS CLI trong lifecycle agent
-không phải SDK input được Autopilot phân tích; quyền runtime đối chiếu programmatic
-Service Authorization Reference.
+`main.tf` tạo user, role MFA, runtime boundary và các deploy managed policies từ
+`operator.tfvars.json`. Renderer chia deploy policies trong quota mặc định. Password
+Console được bộ dựng tạo ngoài Terraform state. CA/key/material Edge cũng nằm ngoài
+Terraform, chỉ ARN/public CA được truyền vào IaC.
 
-Trước W5: dùng `plan-local.py --mode interface --var-file "$FLEET_VARS"` cùng
-`--policy-plan-json` như quy trình trên, rồi chạy `uvx iam-policy-autopilot@0.3.0
-generate-policies "$PRIVATE_DIR/fleet-plan.json" --region ap-southeast-1 --account
-"$AWS_ACCOUNT_ID" --resource-cutoff 100 --pretty`. Review delta ALB/ASG/LT và
-custom SLR từ plan thật; scope PassRole chỉ gateway và custom SLR tới đúng service,
-ASG chỉ `miles-dev-gateway`, LT theo owner tags, SLR đúng suffix `miles-dev`.
-Loại API không dùng; bổ sung provider read/update/refresh/pause qua plan tương ứng,
-validate/simulate positive/negative rồi admin mới gắn quyền. Không tự tăng quota hay
-gắn policy mới để vượt quota. Existing deploy role chưa có quyền fleet/ALB; không
-đổi policy cũ trước khi review diff và budget cho lần chạy thật.
+Dùng `scripts/deploy-installation.py` theo [hướng dẫn account mới](../../../../../docs/testing/aws-personal-account-guide.md).
+`plan operator` và `apply operator --plan-sha256 ...` chạy bằng admin profile sau khi
+được chủ account duyệt. Các stage state/foundation/active dùng deploy role.
+`operator.cleanup_expires_at` bật grant xóa có hạn tối đa bốn giờ. Xóa trường này và
+review/apply operator plan để thu hồi. Giữ operator/state bootstrap sau lượt test.
 
-### Đăng nhập và identity gate
+## Bootstrap danh tính khi thao tác trực tiếp
 
-1. Đăng nhập console bằng operator và MFA, rồi Switch Role với đường dẫn đầy đủ
-   `miles/bootstrap/miles-dev-deploy`.
-2. Đăng nhập CLI bằng `aws login --remote --profile miles-dev --region ap-southeast-1`,
-   chọn phiên role đó trong trình duyệt. Không chọn user hoặc root. Đặt region
-   Singapore trên profile nguồn để refresh token không gặp NoRegion.
-3. Đặt `AWS_PROFILE=miles-dev`, kiểm STS và chạy identity gate trước mỗi apply:
+1. Tạo operator user đúng `operator.user_arn`, Console password và MFA đúng
+   `operator.mfa_arn`. Gắn user policy đã render. User policy deny tạo access key.
+2. Tạo deploy role đúng `operator.deploy_role_arn`, trust user đã render và yêu cầu
+   `aws:MultiFactorAuthPresent=true`. Giữ session duration đã review, baseline 3600s.
+3. Gắn AWS `SignInLocalDevelopmentAccess` cho user và deploy role để dùng `aws login`.
+4. Tạo boundary từ document đã render ở đúng ARN input, rồi gắn các deploy policy
+   đã review. Deploy role giữ tách biệt với quyền sửa chính nó/operator/boundary.
+5. Member đăng nhập Console bằng user + MFA, Switch role bằng đầy đủ path, bấm link
+   từ `aws login --remote`, chọn deploy role rồi lưu code vào private file cho agent
+   hoàn tất login. Xem [hướng dẫn đầy đủ](../../../../../docs/testing/aws-personal-account-guide.md).
+6. Kiểm `aws sts get-caller-identity`, dùng profile credential_process cho Terraform
+   backend/provider và chạy `check-deploy-identity.py --role-arn "$DEPLOY_ROLE_ARN"`
+   trước mỗi apply. Giữ Terraform `deploy_role_arn=null` khi CLI đã là deploy role.
+
+## Đối chiếu quyền với plan
+
+Các templates bao phủ state/foundation, fleet/ALB/SLR, Edge/PrivateLink/Roles Anywhere,
+release publisher, metadata bootstrap và cleanup có hạn. Từng account có boundary, key policy, quota và
+service availability riêng. Quyền read/update/delete của provider cũng cần kiểm.
+
+Tạo plan JSON private từ plan thật. Empty-state `plan-local.py` chỉ phục vụ phân tích
+quyền và không đọc remote state. Nó hỗ trợ private var-file và `--region` override.
+Dùng IAM Policy Autopilot để tạo baseline bổ sung, rồi review delta với policy hiện có.
 
 ```bash
-python3 infra/terraform/cloud/scripts/check-deploy-identity.py --role-arn "$DEPLOY_ROLE_ARN"
+python3 infra/terraform/cloud/scripts/plan-local.py --mode interface \
+  --var-file "$PRIVATE_DIR/rendered/installation.tfvars.json" \
+  --policy-plan-json "$PRIVATE_DIR/fleet-plan.json"
+uvx iam-policy-autopilot@0.4.0 generate-policies "$PRIVATE_DIR/fleet-plan.json" \
+  --region "$AWS_REGION" --account "$AWS_ACCOUNT_ID" --resource-cutoff 100 --pretty
 ```
 
-Backend và provider phải dùng cùng identity. Khi CLI đã là deploy role, giữ
-`deploy_role_arn=null` để tránh tự AssumeRole lần nữa. Provider 6.21.0 chưa hỗ trợ
-credential provider `aws login`; `plan-local.py` đã export credential tạm trong
-subprocess. Với lệnh Terraform triển khai trực tiếp, dùng cùng cách export vào
-process environment; không in hoặc lưu raw credential vào shell history/file.
+Giữ telemetry theo lựa chọn operator, có thể đặt
+`DISABLE_IAM_POLICY_AUTOPILOT_TELEMETRY=true`. Plan JSON chứa cấu hình private,
+chỉ xử lý trong private directory. Không dùng `--upload-policies` trong bước review.
 
-## Mở rộng W3 — chưa cập nhật AWS
+Đối chiếu baseline với API thực dùng. Loại warm-pool, tagging, PassRole và các service
+ngoài scope. Giới hạn ALB/ASG/LT, custom SLR, trust anchor/profile, release prefix và
+metadata bootstrap tới installation. Giữ IAM runtime role/boundary scope, tags,
+Region và các điều kiện từ chối tài nguyên khác. Validate policy bằng Access Analyzer,
+simulate ca allow/deny và review bằng danh tính quản trị trước khi gắn quyền.
 
-Các template data/compute/session/teardown và boundary mới đã validate/simulate,
-chưa tạo managed policy hoặc đổi default version trên AWS trong lượt chỉ plan/test.
-Trước apply cần administrative IAM review, đối chiếu version đang gắn và cập nhật
-đúng document; không để deploy role tự đổi policy/boundary. Không overwrite policy
-khác nội dung mà chưa review diff. Giữ trust/MFA/user policy như bootstrap hiện có.
+Baseline Autopilot 0.4.0 đã chạy trên synthetic Terraform mock plan có fleet/Edge
+ở account fixture và Sydney khi triển khai cấu hình này. Mock tests kiểm tên,
+ARN, boundary, tags và mặc định tương thích. Tên action trong templates đã được
+đối chiếu với [AWS Service Authorization Reference](https://docs.aws.amazon.com/service-authorization/latest/reference/)
+ngày 03/11/2026, cùng dependent actions cho certificate/provider creation. Apply/permissions ở account member cần
+bằng chứng riêng từ lượt AWS được duyệt.
 
-Bốn policy mới cộng policy hiện có và SignInLocalDevelopmentAccess là 10 managed
-policies/role; quota đọc từ account hiện là 20. Boundary không gắn như
-identity policy vào deploy role. Kiểm quota/attachment count thực trước cập nhật.
+## Audit và cleanup
 
-Compute chỉ cho pinned AMI, t4g.small, IMDSv2, private ENI và profile gateway đã
-bounded; volume mã hóa gp3 ≤20 GiB. CreateTags chỉ lúc RunInstances/CreateVolume,
-không được tự gắn nhãn nhận instance có sẵn. Data policy giới hạn 20 bảng thật và
-đúng backend bucket; không cấp object access/data mutation cho deploy chỉ để smoke
-test. Chạy smoke dưới runtime profile trên dev node sau khi apply được duyệt.
+`operator.audit_expires_at` là UTC ISO 8601 dạng `2026-12-01T10:00:00Z`. Khi có giá trị
+ở tương lai, renderer sinh thêm `iam/teardown-audit.json` với hạn dùng tương ứng.
+Grant này chỉ đọc inventory của installation. Gắn/gỡ nó trong cửa sổ audit đã duyệt,
+giữ riêng quyền xóa datastore/KMS/secret cho bước cleanup được duyệt.
 
-Teardown thường ngày chỉ terminate instance, detach volume và bỏ NAT/EIP/routes,
-interface SG/endpoints hoặc ALB đúng tên. Không DeleteBucket/DeleteTable/DeleteVolume,
-ScheduleKeyDeletion hoặc xóa state. `prevent_destroy`/deletion protection vẫn cần;
-IAM permissions không thay proof graceful drain/retention trong app.
-
-Session access chỉ node Miles/dev và document `miles-dev-shell`; kết thúc/resume
-session dùng system tag khớp `${aws:userid}` theo
-[AWS Session Manager IAM examples](https://docs.aws.amazon.com/systems-manager/latest/userguide/getting-started-restrict-access-examples.html).
-Agent gateway có UpdateInstanceInformation và bốn ssmmessages channel actions;
-jobs không nhận các action này trong inline policy. Không cấp SendCommand hoặc
-StartSession cho runtime. KMS grant chỉ cho AWSResource trên key Miles/dev;
-CloudWatch key policy giới hạn đúng runtime log group bằng encryption context.
-
-ALB disabled trong Warm plan hiện tại; template teardown chỉ cho cleanup ALB, chưa
-cấp CreateLoadBalancer/listener/target group. Trước bật ALB phải generate/review
-policy bổ sung từ plan certificate thật. Không dùng AdministratorAccess để né lỗi.
-
-Quyền bootstrap/data/compute/NAT/session đã được kiểm bằng API AWS thật ngày
-25/10/2026; xem [bằng chứng và giới hạn](../../../../../docs/testing/aws-dev-readiness.md).
-Interface mode, ALB và full data/key teardown chưa được nghiệm thu live. Simulation không thay đánh giá key policy, SCP hoặc context
-thực. Các API thiếu phải bổ sung theo lỗi đã xác định và validate lại, không nới
-CreateTags/TagResource để nhận tài nguyên ngoài phạm vi. Xem
-[quy trình vận hành](../../dev-sessions.md).
-
-## Audit trước full teardown
-
-`teardown-audit.json.tmpl` là grant tạm chỉ đọc inventory cần cho
-[full teardown](../../full-teardown.md); không gắn vào role thường ngày. Render
-`ACCOUNT_ID` và `EXPIRES_AT` (UTC ISO 8601, thời điểm kết thúc cửa sổ audit), review
-và validate/simulate trước khi gắn bằng phiên quản trị IAM. Grant cho phép list
-versions/multipart của đúng bucket dev, DescribeTable/Scan 20 bảng dev và đọc secret version
-metadata. `ListBackups`/`DescribeSnapshots` cần resource `*` cho metadata inventory,
-giới hạn Singapore và hạn dùng; không cấp đọc dữ liệu ngoài datastore dev.
-
-Gắn bằng inline policy riêng `MilesDevTeardownAuditTemporary`; không overwrite
-policy cùng tên chưa được đối chiếu. Chạy Scan với `--consistent-read --select COUNT`,
-phân trang đầy đủ; không in item hoặc secret value. DateLessThan giới hạn hiệu lực,
-vẫn phải gỡ policy bằng `iam:DeleteRolePolicy` sau audit/cleanup. Grant này không
-cấp quyền xóa object/datastore, gỡ bảo vệ, xóa key hoặc cập nhật IAM.
-
-DescribeTable giới hạn ARN và hạn dùng, không yêu cầu resource tags: delete waiter
-và refresh phải nhận được ResourceNotFound khi bảng đã mất. Policy thường ngày có
-điều kiện tags sẽ trả AccessDenied trong tình huống đó. Giữ grant audit đến khi
-đã kiểm API và state sau destroy, rồi gỡ cùng quyền cleanup tạm.
+Giữ bản policy/version ban đầu trước mọi grant tạm. Sau cleanup, gỡ grant và kiểm
+quyền đã thu hồi. Chi tiết dữ liệu, retention và bảo vệ ở
+[full teardown](../../full-teardown.md), pause/resume ở [dev sessions](../../dev-sessions.md).

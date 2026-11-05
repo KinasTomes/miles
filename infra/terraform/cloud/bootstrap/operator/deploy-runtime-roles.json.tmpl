@@ -8,12 +8,14 @@
         "iam:CreateRole"
       ],
       "Resource": [
-        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-gateway",
-        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-jobs"
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
       ],
       "Condition": {
         "StringEquals": {
-          "iam:PermissionsBoundary": "arn:aws:iam::ACCOUNT_ID:policy/miles/bootstrap/MilesDevRuntimeBoundary"
+          "iam:PermissionsBoundary": "{{BOUNDARY_ARN}}"
         }
       }
     },
@@ -32,11 +34,14 @@
         "iam:ListRoleTags",
         "iam:PutRolePolicy",
         "iam:TagRole",
-        "iam:UntagRole"
+        "iam:UntagRole",
+        "iam:UpdateAssumeRolePolicy"
       ],
       "Resource": [
-        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-gateway",
-        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-jobs"
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
       ]
     },
     {
@@ -53,10 +58,24 @@
         "iam:UntagInstanceProfile"
       ],
       "Resource": [
-        "arn:aws:iam::ACCOUNT_ID:instance-profile/miles/dev/miles-dev-gateway",
-        "arn:aws:iam::ACCOUNT_ID:instance-profile/miles/dev/miles-dev-jobs",
-        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-gateway",
-        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-jobs"
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap",
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
+      ]
+    },
+    {
+      "Sid": "DeleteRuntimeProfiles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:DeleteInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
+        "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
       ]
     },
     {
@@ -66,8 +85,9 @@
         "iam:PassRole"
       ],
       "Resource": [
-        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-gateway",
-        "arn:aws:iam::ACCOUNT_ID:role/miles/dev/miles-dev-jobs"
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-gateway",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-jobs",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
       ],
       "Condition": {
         "StringEquals": {

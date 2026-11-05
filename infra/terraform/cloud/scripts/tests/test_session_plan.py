@@ -35,6 +35,37 @@ def change(address, actions):
 
 
 class SessionPlanTests(unittest.TestCase):
+    def test_member_fleet_and_region_with_exact_expected_boundary(self):
+        for action, operation in [('pause', 'delete'), ('resume', 'create')]:
+            plan = fixture(action)
+            boundary = f'arn:aws:iam::{ACCOUNT}:policy/miles/member/Boundary'
+            for key, value in {'region': 'ap-southeast-2', 'installation_name': 'miles-member-test',
+                               'runtime_permissions_boundary_arn': boundary, 'enable_asg': True}.items():
+                plan['variables'][key] = {'value': value}
+            addresses = ['module.network.aws_nat_gateway.this["ap-southeast-2a"]',
+                         'module.fleet.aws_autoscaling_group.gateway[0]',
+                         'module.fleet.aws_launch_template.gateway[0]']
+            plan['resource_changes'] = [change(a, [operation]) for a in addresses]
+            plan['planned_values']['outputs']['fleet_contract'] = {'value': None}
+            self.assertEqual(gate.check_plan(plan, action, ACCOUNT, 'ap-southeast-2', 'miles-member-test', boundary), addresses)
+            with self.assertRaises(ValueError):
+                gate.check_plan(plan, action, ACCOUNT)
+            plan['resource_changes'].append(change('module.iam.aws_iam_role.runtime["edge"]', [operation]))
+            with self.assertRaises(ValueError):
+                gate.check_plan(plan, action, ACCOUNT, 'ap-southeast-2', 'miles-member-test', boundary)
+
+    def test_fleet_must_be_paused_and_region_must_match_resources(self):
+        plan = fixture()
+        plan['variables']['enable_asg'] = {'value': True}
+        plan['resource_changes'] = [change('module.fleet.aws_autoscaling_group.gateway[0]', ['delete'])]
+        plan['planned_values']['outputs']['fleet_contract'] = {'value': {'asg_name': 'running'}}
+        with self.assertRaises(ValueError):
+            gate.check_plan(plan, 'pause', ACCOUNT)
+        plan = fixture()
+        plan['resource_changes'] = [change('module.network.aws_nat_gateway.this["ap-southeast-2a"]', ['delete'])]
+        with self.assertRaises(ValueError):
+            gate.check_plan(plan, 'pause', ACCOUNT)
+
     def test_pause_and_resume_only_session_resources(self):
         addresses = ['module.network.aws_eip.nat["ap-southeast-1a"]',
                      'module.network.aws_nat_gateway.this["ap-southeast-1a"]',

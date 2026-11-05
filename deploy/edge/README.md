@@ -12,10 +12,12 @@ Host cần Linux systemd, Python 3.12+, Nginx có TLS, kiến trúc phù hợp r
 Tạo user/group hệ thống `miles`, home/data `/var/lib/miles` mode0700 thuộc miles.
 `/opt/miles`, `/etc/miles` và unit files do root quản lý, Miles chỉ được đọc.
 
-Sau khi kiểm archive SHA-256 từ kênh tin cậy và giải nén an toàn:
+Sau khi kiểm archive SHA-256 từ kênh tin cậy và giải nén an toàn, đặt `MILES_REGION`
+theo Region trong installation config trên shell của host Edge.
 
 ```bash
-sudo python3 bundle/deploy/install.py --bundle "$PWD/bundle" --profile edge --address 127.0.0.1
+sudo python3 bundle/deploy/install.py --bundle "$PWD/bundle" --profile edge --address 127.0.0.1 \
+  --region "${MILES_REGION:?Set MILES_REGION from the installation config}"
 sudo systemctl daemon-reload
 ```
 
@@ -25,14 +27,21 @@ Không cho key của S3 client vào AWS credential provider (hai danh tính khá
 
 ## Credentials và TLS
 
-`/etc/miles/aws-config` dùng profile `miles-runtime`, `credential_process` của IAM
+`/etc/miles/aws-config` dùng profile khớp `aws_profile` trong startup JSON (mặc định
+`miles-runtime`), `credential_process` của IAM
 Roles Anywhere. Thay public ARN placeholders bằng trust anchor/profile/role đã
-review, scope role tới backend/tenant tương ứng. Cài helper tại đường dẫn đã ghi;
+review, scope role tới backend/tenant tương ứng. Certificate CN phải khớp
+`edge_certificate_common_name` của installation. Cài helper tại đường dẫn đã ghi;
 certificate và private key provider ở `/etc/miles/rolesanywhere/`, directory0750
 root:miles, key0640 root:miles. Không đặt secret trong environment, startup JSON,
 Terraform hoặc Git. SDK refresh qua provider; test thực tế cả phiên hết hạn/renewal,
 revocation và clock skew trước nghiệm thu. `AWS_EC2_METADATA_DISABLED=true` để không
 fallback IMDS khi helper hỏng. Không copy instance profile/static AWS access key.
+
+Edge private không có NAT cần endpoint Roles Anywhere cùng đường TCP 443 từ SG
+Edge tới SG endpoint. Dev module hiện chưa tạo endpoint này và chỉ cho gateway/jobs
+vào các interface endpoints hiện có. Provision/review phần mạng Edge trước startup,
+theo [hướng dẫn account cá nhân](../../docs/testing/aws-personal-account-guide.md).
 
 Copy `nginx.conf` vào include bên trong `http {}` của Nginx; bỏ default server khác
 đang mở cổng ngoài dự kiến. Dùng server_name/DNS/certificate thật và key TLS riêng

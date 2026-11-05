@@ -8,7 +8,7 @@ locals {
 resource "aws_iam_role" "runtime" {
   for_each             = local.roles
   name                 = "${var.name}-${each.key}"
-  path                 = "/miles/dev/"
+  path                 = var.runtime_iam_path
   permissions_boundary = var.permissions_boundary_arn
   assume_role_policy = each.key == "edge" ? jsonencode({
     Version = "2012-10-17"
@@ -17,7 +17,7 @@ resource "aws_iam_role" "runtime" {
       Principal = { Service = "rolesanywhere.amazonaws.com" },
       Condition = {
         ArnEquals    = { "aws:SourceArn" = aws_rolesanywhere_trust_anchor.edge[0].arn },
-        StringEquals = { "aws:SourceAccount" = var.account_id, "aws:PrincipalTag/x509Subject/CN" = "miles-edge" }
+        StringEquals = { "aws:SourceAccount" = var.account_id, "aws:PrincipalTag/x509Subject/CN" = var.edge_certificate_common_name }
       }
     }]
     }) : jsonencode({
@@ -28,7 +28,7 @@ resource "aws_iam_role" "runtime" {
 resource "aws_iam_instance_profile" "runtime" {
   for_each = toset(["gateway", "jobs"])
   name     = "${var.name}-${each.key}"
-  path     = "/miles/dev/"
+  path     = var.runtime_iam_path
   role     = aws_iam_role.runtime[each.key].name
 }
 resource "aws_rolesanywhere_trust_anchor" "edge" {
@@ -89,7 +89,41 @@ output "edge_provider" {
     trust_anchor_arn        = aws_rolesanywhere_trust_anchor.edge[0].arn
     profile_arn             = aws_rolesanywhere_profile.edge[0].arn
     role_arn                = aws_iam_role.runtime["edge"].arn
-    certificate_common_name = "miles-edge"
+    certificate_common_name = var.edge_certificate_common_name
     duration_seconds        = 900
   }
+}
+
+# EC2 identity installs Edge only. The serving process uses Roles Anywhere.
+resource "aws_iam_role" "edge_bootstrap" {
+  count                = var.enable_edge ? 1 : 0
+  name                 = "${var.name}-edge-bootstrap"
+  path                 = var.runtime_iam_path
+  permissions_boundary = var.permissions_boundary_arn
+  assume_role_policy   = jsonencode({ Version = "2012-10-17", Statement = [{ Effect = "Allow", Action = "sts:AssumeRole", Principal = { Service = "ec2.amazonaws.com" } }] })
+}
+resource "aws_iam_instance_profile" "edge_bootstrap" {
+  count = var.enable_edge ? 1 : 0
+  name  = "${var.name}-edge-bootstrap"
+  path  = var.runtime_iam_path
+  role  = aws_iam_role.edge_bootstrap[0].name
+}
+resource "aws_iam_role_policy" "edge_bootstrap" {
+  count = var.enable_edge ? 1 : 0
+  name  = "${var.name}-edge-bootstrap"
+  role  = aws_iam_role.edge_bootstrap[0].name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = ["ssm:UpdateInstanceInformation"], Resource = "arn:aws:ec2:${var.region}:${var.account_id}:instance/*", Condition = { StringEquals = { "aws:RequestedRegion" = var.region } } },
+      { Effect = "Allow", Action = ["ssmmessages:CreateControlChannel", "ssmmessages:CreateDataChannel", "ssmmessages:OpenControlChannel", "ssmmessages:OpenDataChannel"], Resource = "*", Condition = { StringEquals = { "aws:RequestedRegion" = var.region } } },
+      { Effect = "Allow", Action = ["secretsmanager:GetSecretValue"], Resource = var.edge_bootstrap_secret_arn },
+      { Effect = "Allow", Action = ["kms:Decrypt"], Resource = var.kms_key_arn },
+      { Effect = "Allow", Action = ["s3:GetObjectVersion"], Resource = ["arn:aws:s3:::${var.data_bucket_name}/releases/${coalesce(var.release_sha256, "unconfigured")}/*", "arn:aws:s3:::${var.data_bucket_name}/deployment/helper/${coalesce(var.edge_helper_sha256, "unconfigured")}/*"] }
+    ]
+  })
+}
+output "edge_bootstrap_profile" {
+  value      = try(aws_iam_instance_profile.edge_bootstrap[0].name, null)
+  depends_on = [aws_iam_role_policy.edge_bootstrap]
 }

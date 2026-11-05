@@ -108,6 +108,19 @@ class ReleaseTests(unittest.TestCase):
             installer.install(self.bundle, root, "edge", "127.0.0.1")
         self.assertFalse((root / "opt/miles/current").exists())
 
+    def test_region_is_staged_consistently_and_existing_config_is_preserved(self):
+        root = self.base / "sydney"
+        installer.install(self.bundle, root, "edge", "127.0.0.1", "ap-southeast-2")
+        config = root / "etc/miles"
+        self.assertEqual(json.loads((config / "startup.json").read_text())["region"], "ap-southeast-2")
+        for file in ("aws-config", "runtime.env"):
+            self.assertIn("ap-southeast-2", (config / file).read_text())
+            self.assertNotIn("ap-southeast-1", (config / file).read_text())
+        installer.install(self.bundle, root, "edge", "127.0.0.1")
+        self.assertEqual(json.loads((config / "startup.json").read_text())["region"], "ap-southeast-2")
+        with self.assertRaises(ValueError):
+            installer.install(self.bundle, self.base / "bad-region", "edge", "127.0.0.1", "bad\nregion")
+
     def test_builder_requires_clean_source_and_protects_existing_output(self):
         out = self.base / "release.tar.gz"
         with patch.object(release.subprocess, "check_output", return_value=" M source.go\n"):
