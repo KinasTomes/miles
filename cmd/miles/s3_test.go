@@ -1,18 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
-	"github.com/KinasTomes/miles/internal/app"
-	"github.com/KinasTomes/miles/internal/config"
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/KinasTomes/miles/internal/app"
+	"github.com/KinasTomes/miles/internal/config"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 )
 
 func TestRequestGateDeadlineDrainAndQuiescence(t *testing.T) {
@@ -135,4 +139,44 @@ func TestWiredS3BucketSignedRequestsAndDrain(t *testing.T) {
 	request("GET", "/new-bucket/object", 501)
 	a.Drain()
 	request("PUT", "/another-bucket", 503)
+}
+
+func TestS3UnavailableLogsStructuredDiagnostics(t *testing.T) {
+	var logs bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(old)
+
+	handler := s3UnavailableNode("test-node-cloud-1")
+	req := httptest.NewRequest("PUT", "/bucket/key", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", w.Code)
+	}
+	reqID := w.Header().Get("X-Amz-Request-Id")
+	if reqID == "" {
+		t.Fatal("missing X-Amz-Request-Id header")
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
+		t.Fatalf("failed to parse json log: %v (%q)", err, logs.String())
+	}
+	if entry["msg"] != "s3 service unavailable" {
+		t.Fatalf("msg: got %v want s3 service unavailable", entry["msg"])
+	}
+	if entry["request_id"] != reqID {
+		t.Fatalf("request_id: got %v want %v", entry["request_id"], reqID)
+	}
+	if entry["node_id"] != "test-node-cloud-1" {
+		t.Fatalf("node_id: got %v want test-node-cloud-1", entry["node_id"])
+	}
+	if entry["stage"] != "admission_gate" {
+		t.Fatalf("stage: got %v want admission_gate", entry["stage"])
+	}
+	if entry["failure_class"] != "draining" {
+		t.Fatalf("failure_class: got %v want draining", entry["failure_class"])
+	}
 }
