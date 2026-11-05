@@ -2,7 +2,7 @@
 
 The pilot is prepared from the shared runtime with checkpoint/rebuild and Warm
 GC/compaction merged. See [procedure and metric definitions](../../benchmarks/dynamodb-pilot.md).
-This page records local proof. It does not report a new AWS measurement.
+This page records local proof and the incomplete live pilot described below.
 
 ## Checks
 
@@ -14,6 +14,8 @@ This page records local proof. It does not report a new AWS measurement.
 | Native recovery race suite | Export/seal and fault scenarios against pinned loopback fixtures. |
 | `terraform validate`, `terraform test` |38 mock-provider plans, including four new alarm plans: opt-in default, exact publisher dimensions/thresholds, Cloud-only and pause removal. No AWS calls. |
 | `python3 -B -m unittest discover -s scripts/tests -p test_dynamodb_pilot.py -v` | Report route/ratio separation and negative cases for mismatched workload/binary/encryption, failures/unhashed GET, missing routes, restart, stale gauges, missing nodes/incomplete statistics and invalid collection windows. Synthetic test inputs are not performance evidence. |
+| Native insert reconciliation regressions | Lost ACK and pre-send failure preserve the original journal outcome, retain roots, reject a delayed original transaction and allow a successor to seal the epoch. Joined writers can reconcile during shutdown. Unknown physical I/O continues to block release. |
+| Native concurrent bucket-policy regression | A publication between the current-pointer read and history discovery returns `ErrConflict`. Immutable history is read before the pointer so an atomic concurrent commit cannot masquerade as inconsistent history. |
 
 Fixtures use the pinned Docker images in `deploy/local/compose.yaml`, fresh
 loopback-only ports, isolated table/bucket names and temporary local paths. Only
@@ -26,7 +28,52 @@ read/write breakdown. These limits are carried into the report and runbook.
 The added Outbox timestamp is telemetry beside the immutable event, not a new
 recovery ordering rule; unresolved legacy events without it withhold observations.
 
-## AWS acceptance still required
+## Incomplete live pilot
+
+The Singapore pilot on 2026-11-05 used two private Cloud gateways, one AWS Edge
+and one dedicated AWS client, all ARM64 `t4g.small` with Standard CPU credits.
+The gateway release was `918ca58`; later Terraform and test-only corrections
+preserved its production Go source. Runtime IAM, its permissions boundary and
+the S3 gateway endpoint were corrected to allow data-bucket version inventory.
+
+- One complete matched concurrency-1 set passed full-file GET verification and
+  fresh physical statistics. Cloud and Edge PUT throughput were each about
+  7.8% of direct S3 in this sample. Earlier failed trials remain part of the
+  evidence. A successful retry does not establish failure-free operation.
+- All 20 tables had PITR enabled. Native routing inventory showed zero NAT
+  gateways, two gateway endpoints and nine interface endpoints across two AZs.
+- Ten isolated probe alarms completed threshold-driven `OK` → `ALARM` → `OK`
+  transitions with native alarm history. `SetAlarmState` was not used.
+- Cloud concurrency-4 PUT failed twice with `ServiceUnavailable`. An earlier
+  Edge concurrency-1 trial had one GET 503. The initiating causes remain open.
+- The scheduled cut could not seal epoch zero. A failed PUT retained a closed
+  writer with pending `insert/...`, which the existing commit-only reconciler
+  could not settle. The subsequent slow-operation preparation received Admin
+  503s on both front doors. Checkpoint/GC overhead and slow Complete/GET remain
+  unverified on this release.
+- Native metrics recorded the `Chunks` table reaching its 128-read-unit cap.
+  The approved adjustment raised only that table's read cap to 512, retaining
+  the write cap at 128. Available later samples had no further nonzero read-cap
+  throttles. This does not establish the cause of the earlier PUT failures.
+- Pinned ALB IP addresses became stale during the run. Measurements switched
+  to the native ALB DNS name with a matching private-CA certificate SAN and
+  strict TLS validation. Future trials must resolve the ALB hostname dynamically.
+
+The pause apply completed at 04:10 UTC. The following plan had zero pending
+changes and retained 83 foundation resources, including both S3 buckets, 20
+tables, KMS and the runtime secret. ASG/ALB absence and Edge/client termination
+were checked separately; Terraform removed the interface endpoints and alarms.
+Full data teardown and independent root-volume absence verification remain
+outstanding. Retained storage and security resources can continue to accrue cost.
+The five temporary managed-policy defaults were restored and the temporary
+deploy-role inline grant was removed. Raw identifiers, credentials, native plans
+and request artifacts remain in private operator evidence.
+
+The insert reconciliation and policy-read ordering fixes have local regression
+proof. They require a new live release before they can certify the retained
+history or complete the interrupted acceptance cases.
+
+## AWS acceptance remaining
 
 - Build hashes and configuration on two Cloud nodes plus one AWS Edge, with the
   same dedicated client/manifest/toolchain/encryption for direct S3 and gateways.
@@ -39,6 +86,5 @@ recovery ordering rule; unresolved legacy events without it withhold observation
 - Complete endpoint/NAT/ALB/EC2/EBS/S3/DDB/PITR/backups/KMS/secret/metrics/alarms
   inventory, dated regional prices, cost window and verified synthetic cleanup.
 
-Alarms remain opt-in and no resources have been applied for this pilot. Prior AWS
-results refer to their original releases and do not certify the added telemetry
-or this pilot. Local success and a merged PR alone do not complete acceptance.
+Alarms remain opt-in. Evidence belongs to its exact release and observation
+window. Local success and a merged PR alone do not complete acceptance.
