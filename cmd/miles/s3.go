@@ -47,7 +47,7 @@ func (c devCredentials) Credential(ctx context.Context, id string) (api.Credenti
 	return credential, nil
 }
 
-func s3Handler(region string, d app.Dependencies, a *app.Admission) http.Handler {
+func s3Handler(region, nodeID string, d app.Dependencies, a *app.Admission) http.Handler {
 	clk := clock.NewReal()
 	now := func() time.Time { return clk.Now().WallUTC }
 	handlers := api.NewBucketHandlers(d.Metadata)
@@ -64,6 +64,7 @@ func s3Handler(region string, d app.Dependencies, a *app.Admission) http.Handler
 			handlers[op] = func(w http.ResponseWriter, r *api.Request) error {
 				service, err := d.ObjectsForRequest(r.HTTP.Context(), r.Bucket)
 				if err != nil {
+					r.RecordFailure("object_factory", err)
 					return &api.Error{Code: api.ErrServiceUnavailable}
 				}
 				return api.NewObjectHandlers(service, service, service, d.S3ListTokenKey)[op](w, r)
@@ -73,13 +74,14 @@ func s3Handler(region string, d app.Dependencies, a *app.Admission) http.Handler
 			handlers[op] = func(w http.ResponseWriter, r *api.Request) error {
 				service, err := d.ObjectsForRequest(r.HTTP.Context(), r.Bucket)
 				if err != nil {
+					r.RecordFailure("object_factory", err)
 					return &api.Error{Code: api.ErrServiceUnavailable}
 				}
 				return multipart.NewHandlers(service, now)[op](w, r)
 			}
 		}
 	}
-	rt := &api.Router{Region: region, Now: now, Credentials: devCredentials{d}, Access: auth.NewSnapshots(d.Metadata, clk), Handlers: handlers}
+	rt := &api.Router{Region: region, Now: now, Credentials: devCredentials{d}, Access: auth.NewSnapshots(d.Metadata, clk), Handlers: handlers, NodeID: nodeID}
 	return requestGate(a, RequestTimeout, rt, s3Unavailable)
 }
 

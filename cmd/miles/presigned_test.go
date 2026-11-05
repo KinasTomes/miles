@@ -96,7 +96,7 @@ func TestPresignedLocalProfiles(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer d.Close()
-			server := httptest.NewServer(s3Handler(c.Region, d, new(app.Admission)))
+			server := httptest.NewServer(s3Handler(c.Region, c.RuntimeNodeID, d, new(app.Admission)))
 			defer server.Close()
 			credential := d.DevCredentials[0]
 			client := sdk.New(sdk.Options{Region: c.Region, BaseEndpoint: aws.String(server.URL), UsePathStyle: true,

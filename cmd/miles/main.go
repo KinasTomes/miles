@@ -59,7 +59,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if c.S3Address != "" {
-		d.S3Handler = func(a *app.Admission) http.Handler { return s3Handler(c.Region, d, a) }
+		d.S3Handler = func(a *app.Admission) http.Handler { return s3Handler(c.Region, c.RuntimeNodeID, d, a) }
 	}
 	if c.AdminAddress != "" && d.Admin != nil {
 		h, err := adminHandler(*d.Admin, stderr)

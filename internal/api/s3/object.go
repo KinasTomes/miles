@@ -134,6 +134,12 @@ func (o *Objects) PutObject(w http.ResponseWriter, r *Request) error {
 		Metadata: metadata, UserID: r.Caller.UserID, CredentialID: r.Caller.AccessKeyID,
 	})
 	if err != nil {
+		var staged *object.PutStageError
+		if errors.As(err, &staged) {
+			r.recordFailure(staged.Stage, err)
+		} else {
+			r.recordFailure("object_put", err)
+		}
 		return objectError(err, r.Bucket, r.Key)
 	}
 	w.Header().Set("ETag", result.ETag)

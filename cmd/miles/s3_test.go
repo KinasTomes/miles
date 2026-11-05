@@ -105,7 +105,7 @@ func TestWiredS3BucketSignedRequestsAndDrain(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := new(app.Admission)
-	server := httptest.NewServer(s3Handler(c.Region, d, a))
+	server := httptest.NewServer(s3Handler(c.Region, c.RuntimeNodeID, d, a))
 	defer server.Close()
 	cred := d.DevCredentials[0]
 	request := func(method, path string, expected int) {
