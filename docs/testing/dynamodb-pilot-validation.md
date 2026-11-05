@@ -92,6 +92,24 @@ The insert reconciliation and policy-read ordering fixes have local regression
 proof. They require a new live release before they can certify the retained
 history or complete the interrupted acceptance cases.
 
+## Diagnostic and observability updates (Workstreams A–C)
+
+Offline analysis and negative fault-injection tests (PR #65 continuation) verified:
+- Analysis of the 90 ordered PUTs from Cloud C1 identified that the 2 failures
+  (#71 HTTP 503 and #73 HTTP 500) occurred at distinct pipeline stages:
+  - Request #71 had a writer lease and quota reservation granted, which were
+    safely transitioned to `Released` without publishing an object head or leaking quota.
+  - Request #73 failed prior to writer admission during credential/authorization lookup.
+- The failure of the diagnostic collection path in earlier runs was traced to
+  SSM Session Manager `Standard_Stream` failure combined with unstructured slog text
+  output. `app.Run` now initializes `slog.SetDefault(logger)` to ensure all runtime
+  components output structured JSON lines.
+- `cmd/miles/s3.go` now captures admission gate rejections with node and stage context,
+  and `internal/api/s3/object.go` logs stages for `GetObject`, `HeadObject`, and
+  `DeleteObject`.
+- Full regression suites (`make check`, `make test-local`, `go test -race`, and Python
+  runner unit tests) pass locally. Local PASS does not constitute AWS acceptance.
+
 ## AWS acceptance remaining
 
 - Build hashes and configuration on two Cloud nodes plus one AWS Edge, with the
