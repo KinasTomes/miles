@@ -85,6 +85,9 @@ def build_report(runs, observation):
     if set(runs) != {"cloud", "edge", "direct"}:
         raise ValueError("require Cloud, Edge and direct runs")
     summaries = {name: run_summary(run) for name, run in runs.items()}
+    # Physical statistics require every matched workload to retain its owned prefix.
+    if any(summary["cleanup"] != "retained_owned_prefix_for_observation" for summary in summaries.values()):
+        raise ValueError("matched pilot statistics require retained owned prefixes in all three runs")
     direct = runs["direct"]
     emulated = direct["target"] == "local-s3-smoke"
     if direct["target"] not in ("direct-s3", "local-s3-smoke"):

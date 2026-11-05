@@ -82,6 +82,9 @@ For each target (replace the config/output names):
 `--retain-objects` stops after verified reads/LIST so the background statistics
 collector can observe live heads. The artifact explicitly reports
 `retained_owned_prefix_for_observation`. Run all three targets with the same flag.
+The report requires this exact retained cleanup state for **each** run; a mixed
+policy or three logically deleted prefixes cannot validate post-workload physical
+statistics, even if the harness itself returned a successful workload status.
 Wait for a successful statistics refresh whose `collection_started_at` is after
 the workload finished, then export statistics via a pinned Admin SSH tunnel.
 Retain-before-delete is opt-in; the default harness still logically deletes only

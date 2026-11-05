@@ -49,6 +49,20 @@ class PilotTests(unittest.TestCase):
         self.assertNotIn("never-copy-secret", str(result))
         self.assertFalse(result["mvp_threshold_applied"])
 
+    def test_pilot_rejects_missing_or_mismatched_retained_cleanup(self):
+        for target in ("cloud", "edge", "direct"):
+            for cleanup in ("logical_delete_verified_physical_retention_unknown", "objects_may_remain_on_failure", ""):
+                with self.subTest(target=target, cleanup=cleanup):
+                    runs, observations = fixture()
+                    runs[target]["cleanup"] = cleanup
+                    with self.assertRaisesRegex(ValueError, "retained owned prefixes"):
+                        pilot.build_report(runs, observations)
+        runs, observations = fixture()
+        for run in runs.values():
+            run["cleanup"] = "logical_delete_verified_physical_retention_unknown"
+        with self.assertRaisesRegex(ValueError, "retained owned prefixes"):
+            pilot.build_report(runs, observations)
+
     def test_mismatch_restart_stale_incomplete_and_integrity_are_rejected(self):
         mutations = [
             lambda r, o: r["edge"].update(manifest_sha256="4" * 64),
