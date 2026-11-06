@@ -3,8 +3,10 @@ import unittest
 
 from scripts.runner_diagnostics import (
     build_failed_window_payload,
+    build_node_telemetry_snapshot,
     correlate_failures,
     execute_with_runcommand_fallback,
+    parse_chrony_tracking,
     parse_gateway_journal_lines,
     parse_prometheus_metrics,
     sanitize_benchmark_failure,
@@ -230,6 +232,198 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         self.assertEqual(payload["correlated_failures"][0]["stage"], "writer_admission")
         self.assertEqual(payload["telemetry"]["before"], before_metrics)
         self.assertEqual(payload["telemetry"]["after"], after_metrics)
+
+    def test_parse_chrony_tracking_csv_bounds(self):
+        # 169.254.169.123 in hex is A9FEA97B, interval 16.0s -> max allowed age is 34.0s
+        now_unix = 1730900000.0
+        ref_time_healthy = now_unix - 10.0 # 10s age < 34s
+        csv_healthy = f"A9FEA97B,169.254.169.123,3,{ref_time_healthy:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        parsed = parse_chrony_tracking(csv_healthy, now_unix=now_unix)
+        self.assertEqual(parsed["status"], "ok")
+        self.assertEqual(parsed["reference_id"], "A9FEA97B")
+        self.assertEqual(parsed["stratum"], 3)
+        self.assertEqual(parsed["interval_seconds"], 16.0)
+        self.assertEqual(parsed["max_allowed_age_seconds"], 34.0)
+        self.assertEqual(parsed["sample_age_seconds"], 10.0)
+        self.assertFalse(parsed["uncertainty_exceeded"])
+
+        # Stale sample: age = 45s > 34s
+        ref_time_stale = now_unix - 45.0
+        csv_stale = f"A9FEA97B,169.254.169.123,3,{ref_time_stale:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+        parsed_stale = parse_chrony_tracking(csv_stale, now_unix=now_unix)
+        self.assertEqual(parsed_stale["status"], "ok")
+        self.assertTrue(parsed_stale["uncertainty_exceeded"])
+
+        # Not synchronised leap status
+        csv_unsynced = f"A9FEA97B,169.254.169.123,3,{ref_time_healthy:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Not synchronised\n"
+        parsed_unsynced = parse_chrony_tracking(csv_unsynced, now_unix=now_unix)
+        self.assertTrue(parsed_unsynced["uncertainty_exceeded"])
+
+        # Invalid stratum (0 or 16)
+        csv_bad_stratum = f"A9FEA97B,169.254.169.123,16,{ref_time_healthy:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+        parsed_bad_stratum = parse_chrony_tracking(csv_bad_stratum, now_unix=now_unix)
+        self.assertTrue(parsed_bad_stratum["uncertainty_exceeded"])
+
+    def test_sanitize_benchmark_failure_detailed_classification(self):
+        client_result = {
+            "status": "failed",
+            "samples": [
+                # 1. Pre-header dial failure
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "http_status": 0,
+                    "error": "dial tcp: connection refused",
+                    "request_id": "",
+                    "payload_bytes": 0,
+                    "latency_ns": 1200000,
+                },
+                # 2. Post-header stream abort (200 with unexpected EOF)
+                {
+                    "phase": "verify-get",
+                    "operation": "GetObject",
+                    "http_status": 200,
+                    "error": "unexpected EOF in chunk data",
+                    "request_id": "REQ-STREAM-ABORT",
+                    "payload_bytes": 4096,
+                    "latency_ns": 15000000,
+                },
+                # 3. Gateway error (500 with request_id)
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "http_status": 500,
+                    "error": "InternalError",
+                    "request_id": "REQ-GATEWAY-500",
+                    "payload_bytes": 0,
+                    "latency_ns": 8000000,
+                },
+                # 4. Upstream error (503 without gateway request_id)
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "http_status": 503,
+                    "error": "Service Unavailable",
+                    "request_id": "",
+                    "payload_bytes": 0,
+                    "latency_ns": 30000000000,
+                },
+                # 5. Success sample (should NOT appear in failures)
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "http_status": 200,
+                    "request_id": "REQ-SUCCESS",
+                    "payload_bytes": 1048576,
+                    "latency_ns": 4500000,
+                }
+            ]
+        }
+
+        sanitized = sanitize_benchmark_failure(client_result)
+        failures = sanitized["failures"]
+        self.assertEqual(len(failures), 4)
+
+        self.assertEqual(failures[0]["failure_type"], "pre_header_error")
+        self.assertEqual(failures[0]["duration_ms"], 1.2)
+
+        self.assertEqual(failures[1]["failure_type"], "post_header_stream_abort")
+        self.assertEqual(failures[1]["request_id"], "REQ-STREAM-ABORT")
+        self.assertEqual(failures[1]["bytes_read"], 4096)
+
+        self.assertEqual(failures[2]["failure_type"], "gateway_error")
+        self.assertEqual(failures[2]["request_id"], "REQ-GATEWAY-500")
+
+        self.assertEqual(failures[3]["failure_type"], "upstream_error")
+
+    def test_build_node_telemetry_snapshot(self):
+        metrics_raw = "miles_ready 1\nprocess_resident_memory_bytes 1000\n"
+        chrony_raw = "A9FEA97B,169.254.169.123,3,100.0,0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n"
+
+        snap = build_node_telemetry_snapshot(
+            alias="cloud-a",
+            profile="cloud",
+            metrics_raw=metrics_raw,
+            chrony_raw=chrony_raw,
+            readyz_status=200,
+            captured_at="2026-11-06T15:00:00Z",
+            now_unix=105.0
+        )
+        self.assertEqual(snap["alias"], "cloud-a")
+        self.assertEqual(snap["profile"], "cloud")
+        self.assertEqual(snap["status"], "ok")
+        self.assertEqual(snap["readyz"], 200)
+        self.assertEqual(snap["metrics"]["miles_ready"], 1)
+        self.assertEqual(snap["clock"]["reference_id"], "A9FEA97B")
+        self.assertFalse(snap["clock"]["uncertainty_exceeded"])
+
+        # Error snapshot
+        snap_err = build_node_telemetry_snapshot(
+            alias="cloud-b",
+            profile="cloud",
+            error="Connection timed out",
+            captured_at="2026-11-06T15:00:00Z"
+        )
+        self.assertEqual(snap_err["status"], "error")
+        self.assertIn("Connection timed out", snap_err["error"])
+
+    def test_build_failed_window_payload_structured_provenance(self):
+        client_res = {
+            "status": "failed",
+            "samples": [
+                {"phase": "put", "request_id": "REQ-A", "status_code": 500},
+                {"phase": "put", "request_id": "REQ-B", "status_code": 503}
+            ]
+        }
+        node_journals = [
+            {
+                "alias": "cloud-a",
+                "lines": [
+                    "{\"msg\": \"s3 server failure\", \"request_id\": \"REQ-A\", \"node_id\": \"cloud-a\", \"stage\": \"writer_admission\", \"failure_class\": \"clock_uncertainty_exceeded\"}"
+                ]
+            }
+        ]
+        # cloud-b had connection error
+        node_status = {"cloud-a": "ok", "cloud-b": "error"}
+        before_telemetry = {
+            "captured_at": "2026-11-06T13:20:00Z",
+            "nodes": [{"alias": "cloud-a", "status": "ok"}, {"alias": "cloud-b", "status": "ok"}]
+        }
+        after_telemetry = {
+            "captured_at": "2026-11-06T13:25:00Z",
+            "nodes": [{"alias": "cloud-a", "status": "ok"}, {"alias": "cloud-b", "status": "error"}]
+        }
+
+        payload = build_failed_window_payload(
+            name="cloud-c1-t1",
+            captured_at="2026-11-06T13:25:00Z",
+            client_result=client_res,
+            node_journals=node_journals,
+            node_status=node_status,
+            before_metrics=before_telemetry,
+            after_metrics=after_telemetry,
+            release_hash="da87fab12c8bc26bcee46f78eb24f0062a985880",
+            utc_window={"before_at": "2026-11-06T13:20:00Z", "after_at": "2026-11-06T13:25:00Z"},
+            schema_version=1
+        )
+
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["release_hash"], "da87fab12c8bc26bcee46f78eb24f0062a985880")
+        self.assertEqual(payload["utc_window"]["before_at"], "2026-11-06T13:20:00Z")
+        self.assertEqual(payload["utc_window"]["after_at"], "2026-11-06T13:25:00Z")
+        self.assertEqual(payload["telemetry"]["before"], before_telemetry)
+        self.assertEqual(payload["telemetry"]["after"], after_telemetry)
+
+        # REQ-A matched gateway journal on cloud-a
+        cor = payload["correlated_failures"]
+        self.assertEqual(cor[0]["request_id"], "REQ-A")
+        self.assertEqual(cor[0]["source"], "gateway")
+        self.assertEqual(cor[0]["failure_class"], "clock_uncertainty_exceeded")
+
+        # REQ-B was unjoined, BUT cloud-b had an error collecting journal -> MUST be uncollected_evidence!
+        self.assertEqual(cor[1]["request_id"], "REQ-B")
+        self.assertEqual(cor[1]["source"], "uncollected_evidence")
 
 
 if __name__ == "__main__":

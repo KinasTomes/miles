@@ -142,26 +142,55 @@ def sanitize_benchmark_failure(client_result):
     """
     Extracts sanitized failure details from warmbench client result without
     leaking payload bodies, authorization headers, or sensitive keys.
+    Distinguishes pre-header, post-header stream abort, upstream and gateway errors.
     """
     if not client_result:
         return {"status": "no_data", "failures": []}
 
     failures = []
 
-    # Check top-level samples list (as produced by warmbench)
+    def classify_failure(http_code, request_id, err_str, bytes_val):
+        err_lower = (err_str or "").lower()
+        if not http_code or http_code == 0 or "dial" in err_lower or "connection refused" in err_lower:
+            return "pre_header_error"
+        if http_code == 200 and (err_str or "eof" in err_lower or "short read" in err_lower or "stream abort" in err_lower):
+            return "post_header_stream_abort"
+        if request_id and http_code >= 400:
+            return "gateway_error"
+        if http_code in (502, 503, 504) and not request_id:
+            return "upstream_error"
+        if http_code >= 400:
+            return "gateway_error"
+        return "unknown_failure"
+
+    # 1. Top-level samples list (warmbench primary format)
     for sample in client_result.get("samples", []):
         err = sample.get("error")
         http_code = sample.get("status_code") or sample.get("http_status")
-        if err or (http_code and http_code >= 400):
-            failures.append({
-                "phase": sample.get("phase", "unknown"),
-                "request_id": sample.get("request_id", ""),
-                "http_status": http_code,
-                "bytes_read": sample.get("bytes_read", 0),
-                "duration_ms": sample.get("duration_ms", 0),
-            })
+        bytes_val = sample.get("payload_bytes", sample.get("bytes_read", 0))
+        duration = sample.get("duration_ms")
+        if duration is None and "latency_ns" in sample:
+            duration = round(sample["latency_ns"] / 1e6, 2)
+        elif duration is None:
+            duration = 0
 
-    # Check phases dictionary or list (for alternate formats or mock tests)
+        if err or (http_code and http_code >= 400):
+            rid = sample.get("request_id", "")
+            ftype = classify_failure(http_code, rid, err, bytes_val)
+            record = {
+                "phase": sample.get("phase", "unknown"),
+                "operation": sample.get("operation", ""),
+                "request_id": rid,
+                "http_status": http_code,
+                "bytes_read": bytes_val,
+                "duration_ms": duration,
+                "failure_type": ftype,
+            }
+            if err:
+                record["error"] = str(err)[:200]
+            failures.append(record)
+
+    # 2. Phase-nested samples (fallback / mock test format)
     phases = client_result.get("phases", {})
     if isinstance(phases, dict):
         for phase_name, phase_data in phases.items():
@@ -169,19 +198,159 @@ def sanitize_benchmark_failure(client_result):
                 for sample in phase_data.get("samples", []):
                     err = sample.get("error")
                     http_code = sample.get("status_code") or sample.get("http_status")
+                    bytes_val = sample.get("payload_bytes", sample.get("bytes_read", 0))
+                    duration = sample.get("duration_ms")
+                    if duration is None and "latency_ns" in sample:
+                        duration = round(sample["latency_ns"] / 1e6, 2)
+                    elif duration is None:
+                        duration = 0
+
                     if err or (http_code and http_code >= 400):
-                        failures.append({
+                        rid = sample.get("request_id", "")
+                        ftype = classify_failure(http_code, rid, err, bytes_val)
+                        record = {
                             "phase": phase_name,
-                            "request_id": sample.get("request_id", ""),
+                            "operation": sample.get("operation", ""),
+                            "request_id": rid,
                             "http_status": http_code,
-                            "bytes_read": sample.get("bytes_read", 0),
-                            "duration_ms": sample.get("duration_ms", 0),
-                        })
+                            "bytes_read": bytes_val,
+                            "duration_ms": duration,
+                            "failure_type": ftype,
+                        }
+                        if err:
+                            record["error"] = str(err)[:200]
+                        failures.append(record)
 
     return {
         "status": client_result.get("status", "unknown"),
         "error": client_result.get("error"),
         "failures": failures,
+    }
+
+
+def parse_chrony_tracking(raw_text, now_unix=None):
+    """
+    Parses chronyc tracking output in CSV format (-c) or key-value text format.
+    Extracts bounded clock signals including stratum, offsets, interval, sample age,
+    and validates clock uncertainty bounds matching coordination.Chrony invariant.
+    """
+    if not raw_text:
+        return {"status": "not_collected"}
+
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if not lines:
+        return {"status": "empty"}
+
+    # Try CSV format first (e.g. chronyc -n -c tracking)
+    for line in lines:
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) >= 14:
+            try:
+                ref_id = parts[0]
+                ref_ip = parts[1]
+                stratum = int(parts[2])
+                ref_time = float(parts[3])
+                offset = float(parts[4])
+                rms_offset = float(parts[6])
+                freq_ppm = float(parts[7])
+                residual_ppm = float(parts[8])
+                skew_ppm = float(parts[9])
+                root_delay = float(parts[10])
+                root_dispersion = float(parts[11])
+                interval = float(parts[12])
+                leap_status = parts[13]
+
+                age = (now_unix - ref_time) if now_unix is not None else None
+                max_allowed_age = min(1024.0, 2 * interval + 2) if interval > 0 else 0
+
+                uncertainty_exceeded = False
+                if stratum < 1 or stratum > 15 or leap_status != "Normal" or interval <= 0:
+                    uncertainty_exceeded = True
+                elif abs(offset) > 2.0 or root_delay < 0 or root_dispersion < 0:
+                    uncertainty_exceeded = True
+                elif age is not None and (age < -2.0 or age > max_allowed_age):
+                    uncertainty_exceeded = True
+
+                return {
+                    "status": "ok",
+                    "reference_id": ref_id,
+                    "reference_ip": ref_ip,
+                    "stratum": stratum,
+                    "ref_time": ref_time,
+                    "offset_seconds": offset,
+                    "rms_offset_seconds": rms_offset,
+                    "freq_ppm": freq_ppm,
+                    "skew_ppm": skew_ppm,
+                    "root_delay": root_delay,
+                    "root_dispersion": root_dispersion,
+                    "interval_seconds": interval,
+                    "leap_status": leap_status,
+                    "sample_age_seconds": round(age, 4) if age is not None else None,
+                    "max_allowed_age_seconds": round(max_allowed_age, 2),
+                    "uncertainty_exceeded": uncertainty_exceeded,
+                }
+            except (ValueError, IndexError):
+                pass
+
+    # Fallback to key-value text format (e.g. chronyc tracking)
+    data = {}
+    for line in lines:
+        if ":" in line:
+            k, v = line.split(":", 1)
+            data[k.strip()] = v.strip()
+
+    if "Reference ID" in data and "Stratum" in data:
+        try:
+            stratum = int(data.get("Stratum", "0"))
+            leap_status = data.get("Leap status", "Unknown")
+            return {
+                "status": "ok",
+                "reference_id": data.get("Reference ID", ""),
+                "stratum": stratum,
+                "leap_status": leap_status,
+                "uncertainty_exceeded": (stratum < 1 or stratum > 15 or leap_status != "Normal")
+            }
+        except ValueError:
+            pass
+
+    return {"status": "unrecognized_format"}
+
+
+def build_node_telemetry_snapshot(
+    alias,
+    profile,
+    metrics_raw=None,
+    chrony_raw=None,
+    readyz_status=None,
+    error=None,
+    captured_at=None,
+    now_unix=None
+):
+    """
+    Constructs a safe, non-sensitive telemetry snapshot for an individual gateway or edge node.
+    """
+    if error:
+        return {
+            "alias": alias,
+            "profile": profile,
+            "status": "error",
+            "error": str(error),
+            "captured_at": captured_at,
+        }
+
+    metrics = parse_prometheus_metrics(metrics_raw) if metrics_raw else {}
+    clock_sig = parse_chrony_tracking(chrony_raw, now_unix=now_unix) if chrony_raw else {"status": "not_collected"}
+
+    status = "ok" if (metrics or clock_sig.get("status") == "ok") else "empty"
+
+    return {
+        "alias": alias,
+        "profile": profile,
+        "status": status,
+        "captured_at": captured_at,
+        "readyz": readyz_status,
+        "metrics": metrics,
+        "clock": clock_sig,
     }
 
 
@@ -225,12 +394,15 @@ def build_failed_window_payload(
     node_journals,
     node_status,
     before_metrics=None,
-    after_metrics=None
+    after_metrics=None,
+    release_hash=None,
+    utc_window=None,
+    schema_version=1
 ):
     """
     Constructs the structured failed-window diagnostic artifact, including
     sanitized benchmark failures, per-node log summaries, correlated failures,
-    and before/after telemetry snapshots.
+    release provenance, UTC window, and before/after telemetry snapshots.
     """
     sanitized = sanitize_benchmark_failure(client_result)
 
@@ -246,9 +418,22 @@ def build_failed_window_payload(
         node_status=node_status
     )
 
+    effective_utc_window = utc_window
+    if not effective_utc_window:
+        before_at = None
+        if isinstance(before_metrics, dict):
+            before_at = before_metrics.get("captured_at")
+        effective_utc_window = {
+            "before_at": before_at,
+            "after_at": captured_at
+        }
+
     return {
         "name": name,
+        "schema_version": schema_version,
+        "release_hash": release_hash or "unspecified",
         "captured_at": captured_at,
+        "utc_window": effective_utc_window,
         "sanitized_summary": sanitized,
         "node_journals": node_journals,
         "node_status": node_status,
