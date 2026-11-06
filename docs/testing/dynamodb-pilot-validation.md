@@ -95,31 +95,32 @@ history or complete the interrupted acceptance cases.
 ## Live pilot trial 2026-11-06 (Cloud C1 Trial 1)
 
 Following approval for Workstream D, a live pilot trial was executed on 2026-11-06
-(Window: 05:05Z - 07:35Z) in `ap-southeast-1` using On-Demand throughput capacity
+(Window: 05:05Z - 07:35Z) in `ap-southeast-1` using `PAY_PER_REQUEST` billing mode
 on all 20 DynamoDB tables, dual Cloud gateways (`cloud-a`, `cloud-b`), one Edge
 gateway, and a dedicated pilot client:
 
-- **PUT workload (100% PASS):** 90/90 `PutObject` requests succeeded (754,994,670 bytes,
-  p50 latency 1,932 ms). All 90 objects were verified committed in `miles-dev-Objects`.
-  The DynamoDB On-Demand capacity provisioning fully eliminated the PUT 500/503 errors
-  observed in previous runs.
+- **PUT workload (100% PASS on this sample):** 90/90 `PutObject` requests succeeded
+  (754,994,670 bytes, p50 latency 1,932 ms). All 90 objects were verified committed in
+  `miles-dev-Objects`. However, both previous and current runs used identical `PAY_PER_REQUEST`
+  capacity caps (19 tables 128/128, Chunks 512/128); this single run does not establish
+  that prior PUT 500/503 root causes were resolved by capacity mode.
 - **HEAD verification (100% PASS):** 90/90 `HeadObject` requests succeeded (p50: 9.2 ms).
 - **GET verification (84/90 PASS, 6 FAIL):**
   - All 45 GET requests routed to `cloud-b` passed 100%.
   - On `cloud-a`, request #79 was truncated (4,901,763 / 8,388,608 bytes read), and 5
     subsequent requests (#81, #83, #85, #87, #89) returned HTTP 500 `InternalError`
     (`stage: object_get`, `failure_class: unknown`).
-  - **Zero data corruption / Zero lost objects:** All 6 failed objects were subsequently
-    downloaded directly via AWS CLI from the pilot client. All 6 downloaded successfully
-    with 100% byte match and exact SHA256 match (`miles_warm_read_integrity_failures_total: 0`).
-  - **Root Cause Confirmed (Clock Uncertainty Guard):** System chrony tracking logs on
-    `cloud-a` revealed a 49.2-second gap between NTP packets from `169.254.169.123`
-    (05:27:58Z to 05:28:47Z). Because `internal/coordination/chrony.go:94` enforces
-    `maxAge = 2*interval + 2 = 34.6s`, at 05:28:32.6Z the clock bounds uncertainty
-    threshold was exceeded. `Chrony.Bounds()` rejected lease issuance (fail-closed safety),
-    causing the active stream to abort and subsequent requests on `cloud-a` to be rejected
-    at `WarmGate.Acquire`. Node `cloud-a` recovered `miles_ready=1` immediately upon the
-    next NTP packet at 05:28:47Z. See detailed RCA in [`cloud-c1-t1-live-run-20261106-rca.md`](./cloud-c1-t1-live-run-20261106-rca.md).
+  - Warmbench reported `miles_warm_read_integrity_failures_total: 0`, and all 90 objects
+    had committed DynamoDB heads, but separate offline download checksum artifacts for the 6
+    failing GETs were not retained in the test archive.
+  - **Chrony clock hypothesis:** Retained post-failure metrics showed `cloud-a` with
+    `miles_ready=0` while `cloud-b` remained ready. Under `internal/coordination/chrony.go:94`,
+    the clock boundary requires `age <= min(1024, 2*interval+2)` (~34s for 16s poll interval).
+    A temporary NTP sample gap beyond ~34s causes `Chrony.Bounds()` to fail-closed, closing
+    the read gate and rejecting lease acquisition. While consistent with the observed outage,
+    raw independent chrony tracking logs with exact packet timestamps were not archived;
+    Chrony failure remains an unverified hypothesis rather than an independently proven fact.
+    See technical analysis in [`cloud-c1-t1-live-run-20261106-rca.md`](./cloud-c1-t1-live-run-20261106-rca.md).
 - **Stop-the-line & Full D4 Teardown:**
   - Upon encountering the GET errors, further testing (C4, Edge) was immediately halted to
     preserve evidence and minimize AWS spend.
@@ -133,7 +134,8 @@ gateway, and a dedicated pilot client:
     and inline policy removed.
   - Native AWS absence verification (`verify-final-aws-cleanup.py`) verified 41/41 absence
     checks passed (`native-final-cleanup-proof.json`).
-  - Total AWS spend remained under 1.00 USD (well below the 10 USD soft budget).
+  - Estimated session spend remained under 1.00 USD (within the 10 USD soft budget); final
+    billed cost awaits AWS invoice reporting lag.
 
 ## Diagnostic and observability updates (Workstreams A–C)
 
