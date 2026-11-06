@@ -2,9 +2,11 @@ import json
 import unittest
 
 from scripts.runner_diagnostics import (
+    build_failed_window_payload,
     correlate_failures,
     execute_with_runcommand_fallback,
     parse_gateway_journal_lines,
+    parse_prometheus_metrics,
     sanitize_benchmark_failure,
 )
 
@@ -177,6 +179,57 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         self.assertEqual(f0["request_id"], "REQ-WARMBENCH-FAIL")
         self.assertEqual(f0["http_status"], 500)
         self.assertNotIn("secret_token", f0)
+
+    def test_parse_prometheus_metrics(self):
+        raw = (
+            "# HELP miles_ready Readiness gauge\n"
+            "# TYPE miles_ready gauge\n"
+            "miles_ready 1\n"
+            "miles_s3_errors_total{stage=\"writer_admission\"} 7\n"
+            "process_resident_memory_bytes 12345678\n"
+            "malformed_line\n"
+        )
+        parsed = parse_prometheus_metrics(raw)
+        self.assertEqual(parsed["miles_ready"], 1)
+        self.assertEqual(parsed["miles_s3_errors_total{stage=\"writer_admission\"}"], 7)
+        self.assertEqual(parsed["process_resident_memory_bytes"], 12345678)
+        self.assertNotIn("malformed_line", parsed)
+
+    def test_build_failed_window_payload_with_telemetry(self):
+        client_res = {
+            "status": "failed",
+            "samples": [
+                {"phase": "put", "request_id": "REQ-1", "status_code": 500}
+            ]
+        }
+        node_journals = [
+            {
+                "alias": "cloud-a",
+                "id": "i-12345",
+                "lines": [
+                    "{\"msg\": \"s3 server failure\", \"request_id\": \"REQ-1\", \"node_id\": \"cloud-a\", \"stage\": \"writer_admission\", \"failure_class\": \"clock_uncertainty_exceeded\"}"
+                ]
+            }
+        ]
+        node_status = {"cloud-a": "ok"}
+        before_metrics = {"cloud-a": {"miles_ready": 1}}
+        after_metrics = {"cloud-a": {"miles_ready": 0}}
+
+        payload = build_failed_window_payload(
+            name="test-trial",
+            captured_at="2026-11-06T13:30:00Z",
+            client_result=client_res,
+            node_journals=node_journals,
+            node_status=node_status,
+            before_metrics=before_metrics,
+            after_metrics=after_metrics,
+        )
+
+        self.assertEqual(payload["name"], "test-trial")
+        self.assertEqual(len(payload["correlated_failures"]), 1)
+        self.assertEqual(payload["correlated_failures"][0]["stage"], "writer_admission")
+        self.assertEqual(payload["telemetry"]["before"], before_metrics)
+        self.assertEqual(payload["telemetry"]["after"], after_metrics)
 
 
 if __name__ == "__main__":

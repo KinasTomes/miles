@@ -147,7 +147,7 @@ def sanitize_benchmark_failure(client_result):
         return {"status": "no_data", "failures": []}
 
     failures = []
-    
+
     # Check top-level samples list (as produced by warmbench)
     for sample in client_result.get("samples", []):
         err = sample.get("error")
@@ -182,4 +182,79 @@ def sanitize_benchmark_failure(client_result):
         "status": client_result.get("status", "unknown"),
         "error": client_result.get("error"),
         "failures": failures,
+    }
+
+
+def parse_prometheus_metrics(raw_metrics_text, max_metrics=50):
+    """
+    Parses a Prometheus exposition text block into a dictionary of metric names
+    to numeric values. Bounds total metrics parsed to prevent unbounded growth.
+    """
+    if not raw_metrics_text:
+        return {}
+
+    metrics = {}
+    for raw_line in raw_metrics_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+
+        metric_token, val_str = parts[0], parts[1]
+        try:
+            val = float(val_str)
+            if val.is_integer():
+                val = int(val)
+        except ValueError:
+            continue
+
+        metrics[metric_token] = val
+        if len(metrics) >= max_metrics:
+            break
+
+    return metrics
+
+
+def build_failed_window_payload(
+    name,
+    captured_at,
+    client_result,
+    node_journals,
+    node_status,
+    before_metrics=None,
+    after_metrics=None
+):
+    """
+    Constructs the structured failed-window diagnostic artifact, including
+    sanitized benchmark failures, per-node log summaries, correlated failures,
+    and before/after telemetry snapshots.
+    """
+    sanitized = sanitize_benchmark_failure(client_result)
+
+    all_gw_records = []
+    for nj in node_journals:
+        lines_text = "\n".join(nj.get("lines", []))
+        parsed = parse_gateway_journal_lines(lines_text)
+        all_gw_records.extend(parsed)
+
+    correlated = correlate_failures(
+        sanitized.get("failures", []),
+        all_gw_records,
+        node_status=node_status
+    )
+
+    return {
+        "name": name,
+        "captured_at": captured_at,
+        "sanitized_summary": sanitized,
+        "node_journals": node_journals,
+        "node_status": node_status,
+        "correlated_failures": correlated,
+        "telemetry": {
+            "before": before_metrics if before_metrics else {"status": "not_collected"},
+            "after": after_metrics if after_metrics else {"status": "not_collected"}
+        }
     }
