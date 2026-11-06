@@ -147,20 +147,36 @@ def sanitize_benchmark_failure(client_result):
         return {"status": "no_data", "failures": []}
 
     failures = []
+    
+    # Check top-level samples list (as produced by warmbench)
+    for sample in client_result.get("samples", []):
+        err = sample.get("error")
+        http_code = sample.get("status_code") or sample.get("http_status")
+        if err or (http_code and http_code >= 400):
+            failures.append({
+                "phase": sample.get("phase", "unknown"),
+                "request_id": sample.get("request_id", ""),
+                "http_status": http_code,
+                "bytes_read": sample.get("bytes_read", 0),
+                "duration_ms": sample.get("duration_ms", 0),
+            })
+
+    # Check phases dictionary or list (for alternate formats or mock tests)
     phases = client_result.get("phases", {})
-    for phase_name, phase_data in phases.items():
-        if isinstance(phase_data, dict):
-            for sample in phase_data.get("samples", []):
-                err = sample.get("error")
-                http_code = sample.get("status_code") or sample.get("http_status")
-                if err or (http_code and http_code >= 400):
-                    failures.append({
-                        "phase": phase_name,
-                        "request_id": sample.get("request_id", ""),
-                        "http_status": http_code,
-                        "bytes_read": sample.get("bytes_read", 0),
-                        "duration_ms": sample.get("duration_ms", 0),
-                    })
+    if isinstance(phases, dict):
+        for phase_name, phase_data in phases.items():
+            if isinstance(phase_data, dict):
+                for sample in phase_data.get("samples", []):
+                    err = sample.get("error")
+                    http_code = sample.get("status_code") or sample.get("http_status")
+                    if err or (http_code and http_code >= 400):
+                        failures.append({
+                            "phase": phase_name,
+                            "request_id": sample.get("request_id", ""),
+                            "http_status": http_code,
+                            "bytes_read": sample.get("bytes_read", 0),
+                            "duration_ms": sample.get("duration_ms", 0),
+                        })
 
     return {
         "status": client_result.get("status", "unknown"),

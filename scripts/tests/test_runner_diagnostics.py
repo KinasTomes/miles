@@ -147,6 +147,37 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         self.assertEqual(f0["bytes_read"], 1234)
         self.assertNotIn("secret_token", f0)
 
+    def test_sanitize_benchmark_failure_toplevel_samples(self):
+        # warmbench outputs samples at the root level rather than phases dict
+        mock_result = {
+            "status": "failed",
+            "samples": [
+                {
+                    "phase": "backup30",
+                    "request_id": "REQ-WARMBENCH-FAIL",
+                    "status_code": 500,
+                    "error": "InternalError",
+                    "secret_token": "SECRET_DATA",
+                    "bytes_read": 0,
+                    "duration_ms": 12.5,
+                },
+                {
+                    "phase": "backup30",
+                    "request_id": "REQ-WARMBENCH-PASS",
+                    "status_code": 200,
+                    "bytes_read": 1024,
+                }
+            ]
+        }
+        sanitized = sanitize_benchmark_failure(mock_result)
+        self.assertEqual(sanitized["status"], "failed")
+        self.assertEqual(len(sanitized["failures"]), 1)
+        f0 = sanitized["failures"][0]
+        self.assertEqual(f0["phase"], "backup30")
+        self.assertEqual(f0["request_id"], "REQ-WARMBENCH-FAIL")
+        self.assertEqual(f0["http_status"], 500)
+        self.assertNotIn("secret_token", f0)
+
 
 if __name__ == "__main__":
     unittest.main()
