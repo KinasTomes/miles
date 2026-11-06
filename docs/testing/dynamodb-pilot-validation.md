@@ -92,6 +92,49 @@ The insert reconciliation and policy-read ordering fixes have local regression
 proof. They require a new live release before they can certify the retained
 history or complete the interrupted acceptance cases.
 
+## Live pilot trial 2026-11-06 (Cloud C1 Trial 1)
+
+Following approval for Workstream D, a live pilot trial was executed on 2026-11-06
+(Window: 05:05Z - 07:35Z) in `ap-southeast-1` using On-Demand throughput capacity
+on all 20 DynamoDB tables, dual Cloud gateways (`cloud-a`, `cloud-b`), one Edge
+gateway, and a dedicated pilot client:
+
+- **PUT workload (100% PASS):** 90/90 `PutObject` requests succeeded (754,994,670 bytes,
+  p50 latency 1,932 ms). All 90 objects were verified committed in `miles-dev-Objects`.
+  The DynamoDB On-Demand capacity provisioning fully eliminated the PUT 500/503 errors
+  observed in previous runs.
+- **HEAD verification (100% PASS):** 90/90 `HeadObject` requests succeeded (p50: 9.2 ms).
+- **GET verification (84/90 PASS, 6 FAIL):**
+  - All 45 GET requests routed to `cloud-b` passed 100%.
+  - On `cloud-a`, request #79 was truncated (4,901,763 / 8,388,608 bytes read), and 5
+    subsequent requests (#81, #83, #85, #87, #89) returned HTTP 500 `InternalError`
+    (`stage: object_get`, `failure_class: unknown`).
+  - **Zero data corruption / Zero lost objects:** All 6 failed objects were subsequently
+    downloaded directly via AWS CLI from the pilot client. All 6 downloaded successfully
+    with 100% byte match and exact SHA256 match (`miles_warm_read_integrity_failures_total: 0`).
+  - **Root Cause Confirmed (Clock Uncertainty Guard):** System chrony tracking logs on
+    `cloud-a` revealed a 49.2-second gap between NTP packets from `169.254.169.123`
+    (05:27:58Z to 05:28:47Z). Because `internal/coordination/chrony.go:94` enforces
+    `maxAge = 2*interval + 2 = 34.6s`, at 05:28:32.6Z the clock bounds uncertainty
+    threshold was exceeded. `Chrony.Bounds()` rejected lease issuance (fail-closed safety),
+    causing the active stream to abort and subsequent requests on `cloud-a` to be rejected
+    at `WarmGate.Acquire`. Node `cloud-a` recovered `miles_ready=1` immediately upon the
+    next NTP packet at 05:28:47Z. See detailed RCA in [`cloud-c1-t1-live-run-20261106-rca.md`](./cloud-c1-t1-live-run-20261106-rca.md).
+- **Stop-the-line & Full D4 Teardown:**
+  - Upon encountering the GET errors, further testing (C4, Edge) was immediately halted to
+    preserve evidence and minimize AWS spend.
+  - All 3,286 DynamoDB records across 20 tables were exported to retained evidence.
+  - All 1,228 S3 versions/delete markers were purged and both buckets deleted.
+  - Terraform workload and foundation resources (136 total) were completely destroyed
+    (`terraform state: 0 resources`).
+  - ACM certificate, audited SSM session document `miles-dev-shell`, and both service-linked
+    roles (`AWSServiceRoleForRolesAnywhere`, `AWSServiceRoleForElasticLoadBalancing`) were deleted.
+  - All 5 IAM managed policies were restored to baseline versions, temporary versions purged,
+    and inline policy removed.
+  - Native AWS absence verification (`verify-final-aws-cleanup.py`) verified 41/41 absence
+    checks passed (`native-final-cleanup-proof.json`).
+  - Total AWS spend remained under 1.00 USD (well below the 10 USD soft budget).
+
 ## Diagnostic and observability updates (Workstreams A–C)
 
 Offline analysis and negative fault-injection tests (PR #65 continuation) verified:
