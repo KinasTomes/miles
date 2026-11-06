@@ -40,6 +40,7 @@ type Request struct {
 	access  Access
 	region  string
 	failure *failureDiagnostic
+	nodeID  string
 }
 
 // Region is the gateway region every credential scope uses; bucket handlers
@@ -56,6 +57,23 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := NewRequestID()
 	setCommonHeaders(w.Header(), id)
 	diagnostic := failureDiagnostic{stage: "resolve"}
+	defer func() {
+		if rec := recover(); rec != nil {
+			if rec == http.ErrAbortHandler {
+				if !diagnostic.logged && diagnostic.stage != "resolve" {
+					class := diagnostic.class
+					if class == "" {
+						class = "unknown"
+					}
+					slog.ErrorContext(r.Context(), "s3 server failure", "request_id", id,
+						"node_id", rt.NodeID, "method", r.Method, "operation", diagnostic.operation,
+						"stage", diagnostic.stage, "failure_class", class)
+					diagnostic.logged = true
+				}
+			}
+			panic(rec)
+		}
+	}()
 	err := rt.serveWithDiagnostics(w, r, id, &diagnostic)
 	if err == nil {
 		return
@@ -137,5 +155,5 @@ func (rt *Router) serveWithDiagnostics(w http.ResponseWriter, r *http.Request, i
 	if !ok {
 		return &Error{Code: ErrNotImplemented, Message: string(route.Op) + " is not implemented yet", Bucket: route.Bucket, Key: route.Key}
 	}
-	return h(w, &Request{Route: route, HTTP: r, ID: id, Caller: caller, Access: access, Body: newPayload(r, route.Op, s), access: rt.Access, region: rt.Region, failure: diagnostic})
+	return h(w, &Request{Route: route, HTTP: r, ID: id, Caller: caller, Access: access, Body: newPayload(r, route.Op, s), access: rt.Access, region: rt.Region, failure: diagnostic, nodeID: rt.NodeID})
 }

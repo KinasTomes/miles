@@ -30,6 +30,7 @@ var (
 	ErrFenced         = errors.New("writer lease or fence is no longer valid")
 	ErrUnavailable    = errors.New("backend unavailable; outcome may be unknown")
 	ErrCold           = errors.New("pack requires restore")
+	ErrClockUncertain = errors.New("clock uncertainty exceeds bounds")
 )
 
 var identifier = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)

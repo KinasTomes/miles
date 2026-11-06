@@ -211,6 +211,7 @@ func (o *Objects) GetObject(w http.ResponseWriter, r *Request) error {
 	})
 	if err != nil {
 		if wrote {
+			r.recordStreamAbort("object_get_stream", err)
 			// Headers are committed; the only legal move is to abort the stream
 			// (API v2 4.2), never to append an XML error to object bytes.
 			panic(http.ErrAbortHandler)
