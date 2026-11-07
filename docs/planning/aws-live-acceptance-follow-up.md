@@ -36,15 +36,15 @@
 
 ## 2. Lộ trình và gates
 
-### Phase A — Offline incident evidence & runner hardening (P0, hoàn thành)
+### Phase A — Offline incident evidence & runner hardening (P0, helper & offline integration complete)
 
 - [x] **A0 — Khóa baseline.** Đã khóa baseline tại worktree `/home/ubuntu/miles-worktrees/w05-dynamodb-pilot-aws-acceptance`, base `origin/main` (`6b3a654`), đối chiếu các lần chạy cũ (`918ca58`, `4a0c1d9`, `9df0ba2`). Phân biệt rõ ràng 4 tầng: Observed, Correlated, Hypothesis, Unverified.
-- [x] **A1 — Bảng lỗi sanitized.** Đã cập nhật bảng 7 lỗi PUT (#35-#47) trong `docs/testing/cloud-c1-t1-live-run-20261106-1255-report.md` đầy đủ 12 trường: phase, ordinal, file/payload, latency, HTTP status, SDK error code, client X-Amz-Request-Id, timestamp UTC, target node, stage, failure class, error source, và ghi nhận trung thực after-window telemetry uncollected tại thời điểm lỗi.
-- [x] **A2 — Sửa đường chụp bằng chứng khi FAIL.** Modularize runner helpers vào `scripts/runner_diagnostics.py`: `collect_node_telemetry_safe` và `collect_node_journals_safe` xử lý timeout, lỗi từng node riêng biệt không làm sập tiến trình, ghi nhận rõ ràng `missing_reason` và `error_type`. Hardened `parse_chrony_tracking` chống lại non-finite/NaN/Inf/negative timestamps và fail-closed an toàn.
-- [x] **A3 — Fault/correlation regression.** Đã bổ sung bộ kiểm thử `test_two_gateway_fixture_controlled_fault_correlation` (gồm 1 HTTP 500, 1 HTTP 503, 1 stream abort, 1 upstream ALB 503) kiểm chứng map 1-1 chính xác, snapshot trước/sau lưu trữ đầy đủ, và xác nhận 100% không rò rỉ secret tokens, signed URLs, payload bytes hay keys.
+- [x] **A1 — Bảng lỗi sanitized.** Đã cập nhật bảng 7 lỗi PUT (#35-#47) trong `docs/testing/cloud-c1-t1-live-run-20261106-1255-report.md` đầy đủ 12 trường sử dụng stable pseudonymous join IDs (`REQ-C1-035`...`047`), node `cloud-a`, synthetic object descriptors (`obj-backup30-part035`...`part047`), lưu trữ bản ánh xạ gốc 1-1 trong private operator evidence (`0o600`), và ghi nhận trung thực after-window telemetry uncollected tại thời điểm lỗi.
+- [x] **A2 — Sửa đường chụp bằng chứng khi FAIL.** Modularize runner helpers vào `scripts/runner_diagnostics.py`: deterministic redaction (`redact_sensitive_strings`, `redact_sensitive_payload`) chống rò rỉ ký tự nhạy cảm, signed URLs (`X-Amz-Signature`), credentials và instance IDs; phân loại lỗi theo allowlist (`classify_error_to_code`); xây dựng orchestrator adapter `scripts/runner_orchestrator.py` hỗ trợ `execute_with_runcommand_fallback` (xử lý lỗi `Standard_Stream`), và wire vào `recheck/live-run-20261106-1255/run-gateway.py` để lưu trữ evidence trước teardown.
+- [x] **A3 — Fault/correlation regression & integration tests.** Bổ sung bộ kiểm thử `scripts/tests/test_runner_diagnostics.py` và `scripts/tests/test_runner_orchestrator.py`: kiểm tra map 1-1, đối soát ALB evidence (unmatched 500 không bị gán nhầm thành upstream, phân loại đúng `origin_unverified` / `gateway_log_missing`), kiểm tra fallback RunCommand khi Session Manager gặp lỗi, kiểm tra partial node failure, và adversarial test chứng minh zero secret leakage trên toàn bộ serialized payload.
 - [x] **A4 — Điều tra readiness.** Phân tích và ghi nhận rõ ràng trong RCA/report: lỗi clock rejection tại `writer_admission` là sự thật quan sát được (Observed Fact), trong khi giả thuyết rớt gói NTP 34,5-46s là mô hình phân tích (Analytical Hypothesis) chưa có bằng chứng packet trace độc lập; ghi nhận trạng thái Unproven và khoảng trống telemetry trước/sau.
 
-**Gate A: PASS.** Toàn bộ kiểm thử offline cho lỗi có correlation đầy đủ, failure artifact có nhãn missing/partial chính xác, runner không còn đường thu log/snapshot im lặng nuốt lỗi.
+**Gate A: OFFLINE ORCHESTRATION INTEGRATION PASS (Live evidence path awaiting Phase C approval).** Bộ scaffolding, helper, và runner orchestrator adapter đã được tích hợp và kiểm chứng qua mock integration tests; đường chạy thực tế trên AWS sẽ được kích hoạt tại Phase C.
 
 ### Phase B — Offline runtime correctness & release (P0/P1)
 
@@ -59,7 +59,7 @@
   - `terraform -chdir=infra/terraform/cloud/environments/dev test -no-color`: PASS (43 passed, 0 failed).
 - [x] Build release từ **commit đã test**; pin binary/manifest/hash/architecture (`746d9fa831bd3982f42740ad57143c4eeba7f2587d3319aa69c4effc5e60295a`, 32,258,733 B, linux/arm64); kiểm chứng deployment smoke (`scripts/deployment_smoke.py`), staging startup config, và TLS proxy contracts; kiểm chứng dataset `backup30` 90 files (754,994,670 bytes, manifest sha256 `04014dd767e799d9f70081536d01c988fa6a02c0b7653c34db11a48c9abc1556`) khớp 100% ground truth qua `bin/datasetgen`; build sạch `bin/warmbench`; không dùng hardcoded DNS/IP ALB hoặc TLS insecure.
 
-**Gate B: PASS.** Toàn bộ check, race detector, Terraform contracts, deployment smoke, và build release packaging đều đạt 100% offline. Sẵn sàng hồ sơ cho Gate C. Commit tách `runner/tests`, `runtime-regression` (nếu cần), `docs`.
+**Gate B: OFFLINE VERIFICATION & PACKAGING PASS (Live release qualification in Phase C).** Toàn bộ check, race detector, Terraform contracts, deployment smoke, và build release packaging đều đạt 100% offline. Live-release qualification trên hạ tầng AWS thực tế được bảo lưu cho Phase C sau khi có phê duyệt. Commit tách `runner/tests`, `runtime-regression` (nếu cần), `docs`.
 
 ### Phase C — AWS preflight / chỉ mở sau approval mới
 

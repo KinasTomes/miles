@@ -86,26 +86,54 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             {"request_id": "REQ-79-STREAM", "http_status": 200},
             {"request_id": "REQ-81-GATE", "http_status": 500},
             {"request_id": "ALB-TIMEOUT-503", "http_status": 503},
+            {"request_id": "UNMATCHED-500", "http_status": 500},
+            {"request_id": "UNPROVEN-503", "http_status": 503},
         ]
         gateway_records = [
             {"request_id": "REQ-79-STREAM", "node_id": "cloud-a", "stage": "object_get_stream", "failure_class": "clock_uncertainty_exceeded"},
             {"request_id": "REQ-81-GATE", "node_id": "cloud-a", "stage": "object_get", "failure_class": "clock_uncertainty_exceeded"},
         ]
+        alb_evidence = [
+            {"request_id": "ALB-TIMEOUT-503", "elb_status_code": 503, "target_status_code": "-"}
+        ]
         node_status = {"cloud-a": "ok", "cloud-b": "ok", "edge-a": "ok"}
 
-        correlated = correlate_failures(client_failures, gateway_records, node_status=node_status)
-        self.assertEqual(len(correlated), 3)
+        correlated = correlate_failures(client_failures, gateway_records, node_status=node_status, alb_evidence=alb_evidence)
+        self.assertEqual(len(correlated), 5)
 
+        # Matched gateway errors
         self.assertEqual(correlated[0]["source"], "gateway")
         self.assertEqual(correlated[0]["stage"], "object_get_stream")
         self.assertEqual(correlated[0]["failure_class"], "clock_uncertainty_exceeded")
+        self.assertEqual(correlated[0]["diagnostic_status"], "correlated_gateway_log")
 
         self.assertEqual(correlated[1]["source"], "gateway")
         self.assertEqual(correlated[1]["stage"], "object_get")
         self.assertEqual(correlated[1]["failure_class"], "clock_uncertainty_exceeded")
+        self.assertEqual(correlated[1]["diagnostic_status"], "correlated_gateway_log")
 
-        # When collector succeeded on all nodes, unjoined 503 is truly upstream ALB
-        self.assertEqual(correlated[2]["source"], "upstream_no_gateway_request")
+        # Corroborated upstream ALB error with evidence
+        self.assertEqual(correlated[2]["source"], "upstream_alb")
+        self.assertEqual(correlated[2]["diagnostic_status"], "corroborated_alb_evidence")
+
+        # Unmatched 500 MUST NEVER be attributed to upstream ALB
+        self.assertEqual(correlated[3]["source"], "origin_unverified")
+        self.assertEqual(correlated[3]["diagnostic_status"], "gateway_log_missing")
+
+        # Unmatched 503 without ALB proof MUST NOT be falsely attributed to upstream
+        self.assertEqual(correlated[4]["source"], "origin_unverified")
+        self.assertEqual(correlated[4]["diagnostic_status"], "gateway_log_missing")
+
+    def test_correlate_failures_unmatched_500_never_attributed_to_upstream(self):
+        # Reproduce exact reviewer test case:
+        correlated = correlate_failures(
+            [{"request_id": "req-not-logged", "http_status": 500}],
+            [],
+            {"cloud-a": "ok", "cloud-b": "ok"}
+        )
+        self.assertEqual(len(correlated), 1)
+        self.assertEqual(correlated[0]["source"], "origin_unverified")
+        self.assertEqual(correlated[0]["diagnostic_status"], "gateway_log_missing")
 
     def test_correlate_failures_incomplete_evidence_marks_uncollected(self):
         client_failures = [
@@ -700,6 +728,10 @@ Leap status     : Normal
             }
         }
 
+        alb_evidence = [
+            {"request_id": "REQ-ALB-TIMEOUT-503", "elb_status_code": 503, "target_status_code": "-"}
+        ]
+
         payload = build_failed_window_payload(
             name="cloud-c1-t1-fixture-test",
             captured_at="2026-11-06T13:23:00Z",
@@ -710,6 +742,7 @@ Leap status     : Normal
             after_metrics=after_telemetry,
             release_hash="da87fab12c8bc26bcee46f78eb24f0062a985880",
             utc_window={"before_at": "2026-11-06T13:20:00Z", "after_at": "2026-11-06T13:23:00Z"},
+            alb_evidence=alb_evidence,
             schema_version=1
         )
 
@@ -742,9 +775,10 @@ Leap status     : Normal
         self.assertEqual(correlated[2]["stage"], "object_get_stream")
         self.assertEqual(correlated[2]["failure_class"], "stream_abort")
 
-        # Req 4: Upstream ALB 503 (both nodes collected successfully, no gateway log)
+        # Req 4: Upstream ALB 503 (corroborated by native ALB evidence)
         self.assertEqual(correlated[3]["request_id"], "REQ-ALB-TIMEOUT-503")
-        self.assertEqual(correlated[3]["source"], "upstream_no_gateway_request")
+        self.assertEqual(correlated[3]["source"], "upstream_alb")
+        self.assertEqual(correlated[3]["diagnostic_status"], "corroborated_alb_evidence")
 
         # 3. Security audit: zero leak of secret tokens, signed URLs, payload bodies, or target keys
         payload_json = json.dumps(payload)
@@ -752,6 +786,70 @@ Leap status     : Normal
         self.assertNotIn(signed_url, payload_json)
         self.assertNotIn(secret_key, payload_json)
         self.assertNotIn("supersecret456", payload_json)
+
+    def test_sanitize_benchmark_failure_adversarial_secrets_in_errors_and_journals(self):
+        """
+        Adversarial test injecting signed URLs, authorization tokens, AWS access keys,
+        and concrete EC2 instance IDs into free-form errors and journal lines.
+        Asserts the serialized entire payload contains zero sensitive leaks.
+        """
+        signed_url_leak = "https://s3.ap-southeast-1.amazonaws.com/test-bucket/secret-key.bin?X-Amz-Signature=SENSITIVE_SIGNATURE_HEX12345&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20261107%2Fap-southeast-1%2Fs3%2Faws4_request"
+        bearer_leak = "Bearer secret_bearer_token_xyz987"
+        aws_key_leak = "AKIAIOSFODNN7EXAMPLE"
+        instance_id_leak = "i-03bea44ea0f048125"
+        password_leak = "secret_password=TopSecretPassword456!"
+
+        client_result = {
+            "status": "failed",
+            "error": f"workload failed with signed URL: {signed_url_leak} and {password_leak}",
+            "samples": [
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-LEAK-1",
+                    "status_code": 500,
+                    "error": f"Dial failed to {signed_url_leak} with auth {bearer_leak}",
+                    "payload_bytes": 0,
+                    "duration_ms": 15.0,
+                }
+            ]
+        }
+
+        node_journals = [
+            {
+                "alias": "cloud-a",
+                "id": instance_id_leak,
+                "lines": [
+                    f'{{"msg": "s3 server failure", "request_id": "REQ-LEAK-1", "node_id": "cloud-a", "stage": "writer_admission", "failure_class": "clock_uncertainty_exceeded", "url": "{signed_url_leak}", "auth": "{bearer_leak}"}}',
+                    f"raw unparsed line with {instance_id_leak} and {aws_key_leak} and {password_leak}",
+                ]
+            }
+        ]
+
+        node_status = {"cloud-a": "ok"}
+
+        payload = build_failed_window_payload(
+            name="adversarial-leak-test",
+            captured_at="2026-11-07T12:00:00Z",
+            client_result=client_result,
+            node_journals=node_journals,
+            node_status=node_status,
+        )
+
+        payload_json = json.dumps(payload)
+
+        # Verify absolute zero leak across entire serialized payload
+        self.assertNotIn("SENSITIVE_SIGNATURE_HEX12345", payload_json)
+        self.assertNotIn("secret_bearer_token_xyz987", payload_json)
+        self.assertNotIn(aws_key_leak, payload_json)
+        self.assertNotIn(instance_id_leak, payload_json)
+        self.assertNotIn("TopSecretPassword456!", payload_json)
+
+        # Verify error was classified into allowlisted error code
+        failures = payload["sanitized_summary"]["failures"]
+        self.assertEqual(len(failures), 1)
+        self.assertIn(failures[0]["error_code"], ["dial_error", "clock_uncertainty_exceeded", "internal_error", "unclassified_error"])
+        self.assertIn("error_code", payload["sanitized_summary"])
 
 
 if __name__ == "__main__":
