@@ -33,18 +33,19 @@ The client benchmark executed 1 preflight `ListObjectsV2` request followed by 90
 ### Correlated Failure Window (Verified against `cloud-c1-t1-failed-window.json`)
 100% (7/7) of the failed requests match the exact gateway journal logs on `cloud-a` (`i-03bea44ea0f048125`):
 
-| Trial PUT # | Timestamp (UTC) | Client Request ID | HTTP Status | Target Node | Stage | Failure Class |
-|---|---|---|---|---|---|---|
-| PUT #35 | 13:22:02.387Z | `6D3C1BC6DDAC8A78` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #37 | 13:22:05.182Z | `B48EC5D2B70EC26A` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #39 | 13:22:07.264Z | `224444512613BA71` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #41 | 13:22:08.708Z | `8112EEEAE1D562B1` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #43 | 13:22:11.182Z | `A18AFBF8A7E7D7B9` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #45 | 13:22:13.237Z | `4C909826697B375B` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #47 | 13:22:14.841Z | `A96DBCD93956F1CE` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
+| Phase | Ordinal | File / Payload Size | Latency | HTTP / SDK Code | Client X-Amz-Request-Id | Timestamp (UTC) | Target Node | Stage | Failure Class | Error Source | After-window Metrics |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `put` | PUT #35 | `compressed-identical-v11.gz` (8,389,273 B) | 40.28 ms | 500 `InternalError` | `6D3C1BC6DDAC8A78` | 13:22:02.387Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #37 | `low-entropy-v12.bin` (8,388,608 B) | 33.24 ms | 500 `InternalError` | `B48EC5D2B70EC26A` | 13:22:05.182Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #39 | `random-distinct-v12.bin` (8,388,608 B) | 24.18 ms | 500 `InternalError` | `224444512613BA71` | 13:22:07.264Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #41 | `compressed-identical-v13.gz` (8,389,273 B) | 22.65 ms | 500 `InternalError` | `8112EEEAE1D562B1` | 13:22:08.708Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #43 | `low-entropy-v14.bin` (8,388,608 B) | 22.13 ms | 500 `InternalError` | `A18AFBF8A7E7D7B9` | 13:22:11.182Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #45 | `random-distinct-v14.bin` (8,388,608 B) | 24.88 ms | 500 `InternalError` | `4C909826697B375B` | 13:22:13.237Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #47 | `compressed-identical-v15.gz` (8,389,273 B) | 24.90 ms | 500 `InternalError` | `A96DBCD93956F1CE` | 13:22:14.841Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
 
 - **Upstream ALB 503:** 0 occurrences.
-- **Uncollected / Missing Journal Records:** 0 occurrences.
+- **Uncollected / Missing Journal Records:** 0 occurrences (all 7 requests matched gateway structured slog records).
+- **After-window Telemetry Note:** Telemetry snapshot was not captured in `cloud-c1-t1-failed-window.json` at failure instant (marked uncollected); steady-state snapshot captured later at 13:35:27Z showed normal clock synchronisation.
 - **Node Isolation:** Node `cloud-b` handled alternating PUTs #36, #38, #40, #42, #44, #46 without any error, isolating the issue strictly to `cloud-a` during this window.
 
 ---

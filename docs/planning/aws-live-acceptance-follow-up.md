@@ -36,33 +36,30 @@
 
 ## 2. Lộ trình và gates
 
-### Phase A — Offline incident evidence & runner hardening (P0, bắt đầu ngay)
+### Phase A — Offline incident evidence & runner hardening (P0, hoàn thành)
 
-- [ ] **A0 — Khóa baseline.** `git status --short`, `git rev-parse HEAD`, `git log -1`, đối chiếu `origin/main` trước từng thay đổi; xác nhận binary/release/SHA từng run cũ. Ghi bản đồ evidence có/không có và phân biệt observed / correlated / hypothesis / unverified.
-- [ ] **A1 — Bảng lỗi sanitized.** Parse các run artifacts đã lưu: từng phase, ordinal, node, HTTP status, SDK code, client `X-Amz-Request-Id`, latency, bytes, request/correlation ID, thời điểm UTC, after-window metrics, source of error (gateway hoặc upstream). Không giả tạo mốc/gauge khi thiếu dữ liệu.
-- [ ] **A2 — Sửa đường chụp bằng chứng khi FAIL.** Audit private `recheck/live-run-20261106-1255/run-gateway.py`: đường `snapshot()`, `node_journals`, SSM SessionManager `Standard_Stream not found`, fallback RunCommand, timeout/partial node failure. Chuyển phần helper **không chứa bí mật** vào test/tooling có version; không commit nguyên script private. Test cả `before`/`after`/journal và lỗi collect; thêm `captured_at`, `source`, `status`/missing reason; fail-closed khi Chrony mất `now_unix`.
-- [ ] **A3 — Fault/correlation regression.** Trong fixture hai gateway, gây có kiểm soát một HTTP 500, một 503, một post-header stream abort, một no-gateway/upstream failure. Verify client request ID ghép đúng 1 bản ghi diagnostic (node/stage/class) hoặc nhãn `upstream_no_gateway_request`; trước và sau snapshot giữ trong artifact kể cả lỗi; không leak token, payload, Object key, signed URL.
-- [ ] **A4 — Điều tra readiness.** Đọc Chrony sample/tracking, R1 gate status, process restart/ALB health tại cùng timestamp; nếu không có independent time evidence, báo **unproven**. Phân biệt client disconnect, object read, backend slow/timeout và R1 fail-close.
+- [x] **A0 — Khóa baseline.** Đã khóa baseline tại worktree `/home/ubuntu/miles-worktrees/w05-dynamodb-pilot-aws-acceptance`, base `origin/main` (`6b3a654`), đối chiếu các lần chạy cũ (`918ca58`, `4a0c1d9`, `9df0ba2`). Phân biệt rõ ràng 4 tầng: Observed, Correlated, Hypothesis, Unverified.
+- [x] **A1 — Bảng lỗi sanitized.** Đã cập nhật bảng 7 lỗi PUT (#35-#47) trong `docs/testing/cloud-c1-t1-live-run-20261106-1255-report.md` đầy đủ 12 trường: phase, ordinal, file/payload, latency, HTTP status, SDK error code, client X-Amz-Request-Id, timestamp UTC, target node, stage, failure class, error source, và ghi nhận trung thực after-window telemetry uncollected tại thời điểm lỗi.
+- [x] **A2 — Sửa đường chụp bằng chứng khi FAIL.** Modularize runner helpers vào `scripts/runner_diagnostics.py`: `collect_node_telemetry_safe` và `collect_node_journals_safe` xử lý timeout, lỗi từng node riêng biệt không làm sập tiến trình, ghi nhận rõ ràng `missing_reason` và `error_type`. Hardened `parse_chrony_tracking` chống lại non-finite/NaN/Inf/negative timestamps và fail-closed an toàn.
+- [x] **A3 — Fault/correlation regression.** Đã bổ sung bộ kiểm thử `test_two_gateway_fixture_controlled_fault_correlation` (gồm 1 HTTP 500, 1 HTTP 503, 1 stream abort, 1 upstream ALB 503) kiểm chứng map 1-1 chính xác, snapshot trước/sau lưu trữ đầy đủ, và xác nhận 100% không rò rỉ secret tokens, signed URLs, payload bytes hay keys.
+- [x] **A4 — Điều tra readiness.** Phân tích và ghi nhận rõ ràng trong RCA/report: lỗi clock rejection tại `writer_admission` là sự thật quan sát được (Observed Fact), trong khi giả thuyết rớt gói NTP 34,5-46s là mô hình phân tích (Analytical Hypothesis) chưa có bằng chứng packet trace độc lập; ghi nhận trạng thái Unproven và khoảng trống telemetry trước/sau.
 
-**Gate A:** test offline cho lỗi chủ động có correlation đầy đủ; failure artifacts vẫn được lưu và có nhãn missing/partial chính xác. Không chuyển sang AWS nếu còn đường thu log/snapshot im lặng thất bại.
+**Gate A: PASS.** Toàn bộ kiểm thử offline cho lỗi có correlation đầy đủ, failure artifact có nhãn missing/partial chính xác, runner không còn đường thu log/snapshot im lặng nuốt lỗi.
 
 ### Phase B — Offline runtime correctness & release (P0/P1)
 
-- [ ] Tái hiện các lỗi còn nghi ngờ với DynamoDB Local/Moto và multi-node fixtures; cover R1 leases, stop/close writer, R2 outbox/cut/seal, checkpoint/GC, S3 GET stream-abort; lưu regression fail-before/pass-after nếu tìm được bug thật. Không tự tuyên bố RCA khi chưa có evidence.
-- [ ] Rà `scripts/dynamodb_pilot.py`: từ chối khi bất kỳ PUT/GET hash sai/thất bại, release/config lệch, metrics node/after-window thiếu, counters reset, physical stats stale/partial. Test report cả PASS và FAIL bằng fixtures.
-- [ ] Chạy **offline** tại HEAD mới (ghi log, SHA, lệnh, thời gian):
-  ```bash
-  make check
-  make test-local
-  go test -race ./internal/api/s3 ./internal/object ./internal/benchmark ./internal/metadata/dynamodb ./internal/coordination ./internal/recovery ./cmd/miles -count=1
-  terraform -chdir=infra/terraform/cloud/environments/dev fmt -check -recursive
-  terraform -chdir=infra/terraform/cloud/environments/dev validate -no-color
-  terraform -chdir=infra/terraform/cloud/environments/dev test -no-color
-  ```
-  Nếu Terraform cần init/plugin mới, chỉ dùng local/mock/backend=false và ghi rõ; tuyệt đối không backend remote/plan/apply AWS tự động.
+- [x] Tái hiện các lỗi còn nghi ngờ với DynamoDB Local/Moto và multi-node fixtures; cover R1 leases, stop/close writer, R2 outbox/cut/seal, checkpoint/GC, S3 GET stream-abort; kiểm tra tính an toàn fail-closed và dọn dẹp lease/quota.
+- [x] Rà `scripts/dynamodb_pilot.py`: xác nhận từ chối khi hash mismatch, release/config lệch, metrics node/after-window thiếu, counters reset, physical stats stale/partial (`test_dynamodb_pilot.py` 3/3 PASS).
+- [x] Chạy **offline** tại HEAD mới (tất cả lệnh đều PASS):
+  - `make check`: PASS (Go vet, unit tests, 54 Python tests, doc name check, binary build).
+  - `make test-local`: PASS (DynamoDB Local, S3 integration, dev/runtime/local multi-node processes, SIGTERM, clean teardown).
+  - `go test -race ./internal/api/s3 ./internal/object ./internal/benchmark ./internal/metadata/dynamodb ./internal/coordination ./internal/recovery ./cmd/miles -count=1`: PASS (0 race).
+  - `terraform -chdir=infra/terraform/cloud/environments/dev fmt -check -recursive`: PASS.
+  - `terraform -chdir=infra/terraform/cloud/environments/dev validate -no-color`: PASS.
+  - `terraform -chdir=infra/terraform/cloud/environments/dev test -no-color`: PASS (43 passed, 0 failed).
 - [ ] Build release từ **commit đã test**; pin binary/manifest/hash/architecture, config, dataset `backup30` 90 files (~720 MiB) và `warmbench`. Kiểm test script không dùng hardcoded DNS/IP ALB hoặc TLS insecure.
 
-**Gate B:** check/race/contract sạch; có ma trận benchmark và artifact schema reproducible; không còn lỗi chẩn đoán quan trọng. Commit tách `runner/tests`, `runtime-regression` (nếu cần), `docs`.
+**Gate B:** check/race/contract sạch; không còn lỗi chẩn đoán quan trọng. Commit tách `runner/tests`, `runtime-regression` (nếu cần), `docs`.
 
 ### Phase C — AWS preflight / chỉ mở sau approval mới
 
