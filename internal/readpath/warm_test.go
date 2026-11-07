@@ -38,6 +38,7 @@ type warmS3 struct {
 	body             []byte
 	gets             int
 	class            types.StorageClass
+	restore          *string
 	classes          map[string]types.StorageClass
 	fault            string
 	before           func(context.Context) error
@@ -55,7 +56,7 @@ func (s *warmS3) HeadObject(ctx context.Context, in *awss3.HeadObjectInput, _ ..
 	if v, ok := s.classes[aws.ToString(in.Key)]; ok {
 		class = v
 	}
-	return &awss3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(s.body))), StorageClass: class}, nil
+	return &awss3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(s.body))), StorageClass: class, Restore: s.restore}, nil
 }
 func (s *warmS3) GetObject(ctx context.Context, in *awss3.GetObjectInput, _ ...func(*awss3.Options)) (*awss3.GetObjectOutput, error) {
 	s.mu.Lock()

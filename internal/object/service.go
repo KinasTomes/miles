@@ -162,6 +162,8 @@ type Options struct {
 	Packs          storage.PackStore
 	Registry       *coordination.WriterRegistry
 	Clock          clock.Clock
+	ReadUTC        storage.R1TimeSource
+	AutoRestore    func(context.Context, *coordination.WarmView, storage.ObjectHead, storage.PackRef, uint64, time.Time) error
 	AdmitWriter    func(context.Context, WriterRequest) (AdmittedWriter, error)
 	Chunking       engine.ChunkingParams
 	Compression    engine.CompressionPolicy

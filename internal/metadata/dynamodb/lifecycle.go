@@ -146,7 +146,7 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 		}
 		old, e := r1Read[lifecycle.Action](t, lifecycleKey(j.ID))
 		if e == nil {
-			if old.Kind != j.Type || old.Source.Ref != p.Ref() || old.Days != p.Days || old.Tier != p.Tier || lifecycle.Repack(old.Kind) && (old.PlanSHA256 != planHash || old.Digest != digest) {
+			if old.Kind != j.Type || old.Source.Ref != p.Ref() || old.Days != p.Days || old.Tier != p.Tier || !old.RequiredUntil.Equal(p.RequiredUntil) || lifecycle.Repack(old.Kind) && (old.PlanSHA256 != planHash || old.Digest != digest) {
 				return s.ErrConflict
 			}
 			if old.Fence != j.Worker {
@@ -183,7 +183,7 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 		if e != nil {
 			return e
 		}
-		a := lifecycle.Action{Version: 1, ID: j.ID, JobID: j.ID, Kind: j.Type, State: "Prepared", Revision: 1, Fence: j.Worker, Source: source, Days: p.Days, Tier: p.Tier, PlanPages: pageCount, PlanSHA256: planHash, Digest: digest}
+		a := lifecycle.Action{Version: 1, ID: j.ID, JobID: j.ID, Kind: j.Type, State: "Prepared", Revision: 1, Fence: j.Worker, Source: source, Days: p.Days, Tier: p.Tier, RequiredUntil: p.RequiredUntil, PlanPages: pageCount, PlanSHA256: planHash, Digest: digest}
 		a.Destination = lifecycle.Destination(j.Type, j.ID, source.Ref)
 		switch j.Type {
 		case "gc":
@@ -235,7 +235,7 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 				a.State = "Waiting"
 			} else if source.Class == s.GlacierIR && source.State == "Cold" {
 				a.State = "Skipped"
-			} else if source.Class != s.Glacier || source.State != "Cold" && !(source.State == "Restored" && !b.Upper.Before(source.RestoredUntil)) {
+			} else if source.Class != s.Glacier || source.State != "Cold" && source.State != "Restored" {
 				return s.ErrConflict
 			}
 		case "pack_promote", "compaction":
@@ -473,7 +473,10 @@ func (m *Store) FinishLifecycle(ctx context.Context, j jobs.Job, physical s.Pack
 			if a.KnownApplied {
 				p.State = "Cold"
 				p.Class = a.Target
-				p.MinRetentionUntil = b.Upper.Add(90 * 24 * time.Hour)
+				p.MinRetentionUntil, e = lifecycle.RetentionUntil(a.Target, b.Upper, p.MinRetentionUntil)
+				if e != nil {
+					return e
+				}
 			} else {
 				p.State = a.Source.State
 				p.Class = a.Source.Class
@@ -509,7 +512,7 @@ func (m *Store) FinishLifecycle(ctx context.Context, j jobs.Job, physical s.Pack
 				}
 				a.State = "Waiting"
 			} else {
-				if !b.Upper.Before(physical.RestoredUntil) {
+				if !b.Upper.Before(physical.RestoredUntil) || physical.RestoredUntil.Before(a.RequiredUntil) {
 					return s.ErrR1Busy
 				}
 				p.State = "Restored"
@@ -807,7 +810,17 @@ func (m *Store) LifecycleQuiescent(ctx context.Context, id string, f s.WriterFen
 	return m.view(ctx, func(t *transaction) error {
 		a, e := r1Read[lifecycle.Action](t, lifecycleKey(id))
 		if errors.Is(e, s.ErrNotFound) {
-			return jobs.ErrReconciliation
+			j, err := get[jobs.Job](t, key("jobs", id))
+			if err != nil || j.Worker != f || !tieringDiscovery(j) {
+				return jobs.ErrReconciliation
+			}
+			// Discovery has only read-only scans and fenced native child enqueue.
+			// Closing this lease fences late enqueues; there is no SDK send.
+			lease, err := r1Read[s.R1Lease](t, r1LeaseKey(id))
+			if err != nil || lease.Fence != f || len(lease.Pending) != 0 {
+				return jobs.ErrReconciliation
+			}
+			return nil
 		}
 		if e != nil {
 			return e
@@ -824,4 +837,8 @@ func (m *Store) LifecycleQuiescent(ctx context.Context, id string, f s.WriterFen
 		}
 		return nil
 	})
+}
+
+func tieringDiscovery(j jobs.Job) bool {
+	return j.Type == "tiering" && bytes.Equal(bytes.TrimSpace(j.Params), []byte(`{}`))
 }
