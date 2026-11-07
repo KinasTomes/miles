@@ -21,6 +21,7 @@ func TestMetadataWriteError(t *testing.T) {
 		{storage.ErrQuotaExceeded, ErrQuotaExceeded, http.StatusForbidden},
 		{storage.ErrConflict, ErrOperationAborted, http.StatusConflict},
 		{storage.ErrUnavailable, ErrServiceUnavailable, http.StatusServiceUnavailable},
+		{storage.ErrR1Busy, ErrServiceUnavailable, http.StatusServiceUnavailable},
 		{storage.ErrFenced, ErrServiceUnavailable, http.StatusServiceUnavailable},
 		{storage.ErrAccessDenied, ErrAccessDenied, http.StatusForbidden},
 		{storage.ErrInvalid, ErrInvalidRequest, http.StatusBadRequest},

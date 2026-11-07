@@ -23,7 +23,7 @@ var metricHelp = map[string]string{
 // CloudWatch use it, so a scrape never performs backend/API operations.
 func (h *Health) Snapshot() []Metric {
 	h.mu.RLock()
-	checked, failures, ops, active := h.checkedAt, h.failures, h.operations, h.active
+	checked, failures, ops, active, runtimeMetrics := h.checkedAt, h.failures, h.operations, h.active, h.runtime
 	h.mu.RUnlock()
 	age := -1.0
 	if !checked.IsZero() {
@@ -51,7 +51,11 @@ func (h *Health) Snapshot() []Metric {
 	if active != nil {
 		out = append(out, Metric{Name: "miles_active_requests", Value: float64(active())})
 	}
-	return append(out, ops.Snapshot()...)
+	out = append(out, ops.Snapshot()...)
+	if runtimeMetrics != nil {
+		out = append(out, runtimeMetrics.Snapshot(h.now())...)
+	}
+	return out
 }
 func (h *Health) metrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")

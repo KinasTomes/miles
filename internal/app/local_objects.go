@@ -57,7 +57,7 @@ func (m *localMetadata) admit(ctx context.Context, credentialID string) (context
 	return storage.WithMutation(ctx, c), nil
 }
 
-func localObjects(m *badger.Store, packs *packs3.Store, resident storage.Cache, cachePolicy config.CachePolicy) (*object.Service, *localMetadata, func(), error) {
+func localObjects(m *badger.Store, packs *packs3.Store, readPacks storage.PackStore, resident storage.Cache, cachePolicy config.CachePolicy) (*object.Service, *localMetadata, func(), error) {
 	authority, err := m.StartLocalRuntime(context.Background(), DevUser, 1<<30)
 	if err != nil {
 		return nil, nil, nil, err
@@ -102,7 +102,7 @@ func localObjects(m *badger.Store, packs *packs3.Store, resident storage.Cache, 
 			return validator.NewBucketSnapshot(id, 1, cachePolicy)
 		},
 		Uploads: m,
-	}, m, packs, gate, global, nil)
+	}, m, readPacks, gate, global, nil, nil)
 	if err != nil {
 		return nil, nil, nil, err
 	}

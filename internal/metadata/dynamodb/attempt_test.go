@@ -18,6 +18,7 @@ type dispatchFault struct {
 	objectTable   string
 	before, after bool
 	requests      [][]byte
+	lastRequest   *ddb.TransactWriteItemsInput
 }
 
 func (f *dispatchFault) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, options ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
@@ -28,6 +29,7 @@ func (f *dispatchFault) TransactWriteItems(ctx context.Context, in *ddb.Transact
 		}
 	}
 	if final {
+		f.lastRequest = in
 		body, _ := json.Marshal(in)
 		f.requests = append(f.requests, body)
 		if f.before {
@@ -88,6 +90,18 @@ func TestLocalDurableAttemptSurvivesRestartWithExactParameters(t *testing.T) {
 func TestLocalLostResponseReplaysOriginalOutcomeAfterOverwrite(t *testing.T) {
 	f := contracttest.NewFixture()
 	m, _ := fixtureStore(t, f)
+	runLostResponseReplaysOriginalOutcome(t, f, m)
+}
+
+func TestAWSDevLostResponseReplaysOriginalOutcome(t *testing.T) {
+	client, _, _ := liveClients(t)
+	f := contracttest.NewFixture()
+	m, _ := fixtureStoreWithClient(t, f, client, "miles_hai_contract_", true)
+	runLostResponseReplaysOriginalOutcome(t, f, m)
+}
+
+func runLostResponseReplaysOriginalOutcome(t *testing.T, f contracttest.Fixture, m *Store) {
+	t.Helper()
 	first := f.Request("lost-ack", 0)
 	contracttest.Prepare(t, m, f, first, 4)
 	fault := &dispatchFault{API: m.api, objectTable: m.tables["Objects"], after: true}
@@ -95,6 +109,27 @@ func TestLocalLostResponseReplaysOriginalOutcomeAfterOverwrite(t *testing.T) {
 	if _, err := m.CommitObject(context.Background(), first); !errors.Is(err, s.ErrUnavailable) {
 		t.Fatal(err)
 	}
+	ctx := t.Context()
+	committed, err := restartFixture(t, m).GetCommitOutcome(ctx, first.Head.OpID)
+	if err != nil || !committed.AlreadyCommitted || committed.Head.Revision != 1 {
+		t.Fatal("op_id outcome", committed, err)
+	}
+	ledger, err := m.GetReservation(ctx, first.ReservationID)
+	if err != nil || ledger.State != s.ReservationCommitted || ledger.OpID != first.Head.OpID {
+		t.Fatal("committed ledger", ledger, err)
+	}
+	if _, err := m.GetOutbox(ctx, first.Event.ID); err != nil {
+		t.Fatal("committed outbox", err)
+	}
+	release := s.ReservationRelease{ID: ledger.ID, OpID: ledger.OpID, ExpectedRevision: ledger.Revision, Writer: ledger.Writer}
+	if err := m.ReleaseLogicalQuota(ctx, release); !errors.Is(err, s.ErrConflict) {
+		t.Fatal("cleanup accepted committed operation", err)
+	}
+	quota, err := m.GetQuota(ctx, ledger.OwnerID)
+	if err != nil || quota.Used != 4 || quota.Reserved != 0 || quota.Staged != 0 {
+		t.Fatal("quota after lost ACK", quota, err)
+	}
+
 	second := f.Request("later-write", 1)
 	contracttest.Prepare(t, m, f, second, 0)
 	if _, err := m.CommitObject(context.Background(), second); err != nil {

@@ -15,6 +15,7 @@ import (
 	"github.com/KinasTomes/miles/internal/auth"
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/faults"
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/stats"
 	"github.com/KinasTomes/miles/internal/storage"
@@ -38,11 +39,19 @@ type Store interface {
 // Admit returns a fresh trusted mutation context for one write made by tokenID.
 type Admit func(ctx context.Context, tokenID string) (storage.MutationContext, error)
 
+type FaultManager interface {
+	Add(time.Time, faults.FaultRule) (faults.FaultRule, error)
+	List(time.Time) ([]faults.FaultRule, error)
+	Delete(string) error
+}
+
 type Options struct {
 	PackInventory   PackInventory
 	CacheStatistics CacheStatistics
 	Operations      Operations
 	Statistics      Statistics
+	Faults          FaultManager
+	NodeID          string
 	Store           Store
 	Admit           Admit
 	Finish          func(context.Context, storage.MutationContext) // after the handler's synchronous metadata work
@@ -129,6 +138,9 @@ func NewServer(o Options) (http.Handler, error) {
 		{"POST /admin/v1/packs/{id}/{generation}/restore", true, s.restorePack},
 		{"POST /admin/v1/packs/{id}/{generation}/promote", true, s.promotePack},
 		{"GET /admin/v1/jobs", false, s.listJobs},
+		{"GET /admin/v1/faults", false, s.listFaults},
+		{"POST /admin/v1/faults", true, s.createFault},
+		{"DELETE /admin/v1/faults/{id}", true, s.deleteFault},
 		{"GET /admin/v1/cache/stats", false, s.cacheStats},
 		{"POST /admin/v1/cache/purge", true, s.purgeCache},
 		{"POST /admin/v1/jobs", true, s.createJob},
@@ -280,6 +292,24 @@ func (s *server) fail(c *call, err error) {
 	default:
 		s.Logger.ErrorContext(c.r.Context(), "admin request failed", "request_id", c.id, "err", err)
 		e = &apiError{http.StatusInternalServerError, "internal_error", "internal error"}
+	}
+	if e.status == http.StatusServiceUnavailable {
+		// Fixed categories only. A raw metadata error may contain IDs, query
+		// parameters or backend details and must not enter operator logs.
+		class := "unknown"
+		switch {
+		case errors.Is(err, storage.ErrR1Busy):
+			class = "r1_gate_busy"
+		case errors.Is(err, storage.ErrFenced):
+			class = "fenced"
+		case errors.Is(err, context.DeadlineExceeded):
+			class = "deadline_exceeded"
+		case errors.Is(err, context.Canceled):
+			class = "canceled"
+		case errors.Is(err, storage.ErrUnavailable):
+			class = "backend_unavailable"
+		}
+		s.Logger.WarnContext(c.r.Context(), "admin service unavailable", "request_id", c.id, "action", c.r.Pattern, "failure_class", class)
 	}
 	if e.status == http.StatusUnauthorized {
 		c.w.Header().Set("WWW-Authenticate", "Bearer")

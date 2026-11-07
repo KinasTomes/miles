@@ -49,7 +49,8 @@ startup = dict(profile='cloud', mode='runtime', shutdown_seconds=1800,
     health_address=address + ':9100', s3_address=address + ':8080', admin_address='127.0.0.1:9000',
     runtime_node_id=identity['instanceId'], ddb_table_prefix=c['table_prefix'],
     runtime_secret_arn=c['runtime_secret_arn'], region=c['region'], utc_reference='169.254.169.123',
-    local_data_path='/var/lib/miles', pack_bucket=c['bucket'], pack_kms_key_id=c['kms_key_arn'])
+    local_data_path='/var/lib/miles', pack_bucket=c['bucket'], pack_kms_key_id=c['kms_key_arn'],
+    deep_observation=bool(c.get('deep_observation', False)))
 (pathlib.Path('/etc/miles') / 'startup.json').write_text(json.dumps(startup))
 if c['owner_ssh_public_key']:
     subprocess.run(['useradd', '--create-home', '--shell', '/bin/bash', 'miles-owner'], check=True)

@@ -28,10 +28,11 @@ import (
 )
 
 type Options struct {
-	Manifest    string
-	Out         string
-	Concurrency int
-	ReadRepeats int // additional full GET passes, separate from initial verification
+	Manifest      string
+	Out           string
+	Concurrency   int
+	RetainObjects bool // Retain only this run prefix for external statistics; caller owns cleanup.
+	ReadRepeats   int  // additional full GET passes, separate from initial verification
 }
 
 type Sample struct {
@@ -43,6 +44,8 @@ type Sample struct {
 	PayloadBytes int64  `json:"payload_bytes"`
 	SHA256       string `json:"sha256,omitempty"`
 	Error        string `json:"error,omitempty"`
+	HTTPStatus   int    `json:"http_status,omitempty"`
+	RequestID    string `json:"request_id,omitempty"`
 }
 
 type Phase struct {
@@ -76,6 +79,7 @@ type Result struct {
 	Phases              []Phase                `json:"phases"`
 	Samples             []Sample               `json:"samples"`
 	Cleanup             string                 `json:"cleanup"`
+	HTTPBodyBytes       map[string]uint64      `json:"http_body_bytes"`
 	Limitations         []string               `json:"limitations"`
 }
 
@@ -90,7 +94,8 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 		return result, err
 	}
 	defer root.Close()
-	client, closeClient, err := newClient(c, o.Concurrency)
+	traffic := new(bodyTraffic)
+	client, closeClient, err := newClient(c, o.Concurrency, traffic)
 	if err != nil {
 		return result, err
 	}
@@ -121,6 +126,7 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 	}
 	defer func() {
 		result.FinishedAt = time.Now().UTC()
+		result.HTTPBodyBytes = traffic.snapshot(c.Target)
 		result.Status = "passed"
 		if err != nil {
 			result.Status, result.Error = "failed", errorCode(err)
@@ -148,6 +154,10 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 		if err = filePhase(ctx, client, root, c, o, fmt.Sprintf("repeat-get-%d", i), &result); err != nil {
 			return result, err
 		}
+	}
+	if o.RetainObjects {
+		result.Cleanup = "retained_owned_prefix_for_observation"
+		return result, nil
 	}
 	if err = filePhase(ctx, client, root, c, o, "delete", &result); err != nil {
 		return result, err
@@ -188,8 +198,11 @@ func fileOperation(ctx context.Context, client *awss3.Client, root *os.Root, c C
 	var err error
 	defer func() {
 		sample.LatencyNS = time.Since(start).Nanoseconds()
-		if err != nil && sample.Error == "" {
-			sample.Error = errorCode(err)
+		if err != nil {
+			sample.HTTPStatus, sample.RequestID = responseDiagnostics(err)
+			if sample.Error == "" {
+				sample.Error = errorCode(err)
+			}
 		}
 	}()
 	switch phase {
@@ -255,7 +268,8 @@ func listPhase(ctx context.Context, client *awss3.Client, bucket, phase string, 
 		callCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 		out, err := client.ListObjectsV2(callCtx, &awss3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(r.Prefix), ContinuationToken: token, MaxKeys: aws.Int32(1000)})
 		cancel()
-		s := Sample{Phase: phase, Operation: "ListObjectsV2", LatencyNS: time.Since(t).Nanoseconds(), Error: errorCode(err)}
+		status, requestID := responseDiagnostics(err)
+		s := Sample{Phase: phase, Operation: "ListObjectsV2", LatencyNS: time.Since(t).Nanoseconds(), Error: errorCode(err), HTTPStatus: status, RequestID: requestID}
 		if err == nil {
 			for _, object := range out.Contents {
 				key := aws.ToString(object.Key)

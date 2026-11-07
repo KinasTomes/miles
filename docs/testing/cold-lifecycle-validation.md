@@ -152,6 +152,11 @@ Kết quả kiểm tra lại ngày 2026-11-07:
   admission/extension, tiering, promotion, retention, GC và compaction: PASS
   với DynamoDB Local/Moto bắt buộc trong compose project riêng. Các container
   fixture đã được dọn sau khi chạy.
+- Trước khi mở PR, tích hợp `origin/main` tại `6b3a654` và chạy lại full Go
+  tests/vet, build, format check, kiểm tên tài liệu và 50 Python regression
+  tests: PASS. Race tests toàn package readpath, coordination, lifecycle và
+  engine/write: PASS. Native Cloud/Edge Cold flows cùng nhóm regression
+  DynamoDB ở trên: PASS sau merge. Các live AWS suite opt-in vẫn chưa được bật.
 
 Trong validation, regression takeover discovery đã phát hiện việc kiểm nhầm
 old fence sau khi native lease slot chuyển epoch. Bản sửa dùng exact next-epoch

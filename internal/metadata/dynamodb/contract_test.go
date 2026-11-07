@@ -11,8 +11,21 @@ import (
 )
 
 func TestLocalMetadataContract(t *testing.T) {
+	runMetadataContract(t, fixtureStore)
+}
+
+func TestAWSDevMetadataContract(t *testing.T) {
+	client, _, _ := liveClients(t)
+	runMetadataContract(t, func(t *testing.T, f contracttest.Fixture) (*Store, *ddb.Client) {
+		return fixtureStoreWithClient(t, f, client, "miles_hai_contract_", true)
+	})
+}
+
+func runMetadataContract(t *testing.T, factory func(*testing.T, contracttest.Fixture) (*Store, *ddb.Client)) {
+	t.Helper()
 	contracttest.RunMetadata(t, func(t *testing.T, f contracttest.Fixture) contracttest.MetadataHarness {
-		m, client := fixtureStore(t, f)
+		m, client := factory(t, f)
+		measureContractFootprint(t, m)
 		set := func(k string, v any) {
 			t.Helper()
 			if err := m.update(context.Background(), func(tx *transaction) error { return put(tx, k, v) }); err != nil {

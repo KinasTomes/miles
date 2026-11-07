@@ -3,7 +3,7 @@ package coordination
 import (
 	"context"
 	"encoding/csv"
-	"errors"
+	"fmt"
 	"math"
 	"net/netip"
 	"os/exec"
@@ -26,6 +26,16 @@ type Chrony struct {
 	read      func(context.Context) ([]byte, error)
 }
 
+var (
+	// ErrClockUncertain indicates the host NTP synchronization fails uncertainty,
+	// stratum, leap status, frequency drift or sample age bounds.
+	ErrClockUncertain = fmt.Errorf("%w: chrony source is not synchronized with bounded uncertainty", storage.ErrClockUncertain)
+	// ErrClockUnavailable indicates chronyc tracking could not be queried.
+	ErrClockUnavailable = fmt.Errorf("%w: chrony tracking unavailable", storage.ErrUnavailable)
+	// ErrClockChanged indicates an uncoordinated clock step or skew during sampling.
+	ErrClockChanged = fmt.Errorf("%w: clock changed during chrony observation", storage.ErrClockUncertain)
+)
+
 const runtimeHorizon = 45 * time.Minute
 
 func (c Chrony) Bounds(ctx context.Context) (storage.R1Bounds, error) {
@@ -45,12 +55,12 @@ func (c Chrony) Bounds(ctx context.Context) (storage.R1Bounds, error) {
 	}
 	body, err := read(ctx)
 	if err != nil {
-		return storage.R1Bounds{}, errors.New("chrony tracking unavailable")
+		return storage.R1Bounds{}, ErrClockUnavailable
 	}
 	end := c.Clock.Now()
 	elapsed, err := end.Instant.Sub(start.Instant)
 	if err != nil || elapsed < 0 || elapsed >= time.Second || math.Abs(end.WallUTC.Sub(start.WallUTC).Seconds()-elapsed.Seconds()) > 0.01 {
-		return storage.R1Bounds{}, errors.New("clock changed during chrony observation")
+		return storage.R1Bounds{}, ErrClockChanged
 	}
 	sample, err := c.parse(body, end, elapsed)
 	if err != nil {
@@ -61,7 +71,7 @@ func (c Chrony) Bounds(ctx context.Context) (storage.R1Bounds, error) {
 }
 
 func (c Chrony) parse(body []byte, now clock.Reading, elapsed time.Duration) (policy.UTCSample, error) {
-	bad := errors.New("chrony source is not synchronized with bounded uncertainty")
+	bad := ErrClockUncertain
 	if len(body) > 4096 {
 		return policy.UTCSample{}, bad
 	}

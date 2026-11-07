@@ -48,7 +48,8 @@ def command(args, env=None, expect_error=None, timeout=60):
         if result.returncode == 0 or expect_error not in result.stderr:
             raise RuntimeError(f"expected {expect_error}: {result.stdout} {result.stderr}")
     elif result.returncode:
-        raise RuntimeError(f"{args[0]} failed: {result.stderr}")
+        err = result.stderr if result.stderr.strip() else result.stdout
+        raise RuntimeError(f"{args[0]} failed: {err}")
     return result.stdout
 
 
@@ -309,7 +310,7 @@ def main():
             # disposable Moto container, never purges application recovery roots.
             cli = directory / "dsgctl"
             command(["go", "build", "-o", str(cli), "./cmd/dsgctl"], env, timeout=120)
-            command([str(cli), "node", "drain"], env, expect_error="invalid job/node command")
+            command([str(cli), "node", "drain"], env, expect_error="invalid node command; use -help")
         finally:
             command(compose + ["down", "--volumes", "--remove-orphans"], env, timeout=60)
     print("PASS local fixtures complete; temporary project, processes and files removed", flush=True)

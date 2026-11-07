@@ -15,15 +15,18 @@ import (
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/engine"
+	"github.com/KinasTomes/miles/internal/faults"
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
 	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/observability"
 	"github.com/KinasTomes/miles/internal/recovery"
+	"github.com/KinasTomes/miles/internal/stats"
 	"github.com/KinasTomes/miles/internal/storage"
 	packs3 "github.com/KinasTomes/miles/internal/storage/s3"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
@@ -32,7 +35,11 @@ func sharedStore(c config.Startup, clients runtimeClients, utc storage.R1TimeSou
 	for name := range dynamodb.Tables() {
 		tables[name] = c.DDBTablePrefix + name
 	}
-	return dynamodb.New(dynamodb.Options{API: clients.metadata, Tables: tables, Authority: &dynamodb.SharedAuthority{Time: utc, Lifetime: time.Minute}, RequireProducers: true})
+	var onRetry func()
+	if clients.telemetry != nil {
+		onRetry = clients.telemetry.Retry
+	}
+	return dynamodb.New(dynamodb.Options{OnRetry: onRetry, API: clients.metadata, Tables: tables, Authority: &dynamodb.SharedAuthority{Time: utc, Lifetime: time.Minute}, RequireProducers: true})
 }
 
 func bootstrapShared(c config.Startup) (Dependencies, error) {
@@ -65,6 +72,14 @@ func bootstrapShared(c config.Startup) (Dependencies, error) {
 func composeShared(ctx context.Context, c config.Startup, clients runtimeClients, clk clock.Clock, utc storage.R1TimeSource, keyID string, seal, cursor []byte) (d Dependencies, err error) {
 	if _, err = utc.Bounds(ctx); err != nil {
 		return d, err
+	}
+	faultReg := faults.NewRegistry(c.EnableFaultInjection)
+	runtimeMetrics := new(observability.Runtime)
+	clients = clients.observed(runtimeMetrics, c.DDBTablePrefix+"Leases")
+	if c.EnableFaultInjection {
+		dOpt := clients.metadata.Options()
+		dOpt.HTTPClient = faults.WrapHTTPClient(dOpt.HTTPClient, faultReg, c.RuntimeNodeID)
+		clients.metadata = ddb.New(dOpt)
 	}
 	m, err := sharedStore(c, clients, utc)
 	if err != nil {
@@ -123,6 +138,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	if err != nil {
 		return d, err
 	}
+	faultPacks := faults.WrapPackStore(coordination.ProtectPackStore(packs), faultReg, c.RuntimeNodeID)
 	metadata := &sharedMetadata{Store: m, utc: utc, owner: c.RuntimeNodeID + "-" + id}
 	journal := &journalRuntime{store: m, objects: journalObjects, catalog: catalog, clock: clk, authority: sharedJobAuthority{metadata}}
 	v, err := config.NewPolicyValidator(config.DSGPolicyLimits())
@@ -183,17 +199,20 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 				}
 				return v.DecodeBucket(id, record.Revision, record.Document)
 			},
-		}, m, packs, gate, global, admission)
+		}, m, faultPacks, gate, global, admission, &runtimeMetrics.Warm)
 	}
 	sealer, err := admin.NewAESSealer(keyID, seal)
 	if err != nil {
 		return d, err
 	}
-	a := &admin.Options{Store: m, Clock: clk, Sealer: sealer, Cursors: admin.Keyring{Current: keyID, Keys: map[string][]byte{keyID: cursor}}, Admit: func(ctx context.Context, _ string) (storage.MutationContext, error) { return metadata.admit(ctx) }, Finish: func(ctx context.Context, c storage.MutationContext) { metadata.finish(ctx, c) }}
+	a := &admin.Options{Faults: faultReg, NodeID: c.RuntimeNodeID, Store: m, Clock: clk, Sealer: sealer, Cursors: admin.Keyring{Current: keyID, Keys: map[string][]byte{keyID: cursor}}, Admit: func(ctx context.Context, _ string) (storage.MutationContext, error) { return metadata.admit(ctx) }, Finish: func(ctx context.Context, c storage.MutationContext) { metadata.finish(ctx, c) }}
 	if err = a.Cursors.Validate(); err != nil {
 		return d, err
 	}
 	probe := func(ctx context.Context) error {
+		if faultReg.ShouldInject(time.Now(), faults.FaultKillNode, c.RuntimeNodeID) {
+			return errors.New("fault injected: kill_node")
+		}
 		if _, e := utc.Bounds(ctx); e != nil {
 			return e
 		}
@@ -271,12 +290,23 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	tiering := runner.Executors["tiering"]
 	tiering.Periodic = time.Minute
 	runner.Executors["tiering"] = tiering
+	scrubWorker := &jobs.ScrubWorker{Store: m, Packs: faultPacks}
+	runner.Executors["scrub"] = scrubWorker.Executor()
+	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: clients.packs, Bucket: c.PackBucket}, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second})
+	if err != nil {
+		return d, err
+	}
+	a.Statistics = measurements
 	a.PackInventory = packCatalog
 	a.Operations = cluster
 	a.CacheStatistics = cluster
-	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Cluster: cluster}
+	obsInterval := time.Duration(c.ObservationIntervalSeconds) * time.Second
+	if obsInterval <= 0 {
+		obsInterval = 30 * time.Second
+	}
+	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Runtime: runtimeMetrics, Collect: runtimeObserver(m, runtimeMetrics, clk, g.HistoryID, c.DeepObservation), CollectInterval: obsInterval, Cluster: cluster}
 	if clients.metrics != nil {
-		operational.CloudWatch, err = observability.NewCloudWatch(clients.metrics, c.Profile)
+		operational.CloudWatch, err = observability.NewCloudWatch(clients.metrics, c.Profile, c.DDBTablePrefix)
 		if err != nil {
 			return d, err
 		}
@@ -297,7 +327,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 		clients.transport.CloseIdleConnections()
 		return errors.Join(e, flushErr, metadata.closeError(), resident.Close())
 	}
-	return Dependencies{Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
+	return Dependencies{NodeID: c.RuntimeNodeID, Faults: faultReg, Statistics: measurements, Metadata: metadata, Packs: faultPacks, Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
 		Operations:       operational,
 		closeWithContext: closeRuntime,
 		Close:            func() error { return closeRuntime(context.Background()) }}, nil
