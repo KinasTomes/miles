@@ -33,6 +33,29 @@ func operationCommand(args []string) (command, error) {
 			return command{method: http.MethodGet, path: "/admin/v1/buckets/" + *bucket + "/stats"}, nil
 		}
 		return command{method: http.MethodGet, path: "/admin/v1/stats"}, nil
+	case "cost":
+		if len(args) < 2 || args[1] != "report" {
+			return command{}, invalid
+		}
+		f := newFlags("cost report")
+		region := f.String("region", "", "pricing region")
+		asOf := f.String("as-of", "", "date YYYY-MM-DD")
+		set, ok := parse(f, args[2:])
+		if !ok {
+			return command{}, invalid
+		}
+		q := url.Values{}
+		if set["region"] {
+			q.Set("region", *region)
+		}
+		if set["as-of"] {
+			q.Set("as_of", *asOf)
+		}
+		path := "/admin/v1/cost/report"
+		if len(q) > 0 {
+			path += "?" + q.Encode()
+		}
+		return command{method: http.MethodGet, path: path}, nil
 	case "layout":
 		// No flags: a key may start with "-".
 		if len(args) != 3 || !validBucket(args[1]) || args[2] == "" || len(args[2]) > 1024 || !utf8.ValidString(args[2]) {

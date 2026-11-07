@@ -43,6 +43,8 @@ func TestOperationalCommandsUseBearerMethodAndWireSchema(t *testing.T) {
 		{[]string{"node", "ls", "--cursor", "k.p.t"}, "GET", "/admin/v1/cluster/nodes?cursor=k.p.t", nil},
 		{[]string{"stats"}, "GET", "/admin/v1/stats", nil},
 		{[]string{"stats", "--bucket", "demo.bucket"}, "GET", "/admin/v1/buckets/demo.bucket/stats", nil},
+		{[]string{"cost", "report"}, "GET", "/admin/v1/cost/report", nil},
+		{[]string{"cost", "report", "--region", "ap-southeast-1", "--as-of", "2026-11-07"}, "GET", "/admin/v1/cost/report?as_of=2026-11-07&region=ap-southeast-1", nil},
 		// One query encoding: space, slash, plus, percent, hash and non-ASCII stay in key.
 		{[]string{"layout", "demo", "dir/a b+c%#é"}, "GET", "/admin/v1/objects/layout?bucket=demo&key=dir%2Fa+b%2Bc%25%23%C3%A9", nil},
 		{[]string{"layout", "demo", "--not-a-flag"}, "GET", "/admin/v1/objects/layout?bucket=demo&key=--not-a-flag", nil},
