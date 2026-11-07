@@ -295,7 +295,10 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
             root_dispersion = numbers[9]
             interval = numbers[10]
 
-            age = (now_unix - ref_time) if now_unix is not None else None
+            now_is_finite = isinstance(now_unix, (int, float)) and math.isfinite(now_unix)
+            elapsed_is_valid = isinstance(elapsed_seconds, (int, float)) and math.isfinite(elapsed_seconds) and elapsed_seconds >= 0
+
+            age = (float(now_unix) - ref_time) if now_is_finite else None
             max_allowed_age = min(1024.0, 2.0 * interval + 2.0) if interval > 0 else 0.0
 
             # Coordination invariants:
@@ -307,7 +310,8 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
             # 6. Drift bound <= 500 PPM
             # 7. Horizon uncertainty bound <= 2.0 seconds
             drift_ppm = abs(freq_ppm) + abs(residual_ppm) + skew_ppm + 1.0
-            error_seconds = abs(offset) + root_dispersion + root_delay / 2.0 + max(0.0, elapsed_seconds) + 0.01
+            elapsed_val = max(0.0, float(elapsed_seconds)) if elapsed_is_valid else float("nan")
+            error_seconds = abs(offset) + root_dispersion + root_delay / 2.0 + elapsed_val + 0.01
             horizon_uncertainty = error_seconds + drift_ppm * 1e-6 * runtime_horizon_seconds
 
             uncertainty_exceeded = False
@@ -328,13 +332,19 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
             elif now_unix is None:
                 uncertainty_exceeded = True
                 rejection_reason = "missing_current_timestamp_for_age_verification"
-            elif age < -2.0 or age > max_allowed_age:
+            elif not now_is_finite:
+                uncertainty_exceeded = True
+                rejection_reason = "non_finite_current_timestamp"
+            elif not elapsed_is_valid:
+                uncertainty_exceeded = True
+                rejection_reason = "invalid_or_non_finite_elapsed_seconds"
+            elif age is None or not math.isfinite(age) or age < -2.0 or age > max_allowed_age:
                 uncertainty_exceeded = True
                 rejection_reason = "sample_age_exceeded"
-            elif drift_ppm > 500.0:
+            elif not math.isfinite(drift_ppm) or drift_ppm > 500.0:
                 uncertainty_exceeded = True
                 rejection_reason = "drift_ppm_exceeded_500"
-            elif horizon_uncertainty > 2.0:
+            elif not math.isfinite(horizon_uncertainty) or horizon_uncertainty > 2.0:
                 uncertainty_exceeded = True
                 rejection_reason = "horizon_uncertainty_exceeded_2s"
 
@@ -438,11 +448,15 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
                 "rejection_reason": "unverified_text_format_missing_drift_or_age",
             }
 
-        age = (now_unix - ref_time) if now_unix is not None else None
+        now_is_finite = isinstance(now_unix, (int, float)) and math.isfinite(now_unix)
+        elapsed_is_valid = isinstance(elapsed_seconds, (int, float)) and math.isfinite(elapsed_seconds) and elapsed_seconds >= 0
+
+        age = (float(now_unix) - ref_time) if now_is_finite else None
         max_allowed_age = min(1024.0, 2.0 * interval + 2.0) if interval > 0 else 0.0
 
         drift_ppm = abs(freq_ppm) + abs(residual_ppm) + skew_ppm + 1.0
-        error_seconds = abs(offset) + root_dispersion + root_delay / 2.0 + max(0.0, elapsed_seconds) + 0.01
+        elapsed_val = max(0.0, float(elapsed_seconds)) if elapsed_is_valid else float("nan")
+        error_seconds = abs(offset) + root_dispersion + root_delay / 2.0 + elapsed_val + 0.01
         horizon_uncertainty = error_seconds + drift_ppm * 1e-6 * runtime_horizon_seconds
 
         uncertainty_exceeded = False
@@ -463,13 +477,19 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
         elif now_unix is None:
             uncertainty_exceeded = True
             rejection_reason = "missing_current_timestamp_for_age_verification"
-        elif age < -2.0 or age > max_allowed_age:
+        elif not now_is_finite:
+            uncertainty_exceeded = True
+            rejection_reason = "non_finite_current_timestamp"
+        elif not elapsed_is_valid:
+            uncertainty_exceeded = True
+            rejection_reason = "invalid_or_non_finite_elapsed_seconds"
+        elif age is None or not math.isfinite(age) or age < -2.0 or age > max_allowed_age:
             uncertainty_exceeded = True
             rejection_reason = "sample_age_exceeded"
-        elif drift_ppm > 500.0:
+        elif not math.isfinite(drift_ppm) or drift_ppm > 500.0:
             uncertainty_exceeded = True
             rejection_reason = "drift_ppm_exceeded_500"
-        elif horizon_uncertainty > 2.0:
+        elif not math.isfinite(horizon_uncertainty) or horizon_uncertainty > 2.0:
             uncertainty_exceeded = True
             rejection_reason = "horizon_uncertainty_exceeded_2s"
 
@@ -505,7 +525,8 @@ def build_node_telemetry_snapshot(
     readyz_status=None,
     error=None,
     captured_at=None,
-    now_unix=None
+    now_unix=None,
+    elapsed_seconds=0.0
 ):
     """
     Constructs a safe, non-sensitive telemetry snapshot for an individual gateway or edge node.
@@ -528,7 +549,7 @@ def build_node_telemetry_snapshot(
             pass
 
     metrics = parse_prometheus_metrics(metrics_raw) if metrics_raw else {}
-    clock_sig = parse_chrony_tracking(chrony_raw, now_unix=now_unix) if chrony_raw else {"status": "not_collected"}
+    clock_sig = parse_chrony_tracking(chrony_raw, now_unix=now_unix, elapsed_seconds=elapsed_seconds) if chrony_raw else {"status": "not_collected"}
 
     status = "ok" if (metrics or clock_sig.get("status") == "ok") else "empty"
 
@@ -541,6 +562,102 @@ def build_node_telemetry_snapshot(
         "metrics": metrics,
         "clock": clock_sig,
     }
+
+
+def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=None, elapsed_seconds=0.0):
+    """
+    Safely collects telemetry across a list of nodes, handling individual node timeouts,
+    connection failures, or collection errors gracefully without aborting the cluster capture.
+    Returns a structured dictionary with per-node snapshots, overall status, and missing reasons.
+    """
+    if not nodes:
+        return {
+            "status": "not_collected",
+            "missing_reason": "no_nodes_specified",
+            "captured_at": captured_at,
+            "nodes": {},
+        }
+
+    import datetime
+    effective_captured_at = captured_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    node_snapshots = {}
+    has_ok = False
+    has_error = False
+
+    for node in nodes:
+        alias = node.get("alias", "unknown")
+        profile = node.get("profile", "cloud")
+        try:
+            res = fetcher_fn(node)
+            metrics_raw = res.get("metrics_raw")
+            chrony_raw = res.get("chrony_raw")
+            readyz = res.get("readyz_status")
+            snap = build_node_telemetry_snapshot(
+                alias=alias,
+                profile=profile,
+                metrics_raw=metrics_raw,
+                chrony_raw=chrony_raw,
+                readyz_status=readyz,
+                captured_at=effective_captured_at,
+                now_unix=now_unix,
+                elapsed_seconds=elapsed_seconds,
+            )
+            node_snapshots[alias] = snap
+            if snap.get("status") == "ok":
+                has_ok = True
+            else:
+                has_error = True
+        except Exception as e:
+            has_error = True
+            node_snapshots[alias] = build_node_telemetry_snapshot(
+                alias=alias,
+                profile=profile,
+                error=str(e),
+                captured_at=effective_captured_at,
+            )
+
+    cluster_status = "ok" if (has_ok and not has_error) else ("partial" if has_ok else "error")
+
+    return {
+        "status": cluster_status,
+        "captured_at": effective_captured_at,
+        "nodes": node_snapshots,
+        "summary": {
+            "total_nodes": len(nodes),
+            "healthy_nodes": sum(1 for s in node_snapshots.values() if s.get("status") == "ok"),
+            "failed_nodes": sum(1 for s in node_snapshots.values() if s.get("status") == "error"),
+        }
+    }
+
+
+def collect_node_journals_safe(nodes, journal_fetcher_fn):
+    """
+    Safely captures systemd/journalctl logs across nodes, capturing error metadata
+    per-node on failure so that log collection failure on one node does not lose logs
+    from other active nodes.
+    Returns (node_journals_list, node_status_dict).
+    """
+    node_journals = []
+    node_status = {}
+
+    for node in nodes:
+        alias = node.get("alias", "unknown")
+        report = {"alias": alias, "id": node.get("id", "")}
+        try:
+            res = journal_fetcher_fn(node)
+            lines = res.get("lines", [])
+            report["count"] = len(lines)
+            report["lines"] = lines
+            node_status[alias] = "ok" if lines else "empty"
+        except Exception as e:
+            report["count"] = 0
+            report["lines"] = []
+            report["error_type"] = type(e).__name__
+            report["error"] = str(e)
+            node_status[alias] = "error"
+        node_journals.append(report)
+
+    return node_journals, node_status
 
 
 def parse_prometheus_metrics(raw_metrics_text, max_metrics=50):
@@ -628,7 +745,7 @@ def build_failed_window_payload(
         "node_status": node_status,
         "correlated_failures": correlated,
         "telemetry": {
-            "before": before_metrics if before_metrics else {"status": "not_collected"},
-            "after": after_metrics if after_metrics else {"status": "not_collected"}
+            "before": before_metrics if before_metrics is not None else {"status": "not_collected", "missing_reason": "before_metrics_not_provided"},
+            "after": after_metrics if after_metrics is not None else {"status": "not_collected", "missing_reason": "after_metrics_not_provided"}
         }
     }
