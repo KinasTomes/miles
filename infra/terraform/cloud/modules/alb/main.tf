@@ -24,10 +24,14 @@ resource "aws_lb_target_group" "s3" {
   vpc_id               = var.vpc_id
   deregistration_delay = var.deregistration_delay_seconds
   health_check {
-    path     = "/readyz"
-    port     = "9100"
-    protocol = "HTTP"
-    matcher  = "200"
+    path                = "/readyz"
+    port                = "9100"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 5
+    timeout             = 2
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
   }
 }
 resource "aws_lb_listener" "https" {

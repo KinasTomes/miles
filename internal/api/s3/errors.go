@@ -107,6 +107,8 @@ func availabilityFailureClass(err error) string {
 		return "r1_gate_busy"
 	case errors.Is(err, storage.ErrFenced):
 		return "fenced"
+	case errors.Is(err, storage.ErrClockUncertain):
+		return "clock_uncertainty_exceeded"
 	case errors.Is(err, storage.ErrUnavailable):
 		return "backend_unavailable"
 	default:
@@ -125,7 +127,7 @@ func MetadataWriteError(err error) *Error {
 		code = ErrQuotaExceeded
 	case errors.Is(err, storage.ErrConflict):
 		code = ErrOperationAborted
-	case errors.Is(err, storage.ErrUnavailable), errors.Is(err, storage.ErrFenced):
+	case errors.Is(err, storage.ErrUnavailable), errors.Is(err, storage.ErrFenced), errors.Is(err, storage.ErrClockUncertain):
 		code = ErrServiceUnavailable
 	case errors.Is(err, storage.ErrAccessDenied):
 		code = ErrAccessDenied

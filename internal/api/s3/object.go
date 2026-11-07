@@ -364,7 +364,7 @@ func objectError(err error, bucket, key string) error {
 		code = ErrQuotaExceeded
 	case errors.Is(err, storage.ErrConflict):
 		code = ErrOperationAborted
-	case errors.Is(err, storage.ErrUnavailable), errors.Is(err, storage.ErrFenced):
+	case errors.Is(err, storage.ErrUnavailable), errors.Is(err, storage.ErrFenced), errors.Is(err, storage.ErrClockUncertain):
 		code = ErrServiceUnavailable
 	case errors.Is(err, storage.ErrCold):
 		code = ErrInvalidObjectState

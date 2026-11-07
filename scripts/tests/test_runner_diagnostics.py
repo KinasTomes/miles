@@ -265,6 +265,30 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         parsed_bad_stratum = parse_chrony_tracking(csv_bad_stratum, now_unix=now_unix)
         self.assertTrue(parsed_bad_stratum["uncertainty_exceeded"])
 
+        # High frequency drift: freq = 600.0 PPM (> 500 PPM bound)
+        csv_high_drift = f"A9FEA97B,169.254.169.123,3,{ref_time_healthy:.4f},0.0001,0.0001,0.0002,600.0,0.01,0.05,0.001,0.001,16.0,Normal\n"
+        parsed_high_drift = parse_chrony_tracking(csv_high_drift, now_unix=now_unix)
+        self.assertTrue(parsed_high_drift["uncertainty_exceeded"])
+        self.assertEqual(parsed_high_drift["rejection_reason"], "drift_ppm_exceeded_500")
+
+        # Non-finite value (NaN at skew field parts[9])
+        csv_nan_skew = f"A9FEA97B,169.254.169.123,3,{ref_time_healthy:.4f},0.0001,0.0001,0.0002,0.1,0.01,NaN,0.001,0.001,16.0,Normal\n"
+        parsed_nan_skew = parse_chrony_tracking(csv_nan_skew, now_unix=now_unix)
+        self.assertTrue(parsed_nan_skew["uncertainty_exceeded"])
+        self.assertEqual(parsed_nan_skew["rejection_reason"], "non_finite_or_unparseable_metrics")
+
+        # Non-finite value (+Inf at offset field parts[4])
+        csv_inf_offset = f"A9FEA97B,169.254.169.123,3,{ref_time_healthy:.4f},+Inf,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+        parsed_inf_offset = parse_chrony_tracking(csv_inf_offset, now_unix=now_unix)
+        self.assertTrue(parsed_inf_offset["uncertainty_exceeded"])
+
+        # Wide horizon uncertainty: errorSeconds + driftPPM*1e-6*2700 > 2.0s
+        # e.g. offset = 1.8s, root_dispersion = 0.5s -> errorSeconds = 2.31s > 2s
+        csv_wide_horizon = f"A9FEA97B,169.254.169.123,3,{ref_time_healthy:.4f},1.8,0.0001,0.0002,10.0,0.01,0.05,0.001,0.5,16.0,Normal\n"
+        parsed_wide = parse_chrony_tracking(csv_wide_horizon, now_unix=now_unix)
+        self.assertTrue(parsed_wide["uncertainty_exceeded"])
+        self.assertEqual(parsed_wide["rejection_reason"], "horizon_uncertainty_exceeded_2s")
+
     def test_sanitize_benchmark_failure_detailed_classification(self):
         client_result = {
             "status": "failed",

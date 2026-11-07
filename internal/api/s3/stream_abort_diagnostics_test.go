@@ -194,7 +194,7 @@ func TestGetObjectStreamAbortDiagnostics(t *testing.T) {
 			}
 
 			wantMsg := "s3 server failure"
-			if !tc.expectPanic && tc.wantClass == "backend_unavailable" {
+			if !tc.expectPanic && (tc.wantClass == "backend_unavailable" || tc.wantClass == "clock_uncertainty_exceeded") {
 				wantMsg = "s3 service unavailable"
 			}
 			if entry["msg"] != wantMsg {

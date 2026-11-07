@@ -228,12 +228,21 @@ def sanitize_benchmark_failure(client_result):
     }
 
 
-def parse_chrony_tracking(raw_text, now_unix=None):
+def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
     """
     Parses chronyc tracking output in CSV format (-c) or key-value text format.
     Extracts bounded clock signals including stratum, offsets, interval, sample age,
-    and validates clock uncertainty bounds matching coordination.Chrony invariant.
+    frequency drift, and validates clock uncertainty bounds matching coordination.Chrony invariant:
+    - Finite numeric checks (rejects NaN and Inf)
+    - Stratum in [1, 15] integer
+    - Leap status == "Normal"
+    - Age in [-2, min(1024, 2*interval+2)]
+    - interval > 0, delay >= 0, dispersion >= 0, skew >= 0, abs(offset) <= 2
+    - driftPPM = abs(freq) + abs(residual) + skew + 1 <= 500
+    - errorSeconds + driftPPM * 1e-6 * runtimeHorizon <= 2 (horizon = 45 minutes)
     """
+    import math
+
     if not raw_text:
         return {"status": "not_collected"}
 
@@ -241,56 +250,113 @@ def parse_chrony_tracking(raw_text, now_unix=None):
     if not lines:
         return {"status": "empty"}
 
+    runtime_horizon_seconds = 45.0 * 60.0  # 45 minutes matching coordination.runtimeHorizon
+
     # Try CSV format first (e.g. chronyc -n -c tracking)
     for line in lines:
         parts = [p.strip() for p in line.split(",")]
         if len(parts) >= 14:
-            try:
-                ref_id = parts[0]
-                ref_ip = parts[1]
-                stratum = int(parts[2])
-                ref_time = float(parts[3])
-                offset = float(parts[4])
-                rms_offset = float(parts[6])
-                freq_ppm = float(parts[7])
-                residual_ppm = float(parts[8])
-                skew_ppm = float(parts[9])
-                root_delay = float(parts[10])
-                root_dispersion = float(parts[11])
-                interval = float(parts[12])
-                leap_status = parts[13]
+            ref_id = parts[0]
+            ref_ip = parts[1]
+            leap_status = parts[13]
 
-                age = (now_unix - ref_time) if now_unix is not None else None
-                max_allowed_age = min(1024.0, 2 * interval + 2) if interval > 0 else 0
+            # Parse and validate all 11 numeric fields
+            numbers = []
+            has_non_finite = False
+            for p in parts[2:13]:
+                try:
+                    val = float(p)
+                    if not math.isfinite(val):
+                        has_non_finite = True
+                    numbers.append(val)
+                except ValueError:
+                    has_non_finite = True
+                    numbers.append(float("nan"))
 
-                uncertainty_exceeded = False
-                if stratum < 1 or stratum > 15 or leap_status != "Normal" or interval <= 0:
-                    uncertainty_exceeded = True
-                elif abs(offset) > 2.0 or root_delay < 0 or root_dispersion < 0:
-                    uncertainty_exceeded = True
-                elif age is not None and (age < -2.0 or age > max_allowed_age):
-                    uncertainty_exceeded = True
-
+            if has_non_finite or len(numbers) != 11:
                 return {
                     "status": "ok",
                     "reference_id": ref_id,
                     "reference_ip": ref_ip,
-                    "stratum": stratum,
-                    "ref_time": ref_time,
-                    "offset_seconds": offset,
-                    "rms_offset_seconds": rms_offset,
-                    "freq_ppm": freq_ppm,
-                    "skew_ppm": skew_ppm,
-                    "root_delay": root_delay,
-                    "root_dispersion": root_dispersion,
-                    "interval_seconds": interval,
                     "leap_status": leap_status,
-                    "sample_age_seconds": round(age, 4) if age is not None else None,
-                    "max_allowed_age_seconds": round(max_allowed_age, 2),
-                    "uncertainty_exceeded": uncertainty_exceeded,
+                    "uncertainty_exceeded": True,
+                    "rejection_reason": "non_finite_or_unparseable_metrics",
                 }
-            except (ValueError, IndexError):
-                pass
+
+            stratum = numbers[0]
+            ref_time = numbers[1]
+            offset = numbers[2]
+            # numbers[3] is last offset
+            rms_offset = numbers[4]
+            freq_ppm = numbers[5]
+            residual_ppm = numbers[6]
+            skew_ppm = numbers[7]
+            root_delay = numbers[8]
+            root_dispersion = numbers[9]
+            interval = numbers[10]
+
+            age = (now_unix - ref_time) if now_unix is not None else None
+            max_allowed_age = min(1024.0, 2.0 * interval + 2.0) if interval > 0 else 0.0
+
+            # Coordination invariants:
+            # 1. Stratum integer between 1 and 15
+            # 2. Leap status Normal
+            # 3. Interval positive, non-negative delay, dispersion, skew
+            # 4. Offset within 2 seconds
+            # 5. Age bound
+            # 6. Drift bound <= 500 PPM
+            # 7. Horizon uncertainty bound <= 2.0 seconds
+            drift_ppm = abs(freq_ppm) + abs(residual_ppm) + skew_ppm + 1.0
+            error_seconds = abs(offset) + root_dispersion + root_delay / 2.0 + max(0.0, elapsed_seconds) + 0.01
+            horizon_uncertainty = error_seconds + drift_ppm * 1e-6 * runtime_horizon_seconds
+
+            uncertainty_exceeded = False
+            rejection_reason = None
+
+            if stratum < 1 or stratum > 15 or not stratum.is_integer():
+                uncertainty_exceeded = True
+                rejection_reason = "invalid_stratum"
+            elif leap_status != "Normal":
+                uncertainty_exceeded = True
+                rejection_reason = "unsynchronized_leap_status"
+            elif interval <= 0 or root_delay < 0 or root_dispersion < 0 or skew_ppm < 0:
+                uncertainty_exceeded = True
+                rejection_reason = "negative_or_invalid_interval_metrics"
+            elif abs(offset) > 2.0:
+                uncertainty_exceeded = True
+                rejection_reason = "offset_exceeded_2s"
+            elif age is not None and (age < -2.0 or age > max_allowed_age):
+                uncertainty_exceeded = True
+                rejection_reason = "sample_age_exceeded"
+            elif drift_ppm > 500.0:
+                uncertainty_exceeded = True
+                rejection_reason = "drift_ppm_exceeded_500"
+            elif horizon_uncertainty > 2.0:
+                uncertainty_exceeded = True
+                rejection_reason = "horizon_uncertainty_exceeded_2s"
+
+            return {
+                "status": "ok",
+                "reference_id": ref_id,
+                "reference_ip": ref_ip,
+                "stratum": int(stratum),
+                "ref_time": ref_time,
+                "offset_seconds": offset,
+                "rms_offset_seconds": rms_offset,
+                "freq_ppm": freq_ppm,
+                "residual_ppm": residual_ppm,
+                "skew_ppm": skew_ppm,
+                "drift_ppm": round(drift_ppm, 3),
+                "root_delay": root_delay,
+                "root_dispersion": root_dispersion,
+                "interval_seconds": interval,
+                "leap_status": leap_status,
+                "sample_age_seconds": round(age, 4) if age is not None else None,
+                "max_allowed_age_seconds": round(max_allowed_age, 2),
+                "horizon_uncertainty_seconds": round(horizon_uncertainty, 4),
+                "uncertainty_exceeded": uncertainty_exceeded,
+                "rejection_reason": rejection_reason,
+            }
 
     # Fallback to key-value text format (e.g. chronyc tracking)
     data = {}
@@ -308,7 +374,7 @@ def parse_chrony_tracking(raw_text, now_unix=None):
                 "reference_id": data.get("Reference ID", ""),
                 "stratum": stratum,
                 "leap_status": leap_status,
-                "uncertainty_exceeded": (stratum < 1 or stratum > 15 or leap_status != "Normal")
+                "uncertainty_exceeded": (stratum < 1 or stratum > 15 or leap_status != "Normal"),
             }
         except ValueError:
             pass
