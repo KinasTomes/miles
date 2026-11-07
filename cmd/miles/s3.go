@@ -11,6 +11,7 @@ import (
 	"github.com/KinasTomes/miles/internal/app"
 	"github.com/KinasTomes/miles/internal/auth"
 	"github.com/KinasTomes/miles/internal/clock"
+	"github.com/KinasTomes/miles/internal/faults"
 	"github.com/KinasTomes/miles/internal/multipart"
 	"github.com/KinasTomes/miles/internal/storage"
 )
@@ -84,7 +85,24 @@ func s3Handler(region, nodeID string, d app.Dependencies, a *app.Admission) http
 		}
 	}
 	rt := &api.Router{Region: region, Now: now, Credentials: devCredentials{d}, Access: auth.NewSnapshots(d.Metadata, clk), Handlers: handlers, NodeID: nodeID}
-	return requestGate(a, RequestTimeout, rt, s3UnavailableNode(nodeID))
+	var handler http.Handler = rt
+	if d.Faults != nil {
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if d.Faults.ShouldInject(now(), faults.FaultKillNode, nodeID) {
+				a.Drain()
+				s3UnavailableNode(nodeID)(w, r)
+				return
+			}
+			if d.Faults.ShouldInject(now(), faults.FaultS35xx, nodeID) {
+				id := api.NewRequestID()
+				slog.WarnContext(r.Context(), "fault injected: s3_5xx", "request_id", id, "node_id", nodeID)
+				_ = api.WriteError(w, r, &api.Error{Code: api.ErrInternalError, Message: "fault injected: s3_5xx"}, id)
+				return
+			}
+			rt.ServeHTTP(w, r)
+		})
+	}
+	return requestGate(a, RequestTimeout, handler, s3UnavailableNode(nodeID))
 }
 
 func s3Unavailable(w http.ResponseWriter, r *http.Request) {

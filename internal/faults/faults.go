@@ -86,12 +86,18 @@ func NewRegistry(enabled bool) *Registry {
 }
 
 func (reg *Registry) Enabled() bool {
+	if reg == nil {
+		return false
+	}
 	reg.mu.RLock()
 	defer reg.mu.RUnlock()
 	return reg.enabled
 }
 
 func (reg *Registry) SetEnabled(enabled bool) {
+	if reg == nil {
+		return
+	}
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
 	reg.enabled = enabled
@@ -107,6 +113,9 @@ func newFaultID() string {
 }
 
 func (reg *Registry) Add(now time.Time, rule FaultRule) (FaultRule, error) {
+	if reg == nil {
+		return FaultRule{}, ErrDisabled
+	}
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
 	if !reg.enabled {
@@ -125,6 +134,9 @@ func (reg *Registry) Add(now time.Time, rule FaultRule) (FaultRule, error) {
 }
 
 func (reg *Registry) List(now time.Time) ([]FaultRule, error) {
+	if reg == nil {
+		return nil, ErrDisabled
+	}
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
 	if !reg.enabled {
@@ -143,6 +155,9 @@ func (reg *Registry) List(now time.Time) ([]FaultRule, error) {
 }
 
 func (reg *Registry) Delete(id string) error {
+	if reg == nil {
+		return ErrDisabled
+	}
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
 	if !reg.enabled {
@@ -156,6 +171,9 @@ func (reg *Registry) Delete(id string) error {
 }
 
 func (reg *Registry) ShouldInject(now time.Time, t FaultType, nodeID string) bool {
+	if reg == nil {
+		return false
+	}
 	reg.mu.Lock()
 	defer reg.mu.Unlock()
 	if !reg.enabled {

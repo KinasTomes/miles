@@ -13,6 +13,7 @@ import (
 	"github.com/KinasTomes/miles/internal/api/admin"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
+	"github.com/KinasTomes/miles/internal/faults"
 	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/stats"
 	"github.com/KinasTomes/miles/internal/storage"
@@ -22,6 +23,8 @@ import (
 // Dependencies use the existing storage ports. Probe is supplied by their wiring,
 // including validated clock readiness; health handlers never invent clock proof.
 type Dependencies struct {
+	NodeID            string
+	Faults            *faults.Registry
 	Statistics        *stats.Service
 	Metadata          storage.MetadataStore
 	Packs             storage.PackStore
@@ -97,5 +100,11 @@ func Bootstrap(c config.Startup) (Dependencies, error) {
 		}
 		return ctx.Err()
 	}
-	return Dependencies{Metadata: m, Packs: coordination.ProtectPackStore(p), Cache: cache, Probe: probe, DevCredentials: []DevCredential{minted}}, nil
+	nodeID := c.RuntimeNodeID
+	if nodeID == "" {
+		nodeID = "local"
+	}
+	faultReg := faults.NewRegistry(c.EnableFaultInjection)
+	packs := faults.WrapPackStore(coordination.ProtectPackStore(p), faultReg, nodeID)
+	return Dependencies{NodeID: nodeID, Faults: faultReg, Metadata: m, Packs: packs, Cache: cache, Probe: probe, DevCredentials: []DevCredential{minted}}, nil
 }

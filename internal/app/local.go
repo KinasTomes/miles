@@ -17,6 +17,7 @@ import (
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
+	"github.com/KinasTomes/miles/internal/faults"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/secretfile"
 	"github.com/KinasTomes/miles/internal/stats"
@@ -88,6 +89,11 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		transport.CloseIdleConnections()
 		return d, err
 	}
+	nodeID := c.RuntimeNodeID
+	if nodeID == "" {
+		nodeID = "local"
+	}
+	faultReg := faults.NewRegistry(c.EnableFaultInjection)
 	lru, err := cache.NewLRU(cache.Limits{CapacityBytes: 64 << 20, MaxEntries: 1024, MaxCopyBytes: 4 << 20})
 	if err != nil {
 		transport.CloseIdleConnections()
@@ -120,6 +126,9 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		return d, err
 	}
 	probe := func(ctx context.Context) error {
+		if faultReg.ShouldInject(time.Now(), faults.FaultKillNode, nodeID) {
+			return errors.New("fault injected: kill_node")
+		}
 		ctx, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()
 		if _, err := m.GetCredential(ctx, cred.AccessKeyID); err != nil {
@@ -137,6 +146,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		transport.CloseIdleConnections()
 		return d, err
 	}
+	adminOptions.Faults = faultReg
 	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: client, Bucket: c.PackBucket}, Now: time.Now, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second})
 	if err != nil {
 		stopObjects()
@@ -145,7 +155,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		return d, err
 	}
 	adminOptions.Statistics = measurements
-	return Dependencies{Statistics: measurements, Metadata: metadata, Packs: coordination.ProtectPackStore(packs), Cache: resident, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Admin: adminOptions, Close: func() error {
+	return Dependencies{NodeID: nodeID, Faults: faultReg, Statistics: measurements, Metadata: metadata, Packs: faults.WrapPackStore(coordination.ProtectPackStore(packs), faultReg, nodeID), Cache: resident, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Admin: adminOptions, Close: func() error {
 		stopObjects()
 		transport.CloseIdleConnections()
 		return errors.Join(closeCache(), m.Close())
