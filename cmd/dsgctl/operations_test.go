@@ -43,6 +43,10 @@ func TestOperationalCommandsUseBearerMethodAndWireSchema(t *testing.T) {
 		{[]string{"node", "ls", "--cursor", "k.p.t"}, "GET", "/admin/v1/cluster/nodes?cursor=k.p.t", nil},
 		{[]string{"stats"}, "GET", "/admin/v1/stats", nil},
 		{[]string{"stats", "--bucket", "demo.bucket"}, "GET", "/admin/v1/buckets/demo.bucket/stats", nil},
+		{[]string{"fault", "ls"}, "GET", "/admin/v1/faults", nil},
+		{[]string{"fault", "rm", "flt-123"}, "DELETE", "/admin/v1/faults/flt-123", nil},
+		{[]string{"fault", "add", "--type", "s3_5xx", "--scope", "node", "--node", "node-b", "--rate", "0.5", "--duration", "120"}, "POST", "/admin/v1/faults", map[string]any{"type": "s3_5xx", "scope": "node", "node_id": "node-b", "rate": 0.5, "duration_seconds": float64(120)}},
+		{[]string{"fault", "add", "--type", "kill_node", "--scope", "node", "--node", "node-a", "--rate", "1.0", "--duration", "60"}, "POST", "/admin/v1/faults", map[string]any{"type": "kill_node", "scope": "node", "node_id": "node-a", "rate": 1.0, "duration_seconds": float64(60)}},
 		// One query encoding: space, slash, plus, percent, hash and non-ASCII stay in key.
 		{[]string{"layout", "demo", "dir/a b+c%#é"}, "GET", "/admin/v1/objects/layout?bucket=demo&key=dir%2Fa+b%2Bc%25%23%C3%A9", nil},
 		{[]string{"layout", "demo", "--not-a-flag"}, "GET", "/admin/v1/objects/layout?bucket=demo&key=--not-a-flag", nil},

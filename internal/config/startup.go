@@ -34,6 +34,7 @@ type Startup struct {
 	UTCReference               string
 	ObservationIntervalSeconds int
 	DeepObservation            bool
+	EnableFaultInjection       bool
 }
 
 func DefaultStartup() Startup {
@@ -45,6 +46,7 @@ func DefaultStartup() Startup {
 		Region:                     "ap-southeast-1",
 		ObservationIntervalSeconds: 30,
 		DeepObservation:            false,
+		EnableFaultInjection:       false,
 	}
 }
 
@@ -114,6 +116,8 @@ func LoadStartup(r io.Reader) (Startup, error) {
 			target = &c.ObservationIntervalSeconds
 		case "deep_observation":
 			target = &c.DeepObservation
+		case "enable_fault_injection":
+			target = &c.EnableFaultInjection
 		default:
 			return c, fmt.Errorf("unknown startup field %q", name)
 		}
