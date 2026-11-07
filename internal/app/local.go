@@ -148,6 +148,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		return d, err
 	}
 	adminOptions.Faults = faultReg
+	adminOptions.NodeID = nodeID
 	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: client, Bucket: c.PackBucket}, Now: time.Now, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second})
 	if err != nil {
 		stopObjects()

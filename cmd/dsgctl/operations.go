@@ -72,8 +72,8 @@ func faultCommand(sub string, args []string, invalid error) (command, error) {
 		return command{method: http.MethodDelete, path: "/admin/v1/faults/" + args[0]}, nil
 	case "add":
 		faultType := f.String("type", "", "fault type: s3_5xx|ddb_throttle|kill_node|corrupt_pack")
-		scope := f.String("scope", "node", "scope: node (cluster scope deferred to multi-node task)")
-		nodeID := f.String("node", "", "node id for --scope node")
+		scope := f.String("scope", "node", "scope: node (fault rules are node-local to the directly addressed gateway; cluster scope deferred)")
+		nodeID := f.String("node", "", "node id of the directly addressed gateway (must match target gateway; not a cluster destination)")
 		rate := f.Float64("rate", 1.0, "injection probability (0.0, 1.0]")
 		duration := f.Int64("duration", 60, "duration in seconds (1..86400)")
 		set, ok := parse(f, args)

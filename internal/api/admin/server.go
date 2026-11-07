@@ -51,6 +51,7 @@ type Options struct {
 	Operations      Operations
 	Statistics      Statistics
 	Faults          FaultManager
+	NodeID          string
 	Store           Store
 	Admit           Admit
 	Finish          func(context.Context, storage.MutationContext) // after the handler's synchronous metadata work

@@ -51,6 +51,10 @@ func (s *server) createFault(c *call) error {
 		return invalid("invalid request body: %v", err)
 	}
 
+	if s.NodeID != "" && req.NodeID != s.NodeID {
+		return invalid("node_id %q does not match target gateway node identity %q; target gateway directly", req.NodeID, s.NodeID)
+	}
+
 	rule := faults.FaultRule{
 		Type:     faults.FaultType(req.Type),
 		Scope:    faults.FaultScope(req.Scope),

@@ -1,9 +1,11 @@
 // Package faults provides opt-in, administrative fault injection for testing and resilience.
 // Fault injection is disabled by default and can only be enabled via explicit configuration.
 //
-// In this MVP, fault injection rules are strictly node-scoped (scope=node) and apply to the
-// current gateway instance identified by node_id. Cluster-scope distributed fault coordination
-// (cross-node fan-out, membership tracking, distributed TTL) is deferred to a future task.
+// In this MVP, fault injection rules are strictly node-scoped (scope=node) and process-local.
+// The Admin API binds the gateway's trusted local NodeID and rejects rules targeting any
+// other node_id. Listings (GET), creations (POST), and deletions (DELETE) operate purely on
+// the directly addressed gateway. Cluster-scope distributed fault coordination (cross-node
+// fan-out, membership tracking, distributed TTL) is deferred to a future task.
 package faults
 
 import (

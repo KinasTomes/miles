@@ -197,7 +197,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	if err != nil {
 		return d, err
 	}
-	a := &admin.Options{Faults: faultReg, Store: m, Clock: clk, Sealer: sealer, Cursors: admin.Keyring{Current: keyID, Keys: map[string][]byte{keyID: cursor}}, Admit: func(ctx context.Context, _ string) (storage.MutationContext, error) { return metadata.admit(ctx) }, Finish: func(ctx context.Context, c storage.MutationContext) { metadata.finish(ctx, c) }}
+	a := &admin.Options{Faults: faultReg, NodeID: c.RuntimeNodeID, Store: m, Clock: clk, Sealer: sealer, Cursors: admin.Keyring{Current: keyID, Keys: map[string][]byte{keyID: cursor}}, Admit: func(ctx context.Context, _ string) (storage.MutationContext, error) { return metadata.admit(ctx) }, Finish: func(ctx context.Context, c storage.MutationContext) { metadata.finish(ctx, c) }}
 	if err = a.Cursors.Validate(); err != nil {
 		return d, err
 	}
