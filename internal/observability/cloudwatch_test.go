@@ -167,7 +167,8 @@ func TestCloudWatchFullMetricInventoryFitsOneBatch(t *testing.T) {
 		t.Fatal(e)
 	}
 	runtime := new(Runtime)
-	runtime.Observe(time.Now(), 3601, 120, 70, 1)
+	lag, stuck := 70.0, 1
+	runtime.Observe(time.Now(), 3601, 120, &lag, &stuck)
 	for _, name := range runtimeCounters {
 		runtime.add(name, 1)
 	}

@@ -24,14 +24,22 @@ func runtimeObserver(store *dynamodb.Store, metrics *observability.Runtime, clk 
 		} else if closedSince.IsZero() {
 			closedSince = now
 		}
-		duration, lag := 0.0, 0.0
+		duration := 0.0
 		if !closedSince.IsZero() {
 			duration = now.Sub(closedSince).Seconds()
 		}
-		if !out.OldestPendingExport.IsZero() {
-			lag = now.Sub(out.OldestPendingExport).Seconds()
+		var lag *float64
+		var stuck *int
+		if out.DeepScanned {
+			l := 0.0
+			if !out.OldestPendingExport.IsZero() {
+				l = now.Sub(out.OldestPendingExport).Seconds()
+			}
+			lag = &l
+			s := out.StuckCompleting
+			stuck = &s
 		}
-		metrics.Observe(now, now.Sub(out.CutAt).Seconds(), duration, lag, out.StuckCompleting)
+		metrics.Observe(now, now.Sub(out.CutAt).Seconds(), duration, lag, stuck)
 		return nil
 	}
 }

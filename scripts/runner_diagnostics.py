@@ -325,7 +325,10 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
             elif abs(offset) > 2.0:
                 uncertainty_exceeded = True
                 rejection_reason = "offset_exceeded_2s"
-            elif age is not None and (age < -2.0 or age > max_allowed_age):
+            elif now_unix is None:
+                uncertainty_exceeded = True
+                rejection_reason = "missing_current_timestamp_for_age_verification"
+            elif age < -2.0 or age > max_allowed_age:
                 uncertainty_exceeded = True
                 rejection_reason = "sample_age_exceeded"
             elif drift_ppm > 500.0:
@@ -457,7 +460,10 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
         elif abs(offset) > 2.0:
             uncertainty_exceeded = True
             rejection_reason = "offset_exceeded_2s"
-        elif age is not None and (age < -2.0 or age > max_allowed_age):
+        elif now_unix is None:
+            uncertainty_exceeded = True
+            rejection_reason = "missing_current_timestamp_for_age_verification"
+        elif age < -2.0 or age > max_allowed_age:
             uncertainty_exceeded = True
             rejection_reason = "sample_age_exceeded"
         elif drift_ppm > 500.0:
@@ -512,6 +518,14 @@ def build_node_telemetry_snapshot(
             "error": str(error),
             "captured_at": captured_at,
         }
+
+    if now_unix is None and captured_at:
+        try:
+            import datetime
+            dt = datetime.datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
+            now_unix = dt.timestamp()
+        except Exception:
+            pass
 
     metrics = parse_prometheus_metrics(metrics_raw) if metrics_raw else {}
     clock_sig = parse_chrony_tracking(chrony_raw, now_unix=now_unix) if chrony_raw else {"status": "not_collected"}

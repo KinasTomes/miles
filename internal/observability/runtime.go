@@ -41,16 +41,21 @@ func (m *Runtime) add(name string, n float64) {
 }
 func (m *Runtime) Retry()              { m.add("miles_ddb_retries_total", 1) }
 func (m *Runtime) ObservationFailure() { m.add("miles_runtime_observation_failures_total", 1) }
-func (m *Runtime) Observe(at time.Time, cutAge, gateDuration, exportLag float64, stuck int) {
+func (m *Runtime) Observe(at time.Time, cutAge, gateDuration float64, exportLag *float64, stuck *int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.observed = at
-	m.gauges = map[string]float64{
-		"miles_recovery_cut_age_seconds":   max(0, cutAge),
-		"miles_r1_gate_closed_seconds":     max(0, gateDuration),
-		"miles_stuck_completing_uploads":   float64(stuck),
-		"miles_journal_export_lag_seconds": max(0, exportLag),
+	g := map[string]float64{
+		"miles_recovery_cut_age_seconds": max(0, cutAge),
+		"miles_r1_gate_closed_seconds":   max(0, gateDuration),
 	}
+	if stuck != nil {
+		g["miles_stuck_completing_uploads"] = float64(*stuck)
+	}
+	if exportLag != nil {
+		g["miles_journal_export_lag_seconds"] = max(0, *exportLag)
+	}
+	m.gauges = g
 }
 func (m *Runtime) Snapshot(at time.Time) []Metric {
 	m.mu.Lock()
@@ -68,8 +73,9 @@ func (m *Runtime) Snapshot(at time.Time) []Metric {
 	}
 	if age >= 0 && age < 60 {
 		for _, name := range runtimeGauges {
-			value := m.gauges[name]
-			out = append(out, Metric{Name: name, Value: value})
+			if value, ok := m.gauges[name]; ok {
+				out = append(out, Metric{Name: name, Value: value})
+			}
 		}
 	}
 	warm := m.Warm.Snapshot()

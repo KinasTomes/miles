@@ -43,7 +43,7 @@ func DefaultStartup() Startup {
 		HealthAddress:              "127.0.0.1:9100",
 		ShutdownSeconds:            1800,
 		Region:                     "ap-southeast-1",
-		ObservationIntervalSeconds: 60,
+		ObservationIntervalSeconds: 30,
 		DeepObservation:            false,
 	}
 }

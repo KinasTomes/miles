@@ -64,7 +64,7 @@ func (o *Operational) run(ctx context.Context, h *observability.Health, a *Admis
 	if o.Collect != nil {
 		interval := o.CollectInterval
 		if interval <= 0 {
-			interval = 60 * time.Second
+			interval = 30 * time.Second
 		}
 		workers = append(workers, func() error {
 			for ctx.Err() == nil {

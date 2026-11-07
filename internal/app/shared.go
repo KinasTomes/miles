@@ -275,10 +275,9 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	a.CacheStatistics = cluster
 	obsInterval := time.Duration(c.ObservationIntervalSeconds) * time.Second
 	if obsInterval <= 0 {
-		obsInterval = 60 * time.Second
+		obsInterval = 30 * time.Second
 	}
-	deep := c.DeepObservation && c.Mode != "benchmark"
-	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Runtime: runtimeMetrics, Collect: runtimeObserver(m, runtimeMetrics, clk, g.HistoryID, deep), CollectInterval: obsInterval, Cluster: cluster}
+	operational := &Operational{Registry: nodeRegistry, Metrics: metrics, Runtime: runtimeMetrics, Collect: runtimeObserver(m, runtimeMetrics, clk, g.HistoryID, c.DeepObservation), CollectInterval: obsInterval, Cluster: cluster}
 	if clients.metrics != nil {
 		operational.CloudWatch, err = observability.NewCloudWatch(clients.metrics, c.Profile, c.DDBTablePrefix)
 		if err != nil {

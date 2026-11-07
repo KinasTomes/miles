@@ -129,7 +129,8 @@ func TestRuntimeStaleGaugesAndScrapeNoIO(t *testing.T) {
 		}
 	}
 	now := time.Now()
-	m.Observe(now, 3700, 120, 70, 1)
+	lag, stuck := 70.0, 1
+	m.Observe(now, 3700, 120, &lag, &stuck)
 	h := NewHealth(nil, nil, false)
 	h.AttachRuntime(m)
 	h.now = func() time.Time { return now }
@@ -150,6 +151,29 @@ func TestRuntimeStaleGaugesAndScrapeNoIO(t *testing.T) {
 				t.Fatal("stale gauge exported", s)
 			}
 		}
+	}
+}
+
+func TestRuntimeShallowObservationWithholdsUnmeasuredGauges(t *testing.T) {
+	m := new(Runtime)
+	now := time.Now()
+	// Shallow observation: stuck completing and export lag are NOT measured (nil)
+	m.Observe(now, 1800, 0, nil, nil)
+	samples := m.Snapshot(now)
+	foundCutAge, foundGateClosed := false, false
+	for _, s := range samples {
+		if s.Name == "miles_stuck_completing_uploads" || s.Name == "miles_journal_export_lag_seconds" {
+			t.Fatalf("unmeasured gauge %q must not be emitted as false zero", s.Name)
+		}
+		if s.Name == "miles_recovery_cut_age_seconds" {
+			foundCutAge = true
+		}
+		if s.Name == "miles_r1_gate_closed_seconds" {
+			foundGateClosed = true
+		}
+	}
+	if !foundCutAge || !foundGateClosed {
+		t.Fatalf("measured gauges cut_age and gate_closed must be emitted in shallow mode: %v", samples)
 	}
 }
 

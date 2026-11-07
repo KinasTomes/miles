@@ -289,6 +289,11 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         self.assertTrue(parsed_wide["uncertainty_exceeded"])
         self.assertEqual(parsed_wide["rejection_reason"], "horizon_uncertainty_exceeded_2s")
 
+        # Missing now_unix fails closed safely
+        parsed_csv_no_now = parse_chrony_tracking(csv_healthy, now_unix=None)
+        self.assertTrue(parsed_csv_no_now["uncertainty_exceeded"])
+        self.assertEqual(parsed_csv_no_now["rejection_reason"], "missing_current_timestamp_for_age_verification")
+
     def test_parse_chrony_tracking_text_bounds(self):
         # Sample healthy text tracking output
         healthy_text = """
@@ -341,6 +346,11 @@ Leap status     : Normal
         parsed_high_drift = parse_chrony_tracking(high_drift_text, now_unix=now_unix)
         self.assertTrue(parsed_high_drift["uncertainty_exceeded"])
         self.assertEqual(parsed_high_drift["rejection_reason"], "drift_ppm_exceeded_500")
+
+        # 5. Missing current timestamp (now_unix is None) fails closed safely
+        parsed_no_now = parse_chrony_tracking(healthy_text, now_unix=None)
+        self.assertTrue(parsed_no_now["uncertainty_exceeded"])
+        self.assertEqual(parsed_no_now["rejection_reason"], "missing_current_timestamp_for_age_verification")
 
     def test_sanitize_benchmark_failure_detailed_classification(self):
         client_result = {

@@ -12,6 +12,7 @@ type RuntimeObservation struct {
 	CutAt, GateStartedAt, OldestPendingExport time.Time
 	GateClosed                                bool
 	StuckCompleting                           int
+	DeepScanned                               bool
 }
 
 func (m *Store) ObserveRuntime(ctx context.Context, history string, now time.Time, deep ...bool) (out RuntimeObservation, err error) {
@@ -62,6 +63,7 @@ func (m *Store) ObserveRuntime(ctx context.Context, history string, now time.Tim
 	// to avoid heavy read-capacity consumption and throttling across multiple nodes.
 	if len(deep) > 0 && deep[0] {
 		stuck := 0
+		completed := false
 		q := storage.ObservationRequest{Kind: "uploads", Limit: 128}
 		for page := 0; page < 4; page++ {
 			result, e := m.ObservePage(ctx, q)
@@ -74,6 +76,7 @@ func (m *Store) ObserveRuntime(ctx context.Context, history string, now time.Tim
 				}
 			}
 			if result.Next == "" {
+				completed = true
 				break
 			}
 			if result.Next == q.Cursor {
@@ -81,12 +84,17 @@ func (m *Store) ObserveRuntime(ctx context.Context, history string, now time.Tim
 			}
 			q.Cursor = result.Next
 		}
+		if !completed {
+			// Bounded scan exceeded 4 pages without reaching end; partial scan cannot be published as complete.
+			return out, storage.ErrUnavailable
+		}
 		oldest, e := m.ObserveExportLag(ctx, history)
 		if e != nil {
 			return out, e
 		}
 		out.OldestPendingExport = oldest
 		out.StuckCompleting = stuck
+		out.DeepScanned = true
 	}
 	return out, nil
 }
