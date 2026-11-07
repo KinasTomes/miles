@@ -265,6 +265,11 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	for _, kind := range []jobs.Type{"tiering", "pack_restore", "pack_promote"} {
 		runner.Executors[kind] = lifecycleWorker.Executor(kind)
 	}
+	for _, kind := range []jobs.Type{"tiering", "pack_restore", "pack_promote"} {
+		runner.Executors[kind] = lifecycleWorker.Executor(kind)
+	}
+	scrubWorker := &jobs.ScrubWorker{Store: m, Packs: packs}
+	runner.Executors["scrub"] = scrubWorker.Executor()
 	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: clients.packs, Bucket: c.PackBucket}, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second})
 	if err != nil {
 		return d, err
