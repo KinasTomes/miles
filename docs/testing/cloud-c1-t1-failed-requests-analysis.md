@@ -1,7 +1,7 @@
 # Phân tích chi tiết và đối chiếu sự cố Cloud C1 (PR #65)
 
-> **Báo cáo kỹ thuật — Workstream A1 & B1 | Trạng thái: Hoàn thành Offline**  
-> Dữ liệu phân tích dựa trên kết quả chạy thử nghiệm live Cloud C1 tại commit `0edbe26` (dataset `backup30`, concurrency 1).  
+> **Báo cáo kỹ thuật — Workstream A1 & B1 | Trạng thái: Hoàn thành Offline**
+> Dữ liệu phân tích dựa trên kết quả chạy thử nghiệm live Cloud C1 tại commit `0edbe26` (dataset `backup30`, concurrency 1).
 > Báo cáo này đã được khử định danh (sanitized), không chứa thông tin nhạy cảm (secrets, ARN riêng tư, raw tokens).
 
 ---

@@ -1,8 +1,8 @@
 # Báo cáo kết quả thử nghiệm Live Cloud C1 & Phân tích sự cố kỹ thuật
 
-> **Báo cáo kỹ thuật — Workstream D | Live Run 2026-11-06**  
-> **Tài khoản AWS:** `499388132734` | **Region:** `ap-southeast-1`  
-> **Commit Gateway:** `4a0c1d9` (PR #65 Draft) | **Branch:** `feat/dynamodb-pilot-observability`  
+> **Báo cáo kỹ thuật — Workstream D | Live Run 2026-11-06**
+> **Tài khoản AWS:** `123456789012` (Sanitized) | **Region:** `ap-southeast-1`
+> **Commit Gateway:** `4a0c1d9` (PR #65 Draft) | **Branch:** `feat/dynamodb-pilot-observability`
 > **Trạng thái:** Dọn dẹp hoàn tất 100% (`D4 Teardown: PASS`), PR vẫn Draft, Task `W05-HUNG-03` vẫn Doing.
 
 ---

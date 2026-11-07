@@ -289,6 +289,59 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         self.assertTrue(parsed_wide["uncertainty_exceeded"])
         self.assertEqual(parsed_wide["rejection_reason"], "horizon_uncertainty_exceeded_2s")
 
+    def test_parse_chrony_tracking_text_bounds(self):
+        # Sample healthy text tracking output
+        healthy_text = """
+Reference ID    : A9FEA97B (169.254.169.123)
+Stratum         : 3
+Ref time (UTC)  : Fri Nov 06 14:32:00 2026
+System time     : 0.000100000 seconds slow of NTP time
+Last offset     : +0.000100000 seconds
+RMS offset      : 0.000200000 seconds
+Frequency       : 0.100 ppm fast
+Residual freq   : +0.010 ppm
+Skew            : 0.050 ppm
+Root delay      : 0.001000000 seconds
+Root dispersion : 0.001000000 seconds
+Update interval : 16.0 seconds
+Leap status     : Normal
+"""
+        import datetime
+        dt = datetime.datetime(2026, 11, 6, 14, 32, 10, tzinfo=datetime.timezone.utc)
+        now_unix = dt.timestamp()
+
+        # 1. Complete healthy text
+        parsed = parse_chrony_tracking(healthy_text, now_unix=now_unix)
+        self.assertEqual(parsed["status"], "ok")
+        self.assertEqual(parsed["reference_id"], "A9FEA97B")
+        self.assertEqual(parsed["stratum"], 3)
+        self.assertEqual(parsed["interval_seconds"], 16.0)
+        self.assertEqual(parsed["sample_age_seconds"], 10.0)
+        self.assertFalse(parsed["uncertainty_exceeded"])
+
+        # 2. Stale sample in text format (now is 50s later, max allowed age is 34s)
+        stale_now = now_unix + 40.0
+        parsed_stale = parse_chrony_tracking(healthy_text, now_unix=stale_now)
+        self.assertTrue(parsed_stale["uncertainty_exceeded"])
+        self.assertEqual(parsed_stale["rejection_reason"], "sample_age_exceeded")
+
+        # 3. Incomplete text format (only Reference ID, Stratum, Leap status)
+        incomplete_text = """
+Reference ID    : A9FEA97B (169.254.169.123)
+Stratum         : 3
+Leap status     : Normal
+"""
+        parsed_incomplete = parse_chrony_tracking(incomplete_text, now_unix=now_unix)
+        self.assertEqual(parsed_incomplete["status"], "unverified_text_format")
+        self.assertTrue(parsed_incomplete["uncertainty_exceeded"])
+        self.assertEqual(parsed_incomplete["rejection_reason"], "unverified_text_format_missing_drift_or_age")
+
+        # 4. High drift in text format (600 ppm > 500 bound)
+        high_drift_text = healthy_text.replace("0.100 ppm fast", "600.000 ppm fast")
+        parsed_high_drift = parse_chrony_tracking(high_drift_text, now_unix=now_unix)
+        self.assertTrue(parsed_high_drift["uncertainty_exceeded"])
+        self.assertEqual(parsed_high_drift["rejection_reason"], "drift_ppm_exceeded_500")
+
     def test_sanitize_benchmark_failure_detailed_classification(self):
         client_result = {
             "status": "failed",

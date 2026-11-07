@@ -105,7 +105,7 @@ resource "aws_autoscaling_group" "gateway" {
   vpc_zone_identifier       = var.subnet_ids
   target_group_arns         = [var.target_group_arn]
   service_linked_role_arn   = var.service_linked_role_arn
-  health_check_type         = "ELB"
+  health_check_type         = var.health_check_type
   health_check_grace_period = 600
   default_instance_warmup   = 300
   force_delete              = false

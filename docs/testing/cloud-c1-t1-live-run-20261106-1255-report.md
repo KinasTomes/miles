@@ -1,7 +1,7 @@
 # Cloud C1 Trial 1 Live Run Report (2026-11-06 12:55 UTC Rerun)
 
 - **Date / Window:** 2026-11-06 12:55 UTC to 15:25 UTC (Scope ID: `w05-hung03-live-20261106-1255`)
-- **AWS Region / Account:** `ap-southeast-1` / `499388132734`
+- **AWS Region / Account:** `ap-southeast-1` / `123456789012` (Sanitized)
 - **Soft Budget:** $10 (actual billing pending lag; 0 compute/workload resources retained)
 - **Status:** **STOP-THE-LINE TRIGGERED; TEARDOWN COMPLETED (STATE 0 VERIFIED). PR #65 REMAINS DRAFT; TASK W05-HUNG-03 REMAINS DOING.**
 
@@ -77,10 +77,10 @@ The client benchmark executed 1 preflight `ListObjectsV2` request followed by 90
 Following the stop-the-line procedure, full teardown was executed:
 
 1. **Active Fleet:** Applied `pause.tfplan`. ASG `miles-dev-gateway`, ALB `miles-dev`, interface VPC endpoints, test alarms, and all 4 EC2 instances were terminated.
-2. **S3 Version Clearance:** Data bucket `miles-dev-data-499388132734-ap-southeast-1` was emptied of all 1,021 versions/markers flushed during instance draining.
+2. **S3 Version Clearance:** Data bucket `miles-dev-data-123456789012-ap-southeast-1` was emptied of all 1,021 versions/markers flushed during instance draining.
 3. **Terraform State 0:** Remaining 83 resources were destroyed via Terraform. `terraform state list` verified empty (0 resources).
 4. **Prerequisites Teardown:**
-   - ACM Certificate `arn:aws:acm:ap-southeast-1:499388132734:certificate/ccfb9ca8-112c-4bf3-b44c-329945e13a49` deleted.
+   - ACM Certificate `arn:aws:acm:ap-southeast-1:123456789012:certificate/ccfb9ca8-112c-4bf3-b44c-329945e13a49` deleted.
    - SSM Document `miles-dev-shell` deleted.
    - Secrets Manager secret `miles-dev/runtime-secrets-pilot-20261106-1255` deletion scheduled (PendingDeletion).
    - Service-Linked Roles `AWSServiceRoleForRolesAnywhere` and `AWSServiceRoleForElasticLoadBalancing` deleted (`SUCCEEDED`).
@@ -90,7 +90,7 @@ Following the stop-the-line procedure, full teardown was executed:
    - Removed inline policy `MilesPilotAcceptance` from role `miles-dev-deploy`.
 6. **Native Absence Verification:**
    - Verified via `verify-final-aws-cleanup.py`: **41/41 checks passed**. Proof stored in `native-final-cleanup-proof.json`.
-   - Retained buckets: strictly `miles-dev-tfstate-499388132734-ap-southeast-1`.
+   - Retained buckets: strictly `miles-dev-tfstate-123456789012-ap-southeast-1`.
 
 ---
 

@@ -37,8 +37,8 @@ variables {
 run "active_fleet" {
   command = apply # Mock provider only: no AWS resources or credentials.
   assert {
-    condition     = output.fleet_contract.min_size == 2 && output.fleet_contract.desired == 2 && output.fleet_contract.max_size == 2 && length(output.fleet_contract.subnets) == 2 && output.fleet_contract.health_type == "ELB"
-    error_message = "Cloud must attach a two-node/two-subnet ELB-health ASG."
+    condition     = output.fleet_contract.min_size == 2 && output.fleet_contract.desired == 2 && output.fleet_contract.max_size == 2 && length(output.fleet_contract.subnets) == 2 && output.fleet_contract.health_type == "EC2"
+    error_message = "Cloud must attach a two-node/two-subnet EC2-health ASG, separating instance liveness from traffic routing readiness."
   }
   assert {
     condition     = output.fleet_contract.heartbeat == 300 && output.fleet_contract.drain == 1800 && output.fleet_contract.controller_max > 1800 && output.alb_contract.idle_timeout == 120 && tonumber(output.alb_contract.drain_seconds) == 1800 && output.alb_contract.preserve_host_header

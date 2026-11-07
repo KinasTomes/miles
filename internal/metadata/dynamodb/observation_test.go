@@ -78,3 +78,24 @@ func TestLocalRuntimeObservationDoesNotResetAgeAtUnsealedClose(t *testing.T) {
 		t.Fatal("advanced cadence was treated as a sealed cut", err)
 	}
 }
+
+func TestLocalRuntimeObservationDeepScanOptIn(t *testing.T) {
+	f := newRecoveryFixture(t)
+	// Default (deep=false): fast O(1) point lookups, no table scans
+	shallow, err := f.m.ObserveRuntime(t.Context(), f.catalog.History, f.utc.Now(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shallow.StuckCompleting != 0 || !shallow.OldestPendingExport.IsZero() {
+		t.Fatalf("shallow scan should not scan tables, got stuck=%d oldest=%v", shallow.StuckCompleting, shallow.OldestPendingExport)
+	}
+
+	// Opt-in (deep=true): scans uploads and outbox
+	deep, err := f.m.ObserveRuntime(t.Context(), f.catalog.History, f.utc.Now(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deep.CutAt != shallow.CutAt {
+		t.Fatalf("CutAt mismatch: deep=%v shallow=%v", deep.CutAt, shallow.CutAt)
+	}
+}

@@ -120,11 +120,12 @@ func (m *Store) GetOutboxExport(ctx context.Context, id string) (s.OutboxExport,
 
 // ObserveExportLag is a bounded approximate base scan, never a closure proof.
 // The timestamp is telemetry beside the immutable event, not part of its digest.
+// Uses eventual consistency (ConsistentRead=false) and bounded page count to minimize RCU impact.
 func (m *Store) ObserveExportLag(ctx context.Context, history string) (time.Time, error) {
 	var oldest time.Time
 	var cursor Item
-	for page := 0; page < 32; page++ {
-		result, err := m.api.Scan(ctx, &ddb.ScanInput{TableName: aws.String(m.tables["Outbox"]), ConsistentRead: aws.Bool(true), Limit: aws.Int32(128), ExclusiveStartKey: cursor, ProjectionExpression: aws.String("history_id, event_observed_at, export_progress")})
+	for page := 0; page < 4; page++ {
+		result, err := m.api.Scan(ctx, &ddb.ScanInput{TableName: aws.String(m.tables["Outbox"]), ConsistentRead: aws.Bool(false), Limit: aws.Int32(128), ExclusiveStartKey: cursor, ProjectionExpression: aws.String("history_id, event_observed_at, export_progress")})
 		if err != nil {
 			return time.Time{}, backend(err)
 		}

@@ -359,25 +359,134 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
             }
 
     # Fallback to key-value text format (e.g. chronyc tracking)
+    import datetime
+
+    def _extract_float(val_str):
+        if not val_str:
+            return None
+        parts = val_str.split()
+        if not parts:
+            return None
+        try:
+            val = float(parts[0])
+            return val if math.isfinite(val) else None
+        except ValueError:
+            return None
+
+    def _parse_ref_time(val_str):
+        if not val_str:
+            return None
+        # Format e.g. "Fri Nov 06 14:32:00 2026" or ISO
+        for fmt in ("%a %b %d %H:%M:%S %Y", "%a %b  %d %H:%M:%S %Y", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S"):
+            try:
+                dt = datetime.datetime.strptime(val_str.strip(), fmt).replace(tzinfo=datetime.timezone.utc)
+                return dt.timestamp()
+            except ValueError:
+                continue
+        return None
+
     data = {}
     for line in lines:
         if ":" in line:
             k, v = line.split(":", 1)
             data[k.strip()] = v.strip()
 
-    if "Reference ID" in data and "Stratum" in data:
+    if "Reference ID" in data or "Stratum" in data:
+        ref_id_str = data.get("Reference ID", "")
+        ref_id = ref_id_str.split()[0] if ref_id_str else ""
+        leap_status = data.get("Leap status", "Unknown")
+
         try:
             stratum = int(data.get("Stratum", "0"))
-            leap_status = data.get("Leap status", "Unknown")
+        except ValueError:
+            stratum = 0
+
+        ref_time = _parse_ref_time(data.get("Ref time (UTC)", ""))
+        interval = _extract_float(data.get("Update interval"))
+        freq_ppm = _extract_float(data.get("Frequency"))
+        residual_ppm = _extract_float(data.get("Residual freq"))
+        skew_ppm = _extract_float(data.get("Skew"))
+        root_delay = _extract_float(data.get("Root delay"))
+        root_dispersion = _extract_float(data.get("Root dispersion"))
+        last_offset = _extract_float(data.get("Last offset"))
+        system_offset = _extract_float(data.get("System time"))
+        offset = last_offset if last_offset is not None else system_offset
+
+        has_all_metrics = (
+            ref_time is not None
+            and interval is not None
+            and freq_ppm is not None
+            and residual_ppm is not None
+            and skew_ppm is not None
+            and root_delay is not None
+            and root_dispersion is not None
+            and offset is not None
+        )
+
+        if not has_all_metrics:
+            # Incomplete text format cannot be verified against coordination invariants;
+            # fail-closed to avoid false healthy classification.
             return {
-                "status": "ok",
-                "reference_id": data.get("Reference ID", ""),
+                "status": "unverified_text_format",
+                "reference_id": ref_id,
                 "stratum": stratum,
                 "leap_status": leap_status,
-                "uncertainty_exceeded": (stratum < 1 or stratum > 15 or leap_status != "Normal"),
+                "uncertainty_exceeded": True,
+                "rejection_reason": "unverified_text_format_missing_drift_or_age",
             }
-        except ValueError:
-            pass
+
+        age = (now_unix - ref_time) if now_unix is not None else None
+        max_allowed_age = min(1024.0, 2.0 * interval + 2.0) if interval > 0 else 0.0
+
+        drift_ppm = abs(freq_ppm) + abs(residual_ppm) + skew_ppm + 1.0
+        error_seconds = abs(offset) + root_dispersion + root_delay / 2.0 + max(0.0, elapsed_seconds) + 0.01
+        horizon_uncertainty = error_seconds + drift_ppm * 1e-6 * runtime_horizon_seconds
+
+        uncertainty_exceeded = False
+        rejection_reason = None
+
+        if stratum < 1 or stratum > 15:
+            uncertainty_exceeded = True
+            rejection_reason = "invalid_stratum"
+        elif leap_status != "Normal":
+            uncertainty_exceeded = True
+            rejection_reason = "unsynchronized_leap_status"
+        elif interval <= 0 or root_delay < 0 or root_dispersion < 0 or skew_ppm < 0:
+            uncertainty_exceeded = True
+            rejection_reason = "negative_or_invalid_interval_metrics"
+        elif abs(offset) > 2.0:
+            uncertainty_exceeded = True
+            rejection_reason = "offset_exceeded_2s"
+        elif age is not None and (age < -2.0 or age > max_allowed_age):
+            uncertainty_exceeded = True
+            rejection_reason = "sample_age_exceeded"
+        elif drift_ppm > 500.0:
+            uncertainty_exceeded = True
+            rejection_reason = "drift_ppm_exceeded_500"
+        elif horizon_uncertainty > 2.0:
+            uncertainty_exceeded = True
+            rejection_reason = "horizon_uncertainty_exceeded_2s"
+
+        return {
+            "status": "ok",
+            "reference_id": ref_id,
+            "stratum": stratum,
+            "ref_time": ref_time,
+            "offset_seconds": offset,
+            "freq_ppm": freq_ppm,
+            "residual_ppm": residual_ppm,
+            "skew_ppm": skew_ppm,
+            "drift_ppm": round(drift_ppm, 3),
+            "root_delay": root_delay,
+            "root_dispersion": root_dispersion,
+            "interval_seconds": interval,
+            "leap_status": leap_status,
+            "sample_age_seconds": round(age, 4) if age is not None else None,
+            "max_allowed_age_seconds": round(max_allowed_age, 2),
+            "horizon_uncertainty_seconds": round(horizon_uncertainty, 4),
+            "uncertainty_exceeded": uncertainty_exceeded,
+            "rejection_reason": rejection_reason,
+        }
 
     return {"status": "unrecognized_format"}
 

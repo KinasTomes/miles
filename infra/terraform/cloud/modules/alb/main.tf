@@ -28,10 +28,10 @@ resource "aws_lb_target_group" "s3" {
     port                = "9100"
     protocol            = "HTTP"
     matcher             = "200"
-    interval            = 5
-    timeout             = 2
-    healthy_threshold   = 2
-    unhealthy_threshold = 2
+    interval            = var.health_check_interval
+    timeout             = var.health_check_timeout
+    healthy_threshold   = var.health_check_healthy_threshold
+    unhealthy_threshold = var.health_check_unhealthy_threshold
   }
 }
 resource "aws_lb_listener" "https" {

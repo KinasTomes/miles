@@ -1,9 +1,9 @@
 # Kế hoạch tiếp tục DynamoDB Cloud/Edge pilot — PR #65
 
-> **Bàn giao Agent | 2026-11-05 | Status: CHƯA NGHIỆM THU, GIỮ DRAFT**  
-> Repo: `KinasTomes/miles` · PR: https://github.com/KinasTomes/miles/pull/65  
-> Worktree: `/home/ubuntu/miles-worktrees/dynamodb-pilot-observability`  
-> Branch: `feat/dynamodb-pilot-observability` · Baseline HEAD: `0edbe2666f06f93bfb7cef9a327ffa32081b186d`  
+> **Bàn giao Agent | 2026-11-05 | Status: CHƯA NGHIỆM THU, GIỮ DRAFT**
+> Repo: `KinasTomes/miles` · PR: https://github.com/KinasTomes/miles/pull/65
+> Worktree: `/home/ubuntu/miles-worktrees/dynamodb-pilot-observability`
+> Branch: `feat/dynamodb-pilot-observability` · Baseline HEAD: `0edbe2666f06f93bfb7cef9a327ffa32081b186d`
 > Task: `W05-HUNG-03` (`Doing`, chưa đủ 3 checklist). Đây là **kế hoạch thực hiện**, không phải báo cáo PASS.
 
 ## 0. Phạm vi và các quyết định bắt buộc

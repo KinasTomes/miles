@@ -14,7 +14,7 @@ type RuntimeObservation struct {
 	StuckCompleting                           int
 }
 
-func (m *Store) ObserveRuntime(ctx context.Context, history string, now time.Time) (out RuntimeObservation, err error) {
+func (m *Store) ObserveRuntime(ctx context.Context, history string, now time.Time, deep ...bool) (out RuntimeObservation, err error) {
 	gate, err := m.GetR1Gate(ctx)
 	if err != nil {
 		return out, err
@@ -57,35 +57,36 @@ func (m *Store) ObserveRuntime(ctx context.Context, history string, now time.Tim
 		}
 		out.GateStartedAt = epoch.StartedAt
 	}
-	stuck := 0
-	q := storage.ObservationRequest{Kind: "uploads", Limit: 128}
-	for page := 0; ; page++ {
-		if page == 32 {
-			return out, storage.ErrUnavailable
+	out.CutAt = cutAt
+	// Table scans for stuck uploads and export lag are opt-in and bounded
+	// to avoid heavy read-capacity consumption and throttling across multiple nodes.
+	if len(deep) > 0 && deep[0] {
+		stuck := 0
+		q := storage.ObservationRequest{Kind: "uploads", Limit: 128}
+		for page := 0; page < 4; page++ {
+			result, e := m.ObservePage(ctx, q)
+			if e != nil {
+				return out, e
+			}
+			for _, upload := range result.Uploads {
+				if upload.State == "Completing" && !upload.LeaseUntil.After(now) {
+					stuck++
+				}
+			}
+			if result.Next == "" {
+				break
+			}
+			if result.Next == q.Cursor {
+				return out, storage.ErrUnavailable
+			}
+			q.Cursor = result.Next
 		}
-		result, e := m.ObservePage(ctx, q)
+		oldest, e := m.ObserveExportLag(ctx, history)
 		if e != nil {
 			return out, e
 		}
-		for _, upload := range result.Uploads {
-			if upload.State == "Completing" && !upload.LeaseUntil.After(now) {
-				stuck++
-			}
-		}
-		if result.Next == "" {
-			break
-		}
-		if result.Next == q.Cursor {
-			return out, storage.ErrUnavailable
-		}
-		q.Cursor = result.Next
+		out.OldestPendingExport = oldest
+		out.StuckCompleting = stuck
 	}
-	oldest, e := m.ObserveExportLag(ctx, history)
-	if e != nil {
-		return out, e
-	}
-	out.CutAt = cutAt
-	out.OldestPendingExport = oldest
-	out.StuckCompleting = stuck
 	return out, nil
 }

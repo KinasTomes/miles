@@ -9,11 +9,11 @@ import (
 	"github.com/KinasTomes/miles/internal/observability"
 )
 
-func runtimeObserver(store *dynamodb.Store, metrics *observability.Runtime, clk clock.Clock, history string) func(context.Context) error {
+func runtimeObserver(store *dynamodb.Store, metrics *observability.Runtime, clk clock.Clock, history string, deep bool) func(context.Context) error {
 	var closedSince time.Time
 	return func(ctx context.Context) error {
 		now := clk.Now().WallUTC
-		out, err := store.ObserveRuntime(ctx, history, now)
+		out, err := store.ObserveRuntime(ctx, history, now, deep)
 		if err != nil {
 			return err
 		}

@@ -13,13 +13,14 @@ import (
 // Operational wiring is explicit: bootstrap never invents a node identity,
 // shared store or AWS credential provider. W5 supplies them with real runtime R1.
 type Operational struct {
-	Registry   *jobs.Registry
-	Metrics    *observability.Operations
-	Runtime    *observability.Runtime
-	Collect    func(context.Context) error
-	CloudWatch *observability.CloudWatch
-	Cluster    *jobs.Cluster
-	OnDrain    func(context.Context) error
+	Registry        *jobs.Registry
+	Metrics         *observability.Operations
+	Runtime         *observability.Runtime
+	Collect         func(context.Context) error
+	CollectInterval time.Duration
+	CloudWatch      *observability.CloudWatch
+	Cluster         *jobs.Cluster
+	OnDrain         func(context.Context) error
 }
 
 func (o *Operational) validate() error {
@@ -61,6 +62,10 @@ func (o *Operational) run(ctx context.Context, h *observability.Health, a *Admis
 		})
 	}
 	if o.Collect != nil {
+		interval := o.CollectInterval
+		if interval <= 0 {
+			interval = 60 * time.Second
+		}
 		workers = append(workers, func() error {
 			for ctx.Err() == nil {
 				call, done := context.WithTimeout(ctx, 10*time.Second)
@@ -69,7 +74,7 @@ func (o *Operational) run(ctx context.Context, h *observability.Health, a *Admis
 				if err != nil {
 					o.Runtime.ObservationFailure()
 				}
-				if err = o.Registry.Clock.Sleep(ctx, 15*time.Second); err != nil {
+				if err = o.Registry.Clock.Sleep(ctx, interval); err != nil {
 					return err
 				}
 			}

@@ -19,7 +19,7 @@ type lagScan struct {
 
 func (p *lagScan) Scan(_ context.Context, in *ddb.ScanInput, _ ...func(*ddb.Options)) (*ddb.ScanOutput, error) {
 	p.calls++
-	if aws.ToInt32(in.Limit) != 128 || !aws.ToBool(in.ConsistentRead) {
+	if aws.ToInt32(in.Limit) != 128 || aws.ToBool(in.ConsistentRead) {
 		return nil, s.ErrInvalid
 	}
 	item := Item{"history_id": text("history"), "event_observed_at": text("2026-11-04T00:00:00Z")}
