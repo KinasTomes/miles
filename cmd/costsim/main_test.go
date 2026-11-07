@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/KinasTomes/miles/internal/simulator"
 )
 
 func TestCLIProducesPrivateReproducibleArtifactWithoutOverwriting(t *testing.T) {
@@ -48,5 +50,36 @@ func TestCLIProducesPrivateReproducibleArtifactWithoutOverwriting(t *testing.T) 
 	}
 	if run(context.Background(), []string{"-help"}, &stdout, &stderr) != 0 {
 		t.Fatal("help failed")
+	}
+}
+
+func TestCLIComparePoliciesProducesValidArtifact(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "comparison.json")
+	args := []string{
+		"-trace", "../../benchmarks/traces/cloud-boundary.json",
+		"-pricing", "../../configs/pricing/pricing.ap-southeast-1.example.json",
+		"-compare",
+		"-out", out,
+	}
+	var stdout, stderr bytes.Buffer
+	if exit := run(context.Background(), args, &stdout, &stderr); exit != 0 {
+		t.Fatal(exit, stderr.String())
+	}
+	b, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ca comparisonArtifact
+	if err = json.Unmarshal(b, &ca); err != nil {
+		t.Fatalf("failed to unmarshal comparison artifact: %v", err)
+	}
+	if ca.Baseline != simulator.PolicyDirectS3 {
+		t.Fatalf("unexpected baseline: %v", ca.Baseline)
+	}
+	if len(ca.Policies) != 4 {
+		t.Fatalf("expected 4 policies, got %d", len(ca.Policies))
+	}
+	if !strings.Contains(stdout.String(), "Four-policy comparative cost artifact written") {
+		t.Fatalf("unexpected stdout: %s", stdout.String())
 	}
 }

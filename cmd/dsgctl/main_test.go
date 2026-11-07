@@ -34,14 +34,14 @@ func TestCLICommandsAndErrors(t *testing.T) {
 		w.Write([]byte(`{"ok":true}`))
 	}))
 	defer server.Close()
-	for _, command := range [][]string{{"stats"}, {"policy", "get"}, {"user", "ls"}, {"pack", "ls"}, {"node", "ls"}} {
+	for _, command := range [][]string{{"stats"}, {"cost", "report"}, {"policy", "get"}, {"user", "ls"}, {"pack", "ls"}, {"node", "ls"}} {
 		var out, diagnostics bytes.Buffer
 		args := append([]string{"--endpoint", server.URL, "--token-file", file}, command...)
 		if err := run(context.Background(), args, &out, &diagnostics); err != nil || !strings.Contains(out.String(), `"ok":true`) {
 			t.Fatal("read command failed", command, err)
 		}
 	}
-	for _, command := range [][]string{{"job", "ls"}, {"job", "run", "scrub"}, {"cost", "report"}} {
+	for _, command := range [][]string{{"job", "ls"}, {"job", "run", "scrub"}} {
 		var out, diagnostics bytes.Buffer
 		args := append([]string{"--endpoint", server.URL, "--token-file", file}, command...)
 		if err := run(context.Background(), args, &out, &diagnostics); !errors.Is(err, adminclient.ErrUnsupported) || out.Len() != 0 {
@@ -59,7 +59,7 @@ func TestCLICommandsAndErrors(t *testing.T) {
 
 func TestCLIRequiresTokenOnlyForSupportedReadCommands(t *testing.T) {
 	t.Setenv("DSGCTL_TOKEN_FILE", "")
-	for _, args := range [][]string{{"stats"}, {"policy", "get"}, {"node", "ls"}, {"job", "run", "scrub"}, {"job", "cancel", "job-fixture"}, {"node", "drain", "node-a"}} {
+	for _, args := range [][]string{{"stats"}, {"cost", "report"}, {"policy", "get"}, {"node", "ls"}, {"job", "run", "scrub"}, {"job", "cancel", "job-fixture"}, {"node", "drain", "node-a"}} {
 		var out, diagnostics bytes.Buffer
 		err := run(context.Background(), args, &out, &diagnostics)
 		if err == nil || err.Error() != "--token-file or DSGCTL_TOKEN_FILE is required" || out.Len() != 0 {
@@ -71,7 +71,7 @@ func TestCLIRequiresTokenOnlyForSupportedReadCommands(t *testing.T) {
 			t.Fatal("help/version must not require a token", err)
 		}
 	}
-	for _, args := range [][]string{{"cost", "report"}, {"fault", "ls"}, {"rebuild-index"}} {
+	for _, args := range [][]string{{"fault", "ls"}, {"rebuild-index"}} {
 		if err := run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{}); !errors.Is(err, adminclient.ErrUnsupported) {
 			t.Fatal("unsupported commands must remain explicit", args, err)
 		}

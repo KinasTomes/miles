@@ -27,7 +27,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, `CLI quản trị Miles
 
-Read: stats [--bucket b]; layout <bucket> <key>
+Read: stats [--bucket b]; layout <bucket> <key>; cost report [--region r] [--as-of date]
 Packs: pack ls [--state s] [--storage-class c] [--live-ratio-lt r]; pack show <pack_id>
   pack restore <pack_id> <generation> [--days 1..30] [--tier Standard|Bulk|Expedited]; pack promote <pack_id> <generation>
 Cache: cache stats|purge --scope cluster | --scope node --node <id>
@@ -83,7 +83,7 @@ SSH tunnel: ssh -N -L 127.0.0.1:19000:<node>:9000 <bastion>; DSGCTL_ENDPOINT=htt
 	var cmd command
 	var err error
 	switch args[0] {
-	case "stats", "layout", "pack", "cache", "job", "node":
+	case "stats", "layout", "cost", "pack", "cache", "job", "node":
 		cmd, err = operationCommand(args)
 	default:
 		cmd, err = identityCommand(args)
