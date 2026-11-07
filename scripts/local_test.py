@@ -48,7 +48,8 @@ def command(args, env=None, expect_error=None, timeout=60):
         if result.returncode == 0 or expect_error not in result.stderr:
             raise RuntimeError(f"expected {expect_error}: {result.stdout} {result.stderr}")
     elif result.returncode:
-        raise RuntimeError(f"{args[0]} failed: {result.stderr}")
+        err = result.stderr if result.stderr.strip() else result.stdout
+        raise RuntimeError(f"{args[0]} failed: {err}")
     return result.stdout
 
 

@@ -44,7 +44,7 @@ Tokens: admin-token create --user u [--system-admin] [--ttl 24h] --out file; adm
   admin-token bootstrap --user u [--ttl 24h] --token-file file (--local-data-path dir | --ddb-table-prefix p --region r [--ddb-endpoint url])
     offline, gateway stopped; DynamoDB credentials from AWS_* env
 Jobs: job ls, job show <id>, job run <type> [--dry-run] [--params-file file] [--policy-revision n], job cancel <id>
-Faults: fault ls; fault add --type <t> [--scope cluster|node] [--node id] [--rate r] [--duration s]; fault rm <id>
+Faults: fault ls; fault add --type <t> [--scope node] --node id [--rate r] [--duration s]; fault rm <id>
 Nodes: node ls, node drain <id>
 List commands (ls, pack show): --limit 1..1000, --cursor <next_cursor>. Secrets go only to new 0600 --out files.
 SSH tunnel: ssh -N -L 127.0.0.1:19000:<node>:9000 <bastion>; DSGCTL_ENDPOINT=http://127.0.0.1:19000
