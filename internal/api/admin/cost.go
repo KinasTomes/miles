@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/KinasTomes/miles/configs/pricing"
 	"github.com/KinasTomes/miles/internal/cost"
 	"github.com/KinasTomes/miles/internal/pricing"
 	"github.com/KinasTomes/miles/internal/storage"
@@ -28,22 +29,23 @@ func (s *server) costReport(c *call) error {
 		asOf = s.now().Format("2006-01-02")
 	}
 
-	// Try loading catalog from configs/pricing or build minimal catalog
-	pricingPath := fmt.Sprintf("configs/pricing/pricing.%s.example.json", region)
 	var catalog *pricing.Catalog
-	if b, err := os.ReadFile(pricingPath); err == nil {
-		catalog, _ = pricing.Parse(b)
+	// If ap-southeast-1, use embedded default catalog
+	if region == "ap-southeast-1" {
+		catalog, _ = pricing.Parse(pricingschema.DefaultCatalog())
+	} else {
+		for _, p := range []string{
+			fmt.Sprintf("configs/pricing/pricing.%s.example.json", region),
+			fmt.Sprintf("../../configs/pricing/pricing.%s.example.json", region),
+		} {
+			if b, err := os.ReadFile(p); err == nil {
+				catalog, _ = pricing.Parse(b)
+				break
+			}
+		}
 	}
 	if catalog == nil {
-		catalog = &pricing.Catalog{
-			SchemaVersion: 1,
-			Region:        region,
-			AsOf:          asOf,
-			Currency:      "USD",
-			Basis:         "gross_model_before_tax_credits_free_tier",
-			Rates:         []pricing.Rate{},
-			Sources:       map[string]pricing.Source{},
-		}
+		catalog, _ = pricing.Parse(pricingschema.DefaultCatalog())
 	}
 
 	usage := []cost.Usage{}

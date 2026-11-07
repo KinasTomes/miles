@@ -6,4 +6,9 @@ import _ "embed"
 //go:embed pricing.schema.json
 var schema string
 
+//go:embed pricing.ap-southeast-1.example.json
+var defaultCatalog []byte
+
 func JSONSchema() string { return schema }
+
+func DefaultCatalog() []byte { return defaultCatalog }
