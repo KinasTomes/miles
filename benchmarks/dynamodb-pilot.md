@@ -9,7 +9,7 @@ CLI tools. EC2 Edge tests the profile, not an on-premises network or its costs.
 
 ## Runtime observations
 
-Prometheus `/metrics` and the existing60s CloudWatch exporter share the same
+Prometheus `/metrics` and the existing 60s CloudWatch exporter share the same
 cached snapshot. Scraping never contacts DynamoDB/S3/CloudWatch. CloudWatch uses
 `Miles/DSG` with **both** `profile=cloud|edge` and
 `installation=<exact ddb_table_prefix>`; job counters additionally retain their
@@ -26,7 +26,7 @@ existing type/state dimensions. Update metric consumers from profile-only series
 | `miles_journal_export_lag_seconds` | Age of the oldest currently unexported event found by bounded base scan for this history;0 when a complete observation finds none. Approximate live discovery, not exact closure. |
 | `miles_r1_gate_closed_seconds` | Current RecoveryCut duration from its durable StartedAt; for other closed gates, time since this process first observed closure. Open gate is0. Sampling can miss short gates; record controlled GC/cut timelines for complete duration distributions. |
 | `miles_stuck_completing_uploads` | Completing uploads whose LeaseUntil has expired at observation. A signal to inspect/reconcile, never permission to abort or reclaim roots. |
-| `miles_runtime_observation_age_seconds`, `miles_runtime_observation_failures_total` | Background collector freshness/failures. Each15s refresh has a10s budget and32×128-record page cap per scanned table. Failed/partial discovery retains old data only until60s; stale gauges disappear rather than publish healthy zeros. |
+| `miles_runtime_observation_age_seconds`, `miles_runtime_observation_failures_total` | Background collector freshness/failures. The collector runs every 30s by default with a 10s per-refresh budget. Shallow observation performs only point reads; opt-in deep observation scans at most 4×128 records per table (Uploads/Outbox) and withholds incomplete results. At 60s staleness, gauges disappear rather than publish healthy zeros. Deep-only metrics are absent (not zero) in shallow mode. |
 | `miles_warm_read_{requests,aborted,integrity_failures,cache_hits,cache_misses}_total` | A single process-owned Warm reader counter set, reused by request service instances. Cache observations never reduce logical client delivery accounting. |
 
 New metadata transaction plans request capacity before their exact idempotent
@@ -153,9 +153,14 @@ window; they are not attributed to one foreground request or a billing ledger.
 ## Alarms and native AWS evidence
 
 Enable paid alarms explicitly with Terraform `enable_alarms=true` and the profiles
-actually running in `monitored_profiles`. Five alarms/profile watch cut age>3600s,
-any integrity error, any observed DDB throttle, expired Completing leases and stale
-telemetry. Each evaluates60s periods,1-of-3. Gauges use Maximum and missing=breaching;
+actually running in `monitored_profiles`. Shallow mode creates four base alarms/profile
+(cut age >3600s, integrity error, observed DDB throttle and stale telemetry).
+The optional fifth alarm/profile monitors expired Completing leases and requires
+`deep_observation=true` with a corresponding active deep-observation publisher.
+The Cloud fleet receives this flag through Terraform startup; any monitored Edge
+runtime must be configured separately. With Cloud and Edge selected, shallow mode
+creates 8 alarms and deep mode creates 10 (provided both profiles collect deep metrics).
+Each alarm evaluates 60s periods, 1-of-3. Gauges use Maximum and missing=breaching;
 sparse error deltas use Sum and missing=notBreaching. Default alarm actions are
 empty (state only); supply existing SNS topic ARNs for notifications. No alarm
 performs automatic data cleanup or instance replacement. Pause removes the alarms.

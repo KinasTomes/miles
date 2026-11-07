@@ -41,13 +41,13 @@ Trong phiên bản ban đầu của PR #65:
   - **Không thực hiện bất kỳ lệnh Scan nào trên bảng dữ liệu.**
 - **Deep Observation (Opt-in Bounded):**
   - Chỉ kích hoạt khi cấu hình khởi động bật rõ ràng `deep_observation = true`.
-  - **Chặn tải trong chế độ Benchmark:** Khi gateway chạy ở `mode = "benchmark"`, cờ `deep` bị cưỡng chế vô hiệu hóa (`deep = false`), bảo đảm zero-overhead và không tranh chấp tài nguyên với workload thử nghiệm.
-  - **Giới hạn số trang (Page Bound):** Bảng `Uploads` chỉ quét tối đa 4 trang (tối đa 512 items thay vì 4.096 items).
+  - **Benchmark:** Gateway shared Cloud/Edge chạy `mode = "runtime"`; không có chế độ tự động tắt deep scan khi client benchmark bắt đầu chạy. Với benchmark, phải cấu hình `deep_observation = false` từ trước. Shallow không quét bảng, nhưng vẫn thực hiện các point reads.
+  - **Giới hạn số trang (Page Bound):** Bảng `Uploads` chỉ quét tối đa 4 trang (tối đa 512 items thay vì 4.096 items). Nếu sau trang thứ tư vẫn còn cursor, trả `ErrUnavailable`; không công bố số liệu bán phần.
   - **Chuyển sang Eventual Consistency cho Outbox Scan:** Trong `ObserveExportLag`, chuyển từ `ConsistentRead: true` sang `ConsistentRead: false`. Vì outbox lag chỉ là chỉ số telemetry xấp xỉ (`approximate base scan, never a closure proof`), đọc eventual giảm 50% RCU và không gây khóa trên partition leader.
 
 ### 2.2. Điều chỉnh Tần số Quan trắc (Polling Interval)
-- Tăng chu kỳ nghỉ mặc định từ 15 giây lên **60 giây** (`observation_interval_seconds = 60`), đồng bộ với chu kỳ đánh giá của CloudWatch Alarms (`period = 60`).
-- Giảm ngay lập tức 75% tần suất gọi API của mỗi worker quan trắc.
+- Tăng chu kỳ nghỉ mặc định từ 15 giây lên **30 giây** (`observation_interval_seconds = 30`), tạo biên thời gian trước ngưỡng stale gauge 60 giây; thời gian thực giữa các lần đo còn bao gồm thời gian collect và scheduling.
+- Giảm khoảng 50% số chu kỳ so với mặc định 15 giây trước khi sửa.
 
 ---
 
@@ -55,15 +55,15 @@ Trong phiên bản ban đầu của PR #65:
 
 | Thông số / Hạng mục | Trước Khi Sửa | Sau Khi Sửa (Mặc định Shallow) | Sau Khi Sửa (Deep Opt-In) |
 | :--- | :--- | :--- | :--- |
-| **Chu kỳ quan trắc** | 15 giây | 60 giây (configurable 10..600s) | 60 giây |
+| **Chu kỳ quan trắc** | 15 giây | 30 giây (cấu hình 0..600s; 0 dùng mặc định) | 30 giây |
 | **Số Scan Uploads / chu kỳ** | 1 – 32 | **0** | 1 – 4 |
 | **Số Scan Outbox / chu kỳ** | 1 – 32 | **0** | 1 – 4 |
 | **Tính nhất quán Outbox Scan** | `ConsistentRead=true` | N/A | `ConsistentRead=false` (50% RCU) |
 | **Point GetItems / chu kỳ** | 3 | 3 | 3 |
-| **Scan Calls / phút (cụm 3 node)** | Up to 768 Scans/phút | **0 Scans/phút** | Up to 24 Scans/phút |
-| **RCU tiêu thụ / tháng (ước tính)** | ~35.000.000 RCU | **~390.000 RCU (-98.9%)** | ~1.800.000 RCU (-94.8%) |
-| **Tác động lên Benchmark Trials** | Gây nghẽn RCU & latency spike | **Hoàn toàn bị cô lập (0 Scans)** | Bị vô hiệu hóa tự động |
-| **Độ phủ CloudWatch Alarms** | Đầy đủ | `recovery_cut_age`, `telemetry_age` hoạt động 100% | Đầy đủ mọi metric |
+| **Scan Calls / phút (cụm 3 node)** | Up to 768 Scans/phút | **0 Scans/phút** | Up to 48 Scans/phút (3 node × 2 chu kỳ × 8 scans) |
+| **RCU/tháng thực tế** | Chưa có số đo đủ để định lượng | Cần đo số point reads, kích thước item và `ConsumedReadCapacityUnits` | Cần đo thêm RCU do bounded scans; không suy ra RCU chỉ từ số lần gọi `Scan` |
+| **Tác động lên Benchmark Trials** | Nhiễu đọc nền đáng kể | Không có Scan, nhưng vẫn có point reads | Vẫn quét nếu bật cờ; phải tắt rõ ràng trước benchmark |
+| **Độ phủ CloudWatch Alarms** | 5 alarms/profile trước đây | 4 base alarms/profile; không xuất `stuck_completing` hoặc `export_lag` chưa đo | 5 alarms/profile khi runtime và Terraform cùng bật deep; kết quả quá giới hạn scan bị withhold |
 
 ---
 
@@ -75,4 +75,11 @@ Trong phiên bản ban đầu của PR #65:
 2. **DynamoDB Eventual Consistency (`TestExportLagRejectsLegacyUnknownAndCursorLoop`):**
    - Xác nhận `ObserveExportLag` truyền `ConsistentRead: false`, giảm tải RCU và vượt qua kiểm thử vòng lặp cursor.
 3. **Cấu hình Khởi động (`internal/config`):**
-   - Bổ sung `observation_interval_seconds` (mặc định 60s, kiểm tra phạm vi hợp lệ 0..600) và `deep_observation` (mặc định `false`). Toàn bộ test suite `internal/config` đạt PASS.
+   - Bổ sung `observation_interval_seconds` (mặc định 30s, kiểm tra phạm vi hợp lệ 0..600; 0 dùng mặc định) và `deep_observation` (mặc định `false`). Terraform truyền cùng giá trị `deep_observation` tới fleet và module alarms; chỉ tạo alarm Completing khi bật deep.
+
+
+## 5. Giới hạn và nghiệm thu
+
+Tỷ lệ giảm **Scan calls** theo giới hạn lý thuyết không chứng minh cùng tỷ lệ giảm RCU hoặc chi phí. DynamoDB tính mức đọc theo kích thước dữ liệu được quét, loại nhất quán và cấu hình tính phí; cần lấy số đo thực tế để kết luận. Kết quả quá giới hạn phân trang hoặc thất bại của deep observer được đánh dấu không khả dụng, không xuất số liệu hoàn chỉnh giả.
+
+Việc merge phần implementation và unit/contract tests không thay thế cho Cloud/Edge/direct S3 AWS live acceptance, kiểm tra R1/R2, chi phí endpoint/PITR và dọn dẹp. Các checklist chưa hoàn tất vẫn thuộc `W05-HUNG-03` và được thực hiện trong follow-up riêng sau khi có phê duyệt AWS.
