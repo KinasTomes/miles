@@ -51,7 +51,7 @@
 - [x] Tái hiện các lỗi còn nghi ngờ với DynamoDB Local/Moto và multi-node fixtures; cover R1 leases, stop/close writer, R2 outbox/cut/seal, checkpoint/GC, S3 GET stream-abort; kiểm tra tính an toàn fail-closed và dọn dẹp lease/quota.
 - [x] Rà `scripts/dynamodb_pilot.py`: xác nhận từ chối khi hash mismatch, release/config lệch, metrics node/after-window thiếu, counters reset, physical stats stale/partial (`test_dynamodb_pilot.py` 3/3 PASS).
 - [x] Chạy **offline** tại HEAD mới (tất cả lệnh đều PASS):
-  - `make check`: PASS (Go vet, unit tests, 67 Python tests, doc name check, binary build).
+  - `make check`: PASS (Go vet, unit tests, 70 Python tests, doc name check, binary build).
   - `make test-local`: PASS (DynamoDB Local, S3 integration, dev/runtime/local multi-node processes, SIGTERM, clean teardown).
   - `go test -race ./internal/api/s3 ./internal/object ./internal/benchmark ./internal/metadata/dynamodb ./internal/coordination ./internal/recovery ./cmd/miles -count=1`: PASS (0 race).
   - `terraform -chdir=infra/terraform/cloud/environments/dev fmt -check -recursive`: PASS.

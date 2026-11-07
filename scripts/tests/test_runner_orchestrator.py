@@ -434,6 +434,92 @@ class RunnerOrchestratorTests(unittest.TestCase):
             self.assertIn("get-command-invocation", second_call_args)
             self.assertIn("cmd-test-12345", second_call_args)
 
+    def test_create_aws_cli_runcommand_runner_truncated_sentinels_raises_error(self):
+        """
+        Verifies that if get-command-invocation returns Status=Success but output is
+        truncated or missing begin/end sentinels, create_aws_cli_runcommand_runner raises
+        an explicit RuntimeError instead of silently returning truncated content.
+        """
+        mock_send_res = MagicMock()
+        mock_send_res.returncode = 0
+        mock_send_res.stdout = json.dumps({"Command": {"CommandId": "cmd-trunc-12345"}})
+
+        mock_inv_res = MagicMock()
+        mock_inv_res.returncode = 0
+        mock_inv_res.stdout = json.dumps({
+            "Status": "Success",
+            "StandardOutputContent": "partial but truncated output; no sentinel",
+            "StandardErrorContent": "",
+        })
+
+        with patch("subprocess.run") as mock_run, patch("time.sleep"):
+            mock_run.side_effect = [mock_send_res, mock_inv_res]
+            runner = create_aws_cli_runcommand_runner(region="ap-southeast-1", timeout=10)
+            with self.assertRaises(RuntimeError) as ctx:
+                runner("i-testnode", "print('hello')")
+            self.assertIn("missing begin/end sentinels", str(ctx.exception))
+
+    def test_execute_workload_and_capture_on_failure_persistence_failure_surfaced(self):
+        """
+        Verifies that if evidence capture cannot write to out_dir (e.g. out_dir is an existing file),
+        the persistence failure is surfaced via a compound RuntimeError while preserving the cause.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            file_blocking_dir = Path(tmp_dir) / "occupied-file"
+            file_blocking_dir.write_text("i am a file not a directory")
+
+            def failing_workload():
+                raise TimeoutError("SSH workload timed out after 1000s")
+
+            nodes = [{"alias": "cloud-a", "id": "i-03bea44ea0f048125", "profile": "cloud"}]
+
+            with self.assertRaises(RuntimeError) as ctx:
+                execute_workload_and_capture_on_failure(
+                    workload_fn=failing_workload,
+                    name="persist-fail-test",
+                    nodes=nodes,
+                    out_dir=file_blocking_dir,
+                )
+
+            err_msg = str(ctx.exception)
+            self.assertIn("Workload failed with TimeoutError", err_msg)
+            self.assertIn("failure evidence persistence failed", err_msg)
+            self.assertIsInstance(ctx.exception.__cause__, TimeoutError)
+
+    def test_chrony_probe_failure_marks_partial_without_fake_readiness(self):
+        """
+        Verifies that when metrics are collected but Chrony probe fails with an exception,
+        the node and cluster status are marked 'partial' (NOT 'ok'), clock status is 'error',
+        and readyz is None (NOT synthesized 200).
+        """
+        def mock_ssm(node_id, prog):
+            if "startup.json" in prog:
+                return "miles_ready 1\n"
+            if "chronyc" in prog:
+                raise RuntimeError("chronyc timed out waiting for tracking")
+            return "{}"
+
+        nodes = [{"alias": "cloud-a", "id": "i-03bea44ea0f048125", "profile": "cloud"}]
+
+        snap = collect_cluster_telemetry(
+            nodes=nodes,
+            ssm_runner=mock_ssm,
+            ssm_runcommand_runner=mock_ssm,
+            captured_at="2026-11-07T12:00:00Z",
+            now_unix=105.0,
+        )
+
+        # Cluster and node must be partial, NOT ok!
+        self.assertEqual(snap["status"], "partial")
+        node_snap = snap["nodes"]["cloud-a"]
+        self.assertEqual(node_snap["status"], "partial")
+        self.assertEqual(node_snap["clock"]["status"], "error")
+        self.assertIn("chronyc timed out", node_snap["clock"]["error"])
+        # readyz must NOT be fake 200
+        self.assertIsNone(node_snap["readyz"])
+        self.assertEqual(snap["summary"]["healthy_nodes"], 0)
+        self.assertEqual(snap["summary"]["partial_nodes"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

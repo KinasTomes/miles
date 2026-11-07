@@ -717,6 +717,7 @@ def build_node_telemetry_snapshot(
     profile,
     metrics_raw=None,
     chrony_raw=None,
+    chrony_error=None,
     readyz_status=None,
     error=None,
     captured_at=None,
@@ -744,9 +745,22 @@ def build_node_telemetry_snapshot(
             pass
 
     metrics = parse_prometheus_metrics(metrics_raw) if metrics_raw else {}
-    clock_sig = parse_chrony_tracking(chrony_raw, now_unix=now_unix, elapsed_seconds=elapsed_seconds) if chrony_raw else {"status": "not_collected"}
+    if chrony_error:
+        clock_sig = {"status": "error", "error": redact_sensitive_strings(str(chrony_error))}
+    elif chrony_raw:
+        clock_sig = parse_chrony_tracking(chrony_raw, now_unix=now_unix, elapsed_seconds=elapsed_seconds)
+    else:
+        clock_sig = {"status": "not_collected", "missing_reason": "no_chrony_output"}
 
-    status = "ok" if (metrics or clock_sig.get("status") == "ok") else "empty"
+    has_metrics = bool(metrics)
+    has_clock_ok = clock_sig.get("status") == "ok"
+
+    if has_metrics and has_clock_ok:
+        status = "ok"
+    elif has_metrics or has_clock_ok:
+        status = "partial"
+    else:
+        status = "empty"
 
     return {
         "alias": alias,
@@ -777,6 +791,7 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
     effective_captured_at = captured_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
     node_snapshots = {}
     has_ok = False
+    has_partial = False
     has_error = False
 
     for node in nodes:
@@ -786,20 +801,25 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
             res = fetcher_fn(node)
             metrics_raw = res.get("metrics_raw")
             chrony_raw = res.get("chrony_raw")
+            chrony_error = res.get("chrony_error")
             readyz = res.get("readyz_status")
             snap = build_node_telemetry_snapshot(
                 alias=alias,
                 profile=profile,
                 metrics_raw=metrics_raw,
                 chrony_raw=chrony_raw,
+                chrony_error=chrony_error,
                 readyz_status=readyz,
                 captured_at=effective_captured_at,
                 now_unix=now_unix,
                 elapsed_seconds=elapsed_seconds,
             )
             node_snapshots[alias] = snap
-            if snap.get("status") == "ok":
+            snap_status = snap.get("status")
+            if snap_status == "ok":
                 has_ok = True
+            elif snap_status == "partial":
+                has_partial = True
             else:
                 has_error = True
         except Exception as e:
@@ -811,7 +831,12 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
                 captured_at=effective_captured_at,
             )
 
-    cluster_status = "ok" if (has_ok and not has_error) else ("partial" if has_ok else "error")
+    if has_ok and not has_error and not has_partial:
+        cluster_status = "ok"
+    elif has_ok or has_partial:
+        cluster_status = "partial"
+    else:
+        cluster_status = "error"
 
     return {
         "status": cluster_status,
@@ -820,6 +845,7 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
         "summary": {
             "total_nodes": len(nodes),
             "healthy_nodes": sum(1 for s in node_snapshots.values() if s.get("status") == "ok"),
+            "partial_nodes": sum(1 for s in node_snapshots.values() if s.get("status") == "partial"),
             "failed_nodes": sum(1 for s in node_snapshots.values() if s.get("status") == "error"),
         }
     }

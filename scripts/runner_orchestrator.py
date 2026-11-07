@@ -88,15 +88,17 @@ def collect_cluster_telemetry(
 
             metrics_raw = exec_cmd(DEFAULT_METRIC_PROGRAM).replace("\r", "")
             chrony_raw = ""
+            chrony_error = None
             try:
                 chrony_raw = exec_cmd(DEFAULT_CHRONY_PROGRAM).replace("\r", "")
-            except Exception:
-                pass
+            except Exception as ce:
+                chrony_error = redact_sensitive_strings(str(ce))
 
             return {
                 "metrics_raw": metrics_raw,
                 "chrony_raw": chrony_raw,
-                "readyz_status": 200 if metrics_raw else None,
+                "chrony_error": chrony_error,
+                "readyz_status": None,
             }
 
         elif profile == "edge":
@@ -106,16 +108,18 @@ def collect_cluster_telemetry(
             r = ssh_runner(["curl", "--silent", "--fail", "http://127.0.0.1:9100/metrics"])
             metrics_raw = r.stdout.decode() if hasattr(r, "stdout") else str(r)
             chrony_raw = ""
+            chrony_error = None
             try:
                 rc = ssh_runner(["chronyc", "-n", "-c", "tracking"])
                 chrony_raw = rc.stdout.decode() if hasattr(rc, "stdout") else str(rc)
-            except Exception:
-                pass
+            except Exception as ce:
+                chrony_error = redact_sensitive_strings(str(ce))
 
             return {
                 "metrics_raw": metrics_raw,
                 "chrony_raw": chrony_raw,
-                "readyz_status": 200 if metrics_raw else None,
+                "chrony_error": chrony_error,
+                "readyz_status": None,
             }
 
         else:
@@ -264,17 +268,20 @@ def capture_and_assemble_failed_window(
         out_path = Path(out_dir)
         out_path.mkdir(parents=True, exist_ok=True)
         artifact_path = out_path / f"{name}-failed-window.json"
-        artifact_path.write_text(json.dumps(public_payload, indent=2))
+        tmp_path = out_path / f".{name}-failed-window.json.tmp.{os.getpid()}"
+        tmp_path.write_text(json.dumps(public_payload, indent=2))
         try:
-            artifact_path.chmod(0o644)
+            tmp_path.chmod(0o644)
         except OSError:
             pass
+        os.replace(tmp_path, artifact_path)
 
     # 5. Optionally write private raw trace if requested
     if save_private_trace and (private_dir or out_dir):
         p_dir = Path(private_dir or out_dir)
         p_dir.mkdir(parents=True, exist_ok=True)
         private_path = p_dir / f"{name}-private-raw-trace.json"
+        tmp_path = p_dir / f".{name}-private-raw-trace.json.tmp.{os.getpid()}"
         raw_trace = {
             "name": name,
             "captured_at": captured_at,
@@ -283,11 +290,10 @@ def capture_and_assemble_failed_window(
             "before_metrics": before_metrics,
             "after_metrics": after_metrics,
         }
-        private_path.write_text(json.dumps(raw_trace, indent=2))
-        try:
-            private_path.chmod(0o600)
-        except OSError:
-            pass
+        fd = os.open(str(tmp_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            json.dump(raw_trace, f, indent=2)
+        os.replace(tmp_path, private_path)
 
     return public_payload, artifact_path
 
@@ -331,6 +337,7 @@ def create_aws_cli_runcommand_runner(region="ap-southeast-1", env=None, timeout=
             env=env,
             text=True,
             check=False,
+            timeout=min(60, timeout),
         )
         if send.returncode != 0:
             raise RuntimeError(f"SSM send-command failed on {node_id}: {send.stderr[-1000:]}")
@@ -350,6 +357,7 @@ def create_aws_cli_runcommand_runner(region="ap-southeast-1", env=None, timeout=
                 env=env,
                 text=True,
                 check=False,
+                timeout=min(30, timeout),
             )
             if inv.returncode != 0:
                 continue
@@ -357,17 +365,22 @@ def create_aws_cli_runcommand_runner(region="ap-southeast-1", env=None, timeout=
             status = inv_data.get("Status")
             if status in ("Success", "Failed", "TimedOut", "Cancelled"):
                 out = inv_data.get("StandardOutputContent", "")
-                if begin in out and end in out:
-                    start = out.index(begin) + len(begin)
-                    match = re.search(re.escape(end) + r" (\d+)", out)
-                    if match:
-                        body = out[start:match.start()].strip()
-                        if match.group(1) != "0":
-                            raise RuntimeError(f"Remote RunCommand failed (rc={match.group(1)}): {body[-2000:]}")
-                        return body
                 if status != "Success":
                     raise RuntimeError(f"RunCommand status {status}: {inv_data.get('StandardErrorContent', '')[-1000:]}")
-                return out.strip()
+                if begin not in out or end not in out:
+                    raise RuntimeError(
+                        f"Incomplete RunCommand output on {node_id}: missing begin/end sentinels (truncated or corrupted)"
+                    )
+                start = out.index(begin) + len(begin)
+                match = re.search(re.escape(end) + r" (\d+)", out)
+                if not match:
+                    raise RuntimeError(
+                        f"Incomplete RunCommand output on {node_id}: missing returncode after end sentinel"
+                    )
+                body = out[start:match.start()].strip()
+                if match.group(1) != "0":
+                    raise RuntimeError(f"Remote RunCommand failed (rc={match.group(1)}): {body[-2000:]}")
+                return body
         raise RuntimeError(f"SSM RunCommand timed out waiting for command {cmd_id} on {node_id}")
 
     return run_cmd
@@ -410,6 +423,7 @@ def execute_workload_and_capture_on_failure(
             except Exception:
                 pass
 
+        capture_err = None
         try:
             capture_and_assemble_failed_window(
                 name=name,
@@ -426,6 +440,35 @@ def execute_workload_and_capture_on_failure(
                 save_private_trace=save_private_trace,
                 private_dir=private_dir,
             )
-        except Exception:
-            pass
+        except Exception as ce:
+            capture_err = ce
+            try:
+                spool_dir = Path("/tmp/miles-failure-spool")
+                spool_dir.mkdir(parents=True, exist_ok=True)
+                try:
+                    spool_dir.chmod(0o700)
+                except OSError:
+                    pass
+                capture_and_assemble_failed_window(
+                    name=name,
+                    nodes=nodes,
+                    client_result=client_result,
+                    before_metrics=before_metrics,
+                    since_timestamp=since_timestamp,
+                    ssm_runner=ssm_runner,
+                    ssm_runcommand_runner=ssm_runcommand_runner,
+                    ssh_runner=ssh_runner,
+                    alb_evidence=alb_evidence,
+                    out_dir=spool_dir,
+                    release_hash=release_hash,
+                    save_private_trace=save_private_trace,
+                    private_dir=spool_dir,
+                )
+            except Exception:
+                pass
+
+        if capture_err:
+            raise RuntimeError(
+                f"Workload failed with {type(exc).__name__} ('{exc}'), AND failure evidence persistence failed: {type(capture_err).__name__} ('{capture_err}')"
+            ) from exc
         raise exc
