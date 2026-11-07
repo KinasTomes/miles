@@ -141,6 +141,25 @@ func (h *WarmView) Check(ctx context.Context) error {
 	defer v.owner.mu.Unlock()
 	return v.check(ctx)
 }
+
+// SharedFence is an identity for native validation, never authority by itself.
+// The receiving transaction must check the live lease/root and exact pin. Local
+// handles cannot enqueue shared lifecycle work through this capability.
+func (h *WarmView) SharedFence(ctx context.Context) (storage.WriterFence, error) {
+	if h == nil || h.state == nil || ctx == nil {
+		return storage.WriterFence{}, storage.ErrInvalid
+	}
+	v := h.state
+	v.owner.mu.Lock()
+	defer v.owner.mu.Unlock()
+	if err := v.check(ctx); err != nil {
+		return storage.WriterFence{}, err
+	}
+	if v.sharedFence.LeaseID == "" || v.root == "" || v.resolving {
+		return storage.WriterFence{}, storage.ErrFenced
+	}
+	return v.sharedFence, nil
+}
 func (handle *WarmView) Bind(ctx context.Context, h storage.ObjectHead) error {
 	if handle == nil || handle.state == nil || ctx == nil {
 		return storage.ErrInvalid

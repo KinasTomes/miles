@@ -71,7 +71,7 @@ func TestNativeWarmGCObjectFlows(t *testing.T) {
 	runNativeSharedRuntime(t, true)
 }
 
-func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
+func runNativeSharedRuntime(t *testing.T, gcFlows bool, coldClass ...coldFlowScenario) {
 	dEndpoint, sEndpoint := nativeEndpoint(t, "MILES_DDB_LOCAL_ENDPOINT"), nativeEndpoint(t, "MILES_RECOVERY_S3_ENDPOINT")
 	timeout := 90 * time.Second
 	if gcFlows {
@@ -138,7 +138,7 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 	t.Cleanup(func() { cleanupNativePackBucket(t, clients.packs, c.PackBucket, gcFlows) })
 	testClock := &gcFlowClock{Clock: clock.NewReal()}
 	var utc storage.R1TimeSource = nativeUTC{}
-	if gcFlows {
+	if gcFlows || len(coldClass) > 0 {
 		utc = testClock
 	}
 	m, e := sharedStore(c, clients, utc)
@@ -173,7 +173,7 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 		// node's CloseIdleConnections interfere with another node's cleanup.
 		nodeTransport := transport.Clone()
 		nodeHTTP := &http.Client{Transport: nodeTransport}
-		if gcFlows {
+		if gcFlows || len(coldClass) > 0 {
 			nodeHTTP.Transport = gcFlowTransport{nodeTransport}
 		}
 		nodeClients := runtimeClients{metadata: ddb.New(ddb.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(dEndpoint), Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(sEndpoint), UsePathStyle: true, Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), transport: nodeTransport}
@@ -188,7 +188,7 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 			}
 		})
 	}
-	if !gcFlows {
+	if !gcFlows && len(coldClass) == 0 {
 		nativeShutdownDuringPeerRecovery(t, ctx, nodes)
 		nativeProvisionedCheckpoint(t, ctx, nodes[0])
 	}
@@ -230,6 +230,10 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 	if gcFlows {
 		nativeWarmGCFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, global)
 		assertNativeRuntimeMetrics(t, ctx, nodes)
+		return
+	}
+	if len(coldClass) > 0 {
+		nativeColdFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, coldClass[0], tokenID+"."+tokenSecret)
 		return
 	}
 	key := "Unicode/tiếng Việt//plus+percent%2F"

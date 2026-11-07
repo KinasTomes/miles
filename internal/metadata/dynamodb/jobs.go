@@ -110,6 +110,16 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 				old.PendingStep = ""
 				old.Checkpoint = []byte(`{"lifecycle_reconciled":true}`)
 			}
+			if errors.Is(err, s.ErrNotFound) && tieringDiscovery(old) {
+				lease, e := r1Read[s.R1Lease](t, r1LeaseKey(old.Worker.LeaseID))
+				// AcquireR1 reuses this row only after old authority is Released;
+				// its exact next epoch is the durable closure proof, not expiry.
+				if e != nil || lease.Fence != c.Fence || lease.Fence.Epoch != old.Worker.Epoch+1 || lease.State != "Active" || lease.Kind != "control" || len(lease.Pending) != 0 {
+					return s.ErrFenced
+				}
+				old.PendingStep = ""
+				old.Checkpoint = []byte(`{}`) // repeat discovery; stable child IDs prevent duplicates
+			}
 		}
 		out, e = jobs.Apply(old, c, m.now())
 		if e != nil {

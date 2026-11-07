@@ -63,8 +63,11 @@ func (m *Store) reserveSweep(t *transaction, a *lifecycle.Action, b s.R1Bounds) 
 		if old.Fence != p.Writer || old.State != "Released" {
 			return s.ErrR1Busy
 		}
-	case "Warm":
+	case "Warm", "Cold", "Restored":
 		// First pass records retirement under the same stable gate as mark.
+		if !lifecycle.RetirableData(p) {
+			return s.ErrR1Busy
+		}
 	case "Retiring":
 		fact, e := r1Read[sweepRetirement](t, sweepRetirementKey(p.Ref))
 		if e != nil {
@@ -77,7 +80,10 @@ func (m *Store) reserveSweep(t *transaction, a *lifecycle.Action, b s.R1Bounds) 
 	default:
 		return s.ErrR1Busy
 	}
-	if p.Class != s.Standard && p.Class != s.StandardIA {
+	if p.Class != s.Standard && p.Class != s.StandardIA && p.Class != s.GlacierIR && p.Class != s.Glacier {
+		return s.ErrR1Busy
+	}
+	if (p.Class == s.GlacierIR || p.Class == s.Glacier) && p.MinRetentionUntil.IsZero() {
 		return s.ErrR1Busy
 	}
 	g.State = "Maintenance"
@@ -115,14 +121,14 @@ func (m *Store) RetireSweep(ctx context.Context, j jobs.Job) (out lifecycle.Acti
 		if e != nil {
 			return e
 		}
-		if a.State != "Prepared" || a.Kind != "gc" || a.Fence != j.Worker || a.Source.State != "Warm" {
+		if a.State != "Prepared" || a.Kind != "gc" || a.Fence != j.Worker || !lifecycle.RetirableData(a.Source) {
 			return s.ErrConflict
 		}
 		p, e := get[s.PackInfo](t, packKey(a.Source.Ref))
 		if e != nil {
 			return e
 		}
-		if p.State != "Warm" || p.StateRevision != a.Source.StateRevision {
+		if p.State != a.Source.State || p.Class != a.Source.Class || p.StateRevision != a.Source.StateRevision {
 			return s.ErrConflict
 		}
 		b, e := m.r1Bounds(ctx)
@@ -199,14 +205,14 @@ func (m *Store) RetireCanonical(ctx context.Context, j jobs.Job, expected s.Chun
 		if e != nil {
 			return e
 		}
-		if action.Kind != "gc" || action.State != "Prepared" || action.Fence != j.Worker || action.Source.State != "Warm" || action.Source.Ref != expected.Location.Pack {
+		if action.Kind != "gc" || action.State != "Prepared" || action.Fence != j.Worker || !lifecycle.RetirableData(action.Source) || action.Source.Ref != expected.Location.Pack {
 			return s.ErrFenced
 		}
 		pack, e := get[s.PackInfo](t, packKey(action.Source.Ref))
 		if e != nil {
 			return e
 		}
-		if pack.State != "Warm" || pack.StateRevision != action.Source.StateRevision {
+		if pack.State != action.Source.State || pack.Class != action.Source.Class || pack.StateRevision != action.Source.StateRevision {
 			return s.ErrConflict
 		}
 		key := chunkKey(expected.Key)

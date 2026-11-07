@@ -163,7 +163,15 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 		if !ok {
 			return nil, storage.ErrInvalid
 		}
-		return objectRuntime(object.Options{Metadata: m, Packs: coordination.ProtectPackStore(packs), Cache: resident, Registry: registry, Clock: clk, Uploads: m, Events: object.MetadataEvents{},
+		return objectRuntime(object.Options{Metadata: m, Packs: coordination.ProtectPackStore(packs), Cache: resident, Registry: registry, Clock: clk, ReadUTC: utc, Uploads: m, Events: object.MetadataEvents{},
+			AutoRestore: func(ctx context.Context, view *coordination.WarmView, head storage.ObjectHead, ref storage.PackRef, revision uint64, required time.Time) error {
+				f, err := view.SharedFence(ctx)
+				if err != nil {
+					return err
+				}
+				_, err = m.QueueReadRestore(ctx, f, head, ref, revision, required)
+				return err
+			},
 			AdmitWriter: func(ctx context.Context, r object.WriterRequest) (object.AdmittedWriter, error) {
 				mutation, w, e := registry.AdmitProducer(ctx, r.Object, r.OpID, r.Deadline)
 				if e != nil {
@@ -273,10 +281,15 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	runner.Executors["purge_uploads"] = uploads.executor("purge_uploads")
 	runner.Executors["recover_uploads"] = uploads.executor("recover_uploads")
 	packCatalog := &lifecycle.Catalog{Store: m, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 32768}
-	lifecycleWorker := &lifecycle.Worker{Store: m, Packs: packs, Catalog: packCatalog, UTC: utc}
+	lifecycleWorker := &lifecycle.Worker{Store: m, Packs: packs, Catalog: packCatalog, UTC: utc, Jobs: &runner.Service}
 	for _, kind := range []jobs.Type{"tiering", "pack_restore", "pack_promote"} {
 		runner.Executors[kind] = lifecycleWorker.Executor(kind)
 	}
+	// Use the existing cluster-owner periodic scheduler. Selection queues exact
+	// children only; actual movement still reserves the native maintenance gate.
+	tiering := runner.Executors["tiering"]
+	tiering.Periodic = time.Minute
+	runner.Executors["tiering"] = tiering
 	scrubWorker := &jobs.ScrubWorker{Store: m, Packs: faultPacks}
 	runner.Executors["scrub"] = scrubWorker.Executor()
 	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: clients.packs, Bucket: c.PackBucket}, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second})

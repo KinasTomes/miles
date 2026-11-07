@@ -180,6 +180,48 @@ func (m *CoordinatedMetadata) PinCopy(ctx context.Context, row storage.Chunk, re
 	return m.pin(ctx, row, restoreRequiredUntil)
 }
 
+// pinArchiveReference is only for same-domain metadata CopyManifest. It does
+// not read payload or promise immediate readability. The bound source view is
+// retained until this writer holds the exact generation; native pins serialize
+// with retirement and remain through commit. Payload Copy still uses PinCopy.
+func (m *CoordinatedMetadata) pinArchiveReference(ctx context.Context, row storage.Chunk) (bool, error) {
+	if row.Validate() != nil {
+		return false, storage.ErrInvalid
+	}
+	rows, err := m.GetChunks(ctx, []storage.ChunkKey{row.Key}, true)
+	if err != nil {
+		return false, err
+	}
+	if rows[row.Key] != row {
+		return false, storage.ErrConflict
+	}
+	infos, err := m.GetPacks(ctx, []storage.PackRef{row.Location.Pack})
+	if err != nil {
+		return false, err
+	}
+	p, ok := infos[row.Location.Pack]
+	if !ok {
+		return false, storage.ErrNotFound
+	}
+	if p.Class != storage.Glacier || p.State != "Cold" && p.State != "Restoring" && p.State != "Restored" {
+		return false, storage.ErrCold
+	}
+	if p.Ref != row.Location.Pack || row.Location.Range.Validate(p.Size) != nil {
+		return false, storage.ErrInvalid
+	}
+	if err = m.writer.Pin(ctx, p.Ref); err != nil {
+		return false, err
+	}
+	rows, err = m.GetChunks(ctx, []storage.ChunkKey{row.Key}, true)
+	if err != nil {
+		return false, err
+	}
+	if rows[row.Key] != row {
+		return false, storage.ErrConflict
+	}
+	return true, m.writer.Check(ctx)
+}
+
 func (m *CoordinatedMetadata) pin(ctx context.Context, row storage.Chunk, restoreRequiredUntil time.Time) (bool, error) {
 	if row.Validate() != nil {
 		return false, storage.ErrInvalid
