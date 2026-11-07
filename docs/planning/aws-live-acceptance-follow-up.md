@@ -57,9 +57,9 @@
   - `terraform -chdir=infra/terraform/cloud/environments/dev fmt -check -recursive`: PASS.
   - `terraform -chdir=infra/terraform/cloud/environments/dev validate -no-color`: PASS.
   - `terraform -chdir=infra/terraform/cloud/environments/dev test -no-color`: PASS (43 passed, 0 failed).
-- [ ] Build release từ **commit đã test**; pin binary/manifest/hash/architecture, config, dataset `backup30` 90 files (~720 MiB) và `warmbench`. Kiểm test script không dùng hardcoded DNS/IP ALB hoặc TLS insecure.
+- [x] Build release từ **commit đã test**; pin binary/manifest/hash/architecture (`746d9fa831bd3982f42740ad57143c4eeba7f2587d3319aa69c4effc5e60295a`, 32,258,733 B, linux/arm64); kiểm chứng deployment smoke (`scripts/deployment_smoke.py`), staging startup config, và TLS proxy contracts; kiểm chứng dataset `backup30` 90 files (754,994,670 bytes, manifest sha256 `04014dd767e799d9f70081536d01c988fa6a02c0b7653c34db11a48c9abc1556`) khớp 100% ground truth qua `bin/datasetgen`; build sạch `bin/warmbench`; không dùng hardcoded DNS/IP ALB hoặc TLS insecure.
 
-**Gate B:** check/race/contract sạch; không còn lỗi chẩn đoán quan trọng. Commit tách `runner/tests`, `runtime-regression` (nếu cần), `docs`.
+**Gate B: PASS.** Toàn bộ check, race detector, Terraform contracts, deployment smoke, và build release packaging đều đạt 100% offline. Sẵn sàng hồ sơ cho Gate C. Commit tách `runner/tests`, `runtime-regression` (nếu cần), `docs`.
 
 ### Phase C — AWS preflight / chỉ mở sau approval mới
 
