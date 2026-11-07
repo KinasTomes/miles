@@ -229,6 +229,7 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 	}
 	if gcFlows {
 		nativeWarmGCFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, global)
+		assertNativeRuntimeMetrics(t, ctx, nodes)
 		return
 	}
 	key := "Unicode/tiếng Việt//plus+percent%2F"
@@ -339,6 +340,41 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 		t.Fatal("cache purge changed durable object or prevented refill", e)
 	}
 
+	assertNativeRuntimeMetrics(t, ctx, nodes)
+}
+
+func assertNativeRuntimeMetrics(t *testing.T, ctx context.Context, nodes []Dependencies) {
+	t.Helper()
+	reads, uploaded, downloaded := 0.0, 0.0, 0.0
+	for i, d := range nodes {
+		if e := d.Operations.Collect(ctx); e != nil {
+			t.Fatal("runtime observer", i, e)
+		}
+		values := map[string]float64{}
+		for _, sample := range d.Operations.Runtime.Snapshot(time.Now()) {
+			values[sample.Name] = sample.Value
+		}
+		reads += values["miles_warm_read_requests_total"]
+		uploaded += values["miles_gateway_s3_request_body_bytes_total"]
+		downloaded += values["miles_gateway_s3_response_body_bytes_total"]
+		if d.Statistics == nil || d.Admin.Statistics == nil {
+			t.Fatal("statistics not wired")
+		}
+		if e := d.Statistics.Refresh(ctx); e != nil {
+			t.Fatal("native runtime statistics", e)
+		}
+		if summary, e := d.Statistics.Global(ctx); e != nil || !summary.PhysicalComplete {
+			t.Fatal("incomplete native statistics", e)
+		}
+		for _, name := range []string{"miles_ddb_calls_total", "miles_ddb_transactions_total", "miles_ddb_lease_write_attempts_total"} {
+			if values[name] <= 0 {
+				t.Fatal("runtime metric missing", i, name, values[name])
+			}
+		}
+	}
+	if reads <= 0 || uploaded <= 0 || downloaded <= 0 {
+		t.Fatal("shared Warm counters missing")
+	}
 }
 
 func cleanupNativePackBucket(t *testing.T, client *s3.Client, bucket string, versioned bool) {

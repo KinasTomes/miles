@@ -103,6 +103,7 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer f.mu.Unlock()
 		f.putCalls++
 		if f.failPut {
+			w.Header().Set("X-Amz-Request-Id", "FA11AB1E1234ABCD")
 			w.WriteHeader(503)
 			io.WriteString(w, "<Error><Code>SlowDown</Code><Message>private-secret http://private-host</Message></Error>")
 			return
@@ -242,8 +243,15 @@ func TestFailuresAreRecordedAndRetainOnlyRunObjects(t *testing.T) {
 			if e != nil || !strings.Contains(string(b), `"status": "failed"`) || strings.Contains(string(b), "private-secret") {
 				t.Fatal("failure evidence missing or SDK error leaked")
 			}
-			if tc.code == "SlowDown" && r.Phases[1].SuccessfulBytes != 0 {
-				t.Fatal("failed PUT bytes counted as throughput")
+			if tc.code == "SlowDown" {
+				if r.Phases[1].SuccessfulBytes != 0 {
+					t.Fatal("failed PUT bytes counted as throughput")
+				}
+				for _, sample := range r.Samples {
+					if sample.Error == "SlowDown" && (sample.HTTPStatus != 503 || sample.RequestID != "FA11AB1E1234ABCD") {
+						t.Fatalf("missing HTTP diagnostic: %+v", sample)
+					}
+				}
 			}
 		})
 	}
@@ -367,5 +375,14 @@ func TestRedirectCannotForwardCredentials(t *testing.T) {
 	r, err := Run(context.Background(), c, o)
 	if err == nil || r.Status != "failed" || forwarded {
 		t.Fatal("redirect was followed or run reported success")
+	}
+}
+
+func TestRetainObjectsForExternalStatistics(t *testing.T) {
+	c, o, f := setup(t)
+	o.RetainObjects = true
+	result, err := Run(t.Context(), c, o)
+	if err != nil || result.Cleanup != "retained_owned_prefix_for_observation" || f.deleteCalls != 0 || len(f.objects) != len(result.Dataset.Files)+1 {
+		t.Fatal("retained run deleted data or hid cleanup", err, result.Cleanup, f.deleteCalls)
 	}
 }

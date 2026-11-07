@@ -191,9 +191,25 @@ func New(o Options) (*Service, error) {
 	return &Service{o: o}, nil
 }
 
+// PutStageError retains the constant phase of an unsuccessful PUT for
+// safe server-only diagnostics. It preserves errors.Is/As for callers.
+type PutStageError struct {
+	Stage string
+	Err   error
+}
+
+func (e *PutStageError) Error() string { return e.Stage + ": " + e.Err.Error() }
+func (e *PutStageError) Unwrap() error { return e.Err }
+
 // PutObject streams one logical body into packs and manifest pages, then
 // publishes a head only after the whole body passed the API checksum checks.
-func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error) {
+func (s *Service) PutObject(ctx context.Context, r PutRequest) (out PutResult, err error) {
+	stage := "put_validate"
+	defer func() {
+		if err != nil {
+			err = &PutStageError{Stage: stage, Err: err}
+		}
+	}()
 	if ctx == nil || r.Body == nil || r.ContentLength < 0 || r.Key == "" || r.UserID == "" || r.CredentialID == "" ||
 		r.Bucket.Name == "" || r.Bucket.ID == "" || r.Bucket.OwnerID == "" || r.Bucket.Domain == "" {
 		return PutResult{}, storage.ErrInvalid
@@ -205,6 +221,7 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 	if object.Validate() != nil {
 		return PutResult{}, storage.ErrInvalid
 	}
+	stage = "object_lookup"
 	base, err := s.o.Metadata.GetObject(ctx, object)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return PutResult{}, err
@@ -217,6 +234,7 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 			baseSize = 0
 		}
 	}
+	stage = "writer_admission"
 	ctx, session, opID, fence, wallDeadline, err := s.begin(ctx, object, r.CredentialID, "")
 	if err != nil {
 		return PutResult{}, err
@@ -235,14 +253,17 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		OwnerID: r.Bucket.OwnerID, Object: object, Bytes: max(0, r.ContentLength-baseSize), StagedBytes: r.ContentLength,
 		Writer: fence,
 	}
+	stage = "reservation"
 	if err := session.Reserve(reserve); err != nil {
 		return PutResult{}, fmt.Errorf("reserve: %w", err)
 	}
+	stage = "manifest_id"
 	manifestID, err := write.NewManifestID()
 	if err != nil {
 		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, err
 	}
+	stage = "bucket_policy"
 	cachePolicy, err := s.o.BucketPolicy(r.Bucket.ID)
 	if err != nil || cachePolicy.BucketID() != r.Bucket.ID || cachePolicy.Revision() == 0 {
 		s.release(ctx, reservationID, opID, fence)
@@ -251,11 +272,13 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		}
 		return PutResult{}, storage.ErrInvalid
 	}
+	stage = "prepare"
 	prepared, err := session.Prepare(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression, WriteCache: s.o.Cache, AdmitOnWrite: cachePolicy.Cache().AdmitOnWrite}, r.Body, manifestID)
 	if err != nil {
 		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, fmt.Errorf("prepare: %w", err)
 	}
+	stage = "body_checksum"
 	if prepared.Size != r.ContentLength {
 		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, ErrLengthMismatch
@@ -282,11 +305,13 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		ETag: etag, ETagKind: "put-md5", Checksum: checksum,
 		Metadata: metadata, OpID: opID,
 	}
+	stage = "bind_head"
 	head, err = prepared.BindHead(head)
 	if err != nil {
 		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, err
 	}
+	stage = "event_build"
 	event, err := s.o.Events.ObjectCommit(ctx, CommitEvent{OpID: opID, Object: object, Revision: baseRevision + 1, Head: head})
 	if err != nil {
 		s.release(ctx, reservationID, opID, fence)
@@ -297,6 +322,7 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (PutResult, error
 		UserID: r.UserID, CredentialID: r.CredentialID, ReservationID: reservationID, Writer: fence, Event: event,
 	}
 	open = false
+	stage = "commit"
 	result, err := s.publish(ctx, session, commit)
 	if err != nil {
 		return PutResult{}, err

@@ -3,16 +3,19 @@ package benchmark
 import (
 	"context"
 	"errors"
+	"github.com/KinasTomes/miles/internal/observability"
 	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"sync/atomic"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/secretfile"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
 // Config is private run input. It is deliberately not copied into the artifact:
@@ -29,6 +32,7 @@ type Config struct {
 
 // Environment records operator declarations, not measurements or readiness proof.
 type Environment struct {
+	Profile        string `json:"profile,omitempty"`
 	Topology       string `json:"topology"`
 	Host           string `json:"host"`
 	CPU            string `json:"cpu"`
@@ -50,7 +54,7 @@ type credentials struct {
 	UserID          string `json:"user_id,omitempty"` // accepts the local runtime file
 }
 
-func newClient(c Config, concurrency int) (*awss3.Client, func(), error) {
+func newClient(c Config, concurrency int, traffic *bodyTraffic) (*awss3.Client, func(), error) {
 	if c.Target != "direct-s3" && c.Target != "miles-warm" && c.Target != "local-s3-smoke" {
 		return nil, nil, errors.New("target must be direct-s3, miles-warm or local-s3-smoke")
 	}
@@ -96,13 +100,40 @@ func newClient(c Config, concurrency int) (*awss3.Client, func(), error) {
 		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 			return aws.Credentials{AccessKeyID: cred.AccessKeyID, SecretAccessKey: cred.SecretAccessKey, SessionToken: cred.SessionToken}, nil
 		}),
-		HTTPClient: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		HTTPClient: observability.CountHTTPClient(&http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, func(n int) { traffic.sent.Add(uint64(n)) }, func(n int) { traffic.received.Add(uint64(n)) }),
 	})
 	return client, transport.CloseIdleConnections, nil
 }
 
 var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
 var safeCode = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
+
+// Only a bounded S3 request ID may leave the client; exclude host IDs,
+// locations, raw error messages and arbitrary headers.
+var safeRequestID = regexp.MustCompile(`^[A-Za-z0-9_-]{8,128}$`)
+
+func responseDiagnostics(err error) (status int, requestID string) {
+	if err == nil {
+		return 0, ""
+	}
+	var response *smithyhttp.ResponseError
+	if errors.As(err, &response) && response.Response != nil && response.Response.Response != nil {
+		status = response.HTTPStatusCode()
+		// Keep only a valid HTTP status, not transport failure details.
+		if status < 100 || status > 599 {
+			status = 0
+		}
+		requestID = response.Response.Header.Get("X-Amz-Request-Id")
+	}
+	var s3response awss3.ResponseError
+	if requestID == "" && errors.As(err, &s3response) {
+		requestID = s3response.ServiceRequestID()
+	}
+	if !safeRequestID.MatchString(requestID) {
+		requestID = ""
+	}
+	return status, requestID
+}
 
 // Do not persist SDK error strings: they can include URLs, request IDs or bodies.
 func errorCode(err error) string {
@@ -123,3 +154,12 @@ func errorCode(err error) string {
 }
 
 const requestTimeout = 30 * time.Minute
+
+type bodyTraffic struct{ sent, received atomic.Uint64 }
+
+func (t *bodyTraffic) snapshot(target string) map[string]uint64 {
+	if target == "miles-warm" {
+		return map[string]uint64{"client_to_gateway": t.sent.Load(), "gateway_to_client": t.received.Load()}
+	}
+	return map[string]uint64{"client_to_s3": t.sent.Load(), "s3_to_client": t.received.Load()}
+}

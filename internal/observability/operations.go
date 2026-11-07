@@ -81,5 +81,5 @@ func validMetric(m Metric) bool {
 	case "miles_job_updates_total":
 		return m.Counter && m.Value >= 0 && len(m.Labels) == 2 && jobs.Type(m.Labels["job_type"]).Valid() && jobs.State(m.Labels["state"]).Valid()
 	}
-	return false
+	return validRuntimeMetric(m)
 }

@@ -16,6 +16,126 @@ import (
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
+func TestLocalRecoveryCutReconcilesUnknownChunkInsert(t *testing.T) {
+	for _, committed := range []bool{false, true} {
+		name := "before-send"
+		if committed {
+			name = "lost-ack"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newRecoveryFixture(t)
+			seed := contracttest.NewFixture()
+			pack := seed.Packs[0]
+			pack.StateRevision = 1
+			if err := f.m.update(context.Background(), func(tx *transaction) error { return put(tx, packKey(pack.Ref), pack) }); err != nil {
+				t.Fatal(err)
+			}
+			op := strings.Repeat("a", 32)
+			writer := f.acquire(t, "chunk-insert", "writer", op, 1)
+			object := seed.Request("obj", 0).Head.Object
+			ctx := s.WithMutation(context.Background(), s.MutationContext{HistoryID: f.catalog.History, LogicalOpID: op, MutationID: op, Object: object, Writer: writer})
+			if err := f.m.BindR1(ctx, writer, s.ObjectHead{Object: object, ManifestID: "retained-root"}); err != nil {
+				t.Fatal(err)
+			}
+			chunk := seed.Chunk(seed.Bucket.Domain)
+			action := "insert/" + chunk.Key.Domain + "/" + chunk.Key.Hash
+			if err := f.m.BeginR1Action(ctx, writer, action); err != nil {
+				t.Fatal(err)
+			}
+			original := f.m.api
+			fault := &dispatchFault{API: original, objectTable: f.m.tables["Chunks"], before: !committed, after: committed}
+			f.m.api = fault
+			if _, _, err := f.m.PutChunkIfAbsent(ctx, chunk, writer); !errors.Is(err, s.ErrUnavailable) {
+				t.Fatal("insert fault did not leave an unknown outcome", err)
+			}
+			if len(fault.requests) != 1 {
+				t.Fatal("insert did not reach the injected dispatch fault")
+			}
+			f.m.api = original
+			if err := f.peer.ReconcileR1(ctx, writer); !errors.Is(err, s.ErrFenced) {
+				t.Fatal("active writer was reconciled", err)
+			}
+			// A restarted worker reaches the hourly cut after the writer expires.
+			f.utc.Advance(time.Hour + time.Second)
+			f.worker = f.acquire(t, "insert-successor", "recovery", "", 1)
+			closeRecovery(t, f.peer, f.request(0))
+			if _, err := f.service(f.peer, f.worker).CloseAndSeal(context.Background(), f.request(0)); err != nil {
+				t.Fatal("unknown insert blocked epoch sealing", err)
+			}
+			lease, err := f.peer.GetR1Lease(ctx, writer.LeaseID)
+			if err != nil || lease.State != "Closed" || len(lease.Pending) != 0 || len(lease.Roots) != 1 {
+				t.Fatal("reconciliation lost retained protection", lease, err)
+			}
+			if !committed {
+				if _, err := original.TransactWriteItems(ctx, fault.lastRequest); !isKnownCancellation(err) {
+					t.Fatal("late insert escaped the closed writer fence", err)
+				}
+			}
+			epoch, err := f.peer.GetRecoveryEpoch(ctx, f.catalog.History, 0)
+			wantEvents := uint64(0)
+			if committed {
+				wantEvents = 1
+			}
+			if err != nil || epoch.State != "Sealed" || epoch.EventCount != wantEvents {
+				t.Fatal("insert journal outcome was lost or fabricated", epoch, err)
+			}
+		})
+	}
+}
+
+func TestLocalRegistryQuiescenceReconcilesSharedInsert(t *testing.T) {
+	f := newRecoveryFixture(t)
+	ctx := context.Background()
+	limits := coordination.LeaseLimits{Lifetime: time.Minute, Heartbeat: 15 * time.Second}
+	seam := &r1ReconcileFault{R1Store: f.m}
+	gate, err := coordination.NewSharedR1Gate(f.local, f.catalog.Incarnation, "node", limits, seam, f.utc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := coordination.NewWriterRegistry(gate, limits, coordination.Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := contracttest.NewFixture().Request("joined-insert", 0)
+	deadline, _ := f.local.Now().Instant.Add(time.Minute)
+	_, writer, err := registry.AdmitProducer(ctx, r.Head.Object, r.Head.OpID, deadline)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work, err := writer.BeginOperation(ctx, r.Head.Object, r.Head.OpID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.m.BindR1(ctx, writer.Fence(), r.Head); err != nil {
+		t.Fatal(err)
+	}
+	action := "insert/default/" + strings.Repeat("a", 64)
+	if err := writer.Do(ctx, action, func(s.WriterFence) error { return s.ErrUnavailable }); !errors.Is(err, s.ErrUnavailable) {
+		t.Fatal(err)
+	}
+	if err := registry.Quiescent(); !errors.Is(err, coordination.ErrWorkPending) {
+		t.Fatal("executing insert was released", err)
+	}
+	work.Finish()
+	writer.CloseFence()
+	seam.fail = true
+	if err := registry.Quiescent(); !errors.Is(err, s.ErrUnavailable) {
+		t.Fatal("failed reconciliation reported clean shutdown", err)
+	}
+	lease, err := f.peer.GetR1Lease(ctx, writer.Fence().LeaseID)
+	if err != nil || lease.State != "Closed" || len(lease.Pending) != 1 || len(lease.Roots) != 1 {
+		t.Fatal("failed reconciliation lost protection", lease, err)
+	}
+	seam.fail = false
+	if err := registry.Quiescent(); err != nil {
+		t.Fatal("joined insert prevented shutdown", err)
+	}
+	lease, err = f.peer.GetR1Lease(ctx, writer.Fence().LeaseID)
+	if err != nil || lease.State != "Released" || len(lease.Pending) != 0 {
+		t.Fatal("joined insert retained unresolved authority", lease, err)
+	}
+}
+
 func TestLocalMultipartTakeoverSettlesOldRecoveryProducer(t *testing.T) {
 	for _, scenario := range []struct {
 		name                            string

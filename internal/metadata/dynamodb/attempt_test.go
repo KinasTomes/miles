@@ -18,6 +18,7 @@ type dispatchFault struct {
 	objectTable   string
 	before, after bool
 	requests      [][]byte
+	lastRequest   *ddb.TransactWriteItemsInput
 }
 
 func (f *dispatchFault) TransactWriteItems(ctx context.Context, in *ddb.TransactWriteItemsInput, options ...func(*ddb.Options)) (*ddb.TransactWriteItemsOutput, error) {
@@ -28,6 +29,7 @@ func (f *dispatchFault) TransactWriteItems(ctx context.Context, in *ddb.Transact
 		}
 	}
 	if final {
+		f.lastRequest = in
 		body, _ := json.Marshal(in)
 		f.requests = append(f.requests, body)
 		if f.before {

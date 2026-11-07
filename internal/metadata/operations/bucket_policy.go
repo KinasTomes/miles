@@ -94,6 +94,9 @@ func WriteBucketPolicy(t Tx, ctx context.Context, now time.Time, r s.BucketPolic
 	if !errors.Is(err, s.ErrNotFound) {
 		return zero, err
 	}
+	// Read immutable history before its pointer. DynamoDB item reads can span
+	// a concurrent commit; the pointer CAS must classify that as a conflict.
+	_, nextErr := get[s.PolicySnapshot](t, "bucket-cache-history", r.BucketID, bucketPolicyRevision(r.ExpectedRevision+1))
 	current, err := get[uint64](t, "bucket-cache-current", r.BucketID)
 	if err != nil && !errors.Is(err, s.ErrNotFound) {
 		return zero, err
@@ -120,10 +123,10 @@ func WriteBucketPolicy(t Tx, ctx context.Context, now time.Time, r s.BucketPolic
 	if current >= s.MaxPolicyRevision {
 		return zero, s.ErrConflict
 	}
-	if _, err := get[s.PolicySnapshot](t, "bucket-cache-history", r.BucketID, bucketPolicyRevision(current+1)); err == nil {
+	if nextErr == nil {
 		return zero, s.ErrUnavailable
-	} else if !errors.Is(err, s.ErrNotFound) {
-		return zero, err
+	} else if !errors.Is(nextErr, s.ErrNotFound) {
+		return zero, nextErr
 	}
 	out := s.PolicySnapshot{Version: s.ModelVersion, Revision: current + 1, Document: bytes.Clone(doc)}
 	// Journal requires an admitted mutation even when the store is in dev mode.
