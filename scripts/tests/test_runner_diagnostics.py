@@ -11,6 +11,7 @@ from scripts.runner_diagnostics import (
     parse_chrony_tracking,
     parse_gateway_journal_lines,
     parse_prometheus_metrics,
+    redact_sensitive_strings,
     sanitize_benchmark_failure,
 )
 
@@ -850,6 +851,54 @@ Leap status     : Normal
         self.assertEqual(len(failures), 1)
         self.assertIn(failures[0]["error_code"], ["dial_error", "clock_uncertainty_exceeded", "internal_error", "unclassified_error"])
         self.assertIn("error_code", payload["sanitized_summary"])
+
+    def test_object_path_and_opaque_auth_zero_leakage(self):
+        """
+        Verifies that object keys/paths in signed URLs and opaque Authorization tokens
+        are completely eliminated from the sanitized public artifact.
+        """
+        raw_auth = "Authorization = aRealTokenSecretWithNoBearer"
+        redacted_auth = redact_sensitive_strings(raw_auth)
+        self.assertNotIn("aRealTokenSecretWithNoBearer", redacted_auth)
+        self.assertIn("Authorization: [REDACTED]", redacted_auth)
+
+        leak_url = "https://example.invalid/private/financial-statement.pdf?X-Amz-Signature=NOTREAL"
+        client_res = {
+            "status": "failed",
+            "error": f"workload failed fetching {leak_url}",
+            "samples": [
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-LEAK-OBJ",
+                    "status_code": 500,
+                    "error": f"error getting {leak_url} with {raw_auth}",
+                }
+            ]
+        }
+
+        sanitized = sanitize_benchmark_failure(client_res)
+        dumped = json.dumps(sanitized)
+        self.assertNotIn("/private/financial-statement.pdf", dumped)
+        self.assertNotIn("financial-statement", dumped)
+        self.assertNotIn("aRealTokenSecretWithNoBearer", dumped)
+        self.assertNotIn("NOTREAL", dumped)
+
+    def test_correlate_failures_alb_target_503_not_upstream(self):
+        """
+        Verifies that when ALB access logs record target_status_code=503 (target responded),
+        the error is classified as origin_unverified (missing gateway log), NOT upstream_alb.
+        """
+        correlated = correlate_failures(
+            client_failures=[{"request_id": "R", "http_status": 503}],
+            gateway_records=[],
+            node_status={"cloud-a": "ok"},
+            alb_evidence=[{"request_id": "R", "elb_status_code": 503, "target_status_code": 503, "upstream": False}]
+        )
+        self.assertEqual(len(correlated), 1)
+        self.assertEqual(correlated[0]["request_id"], "R")
+        self.assertEqual(correlated[0]["source"], "origin_unverified")
+        self.assertEqual(correlated[0]["diagnostic_status"], "gateway_log_missing")
 
 
 if __name__ == "__main__":

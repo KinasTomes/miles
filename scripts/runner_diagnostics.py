@@ -9,7 +9,10 @@ import re
 
 
 SENSITIVE_PATTERNS = [
-    # Signed URL query components & auth params
+    # Full URLs & S3 URIs (removes all hosts, object paths, keys, and queries)
+    (re.compile(r'(?i)https?://[^\s"\'<>]+'), r'[REDACTED_URL]'),
+    (re.compile(r'(?i)s3://[^\s"\'<>]+'), r'[REDACTED_S3_URI]'),
+    # Signed URL query components & auth params (if unattached to full scheme)
     (re.compile(r'(?i)(X-Amz-Signature=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
     (re.compile(r'(?i)(X-Amz-Credential=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
     (re.compile(r'(?i)(X-Amz-Security-Token=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
@@ -17,9 +20,9 @@ SENSITIVE_PATTERNS = [
     (re.compile(r'(?i)(\bSignature=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
     (re.compile(r'(?i)(AWSAccessKeyId=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
     (re.compile(r'(?i)(AWSSecretAccessKey=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
-    # Authorization header
-    (re.compile(r'(?i)(Authorization:\s*)(?:Bearer|AWS4-HMAC-SHA256|Basic)\s+[^\s,"\'<>]+'), r'\1[REDACTED]'),
-    (re.compile(r'(?i)\bBearer\s+[A-Za-z0-9._~+/-]+'), r'Bearer [REDACTED]'),
+    # Authorization header (matches Bearer, SigV4, Basic, or opaque tokens without scheme)
+    (re.compile(r'(?i)\bAuthorization\s*[:=]\s*(?:(?:Bearer|AWS4-HMAC-SHA256|Basic)\s+)?[^\s,"\'<>]+'), r'Authorization: [REDACTED]'),
+    (re.compile(r'(?i)\bBearer\s+[^\s,"\'<>]+'), r'Bearer [REDACTED]'),
     # Raw AWS Access Key IDs (AKIA, ASIA, AROA, AIPA)
     (re.compile(r'(?<![A-Z0-9])(?:AKIA|ASIA|AROA|AIPA)[A-Z0-9]{16}(?![A-Z0-9])'), r'[REDACTED_AWS_KEY]'),
     # Generic secret/password/token/key/credential key-values
@@ -257,7 +260,20 @@ def correlate_failures(client_failures, gateway_records, node_status=None, alb_e
             })
         else:
             alb_rec = alb_map.get(rid)
-            if alb_rec and (alb_rec.get("upstream") is True or alb_rec.get("elb_status_code") in (502, 503, 504) or alb_rec.get("target_status_code") in ("-", None, "", 0)):
+            is_pre_target_alb = False
+            if alb_rec:
+                t_status = str(alb_rec.get("target_status_code", "-")).strip()
+                target_did_not_respond = t_status in ("-", "", "0", "None")
+                upstream_flag = alb_rec.get("upstream")
+
+                if upstream_flag is True:
+                    is_pre_target_alb = True
+                elif upstream_flag is False:
+                    is_pre_target_alb = False
+                elif target_did_not_respond and alb_rec.get("elb_status_code") in (502, 503, 504):
+                    is_pre_target_alb = True
+
+            if is_pre_target_alb:
                 correlated.append({
                     "request_id": rid,
                     "http_status": status,
@@ -266,6 +282,17 @@ def correlate_failures(client_failures, gateway_records, node_status=None, alb_e
                     "alb_status": alb_rec.get("elb_status_code", status),
                     "target_status": alb_rec.get("target_status_code", "-"),
                     "note": "corroborated by ALB access evidence; request terminated at ALB before target",
+                })
+            elif alb_rec and not is_pre_target_alb:
+                # ALB log indicates target responded or was contacted, but gateway log is missing
+                correlated.append({
+                    "request_id": rid,
+                    "http_status": status,
+                    "source": "origin_unverified",
+                    "diagnostic_status": "gateway_log_missing",
+                    "alb_status": alb_rec.get("elb_status_code", status),
+                    "target_status": alb_rec.get("target_status_code", "-"),
+                    "note": "ALB log indicates target responded or was contacted, but gateway log is missing",
                 })
             elif status == 500:
                 # ALB does NOT generate HTTP 500 on its own for target errors
@@ -295,6 +322,18 @@ def correlate_failures(client_failures, gateway_records, node_status=None, alb_e
                     })
 
     return correlated
+
+
+SAFE_ERROR_NAMES = {
+    "InternalError": "InternalError",
+    "Service Unavailable": "Service Unavailable",
+    "ServiceUnavailable": "ServiceUnavailable",
+    "RequestTimeout": "RequestTimeout",
+    "SlowDown": "SlowDown",
+    "unexpected EOF in data stream": "unexpected EOF in data stream",
+    "connection refused": "connection refused",
+    "context deadline exceeded": "context deadline exceeded",
+}
 
 
 def sanitize_benchmark_failure(client_result):
@@ -348,7 +387,11 @@ def sanitize_benchmark_failure(client_result):
                 "error_code": ecode,
             }
             if err:
-                record["error"] = redact_sensitive_strings(str(err)[:200])
+                cleaned_err = str(err).strip()
+                if cleaned_err in SAFE_ERROR_NAMES:
+                    record["error"] = SAFE_ERROR_NAMES[cleaned_err]
+                else:
+                    record["error"] = ecode
             return record
         return None
 
@@ -369,8 +412,8 @@ def sanitize_benchmark_failure(client_result):
                         failures.append(rec)
 
     raw_top_err = client_result.get("error")
-    top_err = redact_sensitive_strings(str(raw_top_err)[:200]) if raw_top_err is not None else None
     top_err_code = classify_error_to_code(raw_top_err) if raw_top_err is not None else None
+    top_err = top_err_code if raw_top_err is not None else None
 
     return {
         "status": str(client_result.get("status", "unknown")),

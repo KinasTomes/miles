@@ -74,9 +74,11 @@ def collect_cluster_telemetry(
                 return ssm_runner(node_id, prog)
 
             def run_rc(prog):
-                if ssm_runcommand_runner:
-                    return ssm_runcommand_runner(node_id, prog)
-                return ssm_runner(node_id, prog)
+                if not ssm_runcommand_runner:
+                    raise RuntimeError(
+                        f"SSM Session Manager failed on node '{alias}' and no genuine ssm_runcommand_runner fallback is configured"
+                    )
+                return ssm_runcommand_runner(node_id, prog)
 
             def exec_cmd(prog):
                 return execute_with_runcommand_fallback(
@@ -154,9 +156,11 @@ def collect_cluster_journals(
                 return ssm_runner(node_id, journal_prog)
 
             def run_rc():
-                if ssm_runcommand_runner:
-                    return ssm_runcommand_runner(node_id, journal_prog)
-                return ssm_runner(node_id, journal_prog)
+                if not ssm_runcommand_runner:
+                    raise RuntimeError(
+                        f"SSM Session Manager failed on node '{alias}' and no genuine ssm_runcommand_runner fallback is configured"
+                    )
+                return ssm_runcommand_runner(node_id, journal_prog)
 
             raw = execute_with_runcommand_fallback(run_session, run_rc)
             data = json.loads(raw)
@@ -286,3 +290,142 @@ def capture_and_assemble_failed_window(
             pass
 
     return public_payload, artifact_path
+
+
+def create_aws_cli_runcommand_runner(region="ap-southeast-1", env=None, timeout=90):
+    """
+    Builds a bounded, secret-free SSM RunCommand runner using AWS CLI.
+    Executes python snippets via AWS-RunShellScript with bounded invocation polling.
+    """
+    import base64
+    import re
+    import secrets
+    import subprocess
+    import time
+
+    def run_cmd(node_id, program):
+        nonce = secrets.token_hex(8)
+        begin = f"__MILES_RC_BEGIN_{nonce}__"
+        end = f"__MILES_RC_END_{nonce}__"
+        wrapper = (
+            "import base64,traceback\n"
+            f"print({repr(begin)},flush=True)\n"
+            "rc=0\n"
+            "try:\n"
+            f" exec(compile(base64.b64decode({repr(base64.b64encode(program.encode()).decode())}),'<runcommand>','exec'))\n"
+            "except BaseException:\n"
+            " rc=1;traceback.print_exc()\n"
+            f"print({repr(end)},rc,flush=True)\n"
+        )
+        shell_cmd = f"sudo -n python3 -c \"import base64;exec(base64.b64decode('{base64.b64encode(wrapper.encode()).decode()}'))\"\n"
+
+        send = subprocess.run(
+            [
+                "aws", "--region", region, "ssm", "send-command",
+                "--instance-ids", node_id,
+                "--document-name", "AWS-RunShellScript",
+                "--parameters", json.dumps({"commands": [shell_cmd]}),
+                "--timeout-seconds", str(min(120, timeout)),
+            ],
+            capture_output=True,
+            env=env,
+            text=True,
+            check=False,
+        )
+        if send.returncode != 0:
+            raise RuntimeError(f"SSM send-command failed on {node_id}: {send.stderr[-1000:]}")
+        cmd_data = json.loads(send.stdout)
+        cmd_id = cmd_data["Command"]["CommandId"]
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(2)
+            inv = subprocess.run(
+                [
+                    "aws", "--region", region, "ssm", "get-command-invocation",
+                    "--command-id", cmd_id,
+                    "--instance-id", node_id,
+                ],
+                capture_output=True,
+                env=env,
+                text=True,
+                check=False,
+            )
+            if inv.returncode != 0:
+                continue
+            inv_data = json.loads(inv.stdout)
+            status = inv_data.get("Status")
+            if status in ("Success", "Failed", "TimedOut", "Cancelled"):
+                out = inv_data.get("StandardOutputContent", "")
+                if begin in out and end in out:
+                    start = out.index(begin) + len(begin)
+                    match = re.search(re.escape(end) + r" (\d+)", out)
+                    if match:
+                        body = out[start:match.start()].strip()
+                        if match.group(1) != "0":
+                            raise RuntimeError(f"Remote RunCommand failed (rc={match.group(1)}): {body[-2000:]}")
+                        return body
+                if status != "Success":
+                    raise RuntimeError(f"RunCommand status {status}: {inv_data.get('StandardErrorContent', '')[-1000:]}")
+                return out.strip()
+        raise RuntimeError(f"SSM RunCommand timed out waiting for command {cmd_id} on {node_id}")
+
+    return run_cmd
+
+
+def execute_workload_and_capture_on_failure(
+    workload_fn,
+    name,
+    nodes,
+    before_metrics=None,
+    since_timestamp=0,
+    ssm_runner=None,
+    ssm_runcommand_runner=None,
+    ssh_runner=None,
+    alb_evidence=None,
+    out_dir=None,
+    release_hash=None,
+    save_private_trace=False,
+    private_dir=None,
+    fetch_result_fn=None,
+):
+    """
+    Executes workload_fn with guaranteed failure evidence capture.
+    If workload_fn raises ANY Exception (e.g. TimeoutExpired, ConnectionError)
+    or returns an object with non-zero returncode, it guarantees that
+    telemetry, journals, and correlated diagnostics are collected and
+    written to disk BEFORE propagating the exception.
+    """
+    try:
+        res = workload_fn()
+        rc = getattr(res, "returncode", 0)
+        if rc != 0:
+            raise RuntimeError(f"Workload execution failed with non-zero return code: {rc}")
+        return res
+    except BaseException as exc:
+        client_result = None
+        if fetch_result_fn:
+            try:
+                client_result = fetch_result_fn()
+            except Exception:
+                pass
+
+        try:
+            capture_and_assemble_failed_window(
+                name=name,
+                nodes=nodes,
+                client_result=client_result,
+                before_metrics=before_metrics,
+                since_timestamp=since_timestamp,
+                ssm_runner=ssm_runner,
+                ssm_runcommand_runner=ssm_runcommand_runner,
+                ssh_runner=ssh_runner,
+                alb_evidence=alb_evidence,
+                out_dir=out_dir,
+                release_hash=release_hash,
+                save_private_trace=save_private_trace,
+                private_dir=private_dir,
+            )
+        except Exception:
+            pass
+        raise exc

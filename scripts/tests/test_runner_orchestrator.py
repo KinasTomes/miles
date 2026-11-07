@@ -14,10 +14,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from unittest.mock import MagicMock, patch
+
 from scripts.runner_orchestrator import (
     capture_and_assemble_failed_window,
     collect_cluster_journals,
     collect_cluster_telemetry,
+    create_aws_cli_runcommand_runner,
+    execute_workload_and_capture_on_failure,
 )
 
 
@@ -282,6 +286,153 @@ class RunnerOrchestratorTests(unittest.TestCase):
         self.assertNotIn("AKIAIOSFODNN7EXAMPLE", dumped)
         self.assertNotIn(inst_id, dumped)
         self.assertNotIn("TopSecret", dumped)
+
+    def test_ssm_fail_fast_when_no_runcommand_runner(self):
+        """
+        Verifies that if Session Manager fails and no ssm_runcommand_runner is passed,
+        the orchestrator fails fast with a clear error and does not re-invoke ssm_runner.
+        """
+        call_count = 0
+
+        def failing_ssm(node_id, prog):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Standard_Stream not found in session channel")
+
+        nodes = [{"alias": "cloud-a", "id": "i-03bea44ea0f048125", "profile": "cloud"}]
+
+        telemetry = collect_cluster_telemetry(
+            nodes=nodes,
+            ssm_runner=failing_ssm,
+            ssm_runcommand_runner=None,
+        )
+        self.assertEqual(telemetry["status"], "error")
+        self.assertEqual(telemetry["nodes"]["cloud-a"]["status"], "error")
+        self.assertIn("no genuine ssm_runcommand_runner fallback", telemetry["nodes"]["cloud-a"]["error"])
+        # Should only have called failing_ssm once, not looped back
+        self.assertEqual(call_count, 1)
+
+    def test_execute_workload_and_capture_on_failure_with_exception(self):
+        """
+        Verifies that when workload_fn raises an exception (e.g. TimeoutError or ConnectionResetError),
+        the orchestrator writes the failed-window artifact to out_dir before re-raising the exception.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir)
+
+            def failing_workload():
+                raise ConnectionResetError("SSH connection dropped by remote peer")
+
+            def mock_ssm(node_id, prog):
+                if "startup.json" in prog:
+                    return "miles_ready 1\n"
+                if "chronyc" in prog:
+                    return "A9FEA97B,169.254.169.123,3,100.0,0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n"
+                if "journalctl" in prog:
+                    return json.dumps({"count": 0, "lines": []})
+                return "{}"
+
+            nodes = [{"alias": "cloud-a", "id": "i-03bea44ea0f048125", "profile": "cloud"}]
+
+            with self.assertRaises(ConnectionResetError):
+                execute_workload_and_capture_on_failure(
+                    workload_fn=failing_workload,
+                    name="ssh-fail-test",
+                    nodes=nodes,
+                    ssm_runner=mock_ssm,
+                    out_dir=out_path,
+                )
+
+            artifact = out_path / "ssh-fail-test-failed-window.json"
+            self.assertTrue(artifact.exists(), "Failed window artifact must be written on workload exception")
+            data = json.loads(artifact.read_text())
+            self.assertEqual(data["name"], "ssh-fail-test")
+
+    def test_execute_workload_and_capture_on_failure_nonzero_rc(self):
+        """
+        Verifies that when workload_fn returns a completed process object with non-zero returncode,
+        it captures failure diagnostics and raises a RuntimeError.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir)
+
+            class MockProcessResult:
+                returncode = 2
+                stdout = "workload execution error"
+
+            def mock_ssm(node_id, prog):
+                if "startup.json" in prog:
+                    return "miles_ready 1\n"
+                if "chronyc" in prog:
+                    return "A9FEA97B,169.254.169.123,3,100.0,0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n"
+                return json.dumps({"count": 0, "lines": []})
+
+            nodes = [{"alias": "cloud-a", "id": "i-03bea44ea0f048125", "profile": "cloud"}]
+
+            with self.assertRaises(RuntimeError) as ctx:
+                execute_workload_and_capture_on_failure(
+                    workload_fn=lambda: MockProcessResult(),
+                    name="rc-nonzero-test",
+                    nodes=nodes,
+                    ssm_runner=mock_ssm,
+                    out_dir=out_path,
+                )
+            self.assertIn("non-zero return code: 2", str(ctx.exception))
+            artifact = out_path / "rc-nonzero-test-failed-window.json"
+            self.assertTrue(artifact.exists())
+
+    def test_create_aws_cli_runcommand_runner(self):
+        """
+        Verifies that create_aws_cli_runcommand_runner sends AWS-RunShellScript command
+        and polls get-command-invocation until success, extracting the delimited output.
+        """
+        import base64
+        import re
+
+        captured_script = []
+
+        def fake_subprocess_run(cmd, **kwargs):
+            if "send-command" in cmd:
+                params_idx = cmd.index("--parameters")
+                params_json = json.loads(cmd[params_idx + 1])
+                sh_cmd = params_json["commands"][0]
+                captured_script.append(sh_cmd)
+                res = MagicMock()
+                res.returncode = 0
+                res.stdout = json.dumps({"Command": {"CommandId": "cmd-test-12345"}})
+                return res
+            elif "get-command-invocation" in cmd:
+                sh_cmd = captured_script[-1]
+                m_b64 = re.search(r"base64\.b64decode\('([^']+)'\)", sh_cmd)
+                decoded = base64.b64decode(m_b64.group(1)).decode() if m_b64 else ""
+                m_begin = re.search(r"__MILES_RC_BEGIN_[0-9a-f]+__", decoded)
+                m_end = re.search(r"__MILES_RC_END_[0-9a-f]+__", decoded)
+                begin = m_begin.group(0) if m_begin else ""
+                end = m_end.group(0) if m_end else ""
+                res = MagicMock()
+                res.returncode = 0
+                res.stdout = json.dumps({
+                    "Status": "Success",
+                    "StandardOutputContent": f"{begin}\nmiles_ready 1\n{end} 0\n",
+                    "StandardErrorContent": "",
+                })
+                return res
+            raise ValueError(f"Unexpected command: {cmd}")
+
+        with patch("subprocess.run", side_effect=fake_subprocess_run) as mock_run, patch("time.sleep"):
+            runner = create_aws_cli_runcommand_runner(region="ap-southeast-1", timeout=10)
+            output = runner("i-testnode", "print('hello')")
+            self.assertEqual(output, "miles_ready 1")
+
+            self.assertEqual(mock_run.call_count, 2)
+            first_call_args = mock_run.call_args_list[0][0][0]
+            self.assertIn("send-command", first_call_args)
+            self.assertIn("AWS-RunShellScript", first_call_args)
+            self.assertIn("i-testnode", first_call_args)
+
+            second_call_args = mock_run.call_args_list[1][0][0]
+            self.assertIn("get-command-invocation", second_call_args)
+            self.assertIn("cmd-test-12345", second_call_args)
 
 
 if __name__ == "__main__":
