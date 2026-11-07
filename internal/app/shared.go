@@ -138,6 +138,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	if err != nil {
 		return d, err
 	}
+	faultPacks := faults.WrapPackStore(coordination.ProtectPackStore(packs), faultReg, c.RuntimeNodeID)
 	metadata := &sharedMetadata{Store: m, utc: utc, owner: c.RuntimeNodeID + "-" + id}
 	journal := &journalRuntime{store: m, objects: journalObjects, catalog: catalog, clock: clk, authority: sharedJobAuthority{metadata}}
 	v, err := config.NewPolicyValidator(config.DSGPolicyLimits())
@@ -190,7 +191,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 				}
 				return v.DecodeBucket(id, record.Revision, record.Document)
 			},
-		}, m, packs, gate, global, admission, &runtimeMetrics.Warm)
+		}, m, faultPacks, gate, global, admission, &runtimeMetrics.Warm)
 	}
 	sealer, err := admin.NewAESSealer(keyID, seal)
 	if err != nil {
@@ -276,7 +277,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	for _, kind := range []jobs.Type{"tiering", "pack_restore", "pack_promote"} {
 		runner.Executors[kind] = lifecycleWorker.Executor(kind)
 	}
-	scrubWorker := &jobs.ScrubWorker{Store: m, Packs: faults.WrapPackStore(coordination.ProtectPackStore(packs), faultReg, c.RuntimeNodeID)}
+	scrubWorker := &jobs.ScrubWorker{Store: m, Packs: faultPacks}
 	runner.Executors["scrub"] = scrubWorker.Executor()
 	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: clients.packs, Bucket: c.PackBucket}, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second})
 	if err != nil {
@@ -313,7 +314,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 		clients.transport.CloseIdleConnections()
 		return errors.Join(e, flushErr, metadata.closeError(), resident.Close())
 	}
-	return Dependencies{NodeID: c.RuntimeNodeID, Faults: faultReg, Statistics: measurements, Metadata: metadata, Packs: faults.WrapPackStore(coordination.ProtectPackStore(packs), faultReg, c.RuntimeNodeID), Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
+	return Dependencies{NodeID: c.RuntimeNodeID, Faults: faultReg, Statistics: measurements, Metadata: metadata, Packs: faultPacks, Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
 		Operations:       operational,
 		closeWithContext: closeRuntime,
 		Close:            func() error { return closeRuntime(context.Background()) }}, nil

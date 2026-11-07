@@ -196,8 +196,13 @@ func (w *ScrubWorker) Step(ctx context.Context, j Job, _ config.GlobalSnapshot) 
 				// Read pack footer and index
 				entries, _, err := pack.ReadFooter(ctx, w.Packs, p.Ref)
 				if err != nil {
-					res.Corrupt++
-					res.Errors = append(res.Errors, fmt.Sprintf("pack %s footer read error: %v", p.Ref.ID, err))
+					var formatErr *pack.FormatError
+					if errors.As(err, &formatErr) {
+						res.Corrupt++
+						res.Errors = append(res.Errors, fmt.Sprintf("pack %s footer corrupt: %v", p.Ref.ID, err))
+					} else {
+						res.Errors = append(res.Errors, fmt.Sprintf("pack %s footer I/O error: %v", p.Ref.ID, err))
+					}
 					if int(res.Candidates) >= limit {
 						break
 					}
@@ -206,6 +211,7 @@ func (w *ScrubWorker) Step(ctx context.Context, j Job, _ config.GlobalSnapshot) 
 
 				// Verify chunks in the pack
 				packCorrupt := false
+				packIOErr := false
 				for _, entry := range entries {
 					if ctx.Err() != nil {
 						return Step{}, ctx.Err()
@@ -213,9 +219,15 @@ func (w *ScrubWorker) Step(ctx context.Context, j Job, _ config.GlobalSnapshot) 
 
 					blob, err := pack.ReadBlobRange(ctx, w.Packs, p.Ref, entry)
 					if err != nil {
-						packCorrupt = true
-						res.Corrupt++
-						res.Errors = append(res.Errors, fmt.Sprintf("pack %s chunk %s read error: %v", p.Ref.ID, entry.Key.Hash, err))
+						var formatErr *pack.FormatError
+						if errors.As(err, &formatErr) {
+							packCorrupt = true
+							res.Corrupt++
+							res.Errors = append(res.Errors, fmt.Sprintf("pack %s chunk %s corrupt: %v", p.Ref.ID, entry.Key.Hash, err))
+						} else {
+							packIOErr = true
+							res.Errors = append(res.Errors, fmt.Sprintf("pack %s chunk %s I/O error: %v", p.Ref.ID, entry.Key.Hash, err))
+						}
 						break
 					}
 
@@ -229,7 +241,7 @@ func (w *ScrubWorker) Step(ctx context.Context, j Job, _ config.GlobalSnapshot) 
 					}
 				}
 
-				if !packCorrupt {
+				if !packCorrupt && !packIOErr {
 					res.Checked++
 				}
 

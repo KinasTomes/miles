@@ -72,22 +72,20 @@ func faultCommand(sub string, args []string, invalid error) (command, error) {
 		return command{method: http.MethodDelete, path: "/admin/v1/faults/" + args[0]}, nil
 	case "add":
 		faultType := f.String("type", "", "fault type: s3_5xx|ddb_throttle|kill_node|corrupt_pack")
-		scope := f.String("scope", "cluster", "cluster|node")
+		scope := f.String("scope", "node", "scope: node (cluster scope deferred to multi-node task)")
 		nodeID := f.String("node", "", "node id for --scope node")
 		rate := f.Float64("rate", 1.0, "injection probability (0.0, 1.0]")
 		duration := f.Int64("duration", 60, "duration in seconds (1..86400)")
 		set, ok := parse(f, args)
-		if !ok || !set["type"] || *rate <= 0.0 || *rate > 1.0 || *duration <= 0 || (*scope == "node" && !set["node"]) {
+		if !ok || !set["type"] || *rate <= 0.0 || *rate > 1.0 || *duration <= 0 || *scope != "node" || !set["node"] {
 			return command{}, invalid
 		}
 		body := map[string]any{
 			"type":             *faultType,
 			"scope":            *scope,
+			"node_id":          *nodeID,
 			"rate":             *rate,
 			"duration_seconds": *duration,
-		}
-		if set["node"] {
-			body["node_id"] = *nodeID
 		}
 		return command{method: http.MethodPost, path: "/admin/v1/faults", body: jsonBody(body)}, nil
 	default:

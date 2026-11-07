@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"testing"
 
 	"github.com/KinasTomes/miles/internal/config"
@@ -278,6 +279,45 @@ func TestScrubWorkerCorruptionDetected(t *testing.T) {
 			t.Fatalf("expected corrupt count 1, got %d", res.Corrupt)
 		}
 	})
+
+	t.Run("transient S3 IO error does not flag corruption", func(t *testing.T) {
+		meta := fake.NewMetadata(fake.Seed{})
+		packStore := fake.NewPacks(nil)
+		ref := storage.PackRef{ID: "pack-io-err", Generation: "gen-1"}
+		info := createTestPack(t, packStore, ref, storage.Standard, "Warm", []byte("chunk content"))
+		meta.SetPack(info)
+
+		faultyStore := &ioErrorPackStore{PackStore: packStore}
+		worker := &ScrubWorker{Store: meta, Packs: faultyStore}
+		exec := worker.Executor()
+
+		step, err := exec.Step(context.Background(), Job{}, config.GlobalSnapshot{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if step.ErrorCode != "io_error" {
+			t.Fatalf("expected ErrorCode io_error, got %q", step.ErrorCode)
+		}
+
+		var res ScrubResult
+		if err := json.Unmarshal(step.Result, &res); err != nil {
+			t.Fatal(err)
+		}
+		if res.Corrupt != 0 {
+			t.Fatalf("expected corrupt count 0 on transient I/O error, got %d", res.Corrupt)
+		}
+		if len(res.Errors) == 0 {
+			t.Fatal("expected I/O error recorded in res.Errors")
+		}
+	})
+}
+
+type ioErrorPackStore struct {
+	storage.PackStore
+}
+
+func (s *ioErrorPackStore) RangeGet(ctx context.Context, ref storage.PackRef, span storage.ByteRange) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("%w: simulated transient s3 timeout", storage.ErrUnavailable)
 }
 
 func TestScrubWorkerPackEligibility(t *testing.T) {

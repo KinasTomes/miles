@@ -30,7 +30,7 @@ func TestFaultRegistryOptInAndLifecycle(t *testing.T) {
 	if nilReg.Enabled() {
 		t.Fatal("nil registry should not be enabled")
 	}
-	if _, err := nilReg.Add(now, FaultRule{Type: FaultS35xx, Scope: ScopeCluster, Rate: 1.0, Duration: 60}); !errors.Is(err, ErrDisabled) {
+	if _, err := nilReg.Add(now, FaultRule{Type: FaultS35xx, Scope: ScopeNode, NodeID: "node-1", Rate: 1.0, Duration: 60}); !errors.Is(err, ErrDisabled) {
 		t.Fatalf("expected ErrDisabled for nil registry, got %v", err)
 	}
 	if _, err := nilReg.List(now); !errors.Is(err, ErrDisabled) {
@@ -51,7 +51,8 @@ func TestFaultRegistryOptInAndLifecycle(t *testing.T) {
 
 	_, err := reg.Add(now, FaultRule{
 		Type:     FaultS35xx,
-		Scope:    ScopeCluster,
+		Scope:    ScopeNode,
+		NodeID:   "node-1",
 		Rate:     1.0,
 		Duration: 60,
 	})
@@ -66,26 +67,31 @@ func TestFaultRegistryOptInAndLifecycle(t *testing.T) {
 	}
 
 	// Invalid rules
-	if _, err := reg.Add(now, FaultRule{Type: "invalid_type", Scope: ScopeCluster, Rate: 1.0, Duration: 60}); err == nil {
+	if _, err := reg.Add(now, FaultRule{Type: "invalid_type", Scope: ScopeNode, NodeID: "node-1", Rate: 1.0, Duration: 60}); err == nil {
 		t.Fatal("expected error for invalid type")
+	}
+	// Cluster scope must be explicitly rejected in MVP
+	if _, err := reg.Add(now, FaultRule{Type: FaultS35xx, Scope: ScopeCluster, Rate: 1.0, Duration: 60}); err == nil {
+		t.Fatal("expected error for cluster scope in MVP")
 	}
 	if _, err := reg.Add(now, FaultRule{Type: FaultS35xx, Scope: ScopeNode, NodeID: "", Rate: 1.0, Duration: 60}); err == nil {
 		t.Fatal("expected error for node scope without node_id")
 	}
-	if _, err := reg.Add(now, FaultRule{Type: FaultS35xx, Scope: ScopeCluster, Rate: 0.0, Duration: 60}); err == nil {
+	if _, err := reg.Add(now, FaultRule{Type: FaultS35xx, Scope: ScopeNode, NodeID: "node-1", Rate: 0.0, Duration: 60}); err == nil {
 		t.Fatal("expected error for rate 0.0")
 	}
-	if _, err := reg.Add(now, FaultRule{Type: FaultS35xx, Scope: ScopeCluster, Rate: 1.5, Duration: 60}); err == nil {
+	if _, err := reg.Add(now, FaultRule{Type: FaultS35xx, Scope: ScopeNode, NodeID: "node-1", Rate: 1.5, Duration: 60}); err == nil {
 		t.Fatal("expected error for rate > 1.0")
 	}
-	if _, err := reg.Add(now, FaultRule{Type: FaultS35xx, Scope: ScopeCluster, Rate: 1.0, Duration: 0}); err == nil {
+	if _, err := reg.Add(now, FaultRule{Type: FaultS35xx, Scope: ScopeNode, NodeID: "node-1", Rate: 1.0, Duration: 0}); err == nil {
 		t.Fatal("expected error for duration <= 0")
 	}
 
 	// Valid rule
 	rule, err := reg.Add(now, FaultRule{
 		Type:     FaultS35xx,
-		Scope:    ScopeCluster,
+		Scope:    ScopeNode,
+		NodeID:   "node-1",
 		Rate:     1.0,
 		Duration: 60,
 	})
@@ -104,7 +110,10 @@ func TestFaultRegistryOptInAndLifecycle(t *testing.T) {
 
 	// ShouldInject
 	if !reg.ShouldInject(now, FaultS35xx, "node-1") {
-		t.Fatal("expected injection for cluster scope")
+		t.Fatal("expected injection for node-1")
+	}
+	if reg.ShouldInject(now, FaultS35xx, "node-2") {
+		t.Fatal("unexpected injection for different node")
 	}
 	if reg.ShouldInject(now, FaultDDBThrottle, "node-1") {
 		t.Fatal("unexpected injection for different fault type")
@@ -142,7 +151,8 @@ func TestFaultRegistryOptInAndLifecycle(t *testing.T) {
 	_, err = reg.Add(now, FaultRule{
 		ID:       "flt-explicit",
 		Type:     FaultDDBThrottle,
-		Scope:    ScopeCluster,
+		Scope:    ScopeNode,
+		NodeID:   "node-1",
 		Rate:     1.0,
 		Duration: 60,
 	})
@@ -170,7 +180,8 @@ func TestWrapHTTPClientDDBThrottle(t *testing.T) {
 	reg := NewRegistry(true)
 	rule := FaultRule{
 		Type:     FaultDDBThrottle,
-		Scope:    ScopeCluster,
+		Scope:    ScopeNode,
+		NodeID:   "node-1",
 		Rate:     1.0,
 		Duration: 60,
 	}
@@ -208,7 +219,8 @@ func TestWrapPackStoreCorruptPack(t *testing.T) {
 	reg := NewRegistry(true)
 	rule := FaultRule{
 		Type:     FaultCorruptPack,
-		Scope:    ScopeCluster,
+		Scope:    ScopeNode,
+		NodeID:   "node-1",
 		Rate:     1.0,
 		Duration: 60,
 	}

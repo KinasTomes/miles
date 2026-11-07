@@ -1,5 +1,9 @@
 // Package faults provides opt-in, administrative fault injection for testing and resilience.
 // Fault injection is disabled by default and can only be enabled via explicit configuration.
+//
+// In this MVP, fault injection rules are strictly node-scoped (scope=node) and apply to the
+// current gateway instance identified by node_id. Cluster-scope distributed fault coordination
+// (cross-node fan-out, membership tracking, distributed TTL) is deferred to a future task.
 package faults
 
 import (
@@ -22,6 +26,9 @@ type FaultType string
 const (
 	FaultS35xx       FaultType = "s3_5xx"
 	FaultDDBThrottle FaultType = "ddb_throttle"
+	// FaultKillNode simulates catastrophic node death by immediately draining admission
+	// and failing health probes. Draining is intentionally permanent on the process; recovery
+	// requires a gateway restart or supervisor reboot, mirroring real node failure.
 	FaultKillNode    FaultType = "kill_node"
 	FaultCorruptPack FaultType = "corrupt_pack"
 )
@@ -37,12 +44,12 @@ func (t FaultType) Valid() bool {
 type FaultScope string
 
 const (
-	ScopeCluster FaultScope = "cluster"
 	ScopeNode    FaultScope = "node"
+	ScopeCluster FaultScope = "cluster" // cluster scope is rejected in MVP and deferred to multi-node task
 )
 
 func (s FaultScope) Valid() bool {
-	return s == ScopeCluster || s == ScopeNode
+	return s == ScopeNode
 }
 
 type FaultRule struct {
@@ -57,10 +64,16 @@ type FaultRule struct {
 }
 
 func (r FaultRule) Validate() error {
-	if !r.Type.Valid() || !r.Scope.Valid() {
-		return ErrInvalidRule
+	if !r.Type.Valid() {
+		return fmt.Errorf("%w: invalid fault type", ErrInvalidRule)
 	}
-	if r.Scope == ScopeNode && r.NodeID == "" {
+	if r.Scope == ScopeCluster {
+		return fmt.Errorf("%w: cluster scope is not supported in single-node fault MVP; specify scope 'node' with node_id", ErrInvalidRule)
+	}
+	if r.Scope != ScopeNode {
+		return fmt.Errorf("%w: invalid fault scope; must be 'node'", ErrInvalidRule)
+	}
+	if r.NodeID == "" {
 		return fmt.Errorf("%w: node scope requires node_id", ErrInvalidRule)
 	}
 	if r.Rate <= 0.0 || r.Rate > 1.0 {
@@ -184,17 +197,15 @@ func (reg *Registry) ShouldInject(now time.Time, t FaultType, nodeID string) boo
 			delete(reg.rules, id)
 			continue
 		}
-		if r.Type == t {
-			if r.Scope == ScopeCluster || (r.Scope == ScopeNode && r.NodeID == nodeID) {
-				if r.Rate >= 1.0 {
-					return true
-				}
-				// Sample pseudo-random
-				b := make([]byte, 2)
-				rand.Read(b)
-				val := float64(uint16(b[0])<<8|uint16(b[1])) / 65535.0
-				return val < r.Rate
+		if r.Type == t && r.Scope == ScopeNode && r.NodeID == nodeID {
+			if r.Rate >= 1.0 {
+				return true
 			}
+			// Sample pseudo-random
+			b := make([]byte, 2)
+			rand.Read(b)
+			val := float64(uint16(b[0])<<8|uint16(b[1])) / 65535.0
+			return val < r.Rate
 		}
 	}
 	return false

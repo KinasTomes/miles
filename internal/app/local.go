@@ -94,6 +94,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		nodeID = "local"
 	}
 	faultReg := faults.NewRegistry(c.EnableFaultInjection)
+	faultPacks := faults.WrapPackStore(coordination.ProtectPackStore(packs), faultReg, nodeID)
 	lru, err := cache.NewLRU(cache.Limits{CapacityBytes: 64 << 20, MaxEntries: 1024, MaxCopyBytes: 4 << 20})
 	if err != nil {
 		transport.CloseIdleConnections()
@@ -119,7 +120,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		}
 		resident, closeCache = node, node.Close
 	}
-	objects, metadata, stopObjects, err := localObjects(m, packs, resident, cachePolicy)
+	objects, metadata, stopObjects, err := localObjects(m, packs, faultPacks, resident, cachePolicy)
 	if err != nil {
 		_ = closeCache()
 		transport.CloseIdleConnections()
@@ -155,7 +156,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		return d, err
 	}
 	adminOptions.Statistics = measurements
-	return Dependencies{NodeID: nodeID, Faults: faultReg, Statistics: measurements, Metadata: metadata, Packs: faults.WrapPackStore(coordination.ProtectPackStore(packs), faultReg, nodeID), Cache: resident, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Admin: adminOptions, Close: func() error {
+	return Dependencies{NodeID: nodeID, Faults: faultReg, Statistics: measurements, Metadata: metadata, Packs: faultPacks, Cache: resident, Objects: objects, Probe: probe, DevCredentials: []DevCredential{cred}, Admin: adminOptions, Close: func() error {
 		stopObjects()
 		transport.CloseIdleConnections()
 		return errors.Join(closeCache(), m.Close())

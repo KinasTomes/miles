@@ -23,13 +23,13 @@ func TestAdminFaultAPIRBACAndLifecycle(t *testing.T) {
 	// 1. Unauthorized / Non-admin checks
 	w.must(w.do("GET", "/admin/v1/faults", "", ""), 401)
 	w.must(w.do("GET", "/admin/v1/faults", nonAdminToken, ""), 403)
-	w.must(w.do("POST", "/admin/v1/faults", "", `{"type":"s3_5xx","scope":"cluster","rate":1.0,"duration_seconds":60}`), 401)
-	w.must(w.do("POST", "/admin/v1/faults", nonAdminToken, `{"type":"s3_5xx","scope":"cluster","rate":1.0,"duration_seconds":60}`), 403)
+	w.must(w.do("POST", "/admin/v1/faults", "", `{"type":"s3_5xx","scope":"node","node_id":"node-1","rate":1.0,"duration_seconds":60}`), 401)
+	w.must(w.do("POST", "/admin/v1/faults", nonAdminToken, `{"type":"s3_5xx","scope":"node","node_id":"node-1","rate":1.0,"duration_seconds":60}`), 403)
 	w.must(w.do("DELETE", "/admin/v1/faults/flt-123", "", ""), 401)
 	w.must(w.do("DELETE", "/admin/v1/faults/flt-123", nonAdminToken, ""), 403)
 
 	// 2. Disabled fault injection
-	rec := w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"cluster","rate":1.0,"duration_seconds":60}`), 400)
+	rec := w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"node","node_id":"node-1","rate":1.0,"duration_seconds":60}`), 400)
 	if code(t, rec) != "invalid_request" {
 		t.Fatalf("expected invalid_request code when disabled, got %s", code(t, rec))
 	}
@@ -39,18 +39,19 @@ func TestAdminFaultAPIRBACAndLifecycle(t *testing.T) {
 
 	// Invalid POST body / parameters
 	w.must(w.do("POST", "/admin/v1/faults", w.root, `{invalid json`), 400)
-	w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"invalid_type","scope":"cluster","rate":1.0,"duration_seconds":60}`), 400)
-	w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"node","rate":1.0,"duration_seconds":60}`), 400)    // node scope requires node_id
-	w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"cluster","rate":0.0,"duration_seconds":60}`), 400) // rate <= 0
-	w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"cluster","rate":1.0,"duration_seconds":0}`), 400)  // duration <= 0
+	w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"invalid_type","scope":"node","node_id":"node-1","rate":1.0,"duration_seconds":60}`), 400)
+	w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"cluster","rate":1.0,"duration_seconds":60}`), 400)                 // cluster scope rejected in MVP
+	w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"node","rate":1.0,"duration_seconds":60}`), 400)                    // node scope requires node_id
+	w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"node","node_id":"node-1","rate":0.0,"duration_seconds":60}`), 400) // rate <= 0
+	w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"node","node_id":"node-1","rate":1.0,"duration_seconds":0}`), 400)  // duration <= 0
 
 	// Valid POST
-	createRec := w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"cluster","rate":1.0,"duration_seconds":120}`), 201)
+	createRec := w.must(w.do("POST", "/admin/v1/faults", w.root, `{"type":"s3_5xx","scope":"node","node_id":"node-1","rate":1.0,"duration_seconds":120}`), 201)
 	var created faults.FaultRule
 	if err := json.Unmarshal(createRec.Body.Bytes(), &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.ID == "" || created.Type != faults.FaultS35xx || created.Scope != faults.ScopeCluster {
+	if created.ID == "" || created.Type != faults.FaultS35xx || created.Scope != faults.ScopeNode || created.NodeID != "node-1" {
 		t.Fatalf("unexpected created rule: %+v", created)
 	}
 
