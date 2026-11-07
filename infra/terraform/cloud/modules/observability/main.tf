@@ -1,11 +1,14 @@
 locals {
-  alarms = {
+  base_alarms = {
     recovery_cut_age = { metric = "miles_recovery_cut_age_seconds", threshold = 3600, statistic = "Maximum", missing = "breaching", description = "Latest sealed cut is older than one hour; export success alone is not RPO." }
     integrity        = { metric = "miles_warm_read_integrity_failures_total", threshold = 0, statistic = "Sum", missing = "notBreaching", description = "A Warm read failed integrity validation. Preserve evidence and stop acceptance." }
     throttling       = { metric = "miles_ddb_throttles_total", threshold = 0, statistic = "Sum", missing = "notBreaching", description = "The runtime observed DynamoDB throttling. Inspect native AWS/DynamoDB table metrics." }
-    completing       = { metric = "miles_stuck_completing_uploads", threshold = 0, statistic = "Maximum", missing = "breaching", description = "A Completing upload has an expired completion lease; inspect outcome before recovery." }
     telemetry_age    = { metric = "miles_runtime_observation_age_seconds", threshold = 60, statistic = "Maximum", missing = "breaching", description = "Runtime telemetry is stale or absent. Missing observations are not healthy zeroes." }
   }
+  deep_alarms = {
+    completing = { metric = "miles_stuck_completing_uploads", threshold = 0, statistic = "Maximum", missing = "breaching", description = "A Completing upload has an expired completion lease; inspect outcome before recovery." }
+  }
+  alarms    = merge(local.base_alarms, var.deep_observation ? local.deep_alarms : {})
   instances = { for pair in setproduct(var.enabled ? var.profiles : [], keys(local.alarms)) : "${pair[0]}-${pair[1]}" => { profile = pair[0], alarm = local.alarms[pair[1]] } }
 }
 resource "aws_cloudwatch_metric_alarm" "runtime" {

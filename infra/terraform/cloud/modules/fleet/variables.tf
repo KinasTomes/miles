@@ -32,3 +32,8 @@ variable "owner_ssh_public_key" {
     error_message = "Owner SSH uses one reviewed ed25519 public key, never a private key."
   }
 }
+variable "deep_observation" {
+  type        = bool
+  default     = false
+  description = "Enable opt-in bounded DynamoDB scans for stuck completing uploads and journal export lag in gateway startup."
+}

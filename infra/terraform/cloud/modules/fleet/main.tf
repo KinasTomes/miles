@@ -16,6 +16,7 @@ locals {
     table_prefix         = "${var.name}-"
     kms_key_arn          = var.kms_key_arn
     owner_ssh_public_key = var.owner_ssh_public_key
+    deep_observation     = var.deep_observation
   })
 }
 

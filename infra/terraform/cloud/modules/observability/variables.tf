@@ -17,3 +17,8 @@ variable "alarm_actions" {
     error_message = "Use up to five SNS topic ARNs; runtime alarms never stop or replace instances."
   }
 }
+variable "deep_observation" {
+  type        = bool
+  default     = false
+  description = "Enable alarms for metrics collected only during deep DynamoDB table scans (e.g. miles_stuck_completing_uploads)."
+}
