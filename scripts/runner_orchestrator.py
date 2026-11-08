@@ -14,10 +14,13 @@ from pathlib import Path
 import time
 
 from scripts.runner_diagnostics import (
+    CHRONY_PAYLOAD_BEGIN,
+    CHRONY_PAYLOAD_END,
     build_failed_window_payload,
     collect_node_journals_safe,
     collect_node_telemetry_safe,
     execute_with_runcommand_fallback,
+    parse_chrony_response_payload,
     redact_sensitive_payload,
     redact_sensitive_strings,
 )
@@ -30,8 +33,14 @@ DEFAULT_METRIC_PROGRAM = (
 )
 
 DEFAULT_CHRONY_PROGRAM = (
-    "import subprocess;"
-    "print(subprocess.run(['chronyc','-n','-c','tracking'],capture_output=True,text=True,timeout=5).stdout)"
+    "import datetime,json,subprocess,time;"
+    "t0=time.monotonic();"
+    "p=subprocess.run(['chronyc','-n','-c','tracking'],capture_output=True,text=True,timeout=5);"
+    "t1=time.monotonic();"
+    "now=datetime.datetime.now(datetime.timezone.utc);"
+    "print('__CHRONY_PAYLOAD_BEGIN__');"
+    "print(json.dumps({'version':1,'host_observed_at':now.isoformat(),'host_observed_unix':now.timestamp(),'host_chrony_elapsed_seconds':round(t1-t0,6),'returncode':p.returncode,'stdout':p.stdout,'stderr':p.stderr}));"
+    "print('__CHRONY_PAYLOAD_END__')"
 )
 
 
@@ -90,17 +99,24 @@ def collect_cluster_telemetry(
                 )
 
             metrics_raw = exec_cmd(DEFAULT_METRIC_PROGRAM).replace("\r", "")
-            chrony_raw = ""
+            raw_chrony_output = ""
             chrony_error = None
             t_chrony_start = time.monotonic()
             try:
-                chrony_raw = exec_cmd(DEFAULT_CHRONY_PROGRAM).replace("\r", "")
+                raw_chrony_output = exec_cmd(DEFAULT_CHRONY_PROGRAM).replace("\r", "")
             except Exception as ce:
                 chrony_error = redact_sensitive_strings(str(ce))
             t_chrony_finish = time.monotonic()
-            chrony_elapsed = round(t_chrony_finish - t_chrony_start, 4)
+            transport_latency = round(t_chrony_finish - t_chrony_start, 4)
             t_finish_node = datetime.datetime.now(datetime.timezone.utc).isoformat()
             t_mono_finish = time.monotonic()
+
+            payload = parse_chrony_response_payload(raw_chrony_output)
+            chrony_raw = payload["chrony_raw"]
+            host_observed_at = payload["host_observed_at"]
+            host_observed_unix = payload["host_observed_unix"]
+            host_chrony_elapsed = payload["host_chrony_elapsed_seconds"]
+            runtime_elapsed_verified = payload["runtime_elapsed_verified"]
 
             return {
                 "metrics_raw": metrics_raw,
@@ -110,7 +126,12 @@ def collect_cluster_telemetry(
                 "probe_started_at": t_start_node,
                 "probe_finished_at": t_finish_node,
                 "probe_duration_seconds": round(t_mono_finish - t_mono_start, 4),
-                "chrony_elapsed_seconds": chrony_elapsed,
+                "transport_latency_seconds": transport_latency,
+                "chrony_elapsed_seconds": host_chrony_elapsed,
+                "host_chrony_elapsed_seconds": host_chrony_elapsed,
+                "host_observed_at": host_observed_at,
+                "host_observed_unix": host_observed_unix,
+                "runtime_elapsed_verified": runtime_elapsed_verified,
             }
 
         elif profile == "edge":
@@ -119,18 +140,29 @@ def collect_cluster_telemetry(
 
             r = ssh_runner(["curl", "--silent", "--fail", "http://127.0.0.1:9100/metrics"])
             metrics_raw = r.stdout.decode() if hasattr(r, "stdout") else str(r)
-            chrony_raw = ""
+            raw_chrony_output = ""
             chrony_error = None
             t_chrony_start = time.monotonic()
             try:
-                rc = ssh_runner(["chronyc", "-n", "-c", "tracking"])
-                chrony_raw = rc.stdout.decode() if hasattr(rc, "stdout") else str(rc)
-            except Exception as ce:
-                chrony_error = redact_sensitive_strings(str(ce))
+                rc = ssh_runner(["python3", "-c", DEFAULT_CHRONY_PROGRAM])
+                raw_chrony_output = rc.stdout.decode() if hasattr(rc, "stdout") else str(rc)
+            except Exception:
+                try:
+                    rc = ssh_runner(["chronyc", "-n", "-c", "tracking"])
+                    raw_chrony_output = rc.stdout.decode() if hasattr(rc, "stdout") else str(rc)
+                except Exception as ce:
+                    chrony_error = redact_sensitive_strings(str(ce))
             t_chrony_finish = time.monotonic()
-            chrony_elapsed = round(t_chrony_finish - t_chrony_start, 4)
+            transport_latency = round(t_chrony_finish - t_chrony_start, 4)
             t_finish_node = datetime.datetime.now(datetime.timezone.utc).isoformat()
             t_mono_finish = time.monotonic()
+
+            payload = parse_chrony_response_payload(raw_chrony_output)
+            chrony_raw = payload["chrony_raw"]
+            host_observed_at = payload["host_observed_at"]
+            host_observed_unix = payload["host_observed_unix"]
+            host_chrony_elapsed = payload["host_chrony_elapsed_seconds"]
+            runtime_elapsed_verified = payload["runtime_elapsed_verified"]
 
             return {
                 "metrics_raw": metrics_raw,
@@ -140,7 +172,12 @@ def collect_cluster_telemetry(
                 "probe_started_at": t_start_node,
                 "probe_finished_at": t_finish_node,
                 "probe_duration_seconds": round(t_mono_finish - t_mono_start, 4),
-                "chrony_elapsed_seconds": chrony_elapsed,
+                "transport_latency_seconds": transport_latency,
+                "chrony_elapsed_seconds": host_chrony_elapsed,
+                "host_chrony_elapsed_seconds": host_chrony_elapsed,
+                "host_observed_at": host_observed_at,
+                "host_observed_unix": host_observed_unix,
+                "runtime_elapsed_verified": runtime_elapsed_verified,
             }
 
         else:
