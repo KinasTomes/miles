@@ -1,8 +1,8 @@
 # Kế hoạch chạy nghiệm thu AWS thực tế (AWS Live Acceptance Run Plan)
 
-**Mã văn kiện:** `aws-live-acceptance-run-plan`  
-**Ngày lập:** 08/11/2026  
-**Trạng thái:** Chờ phê duyệt từ chủ tài khoản (Awaiting Owner Approval) — **AWS State 0 duy trì**  
+**Mã văn kiện:** `aws-live-acceptance-run-plan`
+**Ngày lập:** 08/11/2026
+**Trạng thái:** Pre-execution Plan (Đã được phê duyệt tại run `w05-hung03-live-20261108-0345`; đã thực hiện Phase C, D1, D2, D3, E; teardown sạch 41/41 absence checks — xem kết quả tại [`docs/testing/live-acceptance-20261108-report.md`](../testing/live-acceptance-20261108-report.md))
 **Căn cứ:** `docs/planning/aws-live-acceptance-follow-up.md` §2 (Phase C, D, E) và §4.
 
 ---

@@ -1,6 +1,6 @@
 # W05-HUNG-03 — Kế hoạch follow-up AWS live acceptance sau PR #65
 
-> Ngày lập: 2026-11-07 · Trạng thái: **PLAN / AWS State 0** (chưa chạy AWS)
+> Ngày lập: 2026-11-07 (Cập nhật: 2026-11-08) · Trạng thái: **Phase A, B, C, E HOÀN TẤT; Phase D MỘT PHẦN** (Cloud C1/C4 PASS; Edge C1 fail với 44/44 bằng chứng; Dọn dẹp Phase E sạch State 0)
 >
 > Worktree: `/home/ubuntu/miles-worktrees/w05-dynamodb-pilot-aws-acceptance`
 >
@@ -73,15 +73,15 @@
 
 **Gate C:** approved run plan + saved plan hash + teardown proof plan + IAM/quota/budget. Thiếu bất kỳ mục nào thì duy trì **AWS State 0**. *(Hoàn tất trong run `w05-hung03-live-20261108-0345`).*
 
-### Phase D — Staged live acceptance (AWS, chưa được phép chạy hiện tại)
+### Phase D — Staged live acceptance (Đã thực hiện phiên 2026-11-08 — Scope ID: `w05-hung03-live-20261108-0345`)
 
 - [x] **D0 Fresh install:** triển khai từ release đã duyệt, xác thực 2 Cloud nodes ở hai AZ và Edge (nếu trong scope), SSM/ALB healthy, chrony bounds, R1 lease and export/cut readiness; capture native inventory và metrics `before` cho từng node. Test một lỗi diagnostics có kiểm soát trên fixture trước workload lớn (không inject vào shared production state).
 - [x] **D1 Cloud C1 first:** `backup30`, concurrency=1, **90/90 PUT + 90/90 HEAD + 360/360 GET hash PASS**, per-request IDs và per-node logs + after metrics đầy đủ. **PASS 100%, 0 HTTP 500, 0 HTTP 503**, Dedup 1.94x, Total reduction 2.58x.
-- [x] **D2 only if D1 PASS:** Cloud C4 (100% PASS), Edge C1 (STOP-THE-LINE triggered ở PUT #47 do clock bounds; Phase A runner tự động capture 100% 44/44 failures đầy đủ request IDs và telemetry), direct S3 C1 & C4 baselines (100% PASS).
-- [x] **D3 Recovery/telemetry:** 20 tables verified ACTIVE với `pitr=ENABLED`, final stats snapshot captured (Dedup 1.92x, Reduction 2.74x).
+- [x] **D2 only if D1 PASS:** Cloud C4 (100% PASS); direct S3 C1 & C4 baselines (100% PASS); Edge C1 (46 PASS / 44 FAIL với 503 `clock_uncertainty_exceeded`, STOP-THE-LINE kích hoạt ở ranh giới phase/trial; runner chẩn đoán tự động capture 100% 44/44 failures đầy đủ request IDs và telemetry); Edge C4 (CHƯA CHẠY, hoãn theo stop-the-line).
+- [ ] **D3 Recovery/telemetry:** DDB/PITR/stats: **PASS** (20 tables verified ACTIVE với `pitr=ENABLED`, final stats snapshot captured, Dedup 1.92x, Reduction 2.74x); R1/R2 recovery/cut/GC: **UNVERIFIED / DEFERRED** (tách sang follow-up do phiên dừng tại Edge C1).
 - [ ] **D4 Alarms:** Defer (dừng workload theo stop-the-line sau Edge C1 để bảo toàn ngân sách và evidence).
 
-**Gate D:** chỉ ghi PASS hạng mục có chứng cứ của **đúng release + installation + run window**. Nếu FAIL/hết ngân sách/hết thời hạn: dừng thử bổ sung, lưu evidence, thực hiện cleanup theo plan được duyệt.
+**Gate D:** chỉ ghi PASS hạng mục có chứng cứ của **đúng release + installation + run window**. Do Edge C1 fail và D4/R2 recovery deferred, Phase D chỉ được nghiệm thu một phần (Cloud PASS, Edge FAIL); các hạng mục còn lại tách sang follow-up riêng.
 
 ### Phase E — Teardown, chi phí và handoff
 

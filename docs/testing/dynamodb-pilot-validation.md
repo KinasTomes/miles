@@ -193,18 +193,20 @@ Following approved run plan [`docs/planning/aws-live-acceptance-run-plan.md`](..
 - **Direct C1:** PUT throughput: 78.22 MB/s (p50: 101.38 ms); GET throughput: 86.83 – 90.86 MB/s (p50: 85.37 – 86.12 ms).
 - **Direct C4:** PUT throughput: 298.97 MB/s (p50: 101.65 ms); GET throughput: 361.97 – 365.88 MB/s (p50: 85.56 – 86.11 ms).
 
-#### 3. Edge C1 Trial 1: Stop-the-Line Triggered (Automated Diagnostics Verified)
+#### 3. Edge C1 Trial 1: Stop-the-Line Triggered (Trial/Phase Boundary)
 - **Workload:** Concurrency=1 on Edge node via AWS Roles Anywhere.
 - **PUT workload:** Objects #1 – #46 succeeded (100% PASS). Objects #47 – #90 failed with HTTP 503 `clock_uncertainty_exceeded`.
-- **Automated Evidence Capture:** The Phase A diagnostic runner (`scripts/runner_diagnostics.py` and `scripts/runner_orchestrator.py`) captured **100% (44/44) failures** with correlated request IDs, precise timestamps, and node status in `edge-c1-t1-failed-window.json` and raw trace files prior to stop-the-line halting further trials.
+- **Stop-the-Line Behavior:** In `internal/benchmark/run.go`, `filePhase` dispatches all 90 items in the configured phase. When the `put` phase completed with 44 errors, `finishPhase` returned an error, causing the orchestrator to halt at the phase/trial boundary, immediately cancelling subsequent phases (HEAD, GET) and subsequent trials (Edge C4, D4 Alarms).
+- **Automated Evidence Capture:** The Phase A diagnostic runner (`scripts/runner_diagnostics.py` and `scripts/runner_orchestrator.py`) captured **100% (44/44) failures** with correlated request IDs, precise timestamps, and node status in `edge-c1-t1-failed-window.json` and raw trace files before halting.
 - **Root Cause Analysis (Edge):** The observed failure mechanism was `clock_uncertainty_exceeded` (HTTP 503) beginning at request #47, where `internal/coordination/chrony.go:94` enforces `age <= min(1024, 2*interval + 2)`, causing `Chrony.Bounds()` to fail-closed and reject writer admission with `ErrClockUncertain`. While concurrent network/disk I/O and CPU scheduling contention on the burstable `t4g.small` instance (2 vCPUs, 2 GiB RAM, 20% baseline per vCPU) is the primary working hypothesis for why the NTP sample interval momentarily fell behind, verifying this causation requires correlation against detailed CPU utilization, CloudWatch CPU credit metrics, and raw chrony tracking timestamps. Crucially, unlike previous runs where diagnostics were lost, 100% (44/44) of telemetry, request IDs, and node state were captured and verified in `edge-c1-t1-failed-window.json`.
 
 ### Phase D3 — DynamoDB & recovery observations
-- **DynamoDB tables:** All 20 tables verified ACTIVE with `pitr=ENABLED`.
-- **Final administrative statistics snapshot (`final-stats.json`):**
+- **DynamoDB tables & PITR (PASS 100%):** All 20 tables verified ACTIVE with `pitr=ENABLED`.
+- **Administrative physical statistics snapshot (PASS 100%):**
   - Logical bytes: 1,895,875,283 B; Stored bytes: 692,545,991 B; Unique stored: 654,355,195 B.
   - Objects: 226, Chunks: 660, Warm packs: 155.
-  - **Overall Dedup ratio: 1.92x**, **Compression ratio: 1.51x**, **Total reduction: 2.74x**.
+  - **Overall Dedup ratio: 1.92x**, **Compression ratio: 1.51x**, **Total reduction: 2.74x** (`final-stats.json`).
+- **R1 Lease/Fence, R2 Outbox/Cut & Checkpoint/GC (UNVERIFIED / DEFERRED):** Live recovery cut and slow-operation/GC measurements were deferred to a subsequent run due to the stop-the-line halt at Edge C1.
 
 ### Phase E — Teardown & final AWS zero-resource verification
 - **Compute and endpoints pause:** 53 resources destroyed via `pause-reconciled.tfplan` (EC2 client/edge instances, ASG gateway fleet, ALB, CloudWatch metric alarms, and VPC interface endpoints).
@@ -233,12 +235,14 @@ Following approved run plan [`docs/planning/aws-live-acceptance-run-plan.md`](..
 | **Cloud C1 (Trial 1 — Gate D1)** | **PASS** | 90/90 PUT, 90/90 HEAD, 360/360 GET hash match, 0 HTTP 500/503. Dedup 1.94x, Reduction 2.58x. |
 | **Cloud C4 (Trial 1)** | **PASS** | 90/90 PUT, 90/90 HEAD, 360/360 GET hash match, 0 HTTP 500/503. |
 | **Direct S3 (C1 & C4 Baselines)** | **PASS** | C1 ~78–91 MB/s, C4 ~299–366 MB/s. |
-| **Edge C1 (Trial 1)** | **FAIL** | 46 PASS / 44 FAIL (`clock_uncertainty_exceeded`). Stop-the-line invoked; 44/44 failures captured with full telemetry. |
-| **Edge C4 (Trial 1)** | **NOT RUN** | Halted immediately after Edge C1 stop-the-line to conserve budget and isolate evidence. |
+| **Edge C1 (Trial 1)** | **FAIL** | 46 PASS / 44 FAIL (`clock_uncertainty_exceeded`). Stop-the-line invoked at phase boundary; 44/44 failures captured with full telemetry. |
+| **Edge C4 (Trial 1)** | **NOT RUN** | Halted per stop-the-line policy due to Edge C1 failure. |
+| **D3: DDB / PITR / Stats** | **PASS** | 20 tables verified with PITR; Final stats snapshot captured (Dedup 1.92x, Reduction 2.74x). |
+| **D3: R1/R2 Recovery & GC** | **UNVERIFIED / DEFERRED** | Live recovery cut and GC deferred due to trial-boundary halt after Edge C1. |
 | **Phase D4 (CloudWatch Alarms)** | **DEFERRED** | Deferred to dedicated alarm follow-up run after Edge investigation. |
 | **Phase E (Teardown & Cleanup)** | **PASS** | State = 0, 41/41 absence verified, SLRs deleted, IAM restored. Spend < $0.50 USD. |
 
-**Follow-Up Partitioning:** Because Cloud C1 and Cloud C4 passed with 100% data integrity and zero regressions, subsequent investigation and fixes for Edge clock stability and D4 threshold-driven alarms are partitioned into a dedicated follow-up task. Repeating Cloud C1/C4 is not required unless future modifications affect the Cloud code path.
+**Follow-Up Partitioning:** Because Cloud C1 and Cloud C4 passed with 100% data integrity and zero regressions, subsequent investigation and fixes for Edge clock stability, D3 native recovery cut/GC measurements, D4 threshold-driven alarms, and optional runner per-request fail-fast cancellation are partitioned into a dedicated follow-up task. Repeating Cloud C1/C4 is not required unless future modifications affect the Cloud code path.
 
 ## AWS acceptance remaining
 
