@@ -1,13 +1,17 @@
+import datetime
 import json
 import unittest
 
 from scripts.runner_diagnostics import (
+    CHRONY_PAYLOAD_BEGIN,
+    CHRONY_PAYLOAD_END,
     build_failed_window_payload,
     build_node_telemetry_snapshot,
     collect_node_journals_safe,
     collect_node_telemetry_safe,
     correlate_failures,
     execute_with_runcommand_fallback,
+    parse_chrony_response_payload,
     parse_chrony_tracking,
     parse_gateway_journal_lines,
     parse_prometheus_metrics,
@@ -605,6 +609,538 @@ Leap status     : Normal
         self.assertEqual(cluster_snap["nodes"]["cloud-a"]["metrics"]["miles_ready"], 1)
         self.assertEqual(cluster_snap["nodes"]["cloud-b"]["status"], "error")
         self.assertIn("SSM command timed out", cluster_snap["nodes"]["cloud-b"]["error"])
+
+    def test_sequential_multi_node_probe_timestamps_prevent_negative_sample_age(self):
+        """
+        Regression test: verifies that sequential telemetry probing across multiple nodes
+        evaluates clock sample age against each probe's own finish timestamp, completely
+        preventing false negative sample ages (e.g. -20s, -56s, -61s) caused by sequential delays.
+        Verifies fallback path derives now_unix from probe_finished_at when now_unix is omitted.
+        """
+        nodes = [
+            {"alias": "cloud-a", "profile": "cloud"},
+            {"alias": "cloud-b", "profile": "cloud"},
+            {"alias": "edge-a", "profile": "edge"},
+        ]
+
+        # Simulate sequential execution where each node probe occurs at simulated intervals:
+        # cloud-a probe runs at T=1730900015.0, ref_time = 1730900010.0 (age = 5.0s)
+        # cloud-b probe runs at T=1730900045.0, ref_time = 1730900040.0 (age = 5.0s)
+        # edge-a  probe runs at T=1730900105.0, ref_time = 1730900100.0 (age = 5.0s)
+        simulated_times = {
+            "cloud-a": (1730900010.0, 1730900015.0, 1.2),
+            "cloud-b": (1730900040.0, 1730900045.0, 1.5),
+            "edge-a": (1730900100.0, 1730900105.0, 2.0),
+        }
+
+        def mock_sequential_fetcher(node):
+            alias = node["alias"]
+            ref_t, finish_t, duration = simulated_times[alias]
+            start_t = finish_t - duration
+            csv_str = f"A9FEA97B,169.254.169.123,3,{ref_t:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+            import datetime
+            dt_start = datetime.datetime.fromtimestamp(start_t, datetime.timezone.utc).isoformat()
+            dt_finish = datetime.datetime.fromtimestamp(finish_t, datetime.timezone.utc).isoformat()
+            return {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": csv_str,
+                "readyz_status": None,
+                "probe_started_at": dt_start,
+                "probe_finished_at": dt_finish,
+                "probe_duration_seconds": duration,
+                "chrony_elapsed_seconds": 0.05,
+                # Note: now_unix is intentionally omitted to verify the fallback
+                # correctly derives now_unix from probe_finished_at!
+            }
+
+        snap = collect_node_telemetry_safe(
+            nodes=nodes,
+            fetcher_fn=mock_sequential_fetcher,
+            captured_at="2026-11-06T13:00:00Z",
+            # now_unix intentionally None
+        )
+
+        self.assertEqual(snap["status"], "ok")
+        self.assertIn("collection_started_at", snap)
+        self.assertIn("collection_finished_at", snap)
+
+        for alias in ["cloud-a", "cloud-b", "edge-a"]:
+            node_snap = snap["nodes"][alias]
+            self.assertEqual(node_snap["status"], "ok")
+            self.assertIsNotNone(node_snap["probe_started_at"])
+            self.assertIsNotNone(node_snap["probe_finished_at"])
+            self.assertIsNotNone(node_snap["probe_duration_seconds"])
+            clock = node_snap["clock"]
+            self.assertEqual(clock["status"], "ok")
+            self.assertFalse(clock["uncertainty_exceeded"])
+            self.assertEqual(clock.get("time_provenance"), "probe_finished")
+            # Sample age MUST be positive (~5.0s), NOT negative!
+            self.assertGreaterEqual(clock["sample_age_seconds"], 0.0)
+            self.assertAlmostEqual(clock["sample_age_seconds"], 5.0, delta=0.5)
+
+    def test_chrony_slow_probe_increases_horizon_uncertainty(self):
+        """
+        Regression test: verifies that slow probe execution properly factors into
+        uncertainty bounds:
+        1. When host chronyc execution exceeds 1.0s, it triggers chrony_command_duration_exceeded_1s.
+        2. When host chronyc is valid (< 1.0s) but root dispersion / drift causes horizon uncertainty
+           to exceed 2.0s, it triggers horizon_uncertainty_exceeded_2s.
+        """
+        now_unix = 1730900000.0
+        ref_time = now_unix - 5.0
+        csv_healthy = f"A9FEA97B,169.254.169.123,3,{ref_time:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        # Fast probe: elapsed = 0.05s -> OK
+        fast_res = parse_chrony_tracking(csv_healthy, now_unix=now_unix, elapsed_seconds=0.05)
+        self.assertEqual(fast_res["status"], "ok")
+        self.assertFalse(fast_res["uncertainty_exceeded"])
+        self.assertEqual(fast_res["runtime_equivalence"], "verified")
+
+        # Slow probe on host >= 1.0s -> chrony_command_duration_exceeded_1s
+        slow_cmd_res = parse_chrony_tracking(csv_healthy, now_unix=now_unix, elapsed_seconds=1.25)
+        self.assertEqual(slow_cmd_res["status"], "ok")
+        self.assertTrue(slow_cmd_res["uncertainty_exceeded"])
+        self.assertEqual(slow_cmd_res["rejection_reason"], "chrony_command_duration_exceeded_1s")
+
+        # Probe elapsed < 1.0s (0.5s) with high root dispersion (1.6s) -> horizon_uncertainty > 2.0s
+        csv_high_dispersion = f"A9FEA97B,169.254.169.123,3,{ref_time:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,1.6,16.0,Normal\n"
+        slow_res = parse_chrony_tracking(csv_high_dispersion, now_unix=now_unix, elapsed_seconds=0.5)
+        self.assertEqual(slow_res["status"], "ok")
+        self.assertTrue(slow_res["uncertainty_exceeded"])
+        self.assertEqual(slow_res["rejection_reason"], "horizon_uncertainty_exceeded_2s")
+
+    def test_chrony_future_timestamp_fails_closed(self):
+        """
+        Regression test: verifies that if ref_time is in the future by > 2.0s (clock step backwards
+        or invalid observation), parse_chrony_tracking strictly fails closed with sample_age_exceeded.
+        """
+        now_unix = 1730900000.0
+        # ref_time is 10.0s in the future relative to now_unix -> age = -10.0s < -2.0s
+        ref_time_future = now_unix + 10.0
+        csv_future = f"A9FEA97B,169.254.169.123,3,{ref_time_future:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        future_res = parse_chrony_tracking(csv_future, now_unix=now_unix)
+        self.assertEqual(future_res["status"], "ok")
+        self.assertTrue(future_res["uncertainty_exceeded"])
+        self.assertEqual(future_res["rejection_reason"], "sample_age_exceeded")
+        self.assertLess(future_res["sample_age_seconds"], -2.0)
+
+    def test_chrony_stale_and_recovery_sequence(self):
+        """
+        Regression test: verifies that a node transitioning from stale (age > 34s) to fresh (age = 5s)
+        properly reflects self-recovery across consecutive telemetry captures.
+        """
+        node = [{"alias": "edge-a", "profile": "edge"}]
+        now_unix = 1730900000.0
+
+        # Probe 1: Stale (age = 45s > 34s max allowed)
+        stale_ref = now_unix - 45.0
+        csv_stale = f"A9FEA97B,169.254.169.123,3,{stale_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+        snap1 = collect_node_telemetry_safe(
+            nodes=node,
+            fetcher_fn=lambda n: {"metrics_raw": "miles_ready 1\n", "chrony_raw": csv_stale, "now_unix": now_unix},
+        )
+        self.assertEqual(snap1["status"], "partial")
+        self.assertTrue(snap1["nodes"]["edge-a"]["clock"]["uncertainty_exceeded"])
+        self.assertEqual(snap1["nodes"]["edge-a"]["clock"]["rejection_reason"], "sample_age_exceeded")
+
+        # Probe 2: Recovered (age = 5s <= 34s)
+        now_unix_2 = now_unix + 20.0
+        fresh_ref = now_unix_2 - 5.0
+        csv_fresh = f"A9FEA97B,169.254.169.123,3,{fresh_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+        snap2 = collect_node_telemetry_safe(
+            nodes=node,
+            fetcher_fn=lambda n: {"metrics_raw": "miles_ready 1\n", "chrony_raw": csv_fresh, "now_unix": now_unix_2},
+        )
+        self.assertEqual(snap2["status"], "ok")
+        self.assertFalse(snap2["nodes"]["edge-a"]["clock"]["uncertainty_exceeded"])
+        self.assertEqual(snap2["nodes"]["edge-a"]["clock"]["sample_age_seconds"], 5.0)
+
+    def test_parse_chrony_response_payload_structure_and_error_handling(self):
+        """
+        Verifies that parse_chrony_response_payload parses structured host envelopes,
+        safely handles missing envelopes, and tolerates corrupted JSON payloads.
+        """
+        # 1. Valid envelope with host timings
+        host_unix = 1730900000.0
+        host_iso = datetime.datetime.fromtimestamp(host_unix, datetime.timezone.utc).isoformat()
+        payload_dict = {
+            "version": 1,
+            "host_observed_at": host_iso,
+            "host_observed_unix": host_unix,
+            "host_chrony_elapsed_seconds": 0.0035,
+            "returncode": 0,
+            "stdout": "A9FEA97B,169.254.169.123,3,1730899995.0,0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n",
+            "stderr": "",
+        }
+        wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(payload_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        res = parse_chrony_response_payload(wrapped)
+        self.assertEqual(res["chrony_raw"], payload_dict["stdout"])
+        self.assertEqual(res["host_observed_at"], host_iso)
+        self.assertEqual(res["host_observed_unix"], host_unix)
+        self.assertEqual(res["host_chrony_elapsed_seconds"], 0.0035)
+        self.assertTrue(res["runtime_elapsed_verified"])
+        self.assertEqual(res["runtime_equivalence"], "verified")
+        self.assertTrue(res["envelope_valid"])
+        self.assertIsNone(res["envelope_error"])
+        self.assertEqual(res["returncode"], 0)
+
+        # 2. Raw uninstrumented string without envelope
+        raw_csv = payload_dict["stdout"]
+        res_raw = parse_chrony_response_payload(raw_csv)
+        self.assertEqual(res_raw["chrony_raw"], raw_csv)
+        self.assertIsNone(res_raw["host_chrony_elapsed_seconds"])
+        self.assertFalse(res_raw["runtime_elapsed_verified"])
+        self.assertEqual(res_raw["runtime_equivalence"], "unverified")
+        self.assertFalse(res_raw["envelope_valid"])
+        self.assertEqual(res_raw["envelope_error"], "no_envelope_present")
+
+        # 3. Corrupt JSON inside envelope fails safe to unverified
+        corrupt = f"{CHRONY_PAYLOAD_BEGIN}\n{{invalid-json}}\n{CHRONY_PAYLOAD_END}\n"
+        res_corrupt = parse_chrony_response_payload(corrupt)
+        self.assertFalse(res_corrupt["runtime_elapsed_verified"])
+        self.assertEqual(res_corrupt["runtime_equivalence"], "unverified")
+        self.assertFalse(res_corrupt["envelope_valid"])
+        self.assertEqual(res_corrupt["envelope_error"], "corrupted_payload_json")
+
+        # 4. Non-finite or negative host elapsed
+        bad_elapsed_dict = dict(payload_dict)
+        bad_elapsed_dict["host_chrony_elapsed_seconds"] = -1.0
+        bad_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(bad_elapsed_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        res_bad = parse_chrony_response_payload(bad_wrapped)
+        self.assertIsNone(res_bad["host_chrony_elapsed_seconds"])
+        self.assertFalse(res_bad["runtime_elapsed_verified"])
+        self.assertFalse(res_bad["envelope_valid"])
+        self.assertEqual(res_bad["envelope_error"], "invalid_or_non_finite_host_elapsed")
+
+        # 5. Non-zero returncode fails closed with empty raw output
+        bad_rc_dict = dict(payload_dict)
+        bad_rc_dict["returncode"] = 2
+        bad_rc_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(bad_rc_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        res_bad_rc = parse_chrony_response_payload(bad_rc_wrapped)
+        self.assertFalse(res_bad_rc["envelope_valid"])
+        self.assertEqual(res_bad_rc["envelope_error"], "chronyc_process_failed_rc_2")
+        self.assertFalse(res_bad_rc["runtime_elapsed_verified"])
+        self.assertEqual(res_bad_rc["runtime_equivalence"], "unverified")
+        self.assertEqual(res_bad_rc["chrony_raw"], "")
+
+        # 6. Unsupported schema version
+        bad_ver_dict = dict(payload_dict)
+        bad_ver_dict["version"] = 2
+        bad_ver_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(bad_ver_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        res_bad_ver = parse_chrony_response_payload(bad_ver_wrapped)
+        self.assertFalse(res_bad_ver["envelope_valid"])
+        self.assertEqual(res_bad_ver["envelope_error"], "unsupported_schema_version_2")
+
+        # 7. Inconsistent paired UTC timestamps
+        bad_skew_dict = dict(payload_dict)
+        bad_skew_dict["host_observed_unix"] = host_unix + 50.0  # 50s discrepancy with host_observed_at
+        bad_skew_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(bad_skew_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        res_bad_skew = parse_chrony_response_payload(bad_skew_wrapped)
+        self.assertFalse(res_bad_skew["envelope_valid"])
+        self.assertEqual(res_bad_skew["envelope_error"], "inconsistent_paired_host_utc_timestamps")
+
+        # 8. Empty stdout
+        bad_out_dict = dict(payload_dict)
+        bad_out_dict["stdout"] = "   \n"
+        bad_out_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(bad_out_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        res_bad_out = parse_chrony_response_payload(bad_out_wrapped)
+        self.assertFalse(res_bad_out["envelope_valid"])
+        self.assertEqual(res_bad_out["envelope_error"], "empty_chronyc_stdout")
+
+    def test_host_observed_timestamp_provenance_and_payload_envelope(self):
+        """
+        Verifies that when a node returns host_observed_at / host_observed_unix,
+        telemetry anchors clock sample age to the remote target host's own UTC observation time,
+        marking time_provenance as 'host_observed'.
+        """
+        host_utc = 1730900000.0
+        ref_time = host_utc - 4.5
+        host_iso = datetime.datetime.fromtimestamp(host_utc, datetime.timezone.utc).isoformat()
+        probe_start_iso = datetime.datetime.fromtimestamp(host_utc + 1.0, datetime.timezone.utc).isoformat()
+        probe_finish_iso = datetime.datetime.fromtimestamp(host_utc + 3.0, datetime.timezone.utc).isoformat()
+        payload_dict = {
+            "version": 1,
+            "host_observed_at": host_iso,
+            "host_observed_unix": host_utc,
+            "host_chrony_elapsed_seconds": 0.002,
+            "returncode": 0,
+            "stdout": f"A9FEA97B,169.254.169.123,3,{ref_time:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n",
+        }
+        wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(payload_dict)}\n{CHRONY_PAYLOAD_END}\n"
+
+        nodes = [{"alias": "cloud-a", "profile": "cloud"}]
+        snap = collect_node_telemetry_safe(
+            nodes=nodes,
+            fetcher_fn=lambda n: {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": wrapped,
+                "probe_started_at": probe_start_iso,
+                "probe_finished_at": probe_finish_iso,
+                "probe_duration_seconds": 2.0,
+                "transport_latency_seconds": 1.8,
+            },
+        )
+
+        self.assertEqual(snap["status"], "ok")
+        node_snap = snap["nodes"]["cloud-a"]
+        clock = node_snap["clock"]
+        self.assertEqual(clock["status"], "ok")
+        self.assertFalse(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["time_provenance"], "host_observed")
+        self.assertEqual(clock["runtime_equivalence"], "verified")
+        self.assertEqual(clock["host_chrony_elapsed_seconds"], 0.002)
+        self.assertEqual(node_snap["transport_latency_seconds"], 1.8)
+        self.assertAlmostEqual(clock["sample_age_seconds"], 4.5, delta=0.1)
+
+    def test_adversarial_slow_transport_latency_with_fast_remote_chronyc(self):
+        """
+        Adversarial test (P1): SSM transport latency is 2.5s, but remote host chronyc took
+        only 0.003s. Telemetry MUST NOT conflate transport latency with clock uncertainty
+        or trigger horizon_uncertainty_exceeded_2s.
+        """
+        host_now = 1730900000.0
+        ref_time = host_now - 4.0
+        csv_str = f"A9FEA97B,169.254.169.123,3,{ref_time:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        nodes = [{"alias": "cloud-a", "profile": "cloud"}]
+
+        # Outer probe duration is 2.5s due to SSM Session Manager startup/network lag
+        def slow_transport_fetcher(node):
+            return {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": csv_str,
+                "probe_started_at": "2026-11-08T07:00:00+00:00",
+                "probe_finished_at": "2026-11-08T07:00:02.500+00:00",
+                "probe_duration_seconds": 2.5,
+                "transport_latency_seconds": 2.5,
+                "host_chrony_elapsed_seconds": 0.003,
+                "host_observed_unix": host_now,
+                "runtime_elapsed_verified": True,
+            }
+
+        snap = collect_node_telemetry_safe(
+            nodes=nodes,
+            fetcher_fn=slow_transport_fetcher,
+        )
+
+        self.assertEqual(snap["status"], "ok")
+        node_snap = snap["nodes"]["cloud-a"]
+        clock = node_snap["clock"]
+        self.assertEqual(clock["status"], "ok")
+        self.assertFalse(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["runtime_equivalence"], "verified")
+        self.assertEqual(clock["host_chrony_elapsed_seconds"], 0.003)
+        self.assertEqual(node_snap["transport_latency_seconds"], 2.5)
+        # Horizon uncertainty must be small (~0.015s), NOT > 2.0s!
+        self.assertLess(clock["horizon_uncertainty_seconds"], 0.5)
+
+    def test_truly_slow_remote_chronyc_on_host_fails_closed(self):
+        """
+        Regression test (P1): When host-local chronyc execution is genuinely slow
+        (>= 1.0s bound matching Go runtime coordination.Chrony.Bounds), telemetry
+        strictly fails closed with chrony_command_duration_exceeded_1s.
+        """
+        host_now = 1730900000.0
+        ref_time = host_now - 4.0
+        csv_str = f"A9FEA97B,169.254.169.123,3,{ref_time:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        nodes = [{"alias": "edge-a", "profile": "edge"}]
+
+        def slow_host_chronyc_fetcher(node):
+            return {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": csv_str,
+                "probe_started_at": "2026-11-08T07:00:00+00:00",
+                "probe_finished_at": "2026-11-08T07:00:01.500+00:00",
+                "probe_duration_seconds": 1.5,
+                "transport_latency_seconds": 0.2,
+                "host_chrony_elapsed_seconds": 1.25, # Truly slow local chronyc on host!
+                "host_observed_unix": host_now,
+                "runtime_elapsed_verified": True,
+            }
+
+        snap = collect_node_telemetry_safe(
+            nodes=nodes,
+            fetcher_fn=slow_host_chronyc_fetcher,
+        )
+
+        self.assertEqual(snap["status"], "partial")
+        node_snap = snap["nodes"]["edge-a"]
+        clock = node_snap["clock"]
+        self.assertEqual(clock["status"], "ok")
+        self.assertTrue(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["rejection_reason"], "chrony_command_duration_exceeded_1s")
+        self.assertEqual(clock["runtime_equivalence"], "verified")
+
+    def test_missing_host_timing_envelope_marks_runtime_equivalence_unverified_without_false_alarm(self):
+        """
+        Regression test (P1): When host timing envelope is unavailable (raw CSV) and transport
+        latency is high (2.5s), telemetry marks runtime_equivalence='unverified' without falsely
+        asserting horizon_uncertainty_exceeded_2s.
+        """
+        now_unix = 1730900000.0
+        ref_time = now_unix - 4.0
+        raw_csv = f"A9FEA97B,169.254.169.123,3,{ref_time:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        nodes = [{"alias": "cloud-a", "profile": "cloud"}]
+
+        def uninstrumented_fetcher(node):
+            return {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": raw_csv, # raw CSV without host timing
+                "probe_started_at": "2026-11-08T07:00:00+00:00",
+                "probe_finished_at": "2026-11-08T07:00:02.500+00:00",
+                "probe_duration_seconds": 2.5,
+                "transport_latency_seconds": 2.5,
+                "now_unix": now_unix,
+            }
+
+        snap = collect_node_telemetry_safe(
+            nodes=nodes,
+            fetcher_fn=uninstrumented_fetcher,
+        )
+
+        self.assertEqual(snap["status"], "ok")
+        node_snap = snap["nodes"]["cloud-a"]
+        clock = node_snap["clock"]
+        self.assertEqual(clock["status"], "ok")
+        self.assertFalse(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["runtime_equivalence"], "unverified")
+        self.assertFalse(clock["runtime_elapsed_verified"])
+        self.assertEqual(node_snap["transport_latency_seconds"], 2.5)
+        # Uncertainty is NOT exceeded!
+        self.assertLess(clock["horizon_uncertainty_seconds"], 1.0)
+
+    def test_envelope_nonzero_returncode_marked_unverified_and_rejected(self):
+        """
+        Regression test (P1): When remote chronyc returns non-zero returncode (e.g. rc=2),
+        envelope parser rejects stdout, marks envelope_valid=False, and downstream node
+        telemetry snapshot strictly fails closed:
+        - node status is 'partial' or 'error' (NEVER 'ok')
+        - clock uncertainty_exceeded is True
+        - rejection_reason reflects chronyc failure
+        - runtime_equivalence is 'unverified'
+        """
+        host_unix = 1730900000.0
+        host_iso = datetime.datetime.fromtimestamp(host_unix, datetime.timezone.utc).isoformat()
+        payload = {
+            "version": 1,
+            "host_observed_at": host_iso,
+            "host_observed_unix": host_unix,
+            "host_chrony_elapsed_seconds": 0.005,
+            "returncode": 2, # Process failed!
+            "stdout": "A9FEA97B,169.254.169.123,3,1730899995.0,0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n",
+            "stderr": "506 Cannot talk to daemon",
+        }
+        wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(payload)}\n{CHRONY_PAYLOAD_END}\n"
+
+        nodes = [{"alias": "edge-a", "profile": "edge"}]
+        snap = collect_node_telemetry_safe(
+            nodes=nodes,
+            fetcher_fn=lambda n: {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": wrapped,
+                "probe_started_at": host_iso,
+                "probe_finished_at": host_iso,
+            },
+        )
+
+        self.assertNotEqual(snap["status"], "ok")
+        self.assertEqual(snap["status"], "partial")
+        node_snap = snap["nodes"]["edge-a"]
+        self.assertEqual(node_snap["status"], "partial")
+        clock = node_snap["clock"]
+        self.assertTrue(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["runtime_equivalence"], "unverified")
+        self.assertFalse(clock["runtime_elapsed_verified"])
+        self.assertIn("chronyc", clock["rejection_reason"])
+        self.assertIn("2", clock["rejection_reason"])
+
+    def test_envelope_schema_and_timestamp_validation_failures_fail_closed(self):
+        """
+        Regression test (P1): When envelope contains unsupported version or inconsistent
+        paired UTC timestamps, downstream snapshot fails closed with unverified clock.
+        """
+        host_unix = 1730900000.0
+        host_iso = datetime.datetime.fromtimestamp(host_unix, datetime.timezone.utc).isoformat()
+
+        # Inconsistent paired timestamps (skew > 1.0s)
+        skewed_payload = {
+            "version": 1,
+            "host_observed_at": host_iso,
+            "host_observed_unix": host_unix + 30.0,
+            "host_chrony_elapsed_seconds": 0.003,
+            "returncode": 0,
+            "stdout": f"A9FEA97B,169.254.169.123,3,{host_unix - 4.0:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n",
+        }
+        wrapped_skewed = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(skewed_payload)}\n{CHRONY_PAYLOAD_END}\n"
+
+        snap = collect_node_telemetry_safe(
+            nodes=[{"alias": "cloud-a", "profile": "cloud"}],
+            fetcher_fn=lambda n: {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": wrapped_skewed,
+            },
+        )
+        self.assertEqual(snap["status"], "partial")
+        clock = snap["nodes"]["cloud-a"]["clock"]
+        self.assertTrue(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["rejection_reason"], "inconsistent_paired_host_utc_timestamps")
+        self.assertEqual(clock["runtime_equivalence"], "unverified")
+
+    def test_missing_timestamp_provenance_marked_unverified_without_unbound_local_error(self):
+        """
+        Regression test (P2): When node response has NO host timestamps, NO now_unix,
+        and NO probe_finished_at, collect_node_telemetry_safe MUST NOT raise UnboundLocalError.
+        Must fail closed with explicit time_provenance='unverified_missing_timestamp'
+        and rejection_reason='missing_current_timestamp_for_age_verification'.
+        """
+        raw_csv = "A9FEA97B,169.254.169.123,3,1730899995.0,0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        # Fetcher returns no timestamps whatsoever
+        def stripped_fetcher(node):
+            return {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": raw_csv,
+            }
+
+        snap = collect_node_telemetry_safe(
+            nodes=[{"alias": "edge-a", "profile": "edge"}],
+            fetcher_fn=stripped_fetcher,
+        )
+
+        self.assertEqual(snap["status"], "partial")
+        node_snap = snap["nodes"]["edge-a"]
+        clock = node_snap["clock"]
+        self.assertTrue(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["rejection_reason"], "missing_current_timestamp_for_age_verification")
+        self.assertEqual(clock["time_provenance"], "unverified_missing_timestamp")
+        self.assertIsNone(clock["sample_age_seconds"])
+
+    def test_unparseable_timestamp_string_handled_gracefully(self):
+        """
+        Regression test (P2): When probe_finished_at or host timestamp contains an unparseable
+        string (e.g. 'not-an-iso-string'), collector does not raise an unhandled exception,
+        marks time_provenance='unverified_unparseable_timestamp', and fails closed.
+        """
+        raw_csv = "A9FEA97B,169.254.169.123,3,1730899995.0,0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        snap = collect_node_telemetry_safe(
+            nodes=[{"alias": "cloud-a", "profile": "cloud"}],
+            fetcher_fn=lambda n: {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": raw_csv,
+                "probe_finished_at": "definitely-not-an-iso-timestamp-string",
+            },
+        )
+
+        self.assertEqual(snap["status"], "partial")
+        node_snap = snap["nodes"]["cloud-a"]
+        clock = node_snap["clock"]
+        self.assertTrue(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["rejection_reason"], "missing_current_timestamp_for_age_verification")
+        self.assertEqual(clock["time_provenance"], "unverified_unparseable_timestamp")
 
     def test_collect_node_journals_safe(self):
         nodes = [

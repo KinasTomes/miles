@@ -8,6 +8,7 @@ Tests the real runner orchestration call site with mocked SSM/SSH runners:
 - Rejection of false upstream attribution for unmatched 500 errors
 - Zero secret leakage across entire serialized payloads
 """
+import datetime
 import json
 import os
 import tempfile
@@ -17,6 +18,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from scripts.runner_orchestrator import (
+    CHRONY_PAYLOAD_BEGIN,
+    CHRONY_PAYLOAD_END,
     capture_and_assemble_failed_window,
     collect_cluster_journals,
     collect_cluster_telemetry,
@@ -519,6 +522,186 @@ class RunnerOrchestratorTests(unittest.TestCase):
         self.assertIsNone(node_snap["readyz"])
         self.assertEqual(snap["summary"]["healthy_nodes"], 0)
         self.assertEqual(snap["summary"]["partial_nodes"], 1)
+
+    def test_collect_cluster_telemetry_captures_per_node_probe_timings_and_chrony_elapsed(self):
+        """
+        Verifies that collect_cluster_telemetry records probe_started_at, probe_finished_at,
+        probe_duration_seconds, and chrony_elapsed_seconds across both Cloud (SSM) and Edge (SSH) nodes,
+        and ensures clock sample age is evaluated accurately against the probe finish time.
+        """
+        import time
+
+        def mock_ssm(node_id, prog):
+            now_t = time.time()
+            if "startup.json" in prog:
+                return "miles_ready 1\n"
+            if "chronyc" in prog:
+                ref_t = now_t - 4.0
+                return f"A9FEA97B,169.254.169.123,3,{ref_t:.4f},0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n"
+            return "{}"
+
+        class MockSSHResult:
+            def __init__(self, stdout):
+                self.stdout = stdout.encode() if isinstance(stdout, str) else stdout
+
+        def mock_ssh(cmd):
+            now_t = time.time()
+            if "metrics" in " ".join(cmd):
+                return MockSSHResult("miles_ready 1\n")
+            if "chronyc" in " ".join(cmd):
+                ref_t = now_t - 6.0
+                return MockSSHResult(f"A9FEA97B,169.254.169.123,3,{ref_t:.4f},0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n")
+            return MockSSHResult("")
+
+        nodes = [
+            {"alias": "cloud-a", "id": "i-cloud-a", "profile": "cloud"},
+            {"alias": "edge-a", "id": "edge-node", "profile": "edge"},
+        ]
+
+        snap = collect_cluster_telemetry(
+            nodes=nodes,
+            ssm_runner=mock_ssm,
+            ssm_runcommand_runner=mock_ssm,
+            ssh_runner=mock_ssh,
+        )
+
+        self.assertEqual(snap["status"], "ok")
+        self.assertIn("collection_started_at", snap)
+        self.assertIn("collection_finished_at", snap)
+        self.assertEqual(len(snap["nodes"]), 2)
+
+        for alias in ["cloud-a", "edge-a"]:
+            node_snap = snap["nodes"][alias]
+            self.assertEqual(node_snap["status"], "ok")
+            self.assertIsNotNone(node_snap["probe_started_at"])
+            self.assertIsNotNone(node_snap["probe_finished_at"])
+            self.assertIsNotNone(node_snap["probe_duration_seconds"])
+            self.assertGreaterEqual(node_snap["probe_duration_seconds"], 0.0)
+
+            clock = node_snap["clock"]
+            self.assertEqual(clock["status"], "ok")
+            self.assertFalse(clock["uncertainty_exceeded"])
+            # Sample age must be positive (freshly sampled)
+            self.assertGreater(clock["sample_age_seconds"], 0.0)
+            self.assertLess(clock["sample_age_seconds"], 16.0)
+
+    def test_collect_cluster_telemetry_isolates_transport_latency_from_host_chrony_elapsed(self):
+        """
+        Integration test: verifies that collect_cluster_telemetry extracts structured host
+        telemetry envelopes across Cloud (SSM) and Edge (SSH), recording transport_latency_seconds
+        separately without letting control-plane latency inflate clock uncertainty.
+        """
+        import time
+
+        def mock_ssm(node_id, prog):
+            now_t = time.time()
+            if "startup.json" in prog:
+                return "miles_ready 1\n"
+            if "chronyc" in prog:
+                ref_t = now_t - 3.5
+                now_iso = datetime.datetime.fromtimestamp(now_t, datetime.timezone.utc).isoformat()
+                payload = {
+                    "version": 1,
+                    "host_observed_at": now_iso,
+                    "host_observed_unix": now_t,
+                    "host_chrony_elapsed_seconds": 0.0035,
+                    "returncode": 0,
+                    "stdout": f"A9FEA97B,169.254.169.123,3,{ref_t:.4f},0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n",
+                    "stderr": "",
+                }
+                return f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(payload)}\n{CHRONY_PAYLOAD_END}\n"
+            return "{}"
+
+        class MockSSHResult:
+            def __init__(self, stdout):
+                self.stdout = stdout.encode() if isinstance(stdout, str) else stdout
+
+        def mock_ssh(cmd):
+            now_t = time.time()
+            cmd_str = " ".join(cmd)
+            if "metrics" in cmd_str:
+                return MockSSHResult("miles_ready 1\n")
+            if "chronyc" in cmd_str or "DEFAULT_CHRONY_PROGRAM" in cmd_str or "python3" in cmd_str:
+                ref_t = now_t - 5.0
+                now_iso = datetime.datetime.fromtimestamp(now_t, datetime.timezone.utc).isoformat()
+                payload = {
+                    "version": 1,
+                    "host_observed_at": now_iso,
+                    "host_observed_unix": now_t,
+                    "host_chrony_elapsed_seconds": 0.0042,
+                    "returncode": 0,
+                    "stdout": f"A9FEA97B,169.254.169.123,3,{ref_t:.4f},0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n",
+                    "stderr": "",
+                }
+                return MockSSHResult(f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(payload)}\n{CHRONY_PAYLOAD_END}\n")
+            return MockSSHResult("")
+
+        nodes = [
+            {"alias": "cloud-a", "id": "i-cloud-a", "profile": "cloud"},
+            {"alias": "edge-a", "id": "edge-node", "profile": "edge"},
+        ]
+
+        snap = collect_cluster_telemetry(
+            nodes=nodes,
+            ssm_runner=mock_ssm,
+            ssm_runcommand_runner=mock_ssm,
+            ssh_runner=mock_ssh,
+        )
+
+        self.assertEqual(snap["status"], "ok")
+        cloud_snap = snap["nodes"]["cloud-a"]
+        self.assertEqual(cloud_snap["status"], "ok")
+        self.assertIsNotNone(cloud_snap["transport_latency_seconds"])
+        self.assertEqual(cloud_snap["host_chrony_elapsed_seconds"], 0.0035)
+        self.assertEqual(cloud_snap["clock"]["runtime_equivalence"], "verified")
+        self.assertFalse(cloud_snap["clock"]["uncertainty_exceeded"])
+
+        edge_snap = snap["nodes"]["edge-a"]
+        self.assertEqual(edge_snap["status"], "ok")
+        self.assertIsNotNone(edge_snap["transport_latency_seconds"])
+        self.assertEqual(edge_snap["host_chrony_elapsed_seconds"], 0.0042)
+        self.assertEqual(edge_snap["clock"]["runtime_equivalence"], "verified")
+        self.assertFalse(edge_snap["clock"]["uncertainty_exceeded"])
+
+    def test_collect_cluster_telemetry_truly_slow_host_chronyc_marks_partial(self):
+        """
+        Verifies that when host-local chronyc is genuinely slow (>= 1.0s),
+        collect_cluster_telemetry marks the node and cluster as partial/error.
+        """
+        import time
+
+        def mock_ssm(node_id, prog):
+            now_t = time.time()
+            if "startup.json" in prog:
+                return "miles_ready 1\n"
+            if "chronyc" in prog:
+                ref_t = now_t - 3.5
+                now_iso = datetime.datetime.fromtimestamp(now_t, datetime.timezone.utc).isoformat()
+                payload = {
+                    "version": 1,
+                    "host_observed_at": now_iso,
+                    "host_observed_unix": now_t,
+                    "host_chrony_elapsed_seconds": 1.45, # >= 1.0s on host!
+                    "returncode": 0,
+                    "stdout": f"A9FEA97B,169.254.169.123,3,{ref_t:.4f},0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n",
+                    "stderr": "",
+                }
+                return f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(payload)}\n{CHRONY_PAYLOAD_END}\n"
+            return "{}"
+
+        nodes = [{"alias": "cloud-a", "id": "i-cloud-a", "profile": "cloud"}]
+
+        snap = collect_cluster_telemetry(
+            nodes=nodes,
+            ssm_runner=mock_ssm,
+            ssm_runcommand_runner=mock_ssm,
+        )
+
+        self.assertEqual(snap["status"], "partial")
+        node_snap = snap["nodes"]["cloud-a"]
+        self.assertEqual(node_snap["status"], "partial")
+        self.assertTrue(node_snap["clock"]["uncertainty_exceeded"])
+        self.assertEqual(node_snap["clock"]["rejection_reason"], "chrony_command_duration_exceeded_1s")
 
 
 if __name__ == "__main__":
