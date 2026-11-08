@@ -4,8 +4,11 @@ Safe runner diagnostics, journal parsing, and failure correlation utilities.
 Contains no AWS credentials, private ARNs, or secret material. Usable by
 both local unit/integration tests and operator test runners.
 """
+import datetime
 import json
+import math
 import re
+import time
 
 
 SENSITIVE_PATTERNS = [
@@ -722,38 +725,52 @@ def build_node_telemetry_snapshot(
     error=None,
     captured_at=None,
     now_unix=None,
-    elapsed_seconds=0.0
+    elapsed_seconds=0.0,
+    probe_started_at=None,
+    probe_finished_at=None,
+    probe_duration_seconds=None,
 ):
     """
     Constructs a safe, non-sensitive telemetry snapshot for an individual gateway or edge node.
+    Records probe start/finish timestamps, probe duration, and ensures clock sample evaluation
+    is anchored to the actual probe completion window.
     """
+    effective_captured_at = captured_at or probe_finished_at or probe_started_at
     if error:
         return {
             "alias": alias,
             "profile": profile,
             "status": "error",
             "error": redact_sensitive_strings(str(error)),
-            "captured_at": captured_at,
+            "captured_at": effective_captured_at,
+            "probe_started_at": probe_started_at,
+            "probe_finished_at": probe_finished_at,
+            "probe_duration_seconds": probe_duration_seconds,
         }
 
-    if now_unix is None and captured_at:
-        try:
-            import datetime
-            dt = datetime.datetime.fromisoformat(captured_at.replace("Z", "+00:00"))
-            now_unix = dt.timestamp()
-        except Exception:
-            pass
+    if now_unix is None:
+        target_ts = probe_finished_at or effective_captured_at
+        if target_ts:
+            try:
+                dt = datetime.datetime.fromisoformat(target_ts.replace("Z", "+00:00"))
+                now_unix = dt.timestamp()
+            except Exception:
+                pass
+
+    effective_elapsed = elapsed_seconds
+    if effective_elapsed <= 0.0 and probe_duration_seconds is not None and probe_duration_seconds > 0.0:
+        effective_elapsed = probe_duration_seconds
 
     metrics = parse_prometheus_metrics(metrics_raw) if metrics_raw else {}
     if chrony_error:
         clock_sig = {"status": "error", "error": redact_sensitive_strings(str(chrony_error))}
     elif chrony_raw:
-        clock_sig = parse_chrony_tracking(chrony_raw, now_unix=now_unix, elapsed_seconds=elapsed_seconds)
+        clock_sig = parse_chrony_tracking(chrony_raw, now_unix=now_unix, elapsed_seconds=effective_elapsed)
     else:
         clock_sig = {"status": "not_collected", "missing_reason": "no_chrony_output"}
 
     has_metrics = bool(metrics)
-    has_clock_ok = clock_sig.get("status") == "ok"
+    has_clock_ok = clock_sig.get("status") == "ok" and not clock_sig.get("uncertainty_exceeded", False)
 
     if has_metrics and has_clock_ok:
         status = "ok"
@@ -766,7 +783,10 @@ def build_node_telemetry_snapshot(
         "alias": alias,
         "profile": profile,
         "status": status,
-        "captured_at": captured_at,
+        "captured_at": effective_captured_at,
+        "probe_started_at": probe_started_at,
+        "probe_finished_at": probe_finished_at,
+        "probe_duration_seconds": probe_duration_seconds,
         "readyz": readyz_status,
         "metrics": metrics,
         "clock": clock_sig,
@@ -777,18 +797,22 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
     """
     Safely collects telemetry across a list of nodes, handling individual node timeouts,
     connection failures, or collection errors gracefully without aborting the cluster capture.
+    Per-probe timestamps and durations are captured per node to ensure sequential execution
+    latencies do not distort clock sample age calculations.
     Returns a structured dictionary with per-node snapshots, overall status, and missing reasons.
     """
+    collection_started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     if not nodes:
         return {
             "status": "not_collected",
             "missing_reason": "no_nodes_specified",
-            "captured_at": captured_at,
+            "captured_at": captured_at or collection_started_at,
+            "collection_started_at": collection_started_at,
+            "collection_finished_at": collection_started_at,
             "nodes": {},
         }
 
-    import datetime
-    effective_captured_at = captured_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    effective_captured_at = captured_at or collection_started_at
     node_snapshots = {}
     has_ok = False
     has_partial = False
@@ -797,12 +821,37 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
     for node in nodes:
         alias = node.get("alias", "unknown")
         profile = node.get("profile", "cloud")
+        t_start = datetime.datetime.now(datetime.timezone.utc)
+        t_mono_start = time.monotonic()
         try:
             res = fetcher_fn(node)
+            t_finish = datetime.datetime.now(datetime.timezone.utc)
+            t_mono_finish = time.monotonic()
+            probe_duration = round(t_mono_finish - t_mono_start, 4)
+
             metrics_raw = res.get("metrics_raw")
             chrony_raw = res.get("chrony_raw")
             chrony_error = res.get("chrony_error")
             readyz = res.get("readyz_status")
+
+            node_probe_started = res.get("probe_started_at") or t_start.isoformat()
+            node_probe_finished = res.get("probe_finished_at") or t_finish.isoformat()
+            node_duration = res.get("probe_duration_seconds") if res.get("probe_duration_seconds") is not None else probe_duration
+
+            if now_unix is not None:
+                node_now_unix = now_unix
+            elif "now_unix" in res and res["now_unix"] is not None:
+                node_now_unix = res["now_unix"]
+            else:
+                node_now_unix = t_finish.timestamp()
+
+            if elapsed_seconds > 0.0:
+                node_elapsed = elapsed_seconds
+            elif "chrony_elapsed_seconds" in res and res["chrony_elapsed_seconds"] is not None:
+                node_elapsed = res["chrony_elapsed_seconds"]
+            else:
+                node_elapsed = node_duration
+
             snap = build_node_telemetry_snapshot(
                 alias=alias,
                 profile=profile,
@@ -810,9 +859,12 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
                 chrony_raw=chrony_raw,
                 chrony_error=chrony_error,
                 readyz_status=readyz,
-                captured_at=effective_captured_at,
-                now_unix=now_unix,
-                elapsed_seconds=elapsed_seconds,
+                captured_at=node_probe_finished,
+                now_unix=node_now_unix,
+                elapsed_seconds=node_elapsed,
+                probe_started_at=node_probe_started,
+                probe_finished_at=node_probe_finished,
+                probe_duration_seconds=node_duration,
             )
             node_snapshots[alias] = snap
             snap_status = snap.get("status")
@@ -823,13 +875,21 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
             else:
                 has_error = True
         except Exception as e:
+            t_finish = datetime.datetime.now(datetime.timezone.utc)
+            t_mono_finish = time.monotonic()
+            probe_duration = round(t_mono_finish - t_mono_start, 4)
             has_error = True
             node_snapshots[alias] = build_node_telemetry_snapshot(
                 alias=alias,
                 profile=profile,
                 error=redact_sensitive_strings(str(e)),
-                captured_at=effective_captured_at,
+                captured_at=t_finish.isoformat(),
+                probe_started_at=t_start.isoformat(),
+                probe_finished_at=t_finish.isoformat(),
+                probe_duration_seconds=probe_duration,
             )
+
+    collection_finished_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     if has_ok and not has_error and not has_partial:
         cluster_status = "ok"
@@ -841,6 +901,8 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
     return {
         "status": cluster_status,
         "captured_at": effective_captured_at,
+        "collection_started_at": collection_started_at,
+        "collection_finished_at": collection_finished_at,
         "nodes": node_snapshots,
         "summary": {
             "total_nodes": len(nodes),

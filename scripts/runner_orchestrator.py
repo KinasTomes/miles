@@ -11,6 +11,7 @@ import datetime
 import json
 import os
 from pathlib import Path
+import time
 
 from scripts.runner_diagnostics import (
     build_failed_window_payload,
@@ -65,6 +66,8 @@ def collect_cluster_telemetry(
         alias = node.get("alias", "unknown")
         profile = node.get("profile", "cloud")
         node_id = node.get("id", alias)
+        t_start_node = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        t_mono_start = time.monotonic()
 
         if profile == "cloud":
             if not ssm_runner:
@@ -89,16 +92,25 @@ def collect_cluster_telemetry(
             metrics_raw = exec_cmd(DEFAULT_METRIC_PROGRAM).replace("\r", "")
             chrony_raw = ""
             chrony_error = None
+            t_chrony_start = time.monotonic()
             try:
                 chrony_raw = exec_cmd(DEFAULT_CHRONY_PROGRAM).replace("\r", "")
             except Exception as ce:
                 chrony_error = redact_sensitive_strings(str(ce))
+            t_chrony_finish = time.monotonic()
+            chrony_elapsed = round(t_chrony_finish - t_chrony_start, 4)
+            t_finish_node = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            t_mono_finish = time.monotonic()
 
             return {
                 "metrics_raw": metrics_raw,
                 "chrony_raw": chrony_raw,
                 "chrony_error": chrony_error,
                 "readyz_status": None,
+                "probe_started_at": t_start_node,
+                "probe_finished_at": t_finish_node,
+                "probe_duration_seconds": round(t_mono_finish - t_mono_start, 4),
+                "chrony_elapsed_seconds": chrony_elapsed,
             }
 
         elif profile == "edge":
@@ -109,17 +121,26 @@ def collect_cluster_telemetry(
             metrics_raw = r.stdout.decode() if hasattr(r, "stdout") else str(r)
             chrony_raw = ""
             chrony_error = None
+            t_chrony_start = time.monotonic()
             try:
                 rc = ssh_runner(["chronyc", "-n", "-c", "tracking"])
                 chrony_raw = rc.stdout.decode() if hasattr(rc, "stdout") else str(rc)
             except Exception as ce:
                 chrony_error = redact_sensitive_strings(str(ce))
+            t_chrony_finish = time.monotonic()
+            chrony_elapsed = round(t_chrony_finish - t_chrony_start, 4)
+            t_finish_node = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            t_mono_finish = time.monotonic()
 
             return {
                 "metrics_raw": metrics_raw,
                 "chrony_raw": chrony_raw,
                 "chrony_error": chrony_error,
                 "readyz_status": None,
+                "probe_started_at": t_start_node,
+                "probe_finished_at": t_finish_node,
+                "probe_duration_seconds": round(t_mono_finish - t_mono_start, 4),
+                "chrony_elapsed_seconds": chrony_elapsed,
             }
 
         else:

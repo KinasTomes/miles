@@ -520,6 +520,68 @@ class RunnerOrchestratorTests(unittest.TestCase):
         self.assertEqual(snap["summary"]["healthy_nodes"], 0)
         self.assertEqual(snap["summary"]["partial_nodes"], 1)
 
+    def test_collect_cluster_telemetry_captures_per_node_probe_timings_and_chrony_elapsed(self):
+        """
+        Verifies that collect_cluster_telemetry records probe_started_at, probe_finished_at,
+        probe_duration_seconds, and chrony_elapsed_seconds across both Cloud (SSM) and Edge (SSH) nodes,
+        and ensures clock sample age is evaluated accurately against the probe finish time.
+        """
+        import time
+
+        def mock_ssm(node_id, prog):
+            now_t = time.time()
+            if "startup.json" in prog:
+                return "miles_ready 1\n"
+            if "chronyc" in prog:
+                ref_t = now_t - 4.0
+                return f"A9FEA97B,169.254.169.123,3,{ref_t:.4f},0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n"
+            return "{}"
+
+        class MockSSHResult:
+            def __init__(self, stdout):
+                self.stdout = stdout.encode() if isinstance(stdout, str) else stdout
+
+        def mock_ssh(cmd):
+            now_t = time.time()
+            if "metrics" in " ".join(cmd):
+                return MockSSHResult("miles_ready 1\n")
+            if "chronyc" in " ".join(cmd):
+                ref_t = now_t - 6.0
+                return MockSSHResult(f"A9FEA97B,169.254.169.123,3,{ref_t:.4f},0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n")
+            return MockSSHResult("")
+
+        nodes = [
+            {"alias": "cloud-a", "id": "i-cloud-a", "profile": "cloud"},
+            {"alias": "edge-a", "id": "edge-node", "profile": "edge"},
+        ]
+
+        snap = collect_cluster_telemetry(
+            nodes=nodes,
+            ssm_runner=mock_ssm,
+            ssm_runcommand_runner=mock_ssm,
+            ssh_runner=mock_ssh,
+        )
+
+        self.assertEqual(snap["status"], "ok")
+        self.assertIn("collection_started_at", snap)
+        self.assertIn("collection_finished_at", snap)
+        self.assertEqual(len(snap["nodes"]), 2)
+
+        for alias in ["cloud-a", "edge-a"]:
+            node_snap = snap["nodes"][alias]
+            self.assertEqual(node_snap["status"], "ok")
+            self.assertIsNotNone(node_snap["probe_started_at"])
+            self.assertIsNotNone(node_snap["probe_finished_at"])
+            self.assertIsNotNone(node_snap["probe_duration_seconds"])
+            self.assertGreaterEqual(node_snap["probe_duration_seconds"], 0.0)
+
+            clock = node_snap["clock"]
+            self.assertEqual(clock["status"], "ok")
+            self.assertFalse(clock["uncertainty_exceeded"])
+            # Sample age must be positive (freshly sampled)
+            self.assertGreater(clock["sample_age_seconds"], 0.0)
+            self.assertLess(clock["sample_age_seconds"], 16.0)
+
 
 if __name__ == "__main__":
     unittest.main()

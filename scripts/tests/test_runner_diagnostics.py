@@ -606,6 +606,138 @@ Leap status     : Normal
         self.assertEqual(cluster_snap["nodes"]["cloud-b"]["status"], "error")
         self.assertIn("SSM command timed out", cluster_snap["nodes"]["cloud-b"]["error"])
 
+    def test_sequential_multi_node_probe_timestamps_prevent_negative_sample_age(self):
+        """
+        Regression test: verifies that sequential telemetry probing across multiple nodes
+        evaluates clock sample age against each probe's own finish timestamp, completely
+        preventing false negative sample ages (e.g. -20s, -56s, -61s) caused by sequential delays.
+        """
+        nodes = [
+            {"alias": "cloud-a", "profile": "cloud"},
+            {"alias": "cloud-b", "profile": "cloud"},
+            {"alias": "edge-a", "profile": "edge"},
+        ]
+
+        # Simulate sequential execution where each node probe occurs at simulated intervals:
+        # cloud-a probe runs at T=1730900015.0, ref_time = 1730900010.0 (age = 5.0s)
+        # cloud-b probe runs at T=1730900045.0, ref_time = 1730900040.0 (age = 5.0s)
+        # edge-a  probe runs at T=1730900105.0, ref_time = 1730900100.0 (age = 5.0s)
+        simulated_times = {
+            "cloud-a": (1730900010.0, 1730900015.0, 1.2),
+            "cloud-b": (1730900040.0, 1730900045.0, 1.5),
+            "edge-a": (1730900100.0, 1730900105.0, 2.0),
+        }
+
+        def mock_sequential_fetcher(node):
+            alias = node["alias"]
+            ref_t, finish_t, duration = simulated_times[alias]
+            start_t = finish_t - duration
+            csv_str = f"A9FEA97B,169.254.169.123,3,{ref_t:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+            import datetime
+            dt_start = datetime.datetime.fromtimestamp(start_t, datetime.timezone.utc).isoformat()
+            dt_finish = datetime.datetime.fromtimestamp(finish_t, datetime.timezone.utc).isoformat()
+            return {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": csv_str,
+                "readyz_status": None,
+                "probe_started_at": dt_start,
+                "probe_finished_at": dt_finish,
+                "probe_duration_seconds": duration,
+                "chrony_elapsed_seconds": 0.05,
+                "now_unix": finish_t,
+            }
+
+        snap = collect_node_telemetry_safe(
+            nodes=nodes,
+            fetcher_fn=mock_sequential_fetcher,
+            captured_at="2026-11-06T13:00:00Z",
+        )
+
+        self.assertEqual(snap["status"], "ok")
+        self.assertIn("collection_started_at", snap)
+        self.assertIn("collection_finished_at", snap)
+
+        for alias in ["cloud-a", "cloud-b", "edge-a"]:
+            node_snap = snap["nodes"][alias]
+            self.assertEqual(node_snap["status"], "ok")
+            self.assertIsNotNone(node_snap["probe_started_at"])
+            self.assertIsNotNone(node_snap["probe_finished_at"])
+            self.assertIsNotNone(node_snap["probe_duration_seconds"])
+            clock = node_snap["clock"]
+            self.assertEqual(clock["status"], "ok")
+            self.assertFalse(clock["uncertainty_exceeded"])
+            # Sample age MUST be positive (~5.0s), NOT negative!
+            self.assertGreaterEqual(clock["sample_age_seconds"], 0.0)
+            self.assertAlmostEqual(clock["sample_age_seconds"], 5.0, delta=0.5)
+
+    def test_chrony_slow_probe_increases_horizon_uncertainty(self):
+        """
+        Regression test: verifies that slow probe execution (e.g. command takes > 2.0s due to
+        CPU contention or network lag) properly factors into errorSeconds and triggers
+        horizon_uncertainty_exceeded_2s fail-closed.
+        """
+        now_unix = 1730900000.0
+        ref_time = now_unix - 5.0
+        csv_healthy = f"A9FEA97B,169.254.169.123,3,{ref_time:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        # Fast probe: elapsed = 0.05s -> OK
+        fast_res = parse_chrony_tracking(csv_healthy, now_unix=now_unix, elapsed_seconds=0.05)
+        self.assertEqual(fast_res["status"], "ok")
+        self.assertFalse(fast_res["uncertainty_exceeded"])
+
+        # Slow probe: elapsed = 2.05s -> errorSeconds > 2.0s -> horizon_uncertainty_exceeded_2s
+        slow_res = parse_chrony_tracking(csv_healthy, now_unix=now_unix, elapsed_seconds=2.05)
+        self.assertEqual(slow_res["status"], "ok")
+        self.assertTrue(slow_res["uncertainty_exceeded"])
+        self.assertEqual(slow_res["rejection_reason"], "horizon_uncertainty_exceeded_2s")
+
+    def test_chrony_future_timestamp_fails_closed(self):
+        """
+        Regression test: verifies that if ref_time is in the future by > 2.0s (clock step backwards
+        or invalid observation), parse_chrony_tracking strictly fails closed with sample_age_exceeded.
+        """
+        now_unix = 1730900000.0
+        # ref_time is 10.0s in the future relative to now_unix -> age = -10.0s < -2.0s
+        ref_time_future = now_unix + 10.0
+        csv_future = f"A9FEA97B,169.254.169.123,3,{ref_time_future:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        future_res = parse_chrony_tracking(csv_future, now_unix=now_unix)
+        self.assertEqual(future_res["status"], "ok")
+        self.assertTrue(future_res["uncertainty_exceeded"])
+        self.assertEqual(future_res["rejection_reason"], "sample_age_exceeded")
+        self.assertLess(future_res["sample_age_seconds"], -2.0)
+
+    def test_chrony_stale_and_recovery_sequence(self):
+        """
+        Regression test: verifies that a node transitioning from stale (age > 34s) to fresh (age = 5s)
+        properly reflects self-recovery across consecutive telemetry captures.
+        """
+        node = [{"alias": "edge-a", "profile": "edge"}]
+        now_unix = 1730900000.0
+
+        # Probe 1: Stale (age = 45s > 34s max allowed)
+        stale_ref = now_unix - 45.0
+        csv_stale = f"A9FEA97B,169.254.169.123,3,{stale_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+        snap1 = collect_node_telemetry_safe(
+            nodes=node,
+            fetcher_fn=lambda n: {"metrics_raw": "miles_ready 1\n", "chrony_raw": csv_stale, "now_unix": now_unix},
+        )
+        self.assertEqual(snap1["status"], "partial")
+        self.assertTrue(snap1["nodes"]["edge-a"]["clock"]["uncertainty_exceeded"])
+        self.assertEqual(snap1["nodes"]["edge-a"]["clock"]["rejection_reason"], "sample_age_exceeded")
+
+        # Probe 2: Recovered (age = 5s <= 34s)
+        now_unix_2 = now_unix + 20.0
+        fresh_ref = now_unix_2 - 5.0
+        csv_fresh = f"A9FEA97B,169.254.169.123,3,{fresh_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+        snap2 = collect_node_telemetry_safe(
+            nodes=node,
+            fetcher_fn=lambda n: {"metrics_raw": "miles_ready 1\n", "chrony_raw": csv_fresh, "now_unix": now_unix_2},
+        )
+        self.assertEqual(snap2["status"], "ok")
+        self.assertFalse(snap2["nodes"]["edge-a"]["clock"]["uncertainty_exceeded"])
+        self.assertEqual(snap2["nodes"]["edge-a"]["clock"]["sample_age_seconds"], 5.0)
+
     def test_collect_node_journals_safe(self):
         nodes = [
             {"alias": "cloud-a", "id": "i-aaa"},
