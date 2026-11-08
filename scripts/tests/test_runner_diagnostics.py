@@ -217,6 +217,46 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         self.assertEqual(f0["http_status"], 500)
         self.assertNotIn("secret_token", f0)
 
+    def test_sanitize_benchmark_failure_fail_fast_and_indeterminate(self):
+        mock_result = {
+            "status": "failed",
+            "error": "operation_failed",
+            "fail_fast": True,
+            "stop_trigger": "clock_uncertainty_exceeded",
+            "needs_reconciliation": True,
+            "samples": [
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-FAIL-FAST-INDET",
+                    "http_status": 0,
+                    "error": "deadline_exceeded",
+                    "indeterminate": True,
+                    "reconciliation": "needs_reconciliation",
+                    "secret_token": "PRIVATE_VAL",
+                    "duration_ms": 500.0,
+                },
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-INFLIGHT-SUCCESS",
+                    "http_status": 200,
+                    "payload_bytes": 1024,
+                }
+            ]
+        }
+        sanitized = sanitize_benchmark_failure(mock_result)
+        self.assertEqual(sanitized["status"], "failed")
+        self.assertTrue(sanitized["fail_fast"])
+        self.assertEqual(sanitized["stop_trigger"], "clock_uncertainty_exceeded")
+        self.assertTrue(sanitized["needs_reconciliation"])
+        self.assertEqual(len(sanitized["failures"]), 1)
+        f0 = sanitized["failures"][0]
+        self.assertEqual(f0["request_id"], "REQ-FAIL-FAST-INDET")
+        self.assertTrue(f0.get("indeterminate"))
+        self.assertEqual(f0.get("reconciliation"), "needs_reconciliation")
+        self.assertNotIn("secret_token", f0)
+
     def test_parse_prometheus_metrics(self):
         raw = (
             "# HELP miles_ready Readiness gauge\n"

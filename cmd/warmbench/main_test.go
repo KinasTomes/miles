@@ -13,8 +13,10 @@ func TestFlags(t *testing.T) {
 		text string
 	}{
 		{[]string{"--help"}, 0, "Concurrent requests"},
+		{[]string{"--help"}, 0, "Halt dispatching"},
 		{nil, 2, "require --config"},
 		{[]string{"--unknown"}, 2, "flag provided but not defined"},
+		{[]string{"--fail-fast", "--config", "missing", "--manifest", "missing", "--out", "missing"}, 1, "cannot inspect secret file"},
 		{[]string{"--config", "missing", "--manifest", "missing", "--out", "missing"}, 1, "cannot inspect secret file"},
 	} {
 		var out, err bytes.Buffer

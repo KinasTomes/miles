@@ -34,13 +34,13 @@ Chưa hoàn thành:
 
 **Vị trí:** `internal/benchmark/run.go` (hiện `filePhase` phát tất cả jobs và chỉ `finishPhase` mới báo fail), `cmd/warmbench/main.go`, unit/integration tests.
 
-- [ ] F1. Định nghĩa option CLI `--fail-fast`, default `false` để không thay đổi baseline hiện hành; thêm `FailFast bool` vào `benchmark.Options` và test CLI/config validation.
-- [ ] F2. Bounded worker/dispatcher: khi một worker hoàn tất sample lỗi (`Error != ""`, gồm HTTP 500/503, checksum/size mismatch), latch stop reason, ngừng enqueue **các job chưa dispatch**; không cancel các request đang in-flight bằng context chung.
-- [ ] F3. Worker đã nhận job trước stop tiếp tục hoàn tất/timeout độc lập; `WaitGroup` kết thúc trước save artifact. Không để race, deadlock (đặc biệt C1/C4, channel blocked, failure at first/last job, producer exits), không ghi vào output khi worker còn mutate.
-- [ ] F4. Result schema: nêu rõ `planned/dispatched/completed/skipped`, `stop_trigger` (sanitized), phase/trial status và preserved outcome của mọi dispatched request; skipped ≠ failed; giữ phase statistics nhất quán, bảo toàn `result.json` atomic mode 0600. Nếu cần đổi schema, version và cập nhật toàn bộ consumers/tests.
-- [ ] F5. Khi PUT không có kết quả rõ do timeout/transport, gắn `indeterminate` / needs-reconciliation, không retry bừa hay coi là clean failure. Bảo toàn owned prefix để kiểm tra; tránh auto-delete khi chưa đối soát.
-- [ ] F6. Regression: deterministic mock backend C1/C4/C8; first/middle/last failure; success đang in-flight sau stop; timeout/SIGINT; GET mismatch; no extra dispatch; no hangs; race detector; default `--fail-fast=false` giữ behavior cũ; sanitation trong evidence. Tích hợp với `execute_workload_and_capture_on_failure`.
-- [ ] F7. Chạy `make check`, `make test-local`, Go race của `internal/benchmark` và `cmd/warmbench`, smoke + `git diff --check`; ghi acceptance matrix thực tế vào PR.
+- [x] F1. Định nghĩa option CLI `--fail-fast`, default `false` để không thay đổi baseline hiện hành; thêm `FailFast bool` vào `benchmark.Options` và test CLI/config validation.
+- [x] F2. Bounded worker/dispatcher: khi một worker hoàn tất sample lỗi (`Error != ""`, gồm HTTP 500/503, checksum/size mismatch), latch stop reason, ngừng enqueue **các job chưa dispatch**; không cancel các request đang in-flight bằng context chung.
+- [x] F3. Worker đã nhận job trước stop tiếp tục hoàn tất/timeout độc lập; `WaitGroup` kết thúc trước save artifact. Không để race, deadlock (đặc biệt C1/C4, channel blocked, failure at first/last job, producer exits), không ghi vào output khi worker còn mutate.
+- [x] F4. Result schema: nêu rõ `planned/dispatched/completed/skipped`, `stop_trigger` (sanitized), phase/trial status và preserved outcome của mọi dispatched request; skipped ≠ failed; giữ phase statistics nhất quán, bảo toàn `result.json` atomic mode 0600. Nếu cần đổi schema, version và cập nhật toàn bộ consumers/tests.
+- [x] F5. Khi PUT không có kết quả rõ do timeout/transport, gắn `indeterminate` / needs-reconciliation, không retry bừa hay coi là clean failure. Bảo toàn owned prefix để kiểm tra; tránh auto-delete khi chưa đối soát.
+- [x] F6. Regression: deterministic mock backend C1/C4/C8; first/middle/last failure; success đang in-flight sau stop; timeout/SIGINT; GET mismatch; no extra dispatch; no hangs; race detector; default `--fail-fast=false` giữ behavior cũ; sanitation trong evidence. Tích hợp với `execute_workload_and_capture_on_failure`.
+- [x] F7. Chạy `make check`, `make test-local`, Go race của `internal/benchmark` và `cmd/warmbench`, smoke + `git diff --check`; ghi acceptance matrix thực tế vào PR.
 
 **Gate F:** Error được quan sát → không dispatch job mới; các job đã dispatch có kết cục được lưu (hoặc `indeterminate` minh bạch); không unknown commit bị che; artifacts hợp lệ cả PASS và FAIL; mode mặc định không regression. Code review/CI PASS trước khi merge.
 
@@ -88,8 +88,8 @@ Chưa hoàn thành:
 
 - [x] PR #73 đã squash merge thành `7f6533e`.
 - [x] `main` local cập nhật; worktree `feat/edge-acceptance-followup` tạo từ merged `main`.
-- [ ] Bắt đầu F1–F3 (không apply AWS).
-- [ ] Kiểm thử race/stop/reconcile và cập nhật contract/docs cho F4–F7.
+- [x] Bắt đầu F1–F3 (không apply AWS).
+- [x] Kiểm thử race/stop/reconcile và cập nhật contract/docs cho F4–F7.
 - [ ] Đối chiếu evidence offline (R1–R4); không xuất private telemetry vào repo.
 - [ ] Review/merge các PR kế tiếp.
 - [ ] Xin phê duyệt phiên AWS sau khi hoàn thành offline (đặc biệt D3/D4 không được tuyên bố PASS trước).

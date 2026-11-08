@@ -19,6 +19,7 @@ import (
 	"runtime/debug"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/benchmarkdata"
@@ -33,24 +34,31 @@ type Options struct {
 	Concurrency   int
 	RetainObjects bool // Retain only this run prefix for external statistics; caller owns cleanup.
 	ReadRepeats   int  // additional full GET passes, separate from initial verification
+	FailFast      bool // Halt dispatching new requests immediately on first error; in-flight requests drain.
 }
 
 type Sample struct {
-	Phase        string `json:"phase"`
-	Operation    string `json:"operation"`
-	File         string `json:"file,omitempty"`
-	Group        string `json:"group,omitempty"`
-	LatencyNS    int64  `json:"latency_ns"`
-	PayloadBytes int64  `json:"payload_bytes"`
-	SHA256       string `json:"sha256,omitempty"`
-	Error        string `json:"error,omitempty"`
-	HTTPStatus   int    `json:"http_status,omitempty"`
-	RequestID    string `json:"request_id,omitempty"`
+	Phase          string `json:"phase"`
+	Operation      string `json:"operation"`
+	File           string `json:"file,omitempty"`
+	Group          string `json:"group,omitempty"`
+	LatencyNS      int64  `json:"latency_ns"`
+	PayloadBytes   int64  `json:"payload_bytes"`
+	SHA256         string `json:"sha256,omitempty"`
+	Error          string `json:"error,omitempty"`
+	HTTPStatus     int    `json:"http_status,omitempty"`
+	RequestID      string `json:"request_id,omitempty"`
+	Indeterminate  bool   `json:"indeterminate,omitempty"`
+	Reconciliation string `json:"reconciliation,omitempty"`
 }
 
 type Phase struct {
 	Name            string  `json:"name"`
 	Samples         int     `json:"samples"`
+	Planned         int     `json:"planned"`
+	Dispatched      int     `json:"dispatched"`
+	Completed       int     `json:"completed"`
+	Skipped         int     `json:"skipped"`
 	Failed          int     `json:"failed"`
 	ElapsedNS       int64   `json:"elapsed_ns"`
 	SuccessfulBytes int64   `json:"successful_logical_bytes"`
@@ -58,6 +66,7 @@ type Phase struct {
 	P50NS           int64   `json:"p50_ns"`
 	P95NS           int64   `json:"p95_ns"`
 	MaxNS           int64   `json:"max_ns"`
+	StopTrigger     string  `json:"stop_trigger,omitempty"`
 }
 
 type Result struct {
@@ -74,6 +83,9 @@ type Result struct {
 	Dataset             benchmarkdata.Manifest `json:"dataset"`
 	Concurrency         int                    `json:"concurrency"`
 	ReadRepeats         int                    `json:"read_repeats"`
+	FailFast            bool                   `json:"fail_fast"`
+	StopTrigger         string                 `json:"stop_trigger,omitempty"`
+	NeedsReconciliation bool                   `json:"needs_reconciliation,omitempty"`
 	DeclaredEnvironment Environment            `json:"declared_environment"`
 	Client              map[string]string      `json:"client"`
 	Phases              []Phase                `json:"phases"`
@@ -112,7 +124,8 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 		SchemaVersion: 1, Status: "running", Target: c.Target, Region: c.Region, StartedAt: time.Now().UTC(),
 		Prefix: "warmbench/" + hex.EncodeToString(id) + "/", ManifestSHA256: hex.EncodeToString(sum[:]), Dataset: manifest,
 		Concurrency: o.Concurrency, ReadRepeats: o.ReadRepeats, DeclaredEnvironment: c.Environment, Client: clientVersions(),
-		Cleanup: "not_started", Phases: []Phase{}, Samples: []Sample{},
+		FailFast: o.FailFast,
+		Cleanup:  "not_started", Phases: []Phase{}, Samples: []Sample{},
 		Limitations: []string{
 			"Preliminary only. smoke validates the harness; it is not a performance or R1/R2 acceptance result.",
 			"Single PutObject, SHA256 header, no multipart, no SDK retries; queue dispatch follows manifest order, completion order is concurrent.",
@@ -130,6 +143,17 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 		result.Status = "passed"
 		if err != nil {
 			result.Status, result.Error = "failed", errorCode(err)
+		}
+		if o.FailFast {
+			for _, s := range result.Samples {
+				if s.Indeterminate {
+					result.NeedsReconciliation = true
+					break
+				}
+			}
+			if result.NeedsReconciliation {
+				result.Cleanup = "objects_may_remain_indeterminate_outcome"
+			}
 		}
 		if e := saveResult(o.Out, result); e != nil {
 			err = errors.Join(err, e)
@@ -171,26 +195,115 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 
 func filePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Config, o Options, phase string, r *Result) error {
 	start := time.Now()
-	samples := make([]Sample, len(r.Dataset.Files))
+	total := len(r.Dataset.Files)
+	samples := make([]Sample, total)
 	jobs := make(chan int)
 	var workers sync.WaitGroup
-	for i := 0; i < min(o.Concurrency, len(samples)); i++ {
+
+	if !o.FailFast {
+		for i := 0; i < min(o.Concurrency, total); i++ {
+			workers.Go(func() {
+				for index := range jobs {
+					entry := r.Dataset.Files[index]
+					samples[index] = fileOperation(ctx, client, root, c, r.Prefix+entry.Path, phase, entry, false)
+				}
+			})
+		}
+		for index := range samples {
+			jobs <- index
+		}
+		close(jobs)
+		workers.Wait()
+		return finishPhase(r, phase, start, samples)
+	}
+
+	var (
+		stopCh     = make(chan struct{})
+		stopOnce   sync.Once
+		stopMu     sync.Mutex
+		stopReason string
+		stopped    atomic.Bool
+	)
+
+	triggerStop := func(reason string) {
+		stopOnce.Do(func() {
+			stopMu.Lock()
+			stopReason = sanitizeStopTrigger(reason)
+			stopMu.Unlock()
+			stopped.Store(true)
+			close(stopCh)
+		})
+	}
+
+	getStopReason := func() string {
+		stopMu.Lock()
+		defer stopMu.Unlock()
+		return stopReason
+	}
+
+	for i := 0; i < min(o.Concurrency, total); i++ {
 		workers.Go(func() {
-			for index := range jobs {
-				entry := r.Dataset.Files[index]
-				samples[index] = fileOperation(ctx, client, root, c, r.Prefix+entry.Path, phase, entry)
+			for {
+				if stopped.Load() {
+					return
+				}
+				select {
+				case index, ok := <-jobs:
+					if !ok {
+						return
+					}
+					entry := r.Dataset.Files[index]
+					s := fileOperation(ctx, client, root, c, r.Prefix+entry.Path, phase, entry, true)
+					samples[index] = s
+
+					if s.Error != "" {
+						triggerStop(s.Error)
+						return
+					}
+				case <-stopCh:
+					return
+				}
 			}
 		})
 	}
+
+	dispatchedCount := 0
+dispatchLoop:
 	for index := range samples {
-		jobs <- index
+		if stopped.Load() {
+			break dispatchLoop
+		}
+		select {
+		case jobs <- index:
+			dispatchedCount++
+		case <-stopCh:
+			break dispatchLoop
+		case <-ctx.Done():
+			break dispatchLoop
+		}
 	}
 	close(jobs)
 	workers.Wait() // never write final artifacts while a worker can still mutate keys
-	return finishPhase(r, phase, start, samples)
+
+	completedSamples := make([]Sample, 0, dispatchedCount)
+	for _, s := range samples {
+		if s.Phase != "" {
+			completedSamples = append(completedSamples, s)
+		}
+	}
+
+	skipped := total - dispatchedCount
+	if skipped < 0 {
+		skipped = 0
+	}
+	trigger := getStopReason()
+	if trigger == "" && ctx.Err() != nil {
+		trigger = errorCode(ctx.Err())
+	}
+	return finishPhaseWithStats(r, phase, start, completedSamples, total, dispatchedCount, skipped, trigger)
 }
 
-func fileOperation(ctx context.Context, client *awss3.Client, root *os.Root, c Config, key, phase string, f benchmarkdata.File) (sample Sample) {
+func fileOperation(ctx context.Context, client *awss3.Client, root *os.Root, c Config, key, phase string, f benchmarkdata.File, failFast bool) (sample Sample) {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
@@ -223,6 +336,13 @@ func fileOperation(ctx context.Context, client *awss3.Client, root *os.Root, c C
 		}
 		_, err = client.PutObject(ctx, input)
 		sample.PayloadBytes = int64(f.Bytes) // declared upload bytes, not observed wire bytes
+		if failFast && err != nil {
+			status, _ := responseDiagnostics(err)
+			if status == 0 || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				sample.Indeterminate = true
+				sample.Reconciliation = "needs_reconciliation"
+			}
+		}
 	case "head":
 		sample.Operation = "HeadObject"
 		var out *awss3.HeadObjectOutput
@@ -262,6 +382,7 @@ func listPhase(ctx context.Context, client *awss3.Client, bucket, phase string, 
 	seenKeys, seenTokens := map[string]bool{}, map[string]bool{}
 	var token *string
 	var samples []Sample
+	var stopTrigger string
 	// No page can be empty and truncated indefinitely, nor return unlimited extras.
 	for page := 0; page <= len(r.Dataset.Files); page++ {
 		t := time.Now()
@@ -295,14 +416,30 @@ func listPhase(ctx context.Context, client *awss3.Client, bucket, phase string, 
 		}
 		samples = append(samples, s)
 		if s.Error != "" || token == nil {
+			if s.Error != "" {
+				stopTrigger = sanitizeStopTrigger(s.Error)
+			}
 			break
 		}
 	}
-	return finishPhase(r, phase, start, samples)
+	return finishPhaseWithStats(r, phase, start, samples, len(samples), len(samples), 0, stopTrigger)
 }
 
 func finishPhase(r *Result, name string, start time.Time, samples []Sample) error {
-	p := Phase{Name: name, Samples: len(samples), ElapsedNS: time.Since(start).Nanoseconds()}
+	return finishPhaseWithStats(r, name, start, samples, len(samples), len(samples), 0, "")
+}
+
+func finishPhaseWithStats(r *Result, name string, start time.Time, samples []Sample, planned, dispatched, skipped int, stopTrigger string) error {
+	p := Phase{
+		Name:        name,
+		Samples:     len(samples),
+		Planned:     planned,
+		Dispatched:  dispatched,
+		Completed:   len(samples),
+		Skipped:     skipped,
+		StopTrigger: stopTrigger,
+		ElapsedNS:   time.Since(start).Nanoseconds(),
+	}
 	latencies := make([]int64, 0, len(samples))
 	for _, s := range samples {
 		latencies = append(latencies, s.LatencyNS)
@@ -319,12 +456,25 @@ func finishPhase(r *Result, name string, start time.Time, samples []Sample) erro
 	if p.ElapsedNS > 0 {
 		p.BytesPerSecond = float64(p.SuccessfulBytes) * 1e9 / float64(p.ElapsedNS)
 	}
+	if stopTrigger != "" && r.StopTrigger == "" {
+		r.StopTrigger = stopTrigger
+	}
 	r.Samples = append(r.Samples, samples...)
 	r.Phases = append(r.Phases, p)
 	if p.Failed != 0 {
 		return errors.New("phase failed; see sample error codes in result.json")
 	}
 	return nil
+}
+
+func sanitizeStopTrigger(trigger string) string {
+	if trigger == "" {
+		return ""
+	}
+	if safeCode.MatchString(trigger) {
+		return trigger
+	}
+	return "operation_failed"
 }
 
 func saveResult(out string, r Result) error {
