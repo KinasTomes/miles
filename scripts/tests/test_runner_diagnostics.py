@@ -257,6 +257,37 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         self.assertEqual(f0.get("reconciliation"), "needs_reconciliation")
         self.assertNotIn("secret_token", f0)
 
+    def test_untrusted_reconciliation_string_does_not_leak_secrets(self):
+        """
+        Regression test for P1/P2: verifies that untrusted reconciliation string
+        containing signed tokens or query params is never echoed into sanitized evidence.
+        """
+        leaky_recon = "needs_reconciliation?token=SECRET_TEST_KEY_12345&X-Amz-Signature=TEST_SIGNATURE_9876"
+        client_res = {
+            "status": "failed",
+            "error": "interrupted",
+            "fail_fast": True,
+            "stop_trigger": "interrupted",
+            "needs_reconciliation": True,
+            "samples": [
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-LEAKY-RECON",
+                    "http_status": 0,
+                    "error": "deadline_exceeded",
+                    "indeterminate": True,
+                    "reconciliation": leaky_recon,
+                }
+            ]
+        }
+        sanitized = sanitize_benchmark_failure(client_res)
+        dumped = json.dumps(sanitized)
+        self.assertNotIn("SECRET_TEST_KEY_12345", dumped)
+        self.assertNotIn("TEST_SIGNATURE_9876", dumped)
+        self.assertEqual(sanitized["failures"][0]["reconciliation"], "unknown_reconciliation_state")
+        self.assertEqual(sanitized["stop_trigger"], "interrupted")
+
     def test_parse_prometheus_metrics(self):
         raw = (
             "# HELP miles_ready Readiness gauge\n"

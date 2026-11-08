@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -711,5 +713,274 @@ func TestFailFastHighConcurrencyRace(t *testing.T) {
 	}
 	if putPhase.Completed != putPhase.Dispatched {
 		t.Fatalf("completed != dispatched: %+v", putPhase)
+	}
+}
+
+func TestFailFastSIGINTDoesNotAbortInFlightPUTUntilServerSettles(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 1
+	o.FailFast = true
+
+	started := make(chan struct{}, 1)
+	var serverFinished atomic.Bool
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			time.Sleep(60 * time.Millisecond)
+			serverFinished.Store(true)
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type runRes struct {
+		r   Result
+		err error
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		res, err := Run(ctx, c, o)
+		done <- runRes{res, err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("PUT never started")
+	}
+
+	// Cancel parent context while PUT is in-flight
+	cancel()
+
+	var result runRes
+	select {
+	case result = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run timed out after cancel")
+	}
+
+	// Crucial assertion: server handler finished BEFORE Run returned
+	if !serverFinished.Load() {
+		t.Fatal("Run returned before in-flight server PUT finished (graceful drain was bypassed)")
+	}
+
+	// Interrupted run must be recorded as failed, not passed
+	if result.r.Status != "failed" || !errors.Is(result.err, ErrInterrupted) {
+		t.Fatalf("expected Status='failed' and ErrInterrupted, got status=%q err=%v", result.r.Status, result.err)
+	}
+	if result.r.Error != "interrupted" || result.r.StopTrigger != "interrupted" {
+		t.Fatalf("wrong error/StopTrigger: error=%q stopTrigger=%q", result.r.Error, result.r.StopTrigger)
+	}
+
+	// The PUT settled with 200 OK, so no indeterminate outcome
+	if result.r.NeedsReconciliation {
+		t.Fatal("settled in-flight PUT should not demand reconciliation")
+	}
+	if result.r.Cleanup == "objects_may_remain_indeterminate_outcome" {
+		t.Fatalf("unexpected cleanup state: %q", result.r.Cleanup)
+	}
+
+	// Subsequent phases (head, verify-get, delete) must NOT have run
+	if len(result.r.Phases) != 2 {
+		t.Fatalf("expected exactly 2 phases (preflight-list and put), got %d phases", len(result.r.Phases))
+	}
+
+	putPhase := result.r.Phases[1]
+	if putPhase.Dispatched != 1 || putPhase.Completed != 1 || putPhase.Failed != 0 || putPhase.Skipped != 8 {
+		t.Fatalf("wrong accounting: %+v", putPhase)
+	}
+}
+
+func TestFailFastSIGINTEmergencyDrainTimeoutEscalation(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 1
+	o.FailFast = true
+	o.DrainTimeout = 50 * time.Millisecond
+
+	started := make(chan struct{}, 1)
+	var (
+		releaseServer     = make(chan struct{})
+		releaseServerOnce sync.Once
+	)
+	safeRelease := func() {
+		releaseServerOnce.Do(func() {
+			close(releaseServer)
+		})
+	}
+	defer safeRelease()
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			// Hang indefinitely until released or client disconnects
+			select {
+			case <-releaseServer:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type runRes struct {
+		r   Result
+		err error
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		res, err := Run(ctx, c, o)
+		done <- runRes{res, err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("PUT never started")
+	}
+
+	cancel()
+
+	var result runRes
+	select {
+	case result = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emergency drain timeout did not terminate in-flight request")
+	}
+	safeRelease()
+
+	if result.r.Status != "failed" || !errors.Is(result.err, ErrInterrupted) {
+		t.Fatalf("expected Status='failed' and ErrInterrupted, got status=%q err=%v", result.r.Status, result.err)
+	}
+	if !result.r.NeedsReconciliation {
+		t.Fatal("expected NeedsReconciliation=true after emergency drain abort")
+	}
+	if result.r.Cleanup != "objects_may_remain_indeterminate_outcome" {
+		t.Fatalf("expected Cleanup='objects_may_remain_indeterminate_outcome', got %q", result.r.Cleanup)
+	}
+
+	// Verify sample was recorded as indeterminate
+	foundIndeterminate := false
+	for _, sample := range result.r.Samples {
+		if sample.Operation == "PutObject" && sample.Indeterminate {
+			foundIndeterminate = true
+			if sample.Reconciliation != "needs_reconciliation" {
+				t.Fatalf("expected Reconciliation='needs_reconciliation', got %q", sample.Reconciliation)
+			}
+		}
+	}
+	if !foundIndeterminate {
+		t.Fatal("expected at least one PutObject sample marked indeterminate")
+	}
+}
+
+func TestFailFastSIGINTAllInFlightSucceedFailsBenchmark(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 4
+	o.FailFast = true
+
+	var putDispatched atomic.Int32
+	started := make(chan struct{}, 1)
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			d := putDispatched.Add(1)
+			if d == 1 {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+			}
+			time.Sleep(30 * time.Millisecond)
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type runRes struct {
+		r   Result
+		err error
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		res, err := Run(ctx, c, o)
+		done <- runRes{res, err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("PUT never started")
+	}
+
+	cancel()
+
+	var result runRes
+	select {
+	case result = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run timed out after cancel")
+	}
+
+	// Crucial invariant: Even though 0 PUTs failed (all in-flight completed with 200 OK),
+	// the benchmark MUST still fail with "interrupted", never report "passed".
+	if result.r.Status != "failed" {
+		t.Fatalf("interrupted benchmark must have Status='failed', got %q", result.r.Status)
+	}
+	if !errors.Is(result.err, ErrInterrupted) {
+		t.Fatalf("expected ErrInterrupted, got %v", result.err)
+	}
+	if result.r.Error != "interrupted" || result.r.StopTrigger != "interrupted" {
+		t.Fatalf("expected Error and StopTrigger to be 'interrupted', got error=%q stopTrigger=%q", result.r.Error, result.r.StopTrigger)
+	}
+
+	putPhase := result.r.Phases[1]
+	if putPhase.Failed != 0 {
+		t.Fatalf("expected 0 failed samples in putPhase, got %d", putPhase.Failed)
+	}
+	if putPhase.Dispatched == 0 || putPhase.Completed != putPhase.Dispatched {
+		t.Fatalf("dispatched=%d completed=%d", putPhase.Dispatched, putPhase.Completed)
+	}
+	if putPhase.Skipped == 0 || putPhase.Dispatched+putPhase.Skipped != putPhase.Planned {
+		t.Fatalf("skipped=%d dispatched=%d planned=%d", putPhase.Skipped, putPhase.Dispatched, putPhase.Planned)
+	}
+
+	// Verify subsequent phases (head, verify-get, repeat-get, delete) did NOT run
+	for _, p := range result.r.Phases {
+		if p.Name != "preflight-list" && p.Name != "put" {
+			t.Fatalf("subsequent phase %q should not have executed", p.Name)
+		}
 	}
 }

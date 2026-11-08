@@ -127,6 +127,8 @@ def classify_error_to_code(err_str, http_status=None):
         return "internal_error"
     if "canceled" in s or "cancelled" in s:
         return "context_canceled"
+    if "interrupt" in s:
+        return "interrupted"
     if http_status == 500:
         return "internal_error"
     if http_status == 503:
@@ -336,9 +338,19 @@ SAFE_ERROR_NAMES = {
     "clock_uncertainty_exceeded": "clock_uncertainty_exceeded",
     "sha256_mismatch": "sha256_mismatch",
     "size_mismatch": "size_mismatch",
+    "interrupted": "interrupted",
+    "canceled": "canceled",
+    "deadline_exceeded": "deadline_exceeded",
+    "operation_failed": "operation_failed",
     "unexpected EOF in data stream": "unexpected EOF in data stream",
     "connection refused": "connection refused",
     "context deadline exceeded": "context deadline exceeded",
+}
+
+SAFE_RECONCILIATION_STATES = {
+    "needs_reconciliation": "needs_reconciliation",
+    "reconciled": "reconciled",
+    "not_needed": "not_needed",
 }
 
 
@@ -400,7 +412,8 @@ def sanitize_benchmark_failure(client_result):
                     record["error"] = ecode
             if sample.get("indeterminate"):
                 record["indeterminate"] = True
-                record["reconciliation"] = str(sample.get("reconciliation", "needs_reconciliation"))
+                raw_recon = str(sample.get("reconciliation", "")).strip()
+                record["reconciliation"] = SAFE_RECONCILIATION_STATES.get(raw_recon, "unknown_reconciliation_state")
             return record
         return None
 

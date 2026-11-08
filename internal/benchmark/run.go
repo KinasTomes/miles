@@ -32,9 +32,10 @@ type Options struct {
 	Manifest      string
 	Out           string
 	Concurrency   int
-	RetainObjects bool // Retain only this run prefix for external statistics; caller owns cleanup.
-	ReadRepeats   int  // additional full GET passes, separate from initial verification
-	FailFast      bool // Halt dispatching new requests immediately on first error; in-flight requests drain.
+	RetainObjects bool          // Retain only this run prefix for external statistics; caller owns cleanup.
+	ReadRepeats   int           // additional full GET passes, separate from initial verification
+	FailFast      bool          // Halt dispatching new requests immediately on first error; in-flight requests drain.
+	DrainTimeout  time.Duration // Emergency deadline for in-flight requests to drain after interruption (0 uses requestTimeout)
 }
 
 type Sample struct {
@@ -217,13 +218,42 @@ func filePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Confi
 		return finishPhase(r, phase, start, samples)
 	}
 
+	if ctx.Err() != nil {
+		return ErrInterrupted
+	}
+
 	var (
-		stopCh     = make(chan struct{})
-		stopOnce   sync.Once
-		stopMu     sync.Mutex
-		stopReason string
-		stopped    atomic.Bool
+		stopCh       = make(chan struct{})
+		stopOnce     sync.Once
+		stopMu       sync.Mutex
+		stopReason   string
+		stopped      atomic.Bool
+		interrupted  atomic.Bool
+		drainTimerMu sync.Mutex
+		drainTimer   *time.Timer
 	)
+
+	drainCtx, drainCancel := context.WithCancel(context.Background())
+	defer func() {
+		drainCancel()
+		drainTimerMu.Lock()
+		if drainTimer != nil {
+			drainTimer.Stop()
+		}
+		drainTimerMu.Unlock()
+	}()
+
+	scheduleDrainTimeout := func() {
+		if o.DrainTimeout > 0 {
+			drainTimerMu.Lock()
+			if drainTimer == nil {
+				drainTimer = time.AfterFunc(o.DrainTimeout, func() {
+					drainCancel()
+				})
+			}
+			drainTimerMu.Unlock()
+		}
+	}
 
 	triggerStop := func(reason string) {
 		stopOnce.Do(func() {
@@ -232,6 +262,9 @@ func filePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Confi
 			stopMu.Unlock()
 			stopped.Store(true)
 			close(stopCh)
+			if reason == "interrupted" {
+				scheduleDrainTimeout()
+			}
 		})
 	}
 
@@ -240,6 +273,19 @@ func filePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Confi
 		defer stopMu.Unlock()
 		return stopReason
 	}
+
+	stopWatcher := make(chan struct{})
+	defer close(stopWatcher)
+	go func() {
+		select {
+		case <-ctx.Done():
+			interrupted.Store(true)
+			triggerStop("interrupted")
+			scheduleDrainTimeout()
+		case <-stopWatcher:
+			return
+		}
+	}()
 
 	for i := 0; i < min(o.Concurrency, total); i++ {
 		workers.Go(func() {
@@ -253,7 +299,7 @@ func filePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Confi
 						return
 					}
 					entry := r.Dataset.Files[index]
-					s := fileOperation(ctx, client, root, c, r.Prefix+entry.Path, phase, entry, true)
+					s := fileOperation(drainCtx, client, root, c, r.Prefix+entry.Path, phase, entry, true)
 					samples[index] = s
 
 					if s.Error != "" {
@@ -274,11 +320,25 @@ dispatchLoop:
 			break dispatchLoop
 		}
 		select {
+		case <-stopCh:
+			break dispatchLoop
+		case <-ctx.Done():
+			interrupted.Store(true)
+			triggerStop("interrupted")
+			scheduleDrainTimeout()
+			break dispatchLoop
+		default:
+		}
+
+		select {
 		case jobs <- index:
 			dispatchedCount++
 		case <-stopCh:
 			break dispatchLoop
 		case <-ctx.Done():
+			interrupted.Store(true)
+			triggerStop("interrupted")
+			scheduleDrainTimeout()
 			break dispatchLoop
 		}
 	}
@@ -297,10 +357,14 @@ dispatchLoop:
 		skipped = 0
 	}
 	trigger := getStopReason()
-	if trigger == "" && ctx.Err() != nil {
-		trigger = errorCode(ctx.Err())
+	if trigger == "" && (interrupted.Load() || ctx.Err() != nil) {
+		trigger = "interrupted"
 	}
-	return finishPhaseWithStats(r, phase, start, completedSamples, total, dispatchedCount, skipped, trigger)
+	err := finishPhaseWithStats(r, phase, start, completedSamples, total, dispatchedCount, skipped, trigger)
+	if interrupted.Load() || ctx.Err() != nil {
+		return ErrInterrupted
+	}
+	return err
 }
 
 func fileOperation(ctx context.Context, client *awss3.Client, root *os.Root, c Config, key, phase string, f benchmarkdata.File, failFast bool) (sample Sample) {
@@ -374,6 +438,9 @@ func fileOperation(ctx context.Context, client *awss3.Client, root *os.Root, c C
 }
 
 func listPhase(ctx context.Context, client *awss3.Client, bucket, phase string, r *Result, files []benchmarkdata.File) error {
+	if ctx.Err() != nil {
+		return ErrInterrupted
+	}
 	start := time.Now()
 	expected := map[string]int64{}
 	for _, f := range files {
@@ -385,6 +452,9 @@ func listPhase(ctx context.Context, client *awss3.Client, bucket, phase string, 
 	var stopTrigger string
 	// No page can be empty and truncated indefinitely, nor return unlimited extras.
 	for page := 0; page <= len(r.Dataset.Files); page++ {
+		if ctx.Err() != nil {
+			return ErrInterrupted
+		}
 		t := time.Now()
 		callCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 		out, err := client.ListObjectsV2(callCtx, &awss3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(r.Prefix), ContinuationToken: token, MaxKeys: aws.Int32(1000)})

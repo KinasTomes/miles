@@ -32,6 +32,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	retain := f.Bool("retain-objects", false, "Retain this run prefix for external statistics; caller must clean it up")
 	repeats := f.Int("read-repeats", 3, "Additional full GET passes, 0..10 (each verifies SHA-256)")
 	failFast := f.Bool("fail-fast", false, "Halt dispatching new requests immediately on first sample failure; in-flight drain")
+	drainTimeout := f.Duration("drain-timeout", 0, "Emergency deadline for in-flight requests to drain after interruption (0 uses request timeout)")
 	if err := f.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -54,7 +55,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "invalid config JSON or unknown field")
 		return 1
 	}
-	r, err := benchmark.Run(ctx, c, benchmark.Options{Manifest: *manifest, Out: *out, Concurrency: *concurrency, ReadRepeats: *repeats, RetainObjects: *retain, FailFast: *failFast})
+	r, err := benchmark.Run(ctx, c, benchmark.Options{Manifest: *manifest, Out: *out, Concurrency: *concurrency, ReadRepeats: *repeats, RetainObjects: *retain, FailFast: *failFast, DrainTimeout: *drainTimeout})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
