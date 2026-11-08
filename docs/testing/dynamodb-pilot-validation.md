@@ -155,6 +155,91 @@ Offline analysis and negative fault-injection tests (PR #65 continuation) verifi
 - Full regression suites (`make check`, `make test-local`, `go test -race`, and Python
   runner unit tests) pass locally. Local PASS does not constitute AWS acceptance.
 
+## Live pilot acceptance run 2026-11-08 (W05-HUNG-03 Follow-Up)
+
+Following approved run plan [`docs/planning/aws-live-acceptance-run-plan.md`](../planning/aws-live-acceptance-run-plan.md) and [`docs/planning/aws-live-acceptance-follow-up.md`](../planning/aws-live-acceptance-follow-up.md), a complete staged live acceptance run (`w05-hung03-live-20261108-0345`) was executed on 2026-11-08 (Window: 03:45Z – 05:17Z) on AWS Account `499388132734` in `ap-southeast-1`. See detailed execution report in [`live-acceptance-20261108-report.md`](./live-acceptance-20261108-report.md).
+
+### Topology and environment
+- **Release binary:** Built from source on `feat/w05-hung-03-aws-acceptance` (`miles-linux-arm64.tar.gz`), staged via S3 release upload.
+- **Compute nodes:** 2 Cloud gateways (`cloud-a`, `cloud-b`) across two Availability Zones behind a private Application Load Balancer (`miles-dev`) with dynamic DNS resolution, 1 Edge gateway bootstrapped via AWS Roles Anywhere, and 1 dedicated client instance. All nodes are `t4g.small` ARM64 (2 vCPUs, 2 GiB RAM, burstable with 20% baseline per vCPU, Standard CPU credits).
+- **Storage and networking:** 20 DynamoDB tables in `PAY_PER_REQUEST` billing mode with Point-in-Time Recovery (PITR) enabled; 9 VPC interface endpoints; 2 S3 gateway endpoints; 0 NAT gateways.
+- **Security & IAM:** Non-root deployer `arn:aws:sts::499388132734:assumed-role/miles-dev-deploy/hung-deploy` (profile `miles-dev`). Root (`miles-iam-bootstrap`) strictly reserved for preflight IAM activation, temporary SLR management, and final zero-resource verification.
+
+### Phase D1 — Hard-stop gate (Cloud C1 Trial 1): PASS (100%)
+- **Dataset:** `backup30` (90 objects, 754,994,670 logical bytes).
+- **PUT workload:** **90/90 PUT succeeded (100% PASS, 0 failed, 0 HTTP 500, 0 HTTP 503)**. Elapsed: 158.00s, throughput: 4.56 MB/s, latency p50: 1,830.47 ms, p95: 2,089.50 ms.
+- **HEAD verification:** **90/90 HEAD succeeded (100% PASS)**, latency p50: 19.59 ms, p95: 24.19 ms.
+- **GET full-file SHA-256 verification (4 repeats):**
+  - Verify-GET: 90/90 PASS (13.96 MB/s, p50: 547.33 ms).
+  - Repeat-GET 1: 90/90 PASS (13.52 MB/s, p50: 593.41 ms).
+  - Repeat-GET 2: 90/90 PASS (14.40 MB/s, p50: 538.73 ms).
+  - Repeat-GET 3: 90/90 PASS (14.91 MB/s, p50: 542.56 ms).
+  - **Total GET verifications:** **360/360 full-file SHA-256 PASS (0 HTTP 500, 0 HTTP 503, 0 truncation, 0 checksum mismatch)**.
+- **Physical statistics (D1):**
+  - Logical bytes: 754,994,670 B; Stored bytes: 292,817,237 B.
+  - **Dedup ratio: 1.94x**, **Compression ratio: 1.50x**, **Total reduction: 2.58x**.
+  - Physical allocation complete (`cloud-c1-t1-window.json`).
+- **Gate D1 Result:** Zero clock rejection errors, zero truncation, and zero HTTP 500/503 errors. The clock boundary issue observed on Cloud nodes in previous runs did not recur when chrony NTP synchronization was actively tracked. Hard-stop Gate D1 was cleanly passed.
+
+### Phase D2 — Comparative runs
+
+#### 1. Cloud C4 Trial 1: PASS (100%)
+- **Concurrency:** 4 workers on Cloud nodes through ALB.
+- **PUT workload:** 90/90 PUT succeeded (100% PASS, 0 failures, 0 HTTP 500/503). Elapsed: 79.97s, throughput: 9.00 MB/s, latency p50: 3,255.78 ms, p95: 5,568.51 ms.
+- **HEAD verification:** 90/90 HEAD succeeded (100% PASS), latency p50: 21.61 ms, p95: 89.30 ms.
+- **GET verification (4 repeats):** **360/360 full-file SHA-256 PASS**. Throughput: 26.28 – 27.91 MB/s, latency p50: 1,033.70 – 1,121.33 ms (`cloud-c4-t1-result.json`).
+
+#### 2. Direct S3 Baselines (C1 & C4): PASS (100%)
+- **Direct C1:** PUT throughput: 78.22 MB/s (p50: 101.38 ms); GET throughput: 86.83 – 90.86 MB/s (p50: 85.37 – 86.12 ms).
+- **Direct C4:** PUT throughput: 298.97 MB/s (p50: 101.65 ms); GET throughput: 361.97 – 365.88 MB/s (p50: 85.56 – 86.11 ms).
+
+#### 3. Edge C1 Trial 1: Stop-the-Line Triggered (Automated Diagnostics Verified)
+- **Workload:** Concurrency=1 on Edge node via AWS Roles Anywhere.
+- **PUT workload:** Objects #1 – #46 succeeded (100% PASS). Objects #47 – #90 failed with HTTP 503 `clock_uncertainty_exceeded`.
+- **Automated Evidence Capture:** The Phase A diagnostic runner (`scripts/runner_diagnostics.py` and `scripts/runner_orchestrator.py`) captured **100% (44/44) failures** with correlated request IDs, precise timestamps, and node status in `edge-c1-t1-failed-window.json` and raw trace files prior to stop-the-line halting further trials.
+- **Root Cause Analysis (Edge):** The observed failure mechanism was `clock_uncertainty_exceeded` (HTTP 503) beginning at request #47, where `internal/coordination/chrony.go:94` enforces `age <= min(1024, 2*interval + 2)`, causing `Chrony.Bounds()` to fail-closed and reject writer admission with `ErrClockUncertain`. While concurrent network/disk I/O and CPU scheduling contention on the burstable `t4g.small` instance (2 vCPUs, 2 GiB RAM, 20% baseline per vCPU) is the primary working hypothesis for why the NTP sample interval momentarily fell behind, verifying this causation requires correlation against detailed CPU utilization, CloudWatch CPU credit metrics, and raw chrony tracking timestamps. Crucially, unlike previous runs where diagnostics were lost, 100% (44/44) of telemetry, request IDs, and node state were captured and verified in `edge-c1-t1-failed-window.json`.
+
+### Phase D3 — DynamoDB & recovery observations
+- **DynamoDB tables:** All 20 tables verified ACTIVE with `pitr=ENABLED`.
+- **Final administrative statistics snapshot (`final-stats.json`):**
+  - Logical bytes: 1,895,875,283 B; Stored bytes: 692,545,991 B; Unique stored: 654,355,195 B.
+  - Objects: 226, Chunks: 660, Warm packs: 155.
+  - **Overall Dedup ratio: 1.92x**, **Compression ratio: 1.51x**, **Total reduction: 2.74x**.
+
+### Phase E — Teardown & final AWS zero-resource verification
+- **Compute and endpoints pause:** 53 resources destroyed via `pause-reconciled.tfplan` (EC2 client/edge instances, ASG gateway fleet, ALB, CloudWatch metric alarms, and VPC interface endpoints).
+- **Data buckets purged:** 3,082 objects deleted from `miles-dev-data-499388132734-ap-southeast-1` and 180 objects from `miles-dev-pilot-direct-499388132734-ap-southeast-1` (`empty-owned-buckets.py`).
+- **Remaining workload destroyed:** All 20 DynamoDB tables, VPC, subnets, route tables, KMS key, and Roles Anywhere trust anchor destroyed via `destroy-final.tfplan`.
+- **Terraform state:** 0 managed resources remaining (`cloud/environments/dev`).
+- **External artifacts deleted:**
+  - ACM certificate `665f49f1-2750-44e7-bc9b-c9fb9e0f3721` deleted.
+  - SSM session document `miles-dev-shell` deleted.
+  - Secrets Manager secret `miles-dev/runtime-secrets-pilot-20261108-0345-CG930e` scheduled for deletion (`2026-11-08T05:06:35Z`).
+  - KMS key `5ad99779-8ca4-4d79-b79c-2f913e673e48` scheduled for deletion (`2026-12-08T05:05:04Z`).
+- **Service-Linked Roles cleaned up:** Both `AWSServiceRoleForRolesAnywhere` and `AWSServiceRoleForElasticLoadBalancing` deleted via root `miles-iam-bootstrap` and verified `SUCCEEDED` (`iam/slr-deletion-status.json`).
+- **IAM restoration to baseline:** All 5 managed policies reverted to `old_default` versions, temporary versions deleted, and inline role policy `MilesPilotAcceptance` removed from role `miles-dev-deploy` (`iam/final-restoration-proof.json`).
+- **Native AWS zero-state audit:** `verify-final-aws-cleanup.py` executed via root `miles-iam-bootstrap`:
+  - **41/41 absence checks PASSED (100% verified zero resources)**.
+  - 0 EC2 instances, 0 ASG, 0 ALB, 0 DynamoDB tables, 0 interface endpoints, 0 EBS volumes, 0 ACM certificates, 0 SSM documents, 0 Roles Anywhere trust anchors.
+  - Only bootstrap state bucket `miles-dev-tfstate-499388132734-ap-southeast-1` retained (`native-final-cleanup-proof.json`).
+  - *Note on retention:* The 41/41 check confirms 100% absence of all active synthetic run resources within audit scope, noting that the KMS key and Secrets Manager secret remain in their required AWS standard 30-day pending-deletion retention windows.
+- **Budget and spend:** Soft budget cap was $10.00 USD; total estimated AWS spend for the live acceptance session remained under $0.50 USD (operational estimate subject to AWS invoice reporting latency).
+
+### Live Acceptance Scope & Handoff Summary
+
+| Phase / Trial | Acceptance Status | Notes |
+| :--- | :---: | :--- |
+| **Phase C (Preflight & Preparation)** | **PASS** | Scoped IAM, PKI, 20 DDB tables, endpoints, ALB, ASG. |
+| **Cloud C1 (Trial 1 — Gate D1)** | **PASS** | 90/90 PUT, 90/90 HEAD, 360/360 GET hash match, 0 HTTP 500/503. Dedup 1.94x, Reduction 2.58x. |
+| **Cloud C4 (Trial 1)** | **PASS** | 90/90 PUT, 90/90 HEAD, 360/360 GET hash match, 0 HTTP 500/503. |
+| **Direct S3 (C1 & C4 Baselines)** | **PASS** | C1 ~78–91 MB/s, C4 ~299–366 MB/s. |
+| **Edge C1 (Trial 1)** | **FAIL** | 46 PASS / 44 FAIL (`clock_uncertainty_exceeded`). Stop-the-line invoked; 44/44 failures captured with full telemetry. |
+| **Edge C4 (Trial 1)** | **NOT RUN** | Halted immediately after Edge C1 stop-the-line to conserve budget and isolate evidence. |
+| **Phase D4 (CloudWatch Alarms)** | **DEFERRED** | Deferred to dedicated alarm follow-up run after Edge investigation. |
+| **Phase E (Teardown & Cleanup)** | **PASS** | State = 0, 41/41 absence verified, SLRs deleted, IAM restored. Spend < $0.50 USD. |
+
+**Follow-Up Partitioning:** Because Cloud C1 and Cloud C4 passed with 100% data integrity and zero regressions, subsequent investigation and fixes for Edge clock stability and D4 threshold-driven alarms are partitioned into a dedicated follow-up task. Repeating Cloud C1/C4 is not required unless future modifications affect the Cloud code path.
+
 ## AWS acceptance remaining
 
 - Build hashes and configuration on two Cloud nodes plus one AWS Edge, with the

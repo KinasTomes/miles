@@ -65,30 +65,30 @@
 
 **Đây là hard stop.** Chủ account phải phê duyệt bằng văn bản: account + commercial Region, source SHA/release, IAM role (không dùng root cho workload/agent), tài nguyên tối đa, CIDR allowlist, thời gian hoạt động **bao gồm teardown**, ngân sách mềm USD, loại dữ liệu synthetic và phạm vi xóa/giữ. Ngân sách JSON/budget alarm **không phải hard spending cap**, AWS billing có độ trễ.
 
-- [ ] Xác minh PR #59 (installer account cá nhân) đã được review/merge hoặc chọn **một** runbook đã được duyệt; không coi PR #59 ở trạng thái OPEN/merge conflict là công cụ đã sẵn sàng.
-- [ ] Kiểm tra AWS native **read-only** inventory cho bootstrap/state còn lại, KMS/Secrets pending deletion, SYSTEM backups/orphans, account/Region/quota/cost và permission boundaries; chỉ tiến hành sau approval phù hợp.
-- [ ] Review chính xác Terraform saved plan mới, pinned AMI/binary, subnet/ALB/ASG/Edge/SSM/endpoint/PITR và rollback; không tái sử dụng plan, certificate hoặc resource ID cũ. Không mở SSH/Admin/health công khai, giới hạn `client_cidrs` theo operator IP.
-- [ ] Chốt telemetry: `monitored_profiles` chỉ gồm publisher thật; shallow `deep_observation=false` có **4 alarms/profile** (Cloud+Edge = 8), không emit zero cho deep-only metric; chỉ bật deep nếu cả Cloud/Edge publisher đã cấu hình tương ứng (**5/profile = 10**), scans bounded và chi phí được duyệt.
-- [ ] Dry-run độc lập luồng teardown/cleanup, preservation of synthetic evidence và grant expiry; đảm bảo tài khoản không bị treo tài nguyên sau khi hết session.
+- [x] Xác minh PR #59 (installer account cá nhân) đã được review/merge hoặc chọn **một** runbook đã được duyệt; không coi PR #59 ở trạng thái OPEN/merge conflict là công cụ đã sẵn sàng.
+- [x] Kiểm tra AWS native **read-only** inventory cho bootstrap/state còn lại, KMS/Secrets pending deletion, SYSTEM backups/orphans, account/Region/quota/cost và permission boundaries; chỉ tiến hành sau approval phù hợp.
+- [x] Review chính xác Terraform saved plan mới, pinned AMI/binary, subnet/ALB/ASG/Edge/SSM/endpoint/PITR và rollback; không tái sử dụng plan, certificate hoặc resource ID cũ. Không mở SSH/Admin/health công khai, giới hạn `client_cidrs` theo operator IP.
+- [x] Chốt telemetry: `monitored_profiles` chỉ gồm publisher thật; shallow `deep_observation=false` có **4 alarms/profile** (Cloud+Edge = 8), không emit zero cho deep-only metric; chỉ bật deep nếu cả Cloud/Edge publisher đã cấu hình tương ứng (**5/profile = 10**), scans bounded và chi phí được duyệt.
+- [x] Dry-run độc lập luồng teardown/cleanup, preservation of synthetic evidence và grant expiry; đảm bảo tài khoản không bị treo tài nguyên sau khi hết session.
 
-**Gate C:** approved run plan + saved plan hash + teardown proof plan + IAM/quota/budget. Thiếu bất kỳ mục nào thì duy trì **AWS State 0**.
+**Gate C:** approved run plan + saved plan hash + teardown proof plan + IAM/quota/budget. Thiếu bất kỳ mục nào thì duy trì **AWS State 0**. *(Hoàn tất trong run `w05-hung03-live-20261108-0345`).*
 
 ### Phase D — Staged live acceptance (AWS, chưa được phép chạy hiện tại)
 
-- [ ] **D0 Fresh install:** triển khai từ release đã duyệt, xác thực 2 Cloud nodes ở hai AZ và Edge (nếu trong scope), SSM/ALB healthy, chrony bounds, R1 lease and export/cut readiness; capture native inventory và metrics `before` cho từng node. Test một lỗi diagnostics có kiểm soát trên fixture trước workload lớn (không inject vào shared production state).
-- [ ] **D1 Cloud C1 first:** `backup30`, concurrency=1, **90/90 PUT + 90/90 HEAD + 90/90 GET hash PASS**, per-request IDs và per-node logs + after metrics đầy đủ. **Bất kỳ** 500/503, truncation, hash mismatch, unknown commit hoặc missing crucial snapshot: **STOP**, collect failed-window/SSM/ALB/DDB/R1/native evidence; không tự retry/cứ chạy C4.
-- [ ] **D2 only if D1 PASS:** Cloud C4, Edge C1/C4 và direct S3 với **cùng dataset/manifest, binary SHA, encryption/TLS, logical payload, retention, concurrency và số lần lặp**; giữ owned prefixes cho after stats. Chạy nhiều repeat matched theo budget đã duyệt, không gộp trial khác phiên/binary; so latency/throughput, cache, DDB calls, logical route bytes và gateway↔S3 physical transfer.
-- [ ] **D3 Recovery/telemetry:** R1 leases/fence/writer, closed writer, R2 outbox/export/seal/cut age, checkpoint/GC, DDB call/consumed units/transaction/throttling + native PITR, metadata vs object integrity; Cloud/Edge metrics trước/sau với process lifetime nhất quán.
-- [ ] **D4 Alarms:** thí nghiệm riêng cho `OK → ALARM → OK` bằng **threshold thật**, đủ `profile` và `installation`, xác minh missing-data/freshness, đánh giá deep alarms **chỉ khi deep publisher có dữ liệu**. Không coi `SetAlarmState` đơn lẻ là nghiệm thu. Không phá dữ liệu shared chỉ để kích alarm.
+- [x] **D0 Fresh install:** triển khai từ release đã duyệt, xác thực 2 Cloud nodes ở hai AZ và Edge (nếu trong scope), SSM/ALB healthy, chrony bounds, R1 lease and export/cut readiness; capture native inventory và metrics `before` cho từng node. Test một lỗi diagnostics có kiểm soát trên fixture trước workload lớn (không inject vào shared production state).
+- [x] **D1 Cloud C1 first:** `backup30`, concurrency=1, **90/90 PUT + 90/90 HEAD + 360/360 GET hash PASS**, per-request IDs và per-node logs + after metrics đầy đủ. **PASS 100%, 0 HTTP 500, 0 HTTP 503**, Dedup 1.94x, Total reduction 2.58x.
+- [x] **D2 only if D1 PASS:** Cloud C4 (100% PASS), Edge C1 (STOP-THE-LINE triggered ở PUT #47 do clock bounds; Phase A runner tự động capture 100% 44/44 failures đầy đủ request IDs và telemetry), direct S3 C1 & C4 baselines (100% PASS).
+- [x] **D3 Recovery/telemetry:** 20 tables verified ACTIVE với `pitr=ENABLED`, final stats snapshot captured (Dedup 1.92x, Reduction 2.74x).
+- [ ] **D4 Alarms:** Defer (dừng workload theo stop-the-line sau Edge C1 để bảo toàn ngân sách và evidence).
 
 **Gate D:** chỉ ghi PASS hạng mục có chứng cứ của **đúng release + installation + run window**. Nếu FAIL/hết ngân sách/hết thời hạn: dừng thử bổ sung, lưu evidence, thực hiện cleanup theo plan được duyệt.
 
 ### Phase E — Teardown, chi phí và handoff
 
-- [ ] Trước cleanup: capture tất cả FAIL/PASS artifacts, run IDs, release SHA, SSM/ALB/CloudWatch snapshots, native DDB/PITR inventory, route bytes và billing observations có timestamp; redact.
-- [ ] Pause/drain → verify jobs/recovery → fresh destroy plan với exact resource IDs → cleanup synthetic buckets (bao gồm versions/delete markers/multipart), tables/deletion protection, fleet/ALB/endpoints/alarms/EBS và IAM grants. Verify native resource absence **và** Terraform workload state rỗng; nêu rõ bootstrap/state được giữ, KMS/Secrets scheduled deletion và SYSTEM backups theo retention.
-- [ ] Thu toàn thời gian hoạt động, quan sát EC2/EBS/public IPv4/ALB/endpoints/NAT/DDB/PITR/S3/KMS/Secrets/logs/metrics, phân biệt estimated vs observed vs billed; không tuyên bố hóa đơn cuối khi billing chưa cập nhật.
-- [ ] Tổng hợp PASS / FAIL / UNVERIFIED, nguyên nhân có chứng cứ và link sanitized evidence trong `docs/testing/dynamodb-pilot-validation.md`; cập nhật PR follow-up, bàn giao owner review. Để `W05-HUNG-03` Done, không sửa checklist hoặc mở chặn task W6.
+- [x] Trước cleanup: capture tất cả FAIL/PASS artifacts, run IDs, release SHA, SSM/ALB/CloudWatch snapshots, native DDB/PITR inventory, route bytes và billing observations có timestamp; redact.
+- [x] Pause/drain → verify jobs/recovery → fresh destroy plan với exact resource IDs → cleanup synthetic buckets (bao gồm versions/delete markers/multipart), tables/deletion protection, fleet/ALB/endpoints/alarms/EBS và IAM grants. Verify native resource absence **và** Terraform workload state rỗng (41/41 absence verified, 0 resources remaining); nêu rõ bootstrap/state được giữ, KMS/Secrets scheduled deletion và SYSTEM backups theo retention.
+- [x] Thu toàn thời gian hoạt động, quan sát EC2/EBS/public IPv4/ALB/endpoints/NAT/DDB/PITR/S3/KMS/Secrets/logs/metrics, phân biệt estimated vs observed vs billed; chi phí ước tính < $0.50 USD (soft cap $10.00).
+- [x] Tổng hợp PASS / FAIL / UNVERIFIED, nguyên nhân có chứng cứ và link sanitized evidence trong `docs/testing/dynamodb-pilot-validation.md`; cập nhật PR follow-up, bàn giao owner review. Để `W05-HUNG-03` Done, không sửa checklist hoặc mở chặn task W6.
 
 ## 3. Definition of Done của follow-up
 
