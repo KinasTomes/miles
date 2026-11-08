@@ -428,13 +428,20 @@ def sanitize_benchmark_failure(client_result):
 
 CHRONY_PAYLOAD_BEGIN = "__CHRONY_PAYLOAD_BEGIN__"
 CHRONY_PAYLOAD_END = "__CHRONY_PAYLOAD_END__"
+SUPPORTED_CHRONY_PAYLOAD_VERSION = 1
 
 
 def parse_chrony_response_payload(raw_text):
     """
     Parses structured telemetry output from a remote node.
     If the remote node wrapped chronyc output inside __CHRONY_PAYLOAD_BEGIN__ ... __CHRONY_PAYLOAD_END__,
-    extracts host-local timings and UTC observation timestamp.
+    validates:
+    - schema version == 1
+    - returncode == 0
+    - stdout is a non-empty string
+    - host_chrony_elapsed_seconds is a non-negative finite float
+    - host_observed_at and host_observed_unix are finite and consistent (skew <= 1.0s)
+    If any check fails, marks runtime_equivalence as 'unverified' with a structured envelope_error reason.
     Otherwise, returns raw_text as unverified chronyc output.
     """
     if not raw_text or not isinstance(raw_text, str):
@@ -445,6 +452,9 @@ def parse_chrony_response_payload(raw_text):
             "host_chrony_elapsed_seconds": None,
             "runtime_elapsed_verified": False,
             "runtime_equivalence": "unverified",
+            "envelope_valid": False,
+            "envelope_error": "empty_input",
+            "returncode": None,
         }
 
     begin_idx = raw_text.find(CHRONY_PAYLOAD_BEGIN)
@@ -453,38 +463,81 @@ def parse_chrony_response_payload(raw_text):
         payload_str = raw_text[begin_idx + len(CHRONY_PAYLOAD_BEGIN):end_idx].strip()
         try:
             data = json.loads(payload_str)
-            raw_stdout = data.get("stdout", "")
-            host_elapsed = data.get("host_chrony_elapsed_seconds")
-            host_obs_at = data.get("host_observed_at")
-            host_obs_unix = data.get("host_observed_unix")
+        except Exception:
+            return {
+                "chrony_raw": "",
+                "host_observed_at": None,
+                "host_observed_unix": None,
+                "host_chrony_elapsed_seconds": None,
+                "runtime_elapsed_verified": False,
+                "runtime_equivalence": "unverified",
+                "envelope_valid": False,
+                "envelope_error": "corrupted_payload_json",
+                "returncode": None,
+            }
 
-            if host_elapsed is not None:
-                try:
-                    host_elapsed = float(host_elapsed)
-                    if not math.isfinite(host_elapsed) or host_elapsed < 0:
-                        host_elapsed = None
-                except (ValueError, TypeError):
-                    host_elapsed = None
+        version = data.get("version")
+        returncode = data.get("returncode")
+        raw_stdout = data.get("stdout")
+        host_elapsed = data.get("host_chrony_elapsed_seconds")
+        host_obs_at = data.get("host_observed_at")
+        host_obs_unix = data.get("host_observed_unix")
 
-            if host_obs_unix is not None:
-                try:
-                    host_obs_unix = float(host_obs_unix)
-                    if not math.isfinite(host_obs_unix):
-                        host_obs_unix = None
-                except (ValueError, TypeError):
-                    host_obs_unix = None
+        envelope_valid = True
+        envelope_error = None
 
-            is_verified = (host_elapsed is not None)
+        if version != SUPPORTED_CHRONY_PAYLOAD_VERSION:
+            envelope_valid = False
+            envelope_error = f"unsupported_schema_version_{version}"
+        elif returncode is None or not isinstance(returncode, int) or returncode != 0:
+            envelope_valid = False
+            envelope_error = f"chronyc_process_failed_rc_{returncode}"
+        elif not raw_stdout or not isinstance(raw_stdout, str) or not raw_stdout.strip():
+            envelope_valid = False
+            envelope_error = "empty_chronyc_stdout"
+        elif host_elapsed is None or not isinstance(host_elapsed, (int, float)) or not math.isfinite(host_elapsed) or host_elapsed < 0:
+            envelope_valid = False
+            envelope_error = "invalid_or_non_finite_host_elapsed"
+        elif not host_obs_at or not isinstance(host_obs_at, str) or host_obs_unix is None or not isinstance(host_obs_unix, (int, float)) or not math.isfinite(host_obs_unix):
+            envelope_valid = False
+            envelope_error = "missing_or_invalid_host_utc_metadata"
+        else:
+            try:
+                dt = datetime.datetime.fromisoformat(host_obs_at.replace("Z", "+00:00"))
+                parsed_unix = dt.timestamp()
+                if abs(parsed_unix - float(host_obs_unix)) > 1.0:
+                    envelope_valid = False
+                    envelope_error = "inconsistent_paired_host_utc_timestamps"
+            except Exception:
+                envelope_valid = False
+                envelope_error = "unparseable_host_observed_at_iso"
+
+        if envelope_valid:
             return {
                 "chrony_raw": raw_stdout,
                 "host_observed_at": host_obs_at,
-                "host_observed_unix": host_obs_unix,
-                "host_chrony_elapsed_seconds": host_elapsed,
-                "runtime_elapsed_verified": is_verified,
-                "runtime_equivalence": "verified" if is_verified else "unverified",
+                "host_observed_unix": float(host_obs_unix),
+                "host_chrony_elapsed_seconds": float(host_elapsed),
+                "runtime_elapsed_verified": True,
+                "runtime_equivalence": "verified",
+                "envelope_valid": True,
+                "envelope_error": None,
+                "returncode": returncode,
             }
-        except Exception:
-            pass
+        else:
+            # If chronyc command failed (returncode != 0), do not return stdout as valid tracking text
+            effective_raw = raw_stdout if (returncode == 0 and raw_stdout and isinstance(raw_stdout, str)) else ""
+            return {
+                "chrony_raw": effective_raw,
+                "host_observed_at": None,
+                "host_observed_unix": None,
+                "host_chrony_elapsed_seconds": None,
+                "runtime_elapsed_verified": False,
+                "runtime_equivalence": "unverified",
+                "envelope_valid": False,
+                "envelope_error": envelope_error,
+                "returncode": returncode,
+            }
 
     return {
         "chrony_raw": raw_text,
@@ -493,6 +546,9 @@ def parse_chrony_response_payload(raw_text):
         "host_chrony_elapsed_seconds": None,
         "runtime_elapsed_verified": False,
         "runtime_equivalence": "unverified",
+        "envelope_valid": False,
+        "envelope_error": "no_envelope_present",
+        "returncode": None,
     }
 
 
@@ -516,6 +572,16 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0, runtime_
 
     if isinstance(raw_text, str) and CHRONY_PAYLOAD_BEGIN in raw_text:
         payload = parse_chrony_response_payload(raw_text)
+        if not payload.get("envelope_valid", False):
+            return {
+                "status": "unverified",
+                "uncertainty_exceeded": True,
+                "rejection_reason": payload.get("envelope_error", "invalid_envelope"),
+                "runtime_equivalence": "unverified",
+                "runtime_elapsed_verified": False,
+                "envelope_error": payload.get("envelope_error"),
+                "returncode": payload.get("returncode"),
+            }
         raw_text = payload["chrony_raw"]
         if now_unix is None and payload["host_observed_unix"] is not None:
             now_unix = payload["host_observed_unix"]
@@ -832,6 +898,9 @@ def build_node_telemetry_snapshot(
     host_chrony_elapsed_seconds=None,
     host_observed_at=None,
     host_observed_unix=None,
+    envelope_valid=None,
+    envelope_error=None,
+    returncode=None,
 ):
     """
     Constructs a safe, non-sensitive telemetry snapshot for an individual gateway or edge node.
@@ -850,52 +919,119 @@ def build_node_telemetry_snapshot(
             "probe_finished_at": probe_finished_at,
             "probe_duration_seconds": probe_duration_seconds,
             "transport_latency_seconds": transport_latency_seconds,
+            "envelope_valid": False,
+            "envelope_error": "node_error",
+            "returncode": None,
         }
 
-    # Extract structured envelope if present
+    # Extract structured envelope if present in chrony_raw
     if chrony_raw and isinstance(chrony_raw, str) and CHRONY_PAYLOAD_BEGIN in chrony_raw:
         payload = parse_chrony_response_payload(chrony_raw)
         chrony_raw = payload["chrony_raw"]
-        if host_chrony_elapsed_seconds is None:
-            host_chrony_elapsed_seconds = payload["host_chrony_elapsed_seconds"]
-        if host_observed_at is None:
-            host_observed_at = payload["host_observed_at"]
-        if host_observed_unix is None:
-            host_observed_unix = payload["host_observed_unix"]
-        if runtime_elapsed_verified is None:
-            runtime_elapsed_verified = payload["runtime_elapsed_verified"]
-        if (elapsed_seconds is None or elapsed_seconds <= 0.0) and host_chrony_elapsed_seconds is not None:
-            elapsed_seconds = host_chrony_elapsed_seconds
-        if now_unix is None and host_observed_unix is not None:
-            now_unix = host_observed_unix
-            time_provenance = time_provenance or "host_observed"
+        envelope_valid = payload.get("envelope_valid", False)
+        envelope_error = payload.get("envelope_error")
+        returncode = payload.get("returncode")
+        if returncode is not None and returncode != 0:
+            chrony_error = chrony_error or f"chronyc_failed_rc_{returncode}"
+        elif not envelope_valid and envelope_error and envelope_error != "no_envelope_present":
+            if not chrony_raw:
+                chrony_error = chrony_error or envelope_error
+
+        if envelope_valid:
+            if host_chrony_elapsed_seconds is None:
+                host_chrony_elapsed_seconds = payload["host_chrony_elapsed_seconds"]
+            if host_observed_at is None:
+                host_observed_at = payload["host_observed_at"]
+            if host_observed_unix is None:
+                host_observed_unix = payload["host_observed_unix"]
+            if runtime_elapsed_verified is None:
+                runtime_elapsed_verified = payload["runtime_elapsed_verified"]
+            if (elapsed_seconds is None or elapsed_seconds <= 0.0) and host_chrony_elapsed_seconds is not None:
+                elapsed_seconds = host_chrony_elapsed_seconds
+            if now_unix is None and host_observed_unix is not None:
+                now_unix = host_observed_unix
+                time_provenance = time_provenance or "host_observed"
+        else:
+            host_chrony_elapsed_seconds = None
+            host_observed_at = None
+            host_observed_unix = None
+            runtime_elapsed_verified = False
+            elapsed_seconds = 0.0
+
+    if envelope_valid is False:
+        host_chrony_elapsed_seconds = None
+        host_observed_at = None
+        host_observed_unix = None
+        runtime_elapsed_verified = False
+        elapsed_seconds = 0.0
+        if returncode is not None and returncode != 0:
+            chrony_error = chrony_error or f"chronyc_failed_rc_{returncode}"
+            chrony_raw = ""
+        elif envelope_error and envelope_error != "no_envelope_present":
+            chrony_error = chrony_error or envelope_error
 
     if now_unix is None:
-        target_ts = host_observed_at or probe_finished_at or effective_captured_at
-        if target_ts:
-            try:
-                dt = datetime.datetime.fromisoformat(target_ts.replace("Z", "+00:00"))
-                now_unix = dt.timestamp()
-                time_provenance = time_provenance or ("host_observed" if target_ts == host_observed_at else "probe_finished")
-            except Exception:
-                pass
+        if time_provenance not in ("unverified_missing_timestamp", "unverified_unparseable_timestamp"):
+            target_ts = host_observed_at or probe_finished_at
+            if target_ts:
+                try:
+                    dt = datetime.datetime.fromisoformat(target_ts.replace("Z", "+00:00"))
+                    now_unix = dt.timestamp()
+                    time_provenance = time_provenance or ("host_observed" if target_ts == host_observed_at else "probe_finished")
+                except Exception:
+                    now_unix = None
+                    time_provenance = "unverified_unparseable_timestamp"
+            else:
+                now_unix = None
+                time_provenance = "unverified_missing_timestamp"
+        else:
+            now_unix = None
 
     if runtime_elapsed_verified is None:
-        if host_chrony_elapsed_seconds is not None and host_chrony_elapsed_seconds >= 0:
+        if host_chrony_elapsed_seconds is not None and host_chrony_elapsed_seconds >= 0 and (envelope_valid is True):
             runtime_elapsed_verified = True
             effective_elapsed = float(host_chrony_elapsed_seconds)
-        elif isinstance(elapsed_seconds, (int, float)) and elapsed_seconds > 0.0:
+        elif isinstance(elapsed_seconds, (int, float)) and elapsed_seconds > 0.0 and (envelope_valid is not False):
             runtime_elapsed_verified = True
             effective_elapsed = float(elapsed_seconds)
         else:
             runtime_elapsed_verified = False
             effective_elapsed = 0.0
     else:
-        effective_elapsed = float(elapsed_seconds) if (isinstance(elapsed_seconds, (int, float)) and elapsed_seconds > 0.0) else (float(host_chrony_elapsed_seconds) if host_chrony_elapsed_seconds is not None else 0.0)
+        effective_elapsed = float(elapsed_seconds) if (runtime_elapsed_verified and isinstance(elapsed_seconds, (int, float)) and elapsed_seconds > 0.0) else (float(host_chrony_elapsed_seconds) if (runtime_elapsed_verified and host_chrony_elapsed_seconds is not None) else 0.0)
 
     metrics = parse_prometheus_metrics(metrics_raw) if metrics_raw else {}
     if chrony_error:
-        clock_sig = {"status": "error", "error": redact_sensitive_strings(str(chrony_error))}
+        clock_sig = {
+            "status": "error",
+            "error": redact_sensitive_strings(str(chrony_error)),
+            "uncertainty_exceeded": True,
+            "rejection_reason": envelope_error or (f"chronyc_failed_rc_{returncode}" if (returncode is not None and returncode != 0) else "chronyc_command_failed"),
+            "runtime_equivalence": "unverified",
+            "runtime_elapsed_verified": False,
+            "time_provenance": time_provenance or "unknown",
+        }
+        if transport_latency_seconds is not None:
+            clock_sig["transport_latency_seconds"] = transport_latency_seconds
+        if returncode is not None:
+            clock_sig["returncode"] = returncode
+        if envelope_error:
+            clock_sig["envelope_error"] = envelope_error
+    elif envelope_valid is False and envelope_error and envelope_error != "no_envelope_present":
+        clock_sig = {
+            "status": "error" if (returncode is not None and returncode != 0) else "partial",
+            "uncertainty_exceeded": True,
+            "rejection_reason": envelope_error,
+            "runtime_equivalence": "unverified",
+            "runtime_elapsed_verified": False,
+            "time_provenance": time_provenance or "unverified_missing_timestamp",
+            "envelope_valid": False,
+            "envelope_error": envelope_error,
+        }
+        if returncode is not None:
+            clock_sig["returncode"] = returncode
+        if transport_latency_seconds is not None:
+            clock_sig["transport_latency_seconds"] = transport_latency_seconds
     elif chrony_raw:
         clock_sig = parse_chrony_tracking(
             chrony_raw,
@@ -907,10 +1043,31 @@ def build_node_telemetry_snapshot(
             clock_sig["time_provenance"] = time_provenance
         if transport_latency_seconds is not None:
             clock_sig["transport_latency_seconds"] = transport_latency_seconds
-        if host_chrony_elapsed_seconds is not None:
+        if host_chrony_elapsed_seconds is not None and runtime_elapsed_verified:
             clock_sig["host_chrony_elapsed_seconds"] = host_chrony_elapsed_seconds
+        if returncode is not None:
+            clock_sig["returncode"] = returncode
+        if envelope_error:
+            clock_sig["envelope_error"] = envelope_error
+            if not envelope_valid and envelope_error != "no_envelope_present":
+                clock_sig["runtime_equivalence"] = "unverified"
+                clock_sig["runtime_elapsed_verified"] = False
+                clock_sig["uncertainty_exceeded"] = True
+                clock_sig["rejection_reason"] = envelope_error
     else:
-        clock_sig = {"status": "not_collected", "missing_reason": "no_chrony_output"}
+        clock_sig = {
+            "status": "not_collected",
+            "missing_reason": "no_chrony_output",
+            "uncertainty_exceeded": True,
+            "rejection_reason": "no_chrony_output",
+            "runtime_equivalence": "unverified",
+            "runtime_elapsed_verified": False,
+            "time_provenance": time_provenance or "unverified_missing_timestamp",
+        }
+        if envelope_error:
+            clock_sig["envelope_error"] = envelope_error
+        if returncode is not None:
+            clock_sig["returncode"] = returncode
 
     has_metrics = bool(metrics)
     has_clock_ok = clock_sig.get("status") == "ok" and not clock_sig.get("uncertainty_exceeded", False)
@@ -934,6 +1091,10 @@ def build_node_telemetry_snapshot(
         "probe_duration_seconds": probe_duration_seconds,
         "transport_latency_seconds": transport_latency_seconds,
         "host_chrony_elapsed_seconds": host_chrony_elapsed_seconds,
+        "runtime_elapsed_verified": runtime_elapsed_verified,
+        "envelope_valid": envelope_valid,
+        "envelope_error": envelope_error,
+        "returncode": returncode,
         "readyz": readyz_status,
         "metrics": metrics,
         "clock": clock_sig,
@@ -990,47 +1151,77 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
             host_obs_at = res.get("host_observed_at")
             host_chrony_elapsed = res.get("host_chrony_elapsed_seconds")
             runtime_elapsed_verified = res.get("runtime_elapsed_verified")
+            envelope_valid = res.get("envelope_valid")
+            envelope_error = res.get("envelope_error")
+            remote_rc = res.get("returncode")
 
             # Check if chrony_raw has payload envelope
             if chrony_raw and isinstance(chrony_raw, str) and CHRONY_PAYLOAD_BEGIN in chrony_raw:
                 payload = parse_chrony_response_payload(chrony_raw)
                 chrony_raw = payload["chrony_raw"]
-                if host_obs_unix is None:
-                    host_obs_unix = payload["host_observed_unix"]
-                if host_obs_at is None:
-                    host_obs_at = payload["host_observed_at"]
-                if host_chrony_elapsed is None:
-                    host_chrony_elapsed = payload["host_chrony_elapsed_seconds"]
-                if runtime_elapsed_verified is None:
-                    runtime_elapsed_verified = payload["runtime_elapsed_verified"]
+                envelope_valid = payload.get("envelope_valid", False)
+                envelope_error = payload.get("envelope_error")
+                remote_rc = payload.get("returncode")
+                if envelope_valid:
+                    if host_obs_unix is None:
+                        host_obs_unix = payload["host_observed_unix"]
+                    if host_obs_at is None:
+                        host_obs_at = payload["host_observed_at"]
+                    if host_chrony_elapsed is None:
+                        host_chrony_elapsed = payload["host_chrony_elapsed_seconds"]
+                    if runtime_elapsed_verified is None:
+                        runtime_elapsed_verified = payload["runtime_elapsed_verified"]
+                else:
+                    host_obs_unix = None
+                    host_obs_at = None
+                    host_chrony_elapsed = None
+                    runtime_elapsed_verified = False
+                    if remote_rc is not None and remote_rc != 0:
+                        chrony_error = chrony_error or f"chronyc_failed_rc_{remote_rc}"
+                    elif not chrony_raw and envelope_error:
+                        chrony_error = chrony_error or envelope_error
 
-            # Derive timestamp with clear provenance
-            time_provenance = "caller_injected"
+            # Derive timestamp with clear provenance - explicitly initialize to prevent UnboundLocalError
+            node_now_unix = None
+            time_provenance = "unverified_missing_timestamp"
+
             if now_unix is not None:
-                node_now_unix = now_unix
-                time_provenance = "caller_injected"
-            elif host_obs_unix is not None:
+                if isinstance(now_unix, (int, float)) and math.isfinite(now_unix):
+                    node_now_unix = float(now_unix)
+                    time_provenance = "caller_injected"
+                else:
+                    node_now_unix = now_unix
+                    time_provenance = "caller_injected_invalid"
+            elif host_obs_unix is not None and isinstance(host_obs_unix, (int, float)) and math.isfinite(host_obs_unix):
                 node_now_unix = float(host_obs_unix)
                 time_provenance = "host_observed"
             elif "now_unix" in res and res["now_unix"] is not None:
-                node_now_unix = float(res["now_unix"])
-                time_provenance = "fetcher_injected"
-            elif host_obs_at:
+                res_now = res["now_unix"]
+                if isinstance(res_now, (int, float)) and math.isfinite(res_now):
+                    node_now_unix = float(res_now)
+                    time_provenance = "fetcher_injected"
+                else:
+                    node_now_unix = res_now
+                    time_provenance = "fetcher_injected_invalid"
+            elif host_obs_at and isinstance(host_obs_at, str):
                 try:
-                    node_now_unix = datetime.datetime.fromisoformat(host_obs_at.replace("Z", "+00:00")).timestamp()
+                    dt = datetime.datetime.fromisoformat(host_obs_at.replace("Z", "+00:00"))
+                    node_now_unix = dt.timestamp()
                     time_provenance = "host_observed"
                 except Exception:
                     node_now_unix = None
-            elif res.get("probe_finished_at"):
+                    time_provenance = "unverified_unparseable_timestamp"
+            elif res.get("probe_finished_at") and isinstance(res.get("probe_finished_at"), str):
                 try:
-                    node_now_unix = datetime.datetime.fromisoformat(res["probe_finished_at"].replace("Z", "+00:00")).timestamp()
+                    dt = datetime.datetime.fromisoformat(res["probe_finished_at"].replace("Z", "+00:00"))
+                    node_now_unix = dt.timestamp()
                     time_provenance = "probe_finished"
                 except Exception:
                     node_now_unix = None
-
-            if node_now_unix is None:
-                node_now_unix = t_finish.timestamp()
-                time_provenance = "controller_fallback"
+                    time_provenance = "unverified_unparseable_timestamp"
+            else:
+                node_now_unix = None
+                time_provenance = "unverified_missing_timestamp"
 
             # Derive elapsed duration for clock uncertainty: NEVER fall back to transport/probe duration!
             if host_chrony_elapsed is None and "chrony_elapsed_seconds" in res:
@@ -1041,7 +1232,7 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
                 runtime_elapsed_verified = True
             elif host_chrony_elapsed is not None and isinstance(host_chrony_elapsed, (int, float)) and math.isfinite(host_chrony_elapsed) and host_chrony_elapsed >= 0:
                 node_elapsed = float(host_chrony_elapsed)
-                runtime_elapsed_verified = (runtime_elapsed_verified is not False)
+                runtime_elapsed_verified = (runtime_elapsed_verified is True)
             else:
                 node_elapsed = 0.0
                 runtime_elapsed_verified = False
@@ -1065,6 +1256,9 @@ def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=No
                 host_chrony_elapsed_seconds=host_chrony_elapsed if runtime_elapsed_verified else None,
                 host_observed_at=host_obs_at,
                 host_observed_unix=host_obs_unix,
+                envelope_valid=envelope_valid,
+                envelope_error=envelope_error,
+                returncode=remote_rc,
             )
             node_snapshots[alias] = snap
             snap_status = snap.get("status")

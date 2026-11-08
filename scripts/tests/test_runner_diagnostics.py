@@ -1,3 +1,4 @@
+import datetime
 import json
 import unittest
 
@@ -761,10 +762,12 @@ Leap status     : Normal
         safely handles missing envelopes, and tolerates corrupted JSON payloads.
         """
         # 1. Valid envelope with host timings
+        host_unix = 1730900000.0
+        host_iso = datetime.datetime.fromtimestamp(host_unix, datetime.timezone.utc).isoformat()
         payload_dict = {
             "version": 1,
-            "host_observed_at": "2026-11-08T07:00:00+00:00",
-            "host_observed_unix": 1730900000.0,
+            "host_observed_at": host_iso,
+            "host_observed_unix": host_unix,
             "host_chrony_elapsed_seconds": 0.0035,
             "returncode": 0,
             "stdout": "A9FEA97B,169.254.169.123,3,1730899995.0,0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n",
@@ -773,11 +776,14 @@ Leap status     : Normal
         wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(payload_dict)}\n{CHRONY_PAYLOAD_END}\n"
         res = parse_chrony_response_payload(wrapped)
         self.assertEqual(res["chrony_raw"], payload_dict["stdout"])
-        self.assertEqual(res["host_observed_at"], "2026-11-08T07:00:00+00:00")
-        self.assertEqual(res["host_observed_unix"], 1730900000.0)
+        self.assertEqual(res["host_observed_at"], host_iso)
+        self.assertEqual(res["host_observed_unix"], host_unix)
         self.assertEqual(res["host_chrony_elapsed_seconds"], 0.0035)
         self.assertTrue(res["runtime_elapsed_verified"])
         self.assertEqual(res["runtime_equivalence"], "verified")
+        self.assertTrue(res["envelope_valid"])
+        self.assertIsNone(res["envelope_error"])
+        self.assertEqual(res["returncode"], 0)
 
         # 2. Raw uninstrumented string without envelope
         raw_csv = payload_dict["stdout"]
@@ -786,19 +792,61 @@ Leap status     : Normal
         self.assertIsNone(res_raw["host_chrony_elapsed_seconds"])
         self.assertFalse(res_raw["runtime_elapsed_verified"])
         self.assertEqual(res_raw["runtime_equivalence"], "unverified")
+        self.assertFalse(res_raw["envelope_valid"])
+        self.assertEqual(res_raw["envelope_error"], "no_envelope_present")
 
         # 3. Corrupt JSON inside envelope fails safe to unverified
         corrupt = f"{CHRONY_PAYLOAD_BEGIN}\n{{invalid-json}}\n{CHRONY_PAYLOAD_END}\n"
         res_corrupt = parse_chrony_response_payload(corrupt)
         self.assertFalse(res_corrupt["runtime_elapsed_verified"])
         self.assertEqual(res_corrupt["runtime_equivalence"], "unverified")
+        self.assertFalse(res_corrupt["envelope_valid"])
+        self.assertEqual(res_corrupt["envelope_error"], "corrupted_payload_json")
 
         # 4. Non-finite or negative host elapsed
-        payload_dict["host_chrony_elapsed_seconds"] = -1.0
-        bad_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(payload_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        bad_elapsed_dict = dict(payload_dict)
+        bad_elapsed_dict["host_chrony_elapsed_seconds"] = -1.0
+        bad_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(bad_elapsed_dict)}\n{CHRONY_PAYLOAD_END}\n"
         res_bad = parse_chrony_response_payload(bad_wrapped)
         self.assertIsNone(res_bad["host_chrony_elapsed_seconds"])
         self.assertFalse(res_bad["runtime_elapsed_verified"])
+        self.assertFalse(res_bad["envelope_valid"])
+        self.assertEqual(res_bad["envelope_error"], "invalid_or_non_finite_host_elapsed")
+
+        # 5. Non-zero returncode fails closed with empty raw output
+        bad_rc_dict = dict(payload_dict)
+        bad_rc_dict["returncode"] = 2
+        bad_rc_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(bad_rc_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        res_bad_rc = parse_chrony_response_payload(bad_rc_wrapped)
+        self.assertFalse(res_bad_rc["envelope_valid"])
+        self.assertEqual(res_bad_rc["envelope_error"], "chronyc_process_failed_rc_2")
+        self.assertFalse(res_bad_rc["runtime_elapsed_verified"])
+        self.assertEqual(res_bad_rc["runtime_equivalence"], "unverified")
+        self.assertEqual(res_bad_rc["chrony_raw"], "")
+
+        # 6. Unsupported schema version
+        bad_ver_dict = dict(payload_dict)
+        bad_ver_dict["version"] = 2
+        bad_ver_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(bad_ver_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        res_bad_ver = parse_chrony_response_payload(bad_ver_wrapped)
+        self.assertFalse(res_bad_ver["envelope_valid"])
+        self.assertEqual(res_bad_ver["envelope_error"], "unsupported_schema_version_2")
+
+        # 7. Inconsistent paired UTC timestamps
+        bad_skew_dict = dict(payload_dict)
+        bad_skew_dict["host_observed_unix"] = host_unix + 50.0  # 50s discrepancy with host_observed_at
+        bad_skew_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(bad_skew_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        res_bad_skew = parse_chrony_response_payload(bad_skew_wrapped)
+        self.assertFalse(res_bad_skew["envelope_valid"])
+        self.assertEqual(res_bad_skew["envelope_error"], "inconsistent_paired_host_utc_timestamps")
+
+        # 8. Empty stdout
+        bad_out_dict = dict(payload_dict)
+        bad_out_dict["stdout"] = "   \n"
+        bad_out_wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(bad_out_dict)}\n{CHRONY_PAYLOAD_END}\n"
+        res_bad_out = parse_chrony_response_payload(bad_out_wrapped)
+        self.assertFalse(res_bad_out["envelope_valid"])
+        self.assertEqual(res_bad_out["envelope_error"], "empty_chronyc_stdout")
 
     def test_host_observed_timestamp_provenance_and_payload_envelope(self):
         """
@@ -808,9 +856,12 @@ Leap status     : Normal
         """
         host_utc = 1730900000.0
         ref_time = host_utc - 4.5
+        host_iso = datetime.datetime.fromtimestamp(host_utc, datetime.timezone.utc).isoformat()
+        probe_start_iso = datetime.datetime.fromtimestamp(host_utc + 1.0, datetime.timezone.utc).isoformat()
+        probe_finish_iso = datetime.datetime.fromtimestamp(host_utc + 3.0, datetime.timezone.utc).isoformat()
         payload_dict = {
             "version": 1,
-            "host_observed_at": "2026-11-08T07:00:00+00:00",
+            "host_observed_at": host_iso,
             "host_observed_unix": host_utc,
             "host_chrony_elapsed_seconds": 0.002,
             "returncode": 0,
@@ -824,8 +875,8 @@ Leap status     : Normal
             fetcher_fn=lambda n: {
                 "metrics_raw": "miles_ready 1\n",
                 "chrony_raw": wrapped,
-                "probe_started_at": "2026-11-08T07:00:01+00:00",
-                "probe_finished_at": "2026-11-08T07:00:03+00:00",
+                "probe_started_at": probe_start_iso,
+                "probe_finished_at": probe_finish_iso,
                 "probe_duration_seconds": 2.0,
                 "transport_latency_seconds": 1.8,
             },
@@ -960,6 +1011,136 @@ Leap status     : Normal
         self.assertEqual(node_snap["transport_latency_seconds"], 2.5)
         # Uncertainty is NOT exceeded!
         self.assertLess(clock["horizon_uncertainty_seconds"], 1.0)
+
+    def test_envelope_nonzero_returncode_marked_unverified_and_rejected(self):
+        """
+        Regression test (P1): When remote chronyc returns non-zero returncode (e.g. rc=2),
+        envelope parser rejects stdout, marks envelope_valid=False, and downstream node
+        telemetry snapshot strictly fails closed:
+        - node status is 'partial' or 'error' (NEVER 'ok')
+        - clock uncertainty_exceeded is True
+        - rejection_reason reflects chronyc failure
+        - runtime_equivalence is 'unverified'
+        """
+        host_unix = 1730900000.0
+        host_iso = datetime.datetime.fromtimestamp(host_unix, datetime.timezone.utc).isoformat()
+        payload = {
+            "version": 1,
+            "host_observed_at": host_iso,
+            "host_observed_unix": host_unix,
+            "host_chrony_elapsed_seconds": 0.005,
+            "returncode": 2, # Process failed!
+            "stdout": "A9FEA97B,169.254.169.123,3,1730899995.0,0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n",
+            "stderr": "506 Cannot talk to daemon",
+        }
+        wrapped = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(payload)}\n{CHRONY_PAYLOAD_END}\n"
+
+        nodes = [{"alias": "edge-a", "profile": "edge"}]
+        snap = collect_node_telemetry_safe(
+            nodes=nodes,
+            fetcher_fn=lambda n: {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": wrapped,
+                "probe_started_at": host_iso,
+                "probe_finished_at": host_iso,
+            },
+        )
+
+        self.assertNotEqual(snap["status"], "ok")
+        self.assertEqual(snap["status"], "partial")
+        node_snap = snap["nodes"]["edge-a"]
+        self.assertEqual(node_snap["status"], "partial")
+        clock = node_snap["clock"]
+        self.assertTrue(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["runtime_equivalence"], "unverified")
+        self.assertFalse(clock["runtime_elapsed_verified"])
+        self.assertIn("chronyc", clock["rejection_reason"])
+        self.assertIn("2", clock["rejection_reason"])
+
+    def test_envelope_schema_and_timestamp_validation_failures_fail_closed(self):
+        """
+        Regression test (P1): When envelope contains unsupported version or inconsistent
+        paired UTC timestamps, downstream snapshot fails closed with unverified clock.
+        """
+        host_unix = 1730900000.0
+        host_iso = datetime.datetime.fromtimestamp(host_unix, datetime.timezone.utc).isoformat()
+
+        # Inconsistent paired timestamps (skew > 1.0s)
+        skewed_payload = {
+            "version": 1,
+            "host_observed_at": host_iso,
+            "host_observed_unix": host_unix + 30.0,
+            "host_chrony_elapsed_seconds": 0.003,
+            "returncode": 0,
+            "stdout": f"A9FEA97B,169.254.169.123,3,{host_unix - 4.0:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n",
+        }
+        wrapped_skewed = f"{CHRONY_PAYLOAD_BEGIN}\n{json.dumps(skewed_payload)}\n{CHRONY_PAYLOAD_END}\n"
+
+        snap = collect_node_telemetry_safe(
+            nodes=[{"alias": "cloud-a", "profile": "cloud"}],
+            fetcher_fn=lambda n: {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": wrapped_skewed,
+            },
+        )
+        self.assertEqual(snap["status"], "partial")
+        clock = snap["nodes"]["cloud-a"]["clock"]
+        self.assertTrue(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["rejection_reason"], "inconsistent_paired_host_utc_timestamps")
+        self.assertEqual(clock["runtime_equivalence"], "unverified")
+
+    def test_missing_timestamp_provenance_marked_unverified_without_unbound_local_error(self):
+        """
+        Regression test (P2): When node response has NO host timestamps, NO now_unix,
+        and NO probe_finished_at, collect_node_telemetry_safe MUST NOT raise UnboundLocalError.
+        Must fail closed with explicit time_provenance='unverified_missing_timestamp'
+        and rejection_reason='missing_current_timestamp_for_age_verification'.
+        """
+        raw_csv = "A9FEA97B,169.254.169.123,3,1730899995.0,0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        # Fetcher returns no timestamps whatsoever
+        def stripped_fetcher(node):
+            return {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": raw_csv,
+            }
+
+        snap = collect_node_telemetry_safe(
+            nodes=[{"alias": "edge-a", "profile": "edge"}],
+            fetcher_fn=stripped_fetcher,
+        )
+
+        self.assertEqual(snap["status"], "partial")
+        node_snap = snap["nodes"]["edge-a"]
+        clock = node_snap["clock"]
+        self.assertTrue(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["rejection_reason"], "missing_current_timestamp_for_age_verification")
+        self.assertEqual(clock["time_provenance"], "unverified_missing_timestamp")
+        self.assertIsNone(clock["sample_age_seconds"])
+
+    def test_unparseable_timestamp_string_handled_gracefully(self):
+        """
+        Regression test (P2): When probe_finished_at or host timestamp contains an unparseable
+        string (e.g. 'not-an-iso-string'), collector does not raise an unhandled exception,
+        marks time_provenance='unverified_unparseable_timestamp', and fails closed.
+        """
+        raw_csv = "A9FEA97B,169.254.169.123,3,1730899995.0,0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        snap = collect_node_telemetry_safe(
+            nodes=[{"alias": "cloud-a", "profile": "cloud"}],
+            fetcher_fn=lambda n: {
+                "metrics_raw": "miles_ready 1\n",
+                "chrony_raw": raw_csv,
+                "probe_finished_at": "definitely-not-an-iso-timestamp-string",
+            },
+        )
+
+        self.assertEqual(snap["status"], "partial")
+        node_snap = snap["nodes"]["cloud-a"]
+        clock = node_snap["clock"]
+        self.assertTrue(clock["uncertainty_exceeded"])
+        self.assertEqual(clock["rejection_reason"], "missing_current_timestamp_for_age_verification")
+        self.assertEqual(clock["time_provenance"], "unverified_unparseable_timestamp")
 
     def test_collect_node_journals_safe(self):
         nodes = [

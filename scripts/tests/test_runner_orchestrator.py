@@ -8,6 +8,7 @@ Tests the real runner orchestration call site with mocked SSM/SSH runners:
 - Rejection of false upstream attribution for unmatched 500 errors
 - Zero secret leakage across entire serialized payloads
 """
+import datetime
 import json
 import os
 import tempfile
@@ -598,9 +599,10 @@ class RunnerOrchestratorTests(unittest.TestCase):
                 return "miles_ready 1\n"
             if "chronyc" in prog:
                 ref_t = now_t - 3.5
+                now_iso = datetime.datetime.fromtimestamp(now_t, datetime.timezone.utc).isoformat()
                 payload = {
                     "version": 1,
-                    "host_observed_at": "2026-11-08T07:15:00+00:00",
+                    "host_observed_at": now_iso,
                     "host_observed_unix": now_t,
                     "host_chrony_elapsed_seconds": 0.0035,
                     "returncode": 0,
@@ -621,9 +623,10 @@ class RunnerOrchestratorTests(unittest.TestCase):
                 return MockSSHResult("miles_ready 1\n")
             if "chronyc" in cmd_str or "DEFAULT_CHRONY_PROGRAM" in cmd_str or "python3" in cmd_str:
                 ref_t = now_t - 5.0
+                now_iso = datetime.datetime.fromtimestamp(now_t, datetime.timezone.utc).isoformat()
                 payload = {
                     "version": 1,
-                    "host_observed_at": "2026-11-08T07:15:01+00:00",
+                    "host_observed_at": now_iso,
                     "host_observed_unix": now_t,
                     "host_chrony_elapsed_seconds": 0.0042,
                     "returncode": 0,
@@ -673,9 +676,10 @@ class RunnerOrchestratorTests(unittest.TestCase):
                 return "miles_ready 1\n"
             if "chronyc" in prog:
                 ref_t = now_t - 3.5
+                now_iso = datetime.datetime.fromtimestamp(now_t, datetime.timezone.utc).isoformat()
                 payload = {
                     "version": 1,
-                    "host_observed_at": "2026-11-08T07:15:00+00:00",
+                    "host_observed_at": now_iso,
                     "host_observed_unix": now_t,
                     "host_chrony_elapsed_seconds": 1.45, # >= 1.0s on host!
                     "returncode": 0,

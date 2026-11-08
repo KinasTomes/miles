@@ -117,6 +117,15 @@ def collect_cluster_telemetry(
             host_observed_unix = payload["host_observed_unix"]
             host_chrony_elapsed = payload["host_chrony_elapsed_seconds"]
             runtime_elapsed_verified = payload["runtime_elapsed_verified"]
+            envelope_valid = payload.get("envelope_valid", False)
+            envelope_error = payload.get("envelope_error")
+            remote_rc = payload.get("returncode")
+
+            if remote_rc is not None and remote_rc != 0:
+                chrony_error = chrony_error or f"chronyc_failed_rc_{remote_rc}"
+            elif not envelope_valid and envelope_error and envelope_error != "no_envelope_present":
+                if not chrony_raw:
+                    chrony_error = chrony_error or envelope_error
 
             return {
                 "metrics_raw": metrics_raw,
@@ -132,6 +141,9 @@ def collect_cluster_telemetry(
                 "host_observed_at": host_observed_at,
                 "host_observed_unix": host_observed_unix,
                 "runtime_elapsed_verified": runtime_elapsed_verified,
+                "envelope_valid": envelope_valid,
+                "envelope_error": envelope_error,
+                "returncode": remote_rc,
             }
 
         elif profile == "edge":
@@ -163,6 +175,15 @@ def collect_cluster_telemetry(
             host_observed_unix = payload["host_observed_unix"]
             host_chrony_elapsed = payload["host_chrony_elapsed_seconds"]
             runtime_elapsed_verified = payload["runtime_elapsed_verified"]
+            envelope_valid = payload.get("envelope_valid", False)
+            envelope_error = payload.get("envelope_error")
+            remote_rc = payload.get("returncode")
+
+            if remote_rc is not None and remote_rc != 0:
+                chrony_error = chrony_error or f"chronyc_failed_rc_{remote_rc}"
+            elif not envelope_valid and envelope_error and envelope_error != "no_envelope_present":
+                if not chrony_raw:
+                    chrony_error = chrony_error or envelope_error
 
             return {
                 "metrics_raw": metrics_raw,
@@ -178,6 +199,9 @@ def collect_cluster_telemetry(
                 "host_observed_at": host_observed_at,
                 "host_observed_unix": host_observed_unix,
                 "runtime_elapsed_verified": runtime_elapsed_verified,
+                "envelope_valid": envelope_valid,
+                "envelope_error": envelope_error,
+                "returncode": remote_rc,
             }
 
         else:
