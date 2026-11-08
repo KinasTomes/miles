@@ -4,11 +4,14 @@ import unittest
 from scripts.runner_diagnostics import (
     build_failed_window_payload,
     build_node_telemetry_snapshot,
+    collect_node_journals_safe,
+    collect_node_telemetry_safe,
     correlate_failures,
     execute_with_runcommand_fallback,
     parse_chrony_tracking,
     parse_gateway_journal_lines,
     parse_prometheus_metrics,
+    redact_sensitive_strings,
     sanitize_benchmark_failure,
 )
 
@@ -84,26 +87,54 @@ class RunnerDiagnosticsTests(unittest.TestCase):
             {"request_id": "REQ-79-STREAM", "http_status": 200},
             {"request_id": "REQ-81-GATE", "http_status": 500},
             {"request_id": "ALB-TIMEOUT-503", "http_status": 503},
+            {"request_id": "UNMATCHED-500", "http_status": 500},
+            {"request_id": "UNPROVEN-503", "http_status": 503},
         ]
         gateway_records = [
             {"request_id": "REQ-79-STREAM", "node_id": "cloud-a", "stage": "object_get_stream", "failure_class": "clock_uncertainty_exceeded"},
             {"request_id": "REQ-81-GATE", "node_id": "cloud-a", "stage": "object_get", "failure_class": "clock_uncertainty_exceeded"},
         ]
+        alb_evidence = [
+            {"request_id": "ALB-TIMEOUT-503", "elb_status_code": 503, "target_status_code": "-"}
+        ]
         node_status = {"cloud-a": "ok", "cloud-b": "ok", "edge-a": "ok"}
 
-        correlated = correlate_failures(client_failures, gateway_records, node_status=node_status)
-        self.assertEqual(len(correlated), 3)
+        correlated = correlate_failures(client_failures, gateway_records, node_status=node_status, alb_evidence=alb_evidence)
+        self.assertEqual(len(correlated), 5)
 
+        # Matched gateway errors
         self.assertEqual(correlated[0]["source"], "gateway")
         self.assertEqual(correlated[0]["stage"], "object_get_stream")
         self.assertEqual(correlated[0]["failure_class"], "clock_uncertainty_exceeded")
+        self.assertEqual(correlated[0]["diagnostic_status"], "correlated_gateway_log")
 
         self.assertEqual(correlated[1]["source"], "gateway")
         self.assertEqual(correlated[1]["stage"], "object_get")
         self.assertEqual(correlated[1]["failure_class"], "clock_uncertainty_exceeded")
+        self.assertEqual(correlated[1]["diagnostic_status"], "correlated_gateway_log")
 
-        # When collector succeeded on all nodes, unjoined 503 is truly upstream ALB
-        self.assertEqual(correlated[2]["source"], "upstream_no_gateway_request")
+        # Corroborated upstream ALB error with evidence
+        self.assertEqual(correlated[2]["source"], "upstream_alb")
+        self.assertEqual(correlated[2]["diagnostic_status"], "corroborated_alb_evidence")
+
+        # Unmatched 500 MUST NEVER be attributed to upstream ALB
+        self.assertEqual(correlated[3]["source"], "origin_unverified")
+        self.assertEqual(correlated[3]["diagnostic_status"], "gateway_log_missing")
+
+        # Unmatched 503 without ALB proof MUST NOT be falsely attributed to upstream
+        self.assertEqual(correlated[4]["source"], "origin_unverified")
+        self.assertEqual(correlated[4]["diagnostic_status"], "gateway_log_missing")
+
+    def test_correlate_failures_unmatched_500_never_attributed_to_upstream(self):
+        # Reproduce exact reviewer test case:
+        correlated = correlate_failures(
+            [{"request_id": "req-not-logged", "http_status": 500}],
+            [],
+            {"cloud-a": "ok", "cloud-b": "ok"}
+        )
+        self.assertEqual(len(correlated), 1)
+        self.assertEqual(correlated[0]["source"], "origin_unverified")
+        self.assertEqual(correlated[0]["diagnostic_status"], "gateway_log_missing")
 
     def test_correlate_failures_incomplete_evidence_marks_uncollected(self):
         client_failures = [
@@ -511,6 +542,363 @@ Leap status     : Normal
         # REQ-B was unjoined, BUT cloud-b had an error collecting journal -> MUST be uncollected_evidence!
         self.assertEqual(cor[1]["request_id"], "REQ-B")
         self.assertEqual(cor[1]["source"], "uncollected_evidence")
+
+    def test_parse_chrony_tracking_non_finite_and_invalid_timestamps(self):
+        # Verify fail-closed behavior for NaN, Inf, non-numeric and negative values
+        now_unix = 1730900000.0
+        ref_time = now_unix - 5.0
+        csv_healthy = f"A9FEA97B,169.254.169.123,3,{ref_time:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n"
+
+        # 1. NaN now_unix MUST fail-closed
+        res_nan_now = parse_chrony_tracking(csv_healthy, now_unix=float("nan"))
+        self.assertTrue(res_nan_now["uncertainty_exceeded"])
+        self.assertEqual(res_nan_now["rejection_reason"], "non_finite_current_timestamp")
+
+        # 2. Inf now_unix MUST fail-closed
+        res_inf_now = parse_chrony_tracking(csv_healthy, now_unix=float("inf"))
+        self.assertTrue(res_inf_now["uncertainty_exceeded"])
+        self.assertEqual(res_inf_now["rejection_reason"], "non_finite_current_timestamp")
+
+        # 3. String now_unix MUST fail-closed
+        res_str_now = parse_chrony_tracking(csv_healthy, now_unix="invalid_timestamp")
+        self.assertTrue(res_str_now["uncertainty_exceeded"])
+        self.assertEqual(res_str_now["rejection_reason"], "non_finite_current_timestamp")
+
+        # 4. NaN elapsed_seconds MUST fail-closed
+        res_nan_elapsed = parse_chrony_tracking(csv_healthy, now_unix=now_unix, elapsed_seconds=float("nan"))
+        self.assertTrue(res_nan_elapsed["uncertainty_exceeded"])
+        self.assertEqual(res_nan_elapsed["rejection_reason"], "invalid_or_non_finite_elapsed_seconds")
+
+        # 5. Negative elapsed_seconds MUST fail-closed
+        res_neg_elapsed = parse_chrony_tracking(csv_healthy, now_unix=now_unix, elapsed_seconds=-1.0)
+        self.assertTrue(res_neg_elapsed["uncertainty_exceeded"])
+        self.assertEqual(res_neg_elapsed["rejection_reason"], "invalid_or_non_finite_elapsed_seconds")
+
+    def test_collect_node_telemetry_safe_and_partial_failure(self):
+        nodes = [
+            {"alias": "cloud-a", "profile": "cloud"},
+            {"alias": "cloud-b", "profile": "cloud"}
+        ]
+
+        def mock_fetcher(node):
+            if node["alias"] == "cloud-a":
+                return {
+                    "metrics_raw": "miles_ready 1\n",
+                    "chrony_raw": "A9FEA97B,169.254.169.123,3,100.0,0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16,Normal\n",
+                    "readyz_status": 200
+                }
+            raise RuntimeError("SSM command timed out")
+
+        cluster_snap = collect_node_telemetry_safe(
+            nodes=nodes,
+            fetcher_fn=mock_fetcher,
+            captured_at="2026-11-06T13:20:00Z",
+            now_unix=105.0
+        )
+
+        self.assertEqual(cluster_snap["status"], "partial")
+        self.assertEqual(cluster_snap["summary"]["total_nodes"], 2)
+        self.assertEqual(cluster_snap["summary"]["healthy_nodes"], 1)
+        self.assertEqual(cluster_snap["summary"]["failed_nodes"], 1)
+
+        self.assertEqual(cluster_snap["nodes"]["cloud-a"]["status"], "ok")
+        self.assertEqual(cluster_snap["nodes"]["cloud-a"]["metrics"]["miles_ready"], 1)
+        self.assertEqual(cluster_snap["nodes"]["cloud-b"]["status"], "error")
+        self.assertIn("SSM command timed out", cluster_snap["nodes"]["cloud-b"]["error"])
+
+    def test_collect_node_journals_safe(self):
+        nodes = [
+            {"alias": "cloud-a", "id": "i-aaa"},
+            {"alias": "cloud-b", "id": "i-bbb"}
+        ]
+
+        def mock_journal_fetcher(node):
+            if node["alias"] == "cloud-a":
+                return {"lines": ["line 1", "line 2"]}
+            raise ConnectionResetError("SSM Session stream disconnected")
+
+        node_journals, node_status = collect_node_journals_safe(nodes, mock_journal_fetcher)
+        self.assertEqual(len(node_journals), 2)
+        self.assertEqual(node_status["cloud-a"], "ok")
+        self.assertEqual(node_status["cloud-b"], "error")
+        self.assertEqual(node_journals[0]["count"], 2)
+        self.assertEqual(node_journals[1]["count"], 0)
+        self.assertEqual(node_journals[1]["error_type"], "ConnectionResetError")
+
+    def test_two_gateway_fixture_controlled_fault_correlation(self):
+        """
+        Phase A (A3) regression:
+        In a 2-gateway fixture, exercises:
+        - 1 HTTP 500 (matched to gateway A)
+        - 1 HTTP 503 (matched to gateway B)
+        - 1 post-header stream abort (matched to gateway A)
+        - 1 upstream ALB failure (no gateway record)
+        Verifies client request IDs map to exactly 1 diagnostic record or upstream_no_gateway_request.
+        Verifies before/after telemetry snapshot preservation.
+        Verifies zero secret leaks (tokens, payload bodies, signed URLs, keys).
+        """
+        secret_token = "TOP_SECRET_SESSION_TOKEN_XYZ_123"
+        signed_url = "https://bucket.s3.amazonaws.com/obj?X-Amz-Signature=supersecret456"
+        secret_key = "user/private/financial-statement.pdf"
+
+        client_result = {
+            "status": "failed",
+            "samples": [
+                # 1. HTTP 500 on cloud-a (writer admission rejection)
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-500-A",
+                    "status_code": 500,
+                    "error": "InternalError",
+                    "payload_bytes": 8388608,
+                    "secret_header": secret_token,
+                    "signed_url": signed_url,
+                    "target_key": secret_key,
+                    "latency_ns": 25000000,
+                },
+                # 2. HTTP 503 on cloud-b (storage backend unavailable)
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-503-B",
+                    "status_code": 503,
+                    "error": "ServiceUnavailable",
+                    "payload_bytes": 8389273,
+                    "secret_header": secret_token,
+                    "latency_ns": 8800000000,
+                },
+                # 3. Post-header stream abort on cloud-a
+                {
+                    "phase": "verify-get",
+                    "operation": "GetObject",
+                    "request_id": "REQ-STREAM-ABORT-A",
+                    "status_code": 200,
+                    "error": "unexpected EOF in data stream",
+                    "payload_bytes": 4194304,
+                    "secret_header": secret_token,
+                    "latency_ns": 1200000000,
+                },
+                # 4. Upstream ALB 503 (never reached any gateway)
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-ALB-TIMEOUT-503",
+                    "status_code": 503,
+                    "error": "Service Unavailable",
+                    "payload_bytes": 0,
+                    "latency_ns": 30000000000,
+                }
+            ]
+        }
+
+        node_journals = [
+            {
+                "alias": "cloud-a",
+                "id": "i-03bea44ea0f048125",
+                "lines": [
+                    "{\"msg\": \"s3 server failure\", \"request_id\": \"REQ-500-A\", \"node_id\": \"cloud-a\", \"method\": \"PUT\", \"operation\": \"PutObject\", \"stage\": \"writer_admission\", \"failure_class\": \"clock_uncertainty_exceeded\"}",
+                    "{\"msg\": \"s3 server failure\", \"request_id\": \"REQ-STREAM-ABORT-A\", \"node_id\": \"cloud-a\", \"method\": \"GET\", \"operation\": \"GetObject\", \"stage\": \"object_get_stream\", \"failure_class\": \"stream_abort\"}",
+                ]
+            },
+            {
+                "alias": "cloud-b",
+                "id": "i-075e63f7bff407047",
+                "lines": [
+                    "{\"msg\": \"s3 service unavailable\", \"request_id\": \"REQ-503-B\", \"node_id\": \"cloud-b\", \"method\": \"PUT\", \"operation\": \"PutObject\", \"stage\": \"prepare\", \"failure_class\": \"backend_unavailable\"}",
+                ]
+            }
+        ]
+
+        node_status = {"cloud-a": "ok", "cloud-b": "ok"}
+
+        before_telemetry = {
+            "captured_at": "2026-11-06T13:20:00Z",
+            "status": "ok",
+            "nodes": {
+                "cloud-a": {"alias": "cloud-a", "status": "ok", "metrics": {"miles_ready": 1}},
+                "cloud-b": {"alias": "cloud-b", "status": "ok", "metrics": {"miles_ready": 1}}
+            }
+        }
+        after_telemetry = {
+            "captured_at": "2026-11-06T13:23:00Z",
+            "status": "ok",
+            "nodes": {
+                "cloud-a": {"alias": "cloud-a", "status": "ok", "metrics": {"miles_ready": 0}},
+                "cloud-b": {"alias": "cloud-b", "status": "ok", "metrics": {"miles_ready": 1}}
+            }
+        }
+
+        alb_evidence = [
+            {"request_id": "REQ-ALB-TIMEOUT-503", "elb_status_code": 503, "target_status_code": "-"}
+        ]
+
+        payload = build_failed_window_payload(
+            name="cloud-c1-t1-fixture-test",
+            captured_at="2026-11-06T13:23:00Z",
+            client_result=client_result,
+            node_journals=node_journals,
+            node_status=node_status,
+            before_metrics=before_telemetry,
+            after_metrics=after_telemetry,
+            release_hash="da87fab12c8bc26bcee46f78eb24f0062a985880",
+            utc_window={"before_at": "2026-11-06T13:20:00Z", "after_at": "2026-11-06T13:23:00Z"},
+            alb_evidence=alb_evidence,
+            schema_version=1
+        )
+
+        # 1. Telemetry before/after snapshots preserved
+        self.assertEqual(payload["telemetry"]["before"], before_telemetry)
+        self.assertEqual(payload["telemetry"]["after"], after_telemetry)
+
+        # 2. Exactly 4 correlated failure records matching each client failure
+        correlated = payload["correlated_failures"]
+        self.assertEqual(len(correlated), 4)
+
+        # Req 1: Gateway 500 on cloud-a
+        self.assertEqual(correlated[0]["request_id"], "REQ-500-A")
+        self.assertEqual(correlated[0]["source"], "gateway")
+        self.assertEqual(correlated[0]["node_id"], "cloud-a")
+        self.assertEqual(correlated[0]["stage"], "writer_admission")
+        self.assertEqual(correlated[0]["failure_class"], "clock_uncertainty_exceeded")
+
+        # Req 2: Gateway 503 on cloud-b
+        self.assertEqual(correlated[1]["request_id"], "REQ-503-B")
+        self.assertEqual(correlated[1]["source"], "gateway")
+        self.assertEqual(correlated[1]["node_id"], "cloud-b")
+        self.assertEqual(correlated[1]["stage"], "prepare")
+        self.assertEqual(correlated[1]["failure_class"], "backend_unavailable")
+
+        # Req 3: Post-header stream abort on cloud-a
+        self.assertEqual(correlated[2]["request_id"], "REQ-STREAM-ABORT-A")
+        self.assertEqual(correlated[2]["source"], "gateway")
+        self.assertEqual(correlated[2]["node_id"], "cloud-a")
+        self.assertEqual(correlated[2]["stage"], "object_get_stream")
+        self.assertEqual(correlated[2]["failure_class"], "stream_abort")
+
+        # Req 4: Upstream ALB 503 (corroborated by native ALB evidence)
+        self.assertEqual(correlated[3]["request_id"], "REQ-ALB-TIMEOUT-503")
+        self.assertEqual(correlated[3]["source"], "upstream_alb")
+        self.assertEqual(correlated[3]["diagnostic_status"], "corroborated_alb_evidence")
+
+        # 3. Security audit: zero leak of secret tokens, signed URLs, payload bodies, or target keys
+        payload_json = json.dumps(payload)
+        self.assertNotIn(secret_token, payload_json)
+        self.assertNotIn(signed_url, payload_json)
+        self.assertNotIn(secret_key, payload_json)
+        self.assertNotIn("supersecret456", payload_json)
+
+    def test_sanitize_benchmark_failure_adversarial_secrets_in_errors_and_journals(self):
+        """
+        Adversarial test injecting signed URLs, authorization tokens, AWS access keys,
+        and concrete EC2 instance IDs into free-form errors and journal lines.
+        Asserts the serialized entire payload contains zero sensitive leaks.
+        """
+        signed_url_leak = "https://s3.ap-southeast-1.amazonaws.com/test-bucket/secret-key.bin?X-Amz-Signature=SENSITIVE_SIGNATURE_HEX12345&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20261107%2Fap-southeast-1%2Fs3%2Faws4_request"
+        bearer_leak = "Bearer secret_bearer_token_xyz987"
+        aws_key_leak = "AKIAIOSFODNN7EXAMPLE"
+        instance_id_leak = "i-03bea44ea0f048125"
+        password_leak = "secret_password=TopSecretPassword456!"
+
+        client_result = {
+            "status": "failed",
+            "error": f"workload failed with signed URL: {signed_url_leak} and {password_leak}",
+            "samples": [
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-LEAK-1",
+                    "status_code": 500,
+                    "error": f"Dial failed to {signed_url_leak} with auth {bearer_leak}",
+                    "payload_bytes": 0,
+                    "duration_ms": 15.0,
+                }
+            ]
+        }
+
+        node_journals = [
+            {
+                "alias": "cloud-a",
+                "id": instance_id_leak,
+                "lines": [
+                    f'{{"msg": "s3 server failure", "request_id": "REQ-LEAK-1", "node_id": "cloud-a", "stage": "writer_admission", "failure_class": "clock_uncertainty_exceeded", "url": "{signed_url_leak}", "auth": "{bearer_leak}"}}',
+                    f"raw unparsed line with {instance_id_leak} and {aws_key_leak} and {password_leak}",
+                ]
+            }
+        ]
+
+        node_status = {"cloud-a": "ok"}
+
+        payload = build_failed_window_payload(
+            name="adversarial-leak-test",
+            captured_at="2026-11-07T12:00:00Z",
+            client_result=client_result,
+            node_journals=node_journals,
+            node_status=node_status,
+        )
+
+        payload_json = json.dumps(payload)
+
+        # Verify absolute zero leak across entire serialized payload
+        self.assertNotIn("SENSITIVE_SIGNATURE_HEX12345", payload_json)
+        self.assertNotIn("secret_bearer_token_xyz987", payload_json)
+        self.assertNotIn(aws_key_leak, payload_json)
+        self.assertNotIn(instance_id_leak, payload_json)
+        self.assertNotIn("TopSecretPassword456!", payload_json)
+
+        # Verify error was classified into allowlisted error code
+        failures = payload["sanitized_summary"]["failures"]
+        self.assertEqual(len(failures), 1)
+        self.assertIn(failures[0]["error_code"], ["dial_error", "clock_uncertainty_exceeded", "internal_error", "unclassified_error"])
+        self.assertIn("error_code", payload["sanitized_summary"])
+
+    def test_object_path_and_opaque_auth_zero_leakage(self):
+        """
+        Verifies that object keys/paths in signed URLs and opaque Authorization tokens
+        are completely eliminated from the sanitized public artifact.
+        """
+        raw_auth = "Authorization = aRealTokenSecretWithNoBearer"
+        redacted_auth = redact_sensitive_strings(raw_auth)
+        self.assertNotIn("aRealTokenSecretWithNoBearer", redacted_auth)
+        self.assertIn("Authorization: [REDACTED]", redacted_auth)
+
+        leak_url = "https://example.invalid/private/financial-statement.pdf?X-Amz-Signature=NOTREAL"
+        client_res = {
+            "status": "failed",
+            "error": f"workload failed fetching {leak_url}",
+            "samples": [
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-LEAK-OBJ",
+                    "status_code": 500,
+                    "error": f"error getting {leak_url} with {raw_auth}",
+                }
+            ]
+        }
+
+        sanitized = sanitize_benchmark_failure(client_res)
+        dumped = json.dumps(sanitized)
+        self.assertNotIn("/private/financial-statement.pdf", dumped)
+        self.assertNotIn("financial-statement", dumped)
+        self.assertNotIn("aRealTokenSecretWithNoBearer", dumped)
+        self.assertNotIn("NOTREAL", dumped)
+
+    def test_correlate_failures_alb_target_503_not_upstream(self):
+        """
+        Verifies that when ALB access logs record target_status_code=503 (target responded),
+        the error is classified as origin_unverified (missing gateway log), NOT upstream_alb.
+        """
+        correlated = correlate_failures(
+            client_failures=[{"request_id": "R", "http_status": 503}],
+            gateway_records=[],
+            node_status={"cloud-a": "ok"},
+            alb_evidence=[{"request_id": "R", "elb_status_code": 503, "target_status_code": 503, "upstream": False}]
+        )
+        self.assertEqual(len(correlated), 1)
+        self.assertEqual(correlated[0]["request_id"], "R")
+        self.assertEqual(correlated[0]["source"], "origin_unverified")
+        self.assertEqual(correlated[0]["diagnostic_status"], "gateway_log_missing")
 
 
 if __name__ == "__main__":

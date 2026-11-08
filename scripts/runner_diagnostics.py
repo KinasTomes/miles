@@ -8,6 +8,132 @@ import json
 import re
 
 
+SENSITIVE_PATTERNS = [
+    # Full URLs & S3 URIs (removes all hosts, object paths, keys, and queries)
+    (re.compile(r'(?i)https?://[^\s"\'<>]+'), r'[REDACTED_URL]'),
+    (re.compile(r'(?i)s3://[^\s"\'<>]+'), r'[REDACTED_S3_URI]'),
+    # Signed URL query components & auth params (if unattached to full scheme)
+    (re.compile(r'(?i)(X-Amz-Signature=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
+    (re.compile(r'(?i)(X-Amz-Credential=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
+    (re.compile(r'(?i)(X-Amz-Security-Token=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
+    (re.compile(r'(?i)(X-Amz-Date=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
+    (re.compile(r'(?i)(\bSignature=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
+    (re.compile(r'(?i)(AWSAccessKeyId=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
+    (re.compile(r'(?i)(AWSSecretAccessKey=)[^&\s"\'<>]+'), r'\1[REDACTED]'),
+    # Authorization header (matches Bearer, SigV4, Basic, or opaque tokens without scheme)
+    (re.compile(r'(?i)\bAuthorization\s*[:=]\s*(?:(?:Bearer|AWS4-HMAC-SHA256|Basic)\s+)?[^\s,"\'<>]+'), r'Authorization: [REDACTED]'),
+    (re.compile(r'(?i)\bBearer\s+[^\s,"\'<>]+'), r'Bearer [REDACTED]'),
+    # Raw AWS Access Key IDs (AKIA, ASIA, AROA, AIPA)
+    (re.compile(r'(?<![A-Z0-9])(?:AKIA|ASIA|AROA|AIPA)[A-Z0-9]{16}(?![A-Z0-9])'), r'[REDACTED_AWS_KEY]'),
+    # Generic secret/password/token/key/credential key-values
+    (re.compile(r'(?i)\b([a-z0-9_-]*(?:password|secret|token|key|credential|signature|auth))\s*[:=]\s*["\']?[^"\'\s,;]+["\']?'), r'\1=[REDACTED]'),
+    # Concrete AWS account IDs (12 digits) in ARNs or plain text
+    (re.compile(r'arn:aws[a-z0-9-]*:[a-z0-9-]+:[a-z0-9-]*:(\d{12}):'), r'arn:aws:ap-southeast-1:123456789012:'),
+    # Concrete EC2 instance IDs (i- followed by 8 or 17 hex characters)
+    (re.compile(r'\bi-[0-9a-f]{8,17}\b'), r'[REDACTED_INSTANCE_ID]'),
+]
+
+
+def redact_sensitive_strings(text):
+    """
+    Deterministically scrubs AWS signatures, signed URLs, credentials, secret tokens,
+    authorization headers, and concrete instance IDs from text strings.
+    """
+    if not isinstance(text, str):
+        return text
+    for pattern, repl in SENSITIVE_PATTERNS:
+        text = pattern.sub(repl, text)
+    return text
+
+
+def redact_sensitive_payload(obj):
+    """
+    Recursively scrubs sensitive strings across arbitrary dicts, lists, and strings.
+    """
+    if isinstance(obj, str):
+        return redact_sensitive_strings(obj)
+    if isinstance(obj, list):
+        return [redact_sensitive_payload(x) for x in obj]
+    if isinstance(obj, dict):
+        return {k: redact_sensitive_payload(v) for k, v in obj.items()}
+    return obj
+
+
+ALLOWLISTED_ERROR_CODES = {
+    "clock_uncertainty_exceeded",
+    "backend_unavailable",
+    "service_unavailable",
+    "internal_error",
+    "stream_abort",
+    "connection_refused",
+    "connection_timeout",
+    "dial_error",
+    "unexpected_eof",
+    "short_read",
+    "slow_down",
+    "resource_busy",
+    "context_canceled",
+    "deadline_exceeded",
+    "request_timeout",
+    "bad_request",
+    "unauthorized",
+    "forbidden",
+    "not_found",
+    "conflict",
+    "precondition_failed",
+    "pre_header_error",
+    "post_header_stream_abort",
+    "gateway_error",
+    "upstream_error",
+    "workload_failure",
+    "unclassified_error",
+}
+
+
+def classify_error_to_code(err_str, http_status=None):
+    """
+    Maps free-form error strings or HTTP status codes into strict allowlisted error codes.
+    """
+    if not err_str:
+        if http_status == 500:
+            return "internal_error"
+        if http_status == 503:
+            return "service_unavailable"
+        if http_status == 504:
+            return "request_timeout"
+        return "none" if (http_status and http_status < 400) else "unclassified_error"
+
+    s = str(err_str).lower()
+    if "clock" in s or "uncertain" in s:
+        return "clock_uncertainty_exceeded"
+    if "stream" in s and ("abort" in s or "reset" in s):
+        return "stream_abort"
+    if "eof" in s or "unexpected eof" in s or "short read" in s:
+        return "unexpected_eof"
+    if "connection refused" in s:
+        return "connection_refused"
+    if "timeout" in s or "deadline" in s:
+        return "connection_timeout"
+    if "dial" in s:
+        return "dial_error"
+    if "backend" in s and "unavailable" in s:
+        return "backend_unavailable"
+    if "service unavailable" in s or "slowdown" in s:
+        return "service_unavailable"
+    if "internal" in s:
+        return "internal_error"
+    if "canceled" in s or "cancelled" in s:
+        return "context_canceled"
+    if http_status == 500:
+        return "internal_error"
+    if http_status == 503:
+        return "service_unavailable"
+    if http_status == 504:
+        return "request_timeout"
+    return "unclassified_error"
+
+
+
 def parse_gateway_journal_lines(stdout_text):
     """
     Parses journalctl output matching structured JSON slog lines or legacy text slog.
@@ -77,17 +203,19 @@ def execute_with_runcommand_fallback(session_runner, runcommand_runner):
         raise
 
 
-def correlate_failures(client_failures, gateway_records, node_status=None):
+def correlate_failures(client_failures, gateway_records, node_status=None, alb_evidence=None):
     """
     Joins observed client errors with collected gateway diagnostic records.
 
     client_failures: list of dicts with at least 'request_id' and 'http_status'.
     gateway_records: dict or list of gateway log dicts with 'request_id'.
     node_status: optional dict mapping node_alias to collection status ('ok', 'error', 'empty').
+    alb_evidence: optional dict or list of corroborated ALB access logs, target status records,
+                  or fixture assertions confirming upstream error.
 
     Returns a list of classified error reports. If gateway logs are missing or
-    incomplete, unjoined errors are marked 'uncollected_evidence' rather than
-    falsely attributing them to upstream ALB without proof.
+    incomplete, unjoined errors are marked 'origin_unverified' / 'gateway_log_missing'
+    unless corroborated by native ALB evidence. Never attributes HTTP 500 to upstream.
     """
     if isinstance(gateway_records, list):
         gw_map = {}
@@ -97,6 +225,15 @@ def correlate_failures(client_failures, gateway_records, node_status=None):
                 gw_map[rid] = r
     else:
         gw_map = gateway_records or {}
+
+    alb_map = {}
+    if isinstance(alb_evidence, list):
+        for a in alb_evidence:
+            arid = a.get("request_id")
+            if arid and arid not in alb_map:
+                alb_map[arid] = a
+    elif isinstance(alb_evidence, dict):
+        alb_map = alb_evidence
 
     collection_complete = True
     if node_status:
@@ -119,33 +256,95 @@ def correlate_failures(client_failures, gateway_records, node_status=None):
                 "stage": rec.get("stage", ""),
                 "failure_class": rec.get("failure_class", ""),
                 "msg": rec.get("msg", ""),
+                "diagnostic_status": "correlated_gateway_log",
             })
         else:
-            if collection_complete:
+            alb_rec = alb_map.get(rid)
+            is_pre_target_alb = False
+            if alb_rec:
+                t_status = str(alb_rec.get("target_status_code", "-")).strip()
+                target_did_not_respond = t_status in ("-", "", "0", "None")
+                upstream_flag = alb_rec.get("upstream")
+
+                if upstream_flag is True:
+                    is_pre_target_alb = True
+                elif upstream_flag is False:
+                    is_pre_target_alb = False
+                elif target_did_not_respond and alb_rec.get("elb_status_code") in (502, 503, 504):
+                    is_pre_target_alb = True
+
+            if is_pre_target_alb:
                 correlated.append({
                     "request_id": rid,
                     "http_status": status,
-                    "source": "upstream_no_gateway_request",
+                    "source": "upstream_alb",
+                    "diagnostic_status": "corroborated_alb_evidence",
+                    "alb_status": alb_rec.get("elb_status_code", status),
+                    "target_status": alb_rec.get("target_status_code", "-"),
+                    "note": "corroborated by ALB access evidence; request terminated at ALB before target",
+                })
+            elif alb_rec and not is_pre_target_alb:
+                # ALB log indicates target responded or was contacted, but gateway log is missing
+                correlated.append({
+                    "request_id": rid,
+                    "http_status": status,
+                    "source": "origin_unverified",
+                    "diagnostic_status": "gateway_log_missing",
+                    "alb_status": alb_rec.get("elb_status_code", status),
+                    "target_status": alb_rec.get("target_status_code", "-"),
+                    "note": "ALB log indicates target responded or was contacted, but gateway log is missing",
+                })
+            elif status == 500:
+                # ALB does NOT generate HTTP 500 on its own for target errors
+                correlated.append({
+                    "request_id": rid,
+                    "http_status": status,
+                    "source": "origin_unverified",
+                    "diagnostic_status": "gateway_log_missing",
+                    "note": "unmatched HTTP 500 without gateway log record; ALB does not generate 500 on its own",
                 })
             else:
-                correlated.append({
-                    "request_id": rid,
-                    "http_status": status,
-                    "source": "uncollected_evidence",
-                    "note": "cannot attribute to upstream because node journal collection was incomplete",
-                })
+                if collection_complete:
+                    correlated.append({
+                        "request_id": rid,
+                        "http_status": status,
+                        "source": "origin_unverified",
+                        "diagnostic_status": "gateway_log_missing",
+                        "note": "unmatched client failure without corroborating native ALB access log; origin unverified",
+                    })
+                else:
+                    correlated.append({
+                        "request_id": rid,
+                        "http_status": status,
+                        "source": "uncollected_evidence",
+                        "diagnostic_status": "incomplete_journal_collection",
+                        "note": "cannot attribute origin because node journal collection was incomplete",
+                    })
 
     return correlated
+
+
+SAFE_ERROR_NAMES = {
+    "InternalError": "InternalError",
+    "Service Unavailable": "Service Unavailable",
+    "ServiceUnavailable": "ServiceUnavailable",
+    "RequestTimeout": "RequestTimeout",
+    "SlowDown": "SlowDown",
+    "unexpected EOF in data stream": "unexpected EOF in data stream",
+    "connection refused": "connection refused",
+    "context deadline exceeded": "context deadline exceeded",
+}
 
 
 def sanitize_benchmark_failure(client_result):
     """
     Extracts sanitized failure details from warmbench client result without
-    leaking payload bodies, authorization headers, or sensitive keys.
+    leaking payload bodies, authorization headers, signed URLs, or sensitive keys.
     Distinguishes pre-header, post-header stream abort, upstream and gateway errors.
+    Deterministic redaction and allowlisted error codes are enforced.
     """
     if not client_result:
-        return {"status": "no_data", "failures": []}
+        return {"status": "no_data", "error": None, "error_code": None, "failures": []}
 
     failures = []
 
@@ -163,8 +362,7 @@ def sanitize_benchmark_failure(client_result):
             return "gateway_error"
         return "unknown_failure"
 
-    # 1. Top-level samples list (warmbench primary format)
-    for sample in client_result.get("samples", []):
+    def process_sample(sample, phase_default="unknown"):
         err = sample.get("error")
         http_code = sample.get("status_code") or sample.get("http_status")
         bytes_val = sample.get("payload_bytes", sample.get("bytes_read", 0))
@@ -177,18 +375,31 @@ def sanitize_benchmark_failure(client_result):
         if err or (http_code and http_code >= 400):
             rid = sample.get("request_id", "")
             ftype = classify_failure(http_code, rid, err, bytes_val)
+            ecode = classify_error_to_code(err, http_code)
             record = {
-                "phase": sample.get("phase", "unknown"),
-                "operation": sample.get("operation", ""),
-                "request_id": rid,
+                "phase": str(sample.get("phase", phase_default)),
+                "operation": str(sample.get("operation", "")),
+                "request_id": str(rid),
                 "http_status": http_code,
                 "bytes_read": bytes_val,
                 "duration_ms": duration,
                 "failure_type": ftype,
+                "error_code": ecode,
             }
             if err:
-                record["error"] = str(err)[:200]
-            failures.append(record)
+                cleaned_err = str(err).strip()
+                if cleaned_err in SAFE_ERROR_NAMES:
+                    record["error"] = SAFE_ERROR_NAMES[cleaned_err]
+                else:
+                    record["error"] = ecode
+            return record
+        return None
+
+    # 1. Top-level samples list (warmbench primary format)
+    for sample in client_result.get("samples", []):
+        rec = process_sample(sample)
+        if rec:
+            failures.append(rec)
 
     # 2. Phase-nested samples (fallback / mock test format)
     phases = client_result.get("phases", {})
@@ -196,34 +407,18 @@ def sanitize_benchmark_failure(client_result):
         for phase_name, phase_data in phases.items():
             if isinstance(phase_data, dict):
                 for sample in phase_data.get("samples", []):
-                    err = sample.get("error")
-                    http_code = sample.get("status_code") or sample.get("http_status")
-                    bytes_val = sample.get("payload_bytes", sample.get("bytes_read", 0))
-                    duration = sample.get("duration_ms")
-                    if duration is None and "latency_ns" in sample:
-                        duration = round(sample["latency_ns"] / 1e6, 2)
-                    elif duration is None:
-                        duration = 0
+                    rec = process_sample(sample, phase_default=phase_name)
+                    if rec:
+                        failures.append(rec)
 
-                    if err or (http_code and http_code >= 400):
-                        rid = sample.get("request_id", "")
-                        ftype = classify_failure(http_code, rid, err, bytes_val)
-                        record = {
-                            "phase": phase_name,
-                            "operation": sample.get("operation", ""),
-                            "request_id": rid,
-                            "http_status": http_code,
-                            "bytes_read": bytes_val,
-                            "duration_ms": duration,
-                            "failure_type": ftype,
-                        }
-                        if err:
-                            record["error"] = str(err)[:200]
-                        failures.append(record)
+    raw_top_err = client_result.get("error")
+    top_err_code = classify_error_to_code(raw_top_err) if raw_top_err is not None else None
+    top_err = top_err_code if raw_top_err is not None else None
 
     return {
-        "status": client_result.get("status", "unknown"),
-        "error": client_result.get("error"),
+        "status": str(client_result.get("status", "unknown")),
+        "error": top_err,
+        "error_code": top_err_code,
         "failures": failures,
     }
 
@@ -295,7 +490,10 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
             root_dispersion = numbers[9]
             interval = numbers[10]
 
-            age = (now_unix - ref_time) if now_unix is not None else None
+            now_is_finite = isinstance(now_unix, (int, float)) and math.isfinite(now_unix)
+            elapsed_is_valid = isinstance(elapsed_seconds, (int, float)) and math.isfinite(elapsed_seconds) and elapsed_seconds >= 0
+
+            age = (float(now_unix) - ref_time) if now_is_finite else None
             max_allowed_age = min(1024.0, 2.0 * interval + 2.0) if interval > 0 else 0.0
 
             # Coordination invariants:
@@ -307,7 +505,8 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
             # 6. Drift bound <= 500 PPM
             # 7. Horizon uncertainty bound <= 2.0 seconds
             drift_ppm = abs(freq_ppm) + abs(residual_ppm) + skew_ppm + 1.0
-            error_seconds = abs(offset) + root_dispersion + root_delay / 2.0 + max(0.0, elapsed_seconds) + 0.01
+            elapsed_val = max(0.0, float(elapsed_seconds)) if elapsed_is_valid else float("nan")
+            error_seconds = abs(offset) + root_dispersion + root_delay / 2.0 + elapsed_val + 0.01
             horizon_uncertainty = error_seconds + drift_ppm * 1e-6 * runtime_horizon_seconds
 
             uncertainty_exceeded = False
@@ -328,13 +527,19 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
             elif now_unix is None:
                 uncertainty_exceeded = True
                 rejection_reason = "missing_current_timestamp_for_age_verification"
-            elif age < -2.0 or age > max_allowed_age:
+            elif not now_is_finite:
+                uncertainty_exceeded = True
+                rejection_reason = "non_finite_current_timestamp"
+            elif not elapsed_is_valid:
+                uncertainty_exceeded = True
+                rejection_reason = "invalid_or_non_finite_elapsed_seconds"
+            elif age is None or not math.isfinite(age) or age < -2.0 or age > max_allowed_age:
                 uncertainty_exceeded = True
                 rejection_reason = "sample_age_exceeded"
-            elif drift_ppm > 500.0:
+            elif not math.isfinite(drift_ppm) or drift_ppm > 500.0:
                 uncertainty_exceeded = True
                 rejection_reason = "drift_ppm_exceeded_500"
-            elif horizon_uncertainty > 2.0:
+            elif not math.isfinite(horizon_uncertainty) or horizon_uncertainty > 2.0:
                 uncertainty_exceeded = True
                 rejection_reason = "horizon_uncertainty_exceeded_2s"
 
@@ -438,11 +643,15 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
                 "rejection_reason": "unverified_text_format_missing_drift_or_age",
             }
 
-        age = (now_unix - ref_time) if now_unix is not None else None
+        now_is_finite = isinstance(now_unix, (int, float)) and math.isfinite(now_unix)
+        elapsed_is_valid = isinstance(elapsed_seconds, (int, float)) and math.isfinite(elapsed_seconds) and elapsed_seconds >= 0
+
+        age = (float(now_unix) - ref_time) if now_is_finite else None
         max_allowed_age = min(1024.0, 2.0 * interval + 2.0) if interval > 0 else 0.0
 
         drift_ppm = abs(freq_ppm) + abs(residual_ppm) + skew_ppm + 1.0
-        error_seconds = abs(offset) + root_dispersion + root_delay / 2.0 + max(0.0, elapsed_seconds) + 0.01
+        elapsed_val = max(0.0, float(elapsed_seconds)) if elapsed_is_valid else float("nan")
+        error_seconds = abs(offset) + root_dispersion + root_delay / 2.0 + elapsed_val + 0.01
         horizon_uncertainty = error_seconds + drift_ppm * 1e-6 * runtime_horizon_seconds
 
         uncertainty_exceeded = False
@@ -463,13 +672,19 @@ def parse_chrony_tracking(raw_text, now_unix=None, elapsed_seconds=0.0):
         elif now_unix is None:
             uncertainty_exceeded = True
             rejection_reason = "missing_current_timestamp_for_age_verification"
-        elif age < -2.0 or age > max_allowed_age:
+        elif not now_is_finite:
+            uncertainty_exceeded = True
+            rejection_reason = "non_finite_current_timestamp"
+        elif not elapsed_is_valid:
+            uncertainty_exceeded = True
+            rejection_reason = "invalid_or_non_finite_elapsed_seconds"
+        elif age is None or not math.isfinite(age) or age < -2.0 or age > max_allowed_age:
             uncertainty_exceeded = True
             rejection_reason = "sample_age_exceeded"
-        elif drift_ppm > 500.0:
+        elif not math.isfinite(drift_ppm) or drift_ppm > 500.0:
             uncertainty_exceeded = True
             rejection_reason = "drift_ppm_exceeded_500"
-        elif horizon_uncertainty > 2.0:
+        elif not math.isfinite(horizon_uncertainty) or horizon_uncertainty > 2.0:
             uncertainty_exceeded = True
             rejection_reason = "horizon_uncertainty_exceeded_2s"
 
@@ -502,10 +717,12 @@ def build_node_telemetry_snapshot(
     profile,
     metrics_raw=None,
     chrony_raw=None,
+    chrony_error=None,
     readyz_status=None,
     error=None,
     captured_at=None,
-    now_unix=None
+    now_unix=None,
+    elapsed_seconds=0.0
 ):
     """
     Constructs a safe, non-sensitive telemetry snapshot for an individual gateway or edge node.
@@ -515,7 +732,7 @@ def build_node_telemetry_snapshot(
             "alias": alias,
             "profile": profile,
             "status": "error",
-            "error": str(error),
+            "error": redact_sensitive_strings(str(error)),
             "captured_at": captured_at,
         }
 
@@ -528,9 +745,22 @@ def build_node_telemetry_snapshot(
             pass
 
     metrics = parse_prometheus_metrics(metrics_raw) if metrics_raw else {}
-    clock_sig = parse_chrony_tracking(chrony_raw, now_unix=now_unix) if chrony_raw else {"status": "not_collected"}
+    if chrony_error:
+        clock_sig = {"status": "error", "error": redact_sensitive_strings(str(chrony_error))}
+    elif chrony_raw:
+        clock_sig = parse_chrony_tracking(chrony_raw, now_unix=now_unix, elapsed_seconds=elapsed_seconds)
+    else:
+        clock_sig = {"status": "not_collected", "missing_reason": "no_chrony_output"}
 
-    status = "ok" if (metrics or clock_sig.get("status") == "ok") else "empty"
+    has_metrics = bool(metrics)
+    has_clock_ok = clock_sig.get("status") == "ok"
+
+    if has_metrics and has_clock_ok:
+        status = "ok"
+    elif has_metrics or has_clock_ok:
+        status = "partial"
+    else:
+        status = "empty"
 
     return {
         "alias": alias,
@@ -541,6 +771,117 @@ def build_node_telemetry_snapshot(
         "metrics": metrics,
         "clock": clock_sig,
     }
+
+
+def collect_node_telemetry_safe(nodes, fetcher_fn, captured_at=None, now_unix=None, elapsed_seconds=0.0):
+    """
+    Safely collects telemetry across a list of nodes, handling individual node timeouts,
+    connection failures, or collection errors gracefully without aborting the cluster capture.
+    Returns a structured dictionary with per-node snapshots, overall status, and missing reasons.
+    """
+    if not nodes:
+        return {
+            "status": "not_collected",
+            "missing_reason": "no_nodes_specified",
+            "captured_at": captured_at,
+            "nodes": {},
+        }
+
+    import datetime
+    effective_captured_at = captured_at or datetime.datetime.now(datetime.timezone.utc).isoformat()
+    node_snapshots = {}
+    has_ok = False
+    has_partial = False
+    has_error = False
+
+    for node in nodes:
+        alias = node.get("alias", "unknown")
+        profile = node.get("profile", "cloud")
+        try:
+            res = fetcher_fn(node)
+            metrics_raw = res.get("metrics_raw")
+            chrony_raw = res.get("chrony_raw")
+            chrony_error = res.get("chrony_error")
+            readyz = res.get("readyz_status")
+            snap = build_node_telemetry_snapshot(
+                alias=alias,
+                profile=profile,
+                metrics_raw=metrics_raw,
+                chrony_raw=chrony_raw,
+                chrony_error=chrony_error,
+                readyz_status=readyz,
+                captured_at=effective_captured_at,
+                now_unix=now_unix,
+                elapsed_seconds=elapsed_seconds,
+            )
+            node_snapshots[alias] = snap
+            snap_status = snap.get("status")
+            if snap_status == "ok":
+                has_ok = True
+            elif snap_status == "partial":
+                has_partial = True
+            else:
+                has_error = True
+        except Exception as e:
+            has_error = True
+            node_snapshots[alias] = build_node_telemetry_snapshot(
+                alias=alias,
+                profile=profile,
+                error=redact_sensitive_strings(str(e)),
+                captured_at=effective_captured_at,
+            )
+
+    if has_ok and not has_error and not has_partial:
+        cluster_status = "ok"
+    elif has_ok or has_partial:
+        cluster_status = "partial"
+    else:
+        cluster_status = "error"
+
+    return {
+        "status": cluster_status,
+        "captured_at": effective_captured_at,
+        "nodes": node_snapshots,
+        "summary": {
+            "total_nodes": len(nodes),
+            "healthy_nodes": sum(1 for s in node_snapshots.values() if s.get("status") == "ok"),
+            "partial_nodes": sum(1 for s in node_snapshots.values() if s.get("status") == "partial"),
+            "failed_nodes": sum(1 for s in node_snapshots.values() if s.get("status") == "error"),
+        }
+    }
+
+
+def collect_node_journals_safe(nodes, journal_fetcher_fn):
+    """
+    Safely captures systemd/journalctl logs across nodes, capturing error metadata
+    per-node on failure so that log collection failure on one node does not lose logs
+    from other active nodes. Enforces deterministic string redaction on every line.
+    Returns (node_journals_list, node_status_dict).
+    """
+    node_journals = []
+    node_status = {}
+
+    for node in nodes:
+        alias = node.get("alias", "unknown")
+        report = {"alias": alias}
+        if "id" in node:
+            report["id"] = redact_sensitive_strings(node["id"])
+        try:
+            res = journal_fetcher_fn(node)
+            raw_lines = res.get("lines", [])
+            scrubbed_lines = [redact_sensitive_strings(line) for line in raw_lines]
+            report["count"] = len(scrubbed_lines)
+            report["lines"] = scrubbed_lines
+            node_status[alias] = "ok" if scrubbed_lines else "empty"
+        except Exception as e:
+            report["count"] = 0
+            report["lines"] = []
+            report["error_type"] = type(e).__name__
+            report["error"] = redact_sensitive_strings(str(e))
+            node_status[alias] = "error"
+        node_journals.append(report)
+
+    return node_journals, node_status
 
 
 def parse_prometheus_metrics(raw_metrics_text, max_metrics=50):
@@ -586,12 +927,14 @@ def build_failed_window_payload(
     after_metrics=None,
     release_hash=None,
     utc_window=None,
+    alb_evidence=None,
     schema_version=1
 ):
     """
     Constructs the structured failed-window diagnostic artifact, including
     sanitized benchmark failures, per-node log summaries, correlated failures,
     release provenance, UTC window, and before/after telemetry snapshots.
+    Deterministic redaction is applied recursively across all fields.
     """
     sanitized = sanitize_benchmark_failure(client_result)
 
@@ -604,7 +947,8 @@ def build_failed_window_payload(
     correlated = correlate_failures(
         sanitized.get("failures", []),
         all_gw_records,
-        node_status=node_status
+        node_status=node_status,
+        alb_evidence=alb_evidence
     )
 
     effective_utc_window = utc_window
@@ -617,7 +961,9 @@ def build_failed_window_payload(
             "after_at": captured_at
         }
 
-    return {
+    collection_complete = all(s in ("ok", "empty") for s in node_status.values()) if node_status else False
+
+    payload = {
         "name": name,
         "schema_version": schema_version,
         "release_hash": release_hash or "unspecified",
@@ -626,9 +972,16 @@ def build_failed_window_payload(
         "sanitized_summary": sanitized,
         "node_journals": node_journals,
         "node_status": node_status,
+        "log_coverage": {
+            "nodes_polled": len(node_status) if node_status else 0,
+            "collection_complete": collection_complete,
+            "statuses": dict(node_status) if node_status else {}
+        },
         "correlated_failures": correlated,
         "telemetry": {
-            "before": before_metrics if before_metrics else {"status": "not_collected"},
-            "after": after_metrics if after_metrics else {"status": "not_collected"}
+            "before": before_metrics if before_metrics is not None else {"status": "not_collected", "missing_reason": "before_metrics_not_provided"},
+            "after": after_metrics if after_metrics is not None else {"status": "not_collected", "missing_reason": "after_metrics_not_provided"}
         }
     }
+
+    return redact_sensitive_payload(payload)
