@@ -10,6 +10,15 @@ from pathlib import Path
 import subprocess
 
 
+def utc_timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError("timestamp required")
+    parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include timezone")
+    return parsed.astimezone(datetime.timezone.utc)
+
+
 def volume_ids(response):
     volumes = response.get("Volumes") if isinstance(response, dict) else None
     if not isinstance(volumes, list):
@@ -26,6 +35,7 @@ def validate_volume_baseline(baseline_bytes, expected_sha256, run_id, account_id
     baseline = json.loads(baseline_bytes)
     if baseline.get("schema_version") != "miles-volume-baseline/v1" or (baseline.get("run_id"), baseline.get("account_id"), baseline.get("region")) != (run_id, account_id, region):
         raise ValueError("volume baseline identity mismatch")
+    utc_timestamp(baseline.get("captured_at_utc"))
     ids = baseline.get("volumes")
     if not isinstance(ids, list) or any(not isinstance(item, str) or not item for item in ids) or len(ids) != len(set(ids)):
         raise ValueError("invalid volume baseline")
@@ -57,6 +67,10 @@ def reconcile_snapshot(snapshot, state_resources, inventory, run_id, account_id,
     errors = []
     if not isinstance(snapshot, dict) or snapshot.get("schema_version") != "miles-runtime-inventory/v1":
         return ["invalid_runtime_snapshot"]
+    try:
+        utc_timestamp(snapshot.get("captured_at_utc"))
+    except ValueError:
+        errors.append("invalid_runtime_snapshot_timestamp")
     if (snapshot.get("run_id"), snapshot.get("account_id"), snapshot.get("region")) != (run_id, account_id, region):
         errors.append("runtime_snapshot_identity_mismatch")
     groups = {r["id"] for r in state_resources if r["type"] == "aws_autoscaling_group"}
@@ -113,6 +127,8 @@ def assemble_inventory(asg_response, instance_response, asg_names, extra_instanc
     volumes = set()
     for instance in instances:
         mappings = instance.get("BlockDeviceMappings")
+        if mappings is None and instance.get("State", {}).get("Name") == "terminated":
+            mappings = []
         if not isinstance(mappings, list):
             raise ValueError("missing block device mappings")
         for mapping in mappings:

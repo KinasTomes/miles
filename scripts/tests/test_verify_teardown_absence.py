@@ -22,6 +22,7 @@ from scripts.verify_teardown_absence import (
     EXPECTED_ABSENCE_ERRORS,
     TeardownAbsenceVerifier,
     main,
+    remove_approved_pending,
 )
 from scripts.capture_account_inventory import SPECS
 
@@ -40,6 +41,14 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         result = TeardownAbsenceVerifier(inventory={"volumes": ["vol-1"]}, cli_runner=runner).verify_all()
         self.assertFalse(result["all_absent"])
         self.assertEqual(result["status"], "FAIL")
+
+    def test_only_approved_owned_and_verified_pending_resources_are_exempt(self):
+        residuals = {"kms_keys": ["owned", "other"], "secrets": ["secret"]}
+        inventory = {"kms_keys": ["arn:aws:kms:r:a:key/owned"], "secrets": ["secret"]}
+        pending = lambda resource: {"status": "PENDING_DELETION"}
+        active = lambda resource: {"status": "STILL_PRESENT"}
+        self.assertEqual(remove_approved_pending(residuals, inventory, [], pending, pending), residuals)
+        self.assertEqual(remove_approved_pending(residuals, inventory, ["kms_key", "secret"], pending, active), {"kms_keys": ["other"], "secrets": ["secret"]})
 
     def test_owned_log_group_launch_template_and_kms_alias_are_checked(self):
         def runner(cmd):
@@ -60,7 +69,7 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
 
     def test_live_never_passes_without_state_reconciliation(self):
         inventory = {"account_id": "123456789012", "dynamodb_tables": ["table"]}
-        runner = lambda cmd: (0, json.dumps({"Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/deploy/session"}), "")
+        runner = lambda cmd: (0, json.dumps({"Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/auditor/session"}), "")
         verifier = TeardownAbsenceVerifier(inventory=inventory, mode="live", manifest={"run_id": "test"}, cli_runner=runner)
         result = verifier.verify_all()
         self.assertFalse(result["all_absent"])
@@ -76,20 +85,21 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         manifest = {"schema_version": "miles-teardown-manifest/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "ownership_scope": {"project": "miles"}, "expected_types": list(expected), "expected_counts": {key: 1 for key in expected}, "expected_resources": expected, "provenance": {"source": "terraform_pre_destroy", "created_at_utc": "2026-11-10T00:00:00Z", "state_sha256": digest}}
         def runner(cmd):
             if "get-caller-identity" in cmd:
-                return 0, json.dumps({"Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/deploy/session"}), ""
+                return 0, json.dumps({"Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/auditor/session"}), ""
             if "describe-alarms" in cmd:
                 return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
             return 255, "", "ResourceNotFoundException NoSuchBucket NoSuchEntity InvalidVpcID.NotFound"
         verifier = TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", state_json=state, state_sha256=digest, cli_runner=runner)
         self.assertIn("missing_runtime_snapshot_or_baseline", verifier.verify_all()["state_errors"])
-        baseline = json.dumps({"schema_version": "miles-volume-baseline/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "volumes": []}).encode()
-        runtime = json.dumps({"schema_version": "miles-runtime-inventory/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "vpc_id": "vpc-1", "asg_names": [], "instances": [], "volumes": [], "new_regional_volumes": [], "volume_baseline_sha256": hashlib.sha256(baseline).hexdigest()}).encode()
+        baseline = json.dumps({"schema_version": "miles-volume-baseline/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "captured_at_utc": "2026-11-09T23:50:00Z", "volumes": []}).encode()
+        runtime = json.dumps({"schema_version": "miles-runtime-inventory/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "captured_at_utc": "2026-11-09T23:59:00Z", "vpc_id": "vpc-1", "asg_names": [], "instances": [], "volumes": [], "new_regional_volumes": [], "volume_baseline_sha256": hashlib.sha256(baseline).hexdigest()}).encode()
         runtime_hash = hashlib.sha256(runtime).hexdigest()
         manifest["provenance"]["runtime_sha256"] = runtime_hash
         account_resources = {key: [] for key in SPECS}
         account_resources.update(nat_gateways=[], metric_alarms=[], composite_alarms=[], role_policies=[], managed_policy_versions=[])
-        account_baseline = json.dumps({"schema_version": "miles-account-inventory/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "iam_roles_to_audit": ["deploy"], "resources": account_resources}).encode()
+        account_baseline = json.dumps({"schema_version": "miles-account-inventory/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "captured_at_utc": "2026-11-09T23:50:00Z", "iam_roles_to_audit": ["deploy", "auditor"], "resources": account_resources}).encode()
         manifest["provenance"]["account_baseline_sha256"] = hashlib.sha256(account_baseline).hexdigest()
+        manifest["provenance"]["deploy_role"] = "deploy"
         def runner_with_replacement(cmd):
             if "describe-instances" in cmd:
                 return 0, json.dumps({"Reservations": [{"Instances": [{"InstanceId": "i-new", "VpcId": "vpc-1", "State": {"Name": "running"}}]}]}), ""
@@ -117,9 +127,10 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
                 if cmd[:len(command)] == list(command):
                     return 0, json.dumps({list_key: []}), ""
             return runner(cmd)
-        unverified = TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", state_json=state, state_sha256=digest, runtime_json=runtime, runtime_sha256=runtime_hash, volume_baseline_json=baseline, account_baseline_json=account_baseline, cli_runner=runner_clean_runtime).verify_all()
-        self.assertEqual(unverified["error"], "EXTERNAL_RESOURCE_RECONCILIATION_UNAVAILABLE")
-        self.assertFalse(unverified["all_absent"])
+        verified = TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", state_json=state, state_sha256=digest, runtime_json=runtime, runtime_sha256=runtime_hash, volume_baseline_json=baseline, account_baseline_json=account_baseline, cli_runner=runner_clean_runtime).verify_all()
+        self.assertEqual(verified["status"], "UNVERIFIED")
+        self.assertFalse(verified["all_absent"])
+        self.assertEqual(verified["error"], "EXTERNAL_RESOURCE_RECONCILIATION_UNAVAILABLE")
         resources.append({"mode": "managed", "address": "aws_cloudwatch_log_group.runtime", "type": "aws_cloudwatch_log_group", "values": {"id": "/missing"}})
         changed_state = json.dumps({"values": {"root_module": {"resources": resources}}}).encode()
         changed_hash = hashlib.sha256(changed_state).hexdigest()
@@ -725,7 +736,7 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(sensitive_file.read_text(encoding="utf-8"), "SUPER_SECRET_EVIDENCE_DO_NOT_OVERWRITE")
 
     def test_verify_all_comprehensive_clean_teardown(self):
-        """Verifies verify_all returns PASS and all_absent=True across all resource types."""
+        """Pending deletion remains distinct from fully absent resources."""
         inventory = {
             "vpc_id": "vpc-1",
             "subnets": ["subnet-1"],
@@ -768,8 +779,9 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
 
         verifier = TeardownAbsenceVerifier(inventory=inventory, cli_runner=mock_clean_runner)
         summary = verifier.verify_all()
-        self.assertTrue(summary["all_absent"])
-        self.assertEqual(summary["status"], "PASS")
+        self.assertFalse(summary["all_absent"])
+        self.assertTrue(summary["accepted"])
+        self.assertEqual(summary["status"], "PASS_WITH_PENDING")
         self.assertEqual(summary["still_present_count"], 0)
         self.assertEqual(summary["unexpected_error_count"], 0)
         self.assertEqual(summary["total_checked"], 22)
@@ -1162,8 +1174,9 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
 
         verifier24 = TeardownAbsenceVerifier(inventory=full_24_inventory, cli_runner=mock_clean_24_runner)
         summary24 = verifier24.verify_all()
-        self.assertTrue(summary24["all_absent"])
-        self.assertEqual(summary24["status"], "PASS")
+        self.assertFalse(summary24["all_absent"])
+        self.assertTrue(summary24["accepted"])
+        self.assertEqual(summary24["status"], "PASS_WITH_PENDING")
         self.assertEqual(summary24["still_present_count"], 0)
         self.assertEqual(summary24["unexpected_error_count"], 0)
         self.assertEqual(summary24["total_checked"], 24)

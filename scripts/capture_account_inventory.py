@@ -11,7 +11,7 @@ import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.capture_runtime_inventory import aws_json
+from scripts.capture_runtime_inventory import aws_json, utc_timestamp
 
 # List APIs are intentionally account-wide: concurrent resources produce a
 # conservative residual, never permission to delete them.
@@ -43,6 +43,22 @@ SPECS = {
     "certificates": (("acm", "list-certificates"), "CertificateSummaryList", "CertificateArn"),
     "trust_anchors": (("rolesanywhere", "list-trust-anchors"), "trustAnchors", "trustAnchorId"),
     "rolesanywhere_profiles": (("rolesanywhere", "list-profiles"), "profiles", "profileId"),
+}
+
+# Every directly checked Terraform identity must also have an account-wide
+# listing; instances are separately enumerated by the owned VPC.
+INVENTORY_COVERAGE = {
+    "vpc_id": "vpcs", "subnets": "subnets", "security_groups": "security_groups",
+    "vpc_endpoints": "endpoints", "nat_gateways": "nat_gateways", "elastic_ips": "addresses",
+    "internet_gateways": "internet_gateways", "route_tables": "route_tables",
+    "instances": "vpc_instances", "volumes": "volumes", "s3_buckets": "buckets",
+    "dynamodb_tables": "tables", "iam_roles": "roles", "instance_profiles": "instance_profiles",
+    "asg_names": "asgs", "ssm_documents": "ssm_documents", "ssm_parameters": "parameters",
+    "cloudwatch_alarms": "metric_alarms", "cloudwatch_log_groups": "log_groups",
+    "launch_templates": "launch_templates", "kms_aliases": "kms_aliases", "alb_names": "load_balancers",
+    "target_groups": "target_groups", "trust_anchors": "trust_anchors", "rolesanywhere_profiles": "rolesanywhere_profiles",
+    "kms_keys": "kms_keys", "secrets": "secrets",
+    "acm_certificates": "certificates", "key_pairs": "key_pairs",
 }
 
 
@@ -154,6 +170,7 @@ def validate_baseline(baseline_bytes, expected_sha256, run_id, account_id, regio
     baseline = json.loads(baseline_bytes)
     if not isinstance(baseline, dict) or baseline.get("schema_version") != "miles-account-inventory/v1" or (baseline.get("run_id"), baseline.get("account_id"), baseline.get("region")) != (run_id, account_id, region):
         raise ValueError("account baseline identity mismatch")
+    utc_timestamp(baseline.get("captured_at_utc"))
     resources = baseline.get("resources")
     roles = baseline.get("iam_roles_to_audit")
     if not isinstance(roles, list) or not roles or any(not isinstance(role, str) or not re.fullmatch(r"[A-Za-z0-9+=,.@_-]{1,64}", role) for role in roles) or len(roles) != len(set(roles)):

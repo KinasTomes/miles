@@ -33,16 +33,33 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 try:
     from scripts.freeze_terraform_inventory import augment_inventory, compare_inventory, extract_resources
-    from scripts.capture_runtime_inventory import reconcile_snapshot, runtime_residuals, validate_volume_baseline
+    from scripts.capture_runtime_inventory import reconcile_snapshot, runtime_residuals, utc_timestamp, validate_volume_baseline
     from scripts.capture_account_inventory import collect as collect_account_inventory, compare_baseline as compare_account_baseline, validate_baseline as validate_account_baseline
 except ModuleNotFoundError:
     from freeze_terraform_inventory import augment_inventory, compare_inventory, extract_resources
-    from capture_runtime_inventory import reconcile_snapshot, runtime_residuals, validate_volume_baseline
+    from capture_runtime_inventory import reconcile_snapshot, runtime_residuals, utc_timestamp, validate_volume_baseline
     from capture_account_inventory import collect as collect_account_inventory, compare_baseline as compare_account_baseline, validate_baseline as validate_account_baseline
 
 
 def _iso_utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def remove_approved_pending(residuals, inventory, approved, check_key, check_secret):
+    remaining = {kind: list(ids) for kind, ids in residuals.items()}
+    for kind, approval, inventory_key, checker in (
+        ("kms_keys", "kms_key", "kms_keys", check_key),
+        ("secrets", "secret", "secrets", check_secret),
+    ):
+        if approval not in approved or kind not in remaining:
+            continue
+        owned = set(inventory.get(inventory_key, []))
+        if kind == "kms_keys":
+            owned = {str(key).rsplit("/", 1)[-1] for key in owned}
+        remaining[kind] = [identity for identity in remaining[kind] if identity not in owned or checker(identity).get("status") != "PENDING_DELETION"]
+        if not remaining[kind]:
+            del remaining[kind]
+    return remaining
 
 
 EXPECTED_ABSENCE_ERRORS = {
@@ -1507,7 +1524,6 @@ class TeardownAbsenceVerifier:
         Produces structured absence ledger.
         Fails closed on missing expected resources or empty inventory.
         """
-        external_inventory_unverified = False
         # Guard 0: Live mode strictly requires an authoritative pre-teardown manifest
         if self.manifest_required and not self.manifest:
             return {
@@ -1589,6 +1605,16 @@ class TeardownAbsenceVerifier:
                     audit_roles = json.loads(self.account_baseline_json)["iam_roles_to_audit"]
                     if self.caller_role not in audit_roles:
                         state_errors.append("caller_role_missing_from_iam_baseline")
+                    deploy_role = provenance.get("deploy_role")
+                    if not isinstance(deploy_role, str) or deploy_role not in audit_roles or deploy_role == self.caller_role:
+                        state_errors.append("separate_deploy_role_audit_missing")
+                    if self.runtime_json and self.volume_baseline_json:
+                        runtime_at = utc_timestamp(json.loads(self.runtime_json).get("captured_at_utc"))
+                        volume_at = utc_timestamp(json.loads(self.volume_baseline_json).get("captured_at_utc"))
+                        account_at = utc_timestamp(json.loads(self.account_baseline_json).get("captured_at_utc"))
+                        manifest_at = utc_timestamp(provenance.get("created_at_utc"))
+                        if not account_at <= runtime_at <= manifest_at <= datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=1) or volume_at > runtime_at:
+                            state_errors.append("inventory_capture_order_invalid")
                 except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
                     state_errors.append("invalid_account_baseline")
             else:
@@ -1624,22 +1650,9 @@ class TeardownAbsenceVerifier:
                 account_residuals = compare_account_baseline(account_baseline, account_now)
             except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
                 return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "UNVERIFIED", "all_absent": False, "error": "ACCOUNT_DISCOVERY_FAILED", "total_checked": 0, "resources": {}}
-            if "kms_key" in approved_pending and "kms_keys" in account_residuals:
-                owned_keys = {str(key).rsplit("/", 1)[-1] for key in self.inventory.get("kms_keys", [])}
-                pending_keys = [key for key in account_residuals["kms_keys"] if key in owned_keys and self.check_kms_key_pending_deletion(key)["status"] == "PENDING_DELETION"]
-                account_residuals["kms_keys"] = [key for key in account_residuals["kms_keys"] if key not in pending_keys]
-                if not account_residuals["kms_keys"]:
-                    del account_residuals["kms_keys"]
-            if "secret" in approved_pending and "secrets" in account_residuals:
-                owned_secrets = set(self.inventory.get("secrets", []))
-                pending_secrets = [secret for secret in account_residuals["secrets"] if secret in owned_secrets and self.check_secret_pending_deletion(secret)["status"] == "PENDING_DELETION"]
-                account_residuals["secrets"] = [secret for secret in account_residuals["secrets"] if secret not in pending_secrets]
-                if not account_residuals["secrets"]:
-                    del account_residuals["secrets"]
+            account_residuals = remove_approved_pending(account_residuals, self.inventory, approved_pending, self.check_kms_key_pending_deletion, self.check_secret_pending_deletion)
             if account_residuals:
                 return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "FAIL", "all_absent": False, "error": "ACCOUNT_RESOURCES_REMAIN", "residuals": account_residuals, "total_checked": 0, "resources": {}}
-            # Account-wide list coverage needs an independent contract audit before PASS.
-            external_inventory_unverified = True
 
         # Guard 0.8: Manifest schema validation or two-way reconciliation failure
         if self.manifest_errors:
@@ -2042,13 +2055,15 @@ class TeardownAbsenceVerifier:
         unexpected_errors = [r for r in results.values() if r["status"] == "UNEXPECTED_ERROR"]
         unapproved_pending = [r["resource"] for r in results.values() if r["status"] == "PENDING_DELETION" and self.mode == "live" and r.get("type") not in approved_pending]
 
-        all_absent = (len(still_present) == 0 and len(unexpected_errors) == 0 and not unapproved_pending)
+        accepted = (len(still_present) == 0 and len(unexpected_errors) == 0 and not unapproved_pending)
+        all_absent = accepted and pending_del_count == 0
 
         summary = {
             "timestamp_utc": _iso_utc_now(),
             "mode": self.mode,
-            "status": "PASS" if all_absent else "FAIL",
+            "status": ("PASS" if all_absent else "PASS_WITH_PENDING") if accepted else "FAIL",
             "all_absent": all_absent,
+            "accepted": accepted,
             "total_checked": total,
             "absent_count": absent_count,
             "pending_deletion_count": pending_del_count,
@@ -2059,10 +2074,15 @@ class TeardownAbsenceVerifier:
             "unapproved_pending": unapproved_pending,
             "resources": results,
         }
-        if external_inventory_unverified and all_absent:
-            summary["status"] = "UNVERIFIED"
-            summary["all_absent"] = False
-            summary["error"] = "EXTERNAL_RESOURCE_RECONCILIATION_UNAVAILABLE"
+        if self.mode == "live":
+            summary["retained_audit_role"] = self.caller_role
+            if accepted:
+                # Native inventory coverage and removal of the audit role still
+                # require independent confirmation before declaring teardown complete.
+                summary["status"] = "UNVERIFIED"
+                summary["accepted"] = False
+                summary["all_absent"] = False
+                summary["error"] = "EXTERNAL_RESOURCE_RECONCILIATION_UNAVAILABLE"
         return summary
 
     def export_summary(self, output_path: Path) -> Path:
@@ -2202,6 +2222,9 @@ def main():
         err_detail = summary.get("error") or summary.get("missing_expected_types")
         print(f"FAIL: Teardown verification status is UNVERIFIED ({err_detail}).", file=sys.stderr)
         return 1
+    if summary.get("status") == "PASS_WITH_PENDING" and summary.get("accepted"):
+        print(f"PASS WITH PENDING: {summary['pending_deletion_count']} approved KMS/secret deletions remain scheduled. Mode: {summary['mode']}.")
+        return 0
     if summary["all_absent"]:
         print(f"PASS: All {summary['total_checked']} resources verified absent ({summary['absent_count']} absent, {summary['pending_deletion_count']} pending deletion). Mode: {summary['mode']}.")
         return 0

@@ -1,10 +1,24 @@
 import unittest
+from pathlib import Path
+import re
 from unittest import mock
 
-from scripts.capture_account_inventory import SPECS, collect, compare_baseline, identifiers, managed_policy_snapshot, role_policy_snapshot
+from scripts.capture_account_inventory import INVENTORY_COVERAGE, SPECS, collect, compare_baseline, identifiers, managed_policy_snapshot, role_policy_snapshot
+from scripts.freeze_terraform_inventory import CHILD_PARENTS, STATE_TYPES
+from scripts.verify_teardown_absence import SUPPORTED_RESOURCE_TYPES
 
 
 class AccountInventoryTests(unittest.TestCase):
+    def test_every_dev_terraform_type_has_state_and_native_coverage(self):
+        root = Path(__file__).resolve().parents[2] / "infra/terraform/cloud"
+        paths = list((root / "modules").rglob("*.tf")) + list((root / "environments/dev").rglob("*.tf"))
+        kinds = set()
+        for path in paths:
+            kinds.update(re.findall(r'resource\s+"(aws_[a-z_]+)"', path.read_text()))
+        self.assertFalse(kinds - set(STATE_TYPES) - set(CHILD_PARENTS))
+        self.assertFalse(set(STATE_TYPES.values()) - set(INVENTORY_COVERAGE))
+        self.assertFalse(SUPPORTED_RESOURCE_TYPES - set(INVENTORY_COVERAGE))
+        self.assertFalse(set(INVENTORY_COVERAGE.values()) - set(SPECS) - {"nat_gateways", "metric_alarms", "vpc_instances"})
     def test_native_inventory_fails_closed_on_incomplete_response(self):
         with self.assertRaises(ValueError):
             identifiers({}, "Volumes", "VolumeId")

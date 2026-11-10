@@ -16,7 +16,7 @@ from scripts.capture_account_inventory import validate_baseline
 from scripts.verify_teardown_absence import METADATA_INVENTORY_KEYS, TeardownAbsenceVerifier
 
 
-def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region, runtime_bytes=None, runtime_sha256=None, account_baseline_bytes=None, account_baseline_sha256=None, approved_pending=None):
+def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region, runtime_bytes=None, runtime_sha256=None, account_baseline_bytes=None, account_baseline_sha256=None, approved_pending=None, deploy_role=None):
     actual_hash = hashlib.sha256(state_bytes).hexdigest()
     if not hmac.compare_digest(actual_hash, state_sha256):
         raise ValueError("frozen state hash mismatch")
@@ -59,6 +59,8 @@ def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region
         manifest["provenance"]["runtime_sha256"] = runtime_sha256
     if account_baseline_bytes is not None:
         manifest["provenance"]["account_baseline_sha256"] = account_baseline_sha256
+    if deploy_role:
+        manifest["provenance"]["deploy_role"] = deploy_role
     pending = approved_pending or []
     if len(pending) != len(set(pending)) or any(item not in ("kms_key", "secret") for item in pending):
         raise ValueError("invalid pending-deletion exception")
@@ -78,8 +80,9 @@ def main():
     parser.add_argument("--account-baseline")
     parser.add_argument("--account-baseline-sha256")
     parser.add_argument("--approve-pending-deletion", action="append", choices=("kms_key", "secret"), default=[])
+    parser.add_argument("--deploy-role", help="Persistent deploy role whose IAM policy must be restored")
     args = parser.parse_args()
-    manifest = build_manifest(Path(args.state_json).read_bytes(), args.state_sha256, json.loads(Path(args.inventory_json).read_text()), args.run_id, args.account_id, args.region, Path(args.runtime_json).read_bytes() if args.runtime_json else None, args.runtime_sha256, Path(args.account_baseline).read_bytes() if args.account_baseline else None, args.account_baseline_sha256, args.approve_pending_deletion)
+    manifest = build_manifest(Path(args.state_json).read_bytes(), args.state_sha256, json.loads(Path(args.inventory_json).read_text()), args.run_id, args.account_id, args.region, Path(args.runtime_json).read_bytes() if args.runtime_json else None, args.runtime_sha256, Path(args.account_baseline).read_bytes() if args.account_baseline else None, args.account_baseline_sha256, args.approve_pending_deletion, args.deploy_role)
     payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as output:

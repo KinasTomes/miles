@@ -32,7 +32,7 @@ class RuntimeInventoryTests(unittest.TestCase):
 
     def test_snapshot_requires_asg_members_and_attached_volumes(self):
         resources = [{"type": "aws_vpc", "id": "vpc-1"}, {"type": "aws_autoscaling_group", "id": "asg"}, {"type": "aws_instance", "id": "i-2"}]
-        snapshot = {"schema_version": "miles-runtime-inventory/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", **assemble_inventory(self.groups, self.instances, ["asg"], ["i-2"], "vpc-1")}
+        snapshot = {"schema_version": "miles-runtime-inventory/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "captured_at_utc": "2026-11-10T00:00:00Z", **assemble_inventory(self.groups, self.instances, ["asg"], ["i-2"], "vpc-1")}
         snapshot.update(new_regional_volumes=["vol-1", "vol-2"], volume_baseline_sha256="a" * 64)
         self.assertEqual(reconcile_snapshot(snapshot, resources, snapshot, "run", "123456789012", "ap-southeast-1"), [])
         truncated = dict(snapshot, volumes=["vol-1"])
@@ -40,7 +40,7 @@ class RuntimeInventoryTests(unittest.TestCase):
         self.assertIn("runtime_snapshot_identity_mismatch", reconcile_snapshot(snapshot, resources, snapshot, "other", "123456789012", "ap-southeast-1"))
 
     def test_regional_volume_baseline_catches_detached_new_volumes(self):
-        baseline = json.dumps({"schema_version": "miles-volume-baseline/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "volumes": ["vol-old"]}).encode()
+        baseline = json.dumps({"schema_version": "miles-volume-baseline/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "captured_at_utc": "2026-11-10T00:00:00Z", "volumes": ["vol-old"]}).encode()
         digest = hashlib.sha256(baseline).hexdigest()
         previous = validate_volume_baseline(baseline, digest, "run", "123456789012", "ap-southeast-1")
         current = volume_ids({"Volumes": [{"VolumeId": "vol-old"}, {"VolumeId": "vol-detached"}]})
@@ -60,7 +60,7 @@ class RuntimeInventoryTests(unittest.TestCase):
 
     def test_capture_cli_freezes_vpc_and_new_regional_volume(self):
         with tempfile.TemporaryDirectory() as directory:
-            baseline = json.dumps({"schema_version": "miles-volume-baseline/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "volumes": ["vol-old"]}).encode()
+            baseline = json.dumps({"schema_version": "miles-volume-baseline/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "captured_at_utc": "2026-11-10T00:00:00Z", "volumes": ["vol-old"]}).encode()
             baseline_file = Path(directory) / "baseline.json"
             baseline_file.write_bytes(baseline)
             output = Path(directory) / "runtime.json"
