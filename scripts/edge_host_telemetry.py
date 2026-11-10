@@ -14,7 +14,8 @@ Strict Guardrails:
 - Local execution duration measurement: nanosecond monotonic timers capture true host duration.
 - Bounded private ring buffer: strictly bounded to <= max_bytes in /run/miles with 0600 permissions.
 - Hard cap invariant: oversized records (> max_bytes) are safely dropped; file size strictly bounded.
-- Preflight validation and fail-closed empty-window propagation.
+- Preflight validation with active daemon probe: fails closed if chronyc daemon is down or unparseable.
+- Fail-closed empty-window and chrony failure propagation: OS-only records never qualify as clock evidence.
 """
 
 import argparse
@@ -72,9 +73,10 @@ def preflight_check(
     require_chrony: bool = True,
 ) -> Tuple[bool, List[str]]:
     """
-    Verifies that required dependencies and tools are present before sampling:
+    Verifies that required dependencies and tools are present and functional before sampling:
     - parse_chrony_tracking parser is loaded.
     - chronyc executable is available on PATH (or mock runner provided).
+    - Active chronyc probe passes (daemon is running and returns valid, bounded tracking data).
     """
     errors: List[str] = []
 
@@ -82,12 +84,29 @@ def preflight_check(
         errors.append("parse_chrony_tracking parser function is unavailable (import failed)")
 
     if require_chrony:
-        if chrony_probe is not None and chrony_probe._runner != chrony_probe._default_runner:
-            # Custom mock runner in use, skip binary check
-            pass
-        else:
+        probe = chrony_probe or ChronyProbe()
+        if probe._runner == probe._default_runner:
             if not shutil.which("chronyc"):
                 errors.append("chronyc binary not found on system PATH")
+                return (False, errors)
+
+        # Active probe to verify daemon readiness and tracking output
+        sample = probe.sample_full(sample_sources=False)
+        t_res = sample.get("tracking", {})
+        rc = t_res.get("returncode", -1)
+        if rc != 0:
+            err_msg = t_res.get("stderr", "").strip() or f"exit code {rc}"
+            errors.append(f"chrony tracking probe failed: {err_msg}")
+        elif t_res.get("timed_out", False):
+            errors.append(f"chrony tracking probe timed out after {probe.command_timeout}s")
+        else:
+            parsed = sample.get("parsed_tracking")
+            if not parsed or not isinstance(parsed, dict) or parsed.get("status") != "ok":
+                reason = parsed.get("rejection_reason") if isinstance(parsed, dict) else "unparseable_output"
+                errors.append(f"chrony tracking output rejected during preflight: {reason}")
+            elif parsed.get("uncertainty_exceeded", False):
+                reason = parsed.get("rejection_reason", "uncertainty_exceeded")
+                errors.append(f"chrony clock uncertainty exceeded during preflight: {reason}")
 
     return (len(errors) == 0, errors)
 
@@ -450,6 +469,8 @@ class HostTelemetryRecorder:
     """
     Orchestrates high-frequency diagnostic sampling on an Edge host.
     Combines ChronyProbe, OSPressureProbe, and BoundedRingBuffer into a coordinated recorder.
+    Tracks records_written vs valid_chrony_samples to ensure OS-only samples never masquerade
+    as clock evidence.
     """
 
     def __init__(
@@ -459,6 +480,7 @@ class HostTelemetryRecorder:
         chrony_interval: float = 2.0,
         chrony_timeout: float = 1.0,
         max_bytes: int = 10 * 1024 * 1024,
+        chrony_probe: Optional[ChronyProbe] = None,
         chrony_runner: Optional[Callable[[List[str], float], Tuple[int, str, str]]] = None,
         proc_root: Path = Path("/proc"),
     ):
@@ -466,14 +488,19 @@ class HostTelemetryRecorder:
         self.os_interval = max(0.2, os_interval)
         self.chrony_interval = max(0.5, chrony_interval)
         self.ring_buffer = BoundedRingBuffer(self.output_file, max_bytes=max_bytes)
-        self.chrony_probe = ChronyProbe(command_timeout=chrony_timeout, runner=chrony_runner)
+        self.chrony_probe = chrony_probe or ChronyProbe(command_timeout=chrony_timeout, runner=chrony_runner)
         self.os_probe = OSPressureProbe(proc_root=proc_root)
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._sequence = 0
         self._last_chrony_sample_mono = 0.0
-        self.samples_collected = 0
+
+        # Separate bookkeeping: raw records written vs valid verified chrony samples
+        self.records_written = 0
+        self.valid_chrony_samples = 0
+        self.consecutive_chrony_errors = 0
+        self.max_consecutive_chrony_errors = 0
 
     def sample_now(self) -> Dict[str, Any]:
         """Takes an immediate coordinated sample and writes to the ring buffer."""
@@ -491,6 +518,24 @@ class HostTelemetryRecorder:
             chrony_data = self.chrony_probe.sample_full()
             self._last_chrony_sample_mono = mono_now
 
+            # Track validity of chrony sample
+            t_res = chrony_data.get("tracking", {})
+            pt = chrony_data.get("parsed_tracking")
+            sample_ok = (
+                t_res.get("returncode") == 0
+                and not t_res.get("timed_out", False)
+                and isinstance(pt, dict)
+                and pt.get("status") == "ok"
+                and not pt.get("uncertainty_exceeded", False)
+            )
+            if sample_ok:
+                self.valid_chrony_samples += 1
+                self.consecutive_chrony_errors = 0
+            else:
+                self.consecutive_chrony_errors += 1
+                if self.consecutive_chrony_errors > self.max_consecutive_chrony_errors:
+                    self.max_consecutive_chrony_errors = self.consecutive_chrony_errors
+
         record: Dict[str, Any] = {
             "sequence": self._sequence,
             "timestamp_utc": now_utc,
@@ -500,7 +545,7 @@ class HostTelemetryRecorder:
         }
 
         self.ring_buffer.write_record(record)
-        self.samples_collected += 1
+        self.records_written += 1
         return record
 
     def run_loop(self, duration_seconds: Optional[float] = None) -> None:
@@ -546,6 +591,7 @@ class HostTelemetryRecorder:
         """
         Analyzes records in the ring buffer for a given window, producing key
         epistemological indicators for RCA hypothesis evaluation.
+        Fails closed on missing or unverified chrony clock evidence.
         """
         records = self.ring_buffer.read_records(since_utc, until_utc)
         if not records:
@@ -565,9 +611,18 @@ class HostTelemetryRecorder:
         sample_ages = []
         drifts = []
         offsets = []
+        uncertainty_violations = 0
+        failed_commands = 0
+
         for r in chrony_records:
+            t_res = r["chrony"].get("tracking", {})
+            if t_res.get("returncode") != 0 or t_res.get("timed_out", False):
+                failed_commands += 1
+
             pt = r["chrony"].get("parsed_tracking")
             if isinstance(pt, dict) and pt.get("status") == "ok":
+                if pt.get("uncertainty_exceeded", False):
+                    uncertainty_violations += 1
                 sa = pt.get("sample_age_seconds")
                 if sa is not None:
                     sample_ages.append(sa)
@@ -577,6 +632,8 @@ class HostTelemetryRecorder:
                 off = pt.get("offset_seconds")
                 if off is not None:
                     offsets.append(off)
+            else:
+                uncertainty_violations += 1
 
         # OS steal and iowait
         steal_percentages = []
@@ -588,17 +645,39 @@ class HostTelemetryRecorder:
             if "iowait_pct" in stat:
                 iowait_percentages.append(stat["iowait_pct"])
 
+        # Clock evidence is verified ONLY if we have valid chrony samples, zero timeouts,
+        # zero command failures, and valid non-stale sample ages.
         clock_evidence_verified = (
             len(chrony_records) > 0
+            and failed_commands == 0
             and len(timeouts) == 0
             and len(sample_ages) > 0
+            and uncertainty_violations == 0
         )
+
+        reason = None
+        if not clock_evidence_verified:
+            reasons = []
+            if len(chrony_records) == 0:
+                reasons.append("no_chrony_samples")
+            if failed_commands > 0:
+                reasons.append(f"{failed_commands}_failed_chrony_commands")
+            if len(timeouts) > 0:
+                reasons.append(f"{len(timeouts)}_chrony_timeouts")
+            if len(sample_ages) == 0:
+                reasons.append("no_valid_tracking_parsed")
+            if uncertainty_violations > 0:
+                reasons.append(f"{uncertainty_violations}_uncertainty_violations")
+            reason = "; ".join(reasons)
 
         return {
             "record_count": len(records),
             "status": "OK" if clock_evidence_verified else "UNVERIFIED",
             "clock_evidence_verified": clock_evidence_verified,
+            "reason": reason,
             "chrony_sample_count": len(chrony_records),
+            "valid_tracking_samples": len(sample_ages),
+            "failed_chrony_commands": failed_commands,
             "window_start_utc": records[0]["timestamp_utc"],
             "window_end_utc": records[-1]["timestamp_utc"],
             "chrony_timing": {
@@ -634,6 +713,7 @@ def main():
     run_parser.add_argument("--output-file", default="/run/miles/host-telemetry.jsonl", help="Ring buffer JSONL file path.")
     run_parser.add_argument("--os-interval", type=float, default=1.0, help="OS pressure sample interval in seconds.")
     run_parser.add_argument("--chrony-interval", type=float, default=2.0, help="Chrony sample interval in seconds.")
+    run_parser.add_argument("--chrony-timeout", type=float, default=1.0, help="Chrony command timeout in seconds.")
     run_parser.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024, help="Max ring buffer size in bytes (default 10MB).")
     run_parser.add_argument("--duration", type=float, default=None, help="Optional duration to run before auto-exit.")
 
@@ -658,6 +738,11 @@ def main():
 
         op = OSPressureProbe()
         chrony_data = cp.sample_full()
+        pt = chrony_data.get("parsed_tracking")
+        if chrony_data.get("returncode") != 0 or not pt or pt.get("status") != "ok" or pt.get("uncertainty_exceeded"):
+            print("Error: Chrony tracking failed or uncertainty exceeded during probe", file=sys.stderr)
+            return 1
+
         os_data = op.sample_all()
         result = {
             "timestamp_utc": _iso_utc_now(),
@@ -669,7 +754,7 @@ def main():
         return 0
 
     if args.subcommand == "run":
-        cp = ChronyProbe()
+        cp = ChronyProbe(command_timeout=args.chrony_timeout)
         ok, errors = preflight_check(chrony_probe=cp, require_chrony=True)
         if not ok:
             for err in errors:
@@ -680,7 +765,9 @@ def main():
             output_file=Path(args.output_file),
             os_interval=args.os_interval,
             chrony_interval=args.chrony_interval,
+            chrony_timeout=args.chrony_timeout,
             max_bytes=args.max_bytes,
+            chrony_probe=cp,
         )
 
         def sig_handler(sig, frame):
@@ -691,9 +778,21 @@ def main():
         signal.signal(signal.SIGTERM, sig_handler)
 
         recorder.run_loop(duration_seconds=args.duration)
-        if recorder.samples_collected == 0:
-            print("Error: Telemetry run loop collected 0 samples (run failed or window empty)", file=sys.stderr)
+
+        # Fail closed if 0 records written, 0 valid chrony samples, or clock evidence unverified
+        if recorder.records_written == 0:
+            print("Error: Telemetry run loop wrote 0 records", file=sys.stderr)
             return 1
+        if recorder.valid_chrony_samples == 0:
+            print("Error: Gate D0 telemetry failure: 0 valid chrony clock tracking samples collected", file=sys.stderr)
+            return 1
+
+        summary = recorder.summarize_window()
+        if summary.get("status") != "OK" or not summary.get("clock_evidence_verified"):
+            reason = summary.get("reason") or "clock uncertainty or timeouts in window"
+            print(f"Error: Gate D0 clock evidence unverified: {reason}", file=sys.stderr)
+            return 1
+
         return 0
 
     if args.subcommand == "summarize":
@@ -704,7 +803,7 @@ def main():
         recorder = HostTelemetryRecorder(output_file=p)
         summary = recorder.summarize_window(since_utc=args.since, until_utc=args.until)
         print(json.dumps(summary, indent=2))
-        return 0
+        return 0 if summary.get("status") == "OK" and summary.get("clock_evidence_verified") else 1
 
     return 0
 

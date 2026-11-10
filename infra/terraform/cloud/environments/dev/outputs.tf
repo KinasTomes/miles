@@ -26,6 +26,8 @@ output "runtime_inventory" {
     secret_metadata_arn     = module.security.secret_arn
     bootstrap_parameter_arn = module.security.parameter_arn
     alb_dns                 = module.alb.dns_name
+    alb_name                = module.alb.alb_name
+    alb_arn                 = module.alb.alb_arn
     target_group_arn        = module.alb.target_group_arn
   }
 }

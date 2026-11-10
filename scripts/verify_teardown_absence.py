@@ -11,12 +11,12 @@ Distinguishes among:
 - UNEXPECTED_ERROR: Permission denied, network failure, or unknown error.
 
 Strict Guardrails:
-- Fail-closed: Empty or unverified inventory evaluates to UNVERIFIED / FAIL.
+- Fail-closed: Incomplete inventory or missing expected resource types evaluates to UNVERIFIED / FAIL.
+- Real Terraform contract compatibility: ALB name/ARN and full CloudWatch alarm names (${var.name}-${key})
+  are extracted and queried using exact AWS native APIs.
 - CloudWatch describe-alarms returning 0 with empty lists is correctly classified as ABSENT.
-- Dynamic extraction covers all owned resources (VPCs, subnets, SGs, endpoints, ALB/TGs,
-  roles, instance profiles, trust anchors, profiles, compute instances, volumes, ASGs,
-  SSM parameters, KMS keys, secrets, tables, buckets, and alarms).
-- Emits structured Gate E ledger artifact with 0600 file permissions and explicit mode.
+- Atomic ledger export: enforces 0600 permissions even when overwriting pre-existing files.
+- Emits structured Gate E ledger artifact with explicit mode ('dry-run' vs 'live').
 """
 
 import argparse
@@ -139,7 +139,11 @@ class TeardownAbsenceVerifier:
 
     @staticmethod
     def extract_inventory_from_outputs(data: Dict[str, Any]) -> Dict[str, Any]:
-        """Extracts owned resource identifiers from nested Terraform output structure."""
+        """
+        Extracts owned resource identifiers from nested Terraform output structure.
+        Detects expected resource types based on deployment contract / session config
+        and flags missing expected types.
+        """
         inv: Dict[str, Any] = {
             "dynamodb_tables": [],
             "s3_buckets": [],
@@ -163,12 +167,16 @@ class TeardownAbsenceVerifier:
             "cloudwatch_alarms": [],
             "kms_keys": [],
             "secrets": [],
+            "expected_missing": [],
         }
 
         def _dedup_add(key: str, items: List[str]) -> None:
             for item in items:
                 if item and item not in inv[key]:
                     inv[key].append(item)
+
+        # Infer base stack name prefix (e.g. 'miles-dev') from tables, buckets, or secret
+        prefix = None
 
         # 1. network_inventory
         net = _unwrap_val(data.get("network_inventory", {}))
@@ -186,36 +194,62 @@ class TeardownAbsenceVerifier:
         # 2. runtime_inventory
         rt = _unwrap_val(data.get("runtime_inventory", {}))
         if isinstance(rt, dict):
-            # Tables
             tables = rt.get("expected_tables", [])
             if isinstance(tables, list):
                 _dedup_add("dynamodb_tables", [str(t).strip() for t in tables])
-            # Buckets
+                for t in tables:
+                    if "-" in str(t):
+                        # e.g. miles-dev-records -> prefix is miles-dev
+                        parts = str(t).split("-")
+                        if len(parts) >= 2:
+                            prefix = "-".join(parts[:-1])
+                            break
+
             if rt.get("data_bucket_name"):
                 _dedup_add("s3_buckets", [str(rt["data_bucket_name"]).strip()])
-            # KMS Keys
             if rt.get("kms_key_arn"):
                 _dedup_add("kms_keys", [str(rt["kms_key_arn"]).strip()])
-            # Secrets
             if rt.get("secret_metadata_arn"):
                 _dedup_add("secrets", [str(rt["secret_metadata_arn"]).strip()])
-            # SSM Parameter
             if rt.get("bootstrap_parameter_arn"):
-                param = str(rt["bootstrap_parameter_arn"]).strip()
-                _dedup_add("ssm_parameters", [param])
-            # Target Groups
+                _dedup_add("ssm_parameters", [str(rt["bootstrap_parameter_arn"]).strip()])
+
+            # Target Groups & ALB
             if rt.get("target_group_arn"):
-                _dedup_add("target_groups", [str(rt["target_group_arn"]).strip()])
+                tg_arn = str(rt["target_group_arn"]).strip()
+                _dedup_add("target_groups", [tg_arn])
+                # tg_arn: arn:aws:elasticloadbalancing:...:targetgroup/{prefix}-s3/...
+                if "/targetgroup/" in tg_arn:
+                    tg_part = tg_arn.split("/targetgroup/")[1].split("/")[0]
+                    if tg_part.endswith("-s3"):
+                        inferred_alb = tg_part[:-3]
+                        if not prefix:
+                            prefix = inferred_alb
+                        _dedup_add("alb_names", [inferred_alb])
+
+            if rt.get("alb_name"):
+                _dedup_add("alb_names", [str(rt["alb_name"]).strip()])
+            elif rt.get("alb_dns") and not inv["alb_names"]:
+                # DNS: {alb_name}-{hash}.{region}.elb.amazonaws.com
+                dns = str(rt["alb_dns"]).strip()
+                if "." in dns:
+                    alb_part = dns.split(".")[0]
+                    if "-" in alb_part:
+                        # Extract alb name part before the random hash
+                        candidate_name = alb_part.rsplit("-", 1)[0]
+                        if candidate_name:
+                            _dedup_add("alb_names", [candidate_name])
+
             # IAM Roles
             roles_val = rt.get("iam_roles")
             if roles_val:
-                role_names = [_name_from_arn(r) for r in _extract_id_list(roles_val)]
-                _dedup_add("iam_roles", role_names)
+                _dedup_add("iam_roles", [_name_from_arn(r) for r in _extract_id_list(roles_val)])
+
             # Instance Profiles
             inst_profiles = rt.get("instance_profiles")
             if inst_profiles:
-                p_names = [_name_from_arn(p) for p in _extract_id_list(inst_profiles)]
-                _dedup_add("instance_profiles", p_names)
+                _dedup_add("instance_profiles", [_name_from_arn(p) for p in _extract_id_list(inst_profiles)])
+
             # Compute inventory
             compute = rt.get("compute")
             if isinstance(compute, dict):
@@ -250,13 +284,30 @@ class TeardownAbsenceVerifier:
         # 5. alb_contract
         alb_c = _unwrap_val(data.get("alb_contract", {}))
         if isinstance(alb_c, dict):
+            if alb_c.get("alb_name"):
+                _dedup_add("alb_names", [str(alb_c["alb_name"]).strip()])
             if alb_c.get("target_group_arn"):
                 _dedup_add("target_groups", [str(alb_c["target_group_arn"]).strip()])
 
         # 6. alarm_contract
         alarm_c = _unwrap_val(data.get("alarm_contract", {}))
         if isinstance(alarm_c, dict):
-            _dedup_add("cloudwatch_alarms", list(alarm_c.keys()))
+            for k, val in alarm_c.items():
+                if isinstance(val, dict):
+                    if val.get("alarm_name"):
+                        _dedup_add("cloudwatch_alarms", [str(val["alarm_name"]).strip()])
+                    else:
+                        # Derive full AWS alarm name: ${var.name}-${key}
+                        inst_prefix = val.get("dimensions", {}).get("installation")
+                        if inst_prefix and str(inst_prefix).endswith("-"):
+                            actual_name = f"{str(inst_prefix).rstrip('-')}-{k}"
+                        elif prefix:
+                            actual_name = f"{prefix}-{k}"
+                        else:
+                            actual_name = str(k)
+                        _dedup_add("cloudwatch_alarms", [actual_name])
+                elif isinstance(val, str):
+                    _dedup_add("cloudwatch_alarms", [val])
 
         # 7. Direct top-level outputs
         if data.get("data_bucket_name"):
@@ -273,6 +324,24 @@ class TeardownAbsenceVerifier:
             _dedup_add("key_pairs", _extract_id_list(_unwrap_val(data["key_pairs"])))
         if data.get("ssm_documents"):
             _dedup_add("ssm_documents", _extract_id_list(_unwrap_val(data["ssm_documents"])))
+        if data.get("alb_names"):
+            _dedup_add("alb_names", _extract_id_list(_unwrap_val(data["alb_names"])))
+
+        # 8. Check for expected resources based on session configuration and contract
+        session_cfg = _unwrap_val(data.get("session_configuration", {}))
+        if isinstance(session_cfg, dict):
+            if session_cfg.get("enable_alb") and not inv["alb_names"]:
+                inv["expected_missing"].append("alb")
+            if session_cfg.get("enable_compute") and not inv["instances"]:
+                inv["expected_missing"].append("instance")
+
+        # If ALB was deployed (target_group_arn or alb_dns present) but alb_names is empty
+        if rt.get("target_group_arn") and not inv["alb_names"]:
+            inv["expected_missing"].append("alb")
+
+        # If alarm_contract has alarms but cloudwatch_alarms is empty
+        if alarm_c and isinstance(alarm_c, dict) and len(alarm_c) > 0 and not inv["cloudwatch_alarms"]:
+            inv["expected_missing"].append("cloudwatch_alarms")
 
         return inv
 
@@ -365,7 +434,7 @@ class TeardownAbsenceVerifier:
                 "type": "cloudwatch_alarm",
                 "status": "STILL_PRESENT",
                 "reason": "RESOURCE_EXISTS_LEAK",
-                "details": f"Found {len(matching)} alarm(s)",
+                "details": f"Found {len(matching)} alarm(s) matching {alarm_name}",
             }
         except Exception as e:
             return {
@@ -622,8 +691,28 @@ class TeardownAbsenceVerifier:
         """
         Executes absence verification across all registered resources in inventory.
         Produces structured absence ledger.
-        Fails closed on empty or unverified inventory.
+        Fails closed on missing expected resources or empty inventory.
         """
+        # Guard 1: Incomplete inventory / missing expected resource types
+        expected_missing = self.inventory.get("expected_missing", [])
+        if expected_missing:
+            return {
+                "timestamp_utc": _iso_utc_now(),
+                "mode": self.mode,
+                "status": "UNVERIFIED",
+                "all_absent": False,
+                "error": "INCOMPLETE_INVENTORY_MISSING_EXPECTED_RESOURCES",
+                "missing_expected_types": expected_missing,
+                "total_checked": 0,
+                "absent_count": 0,
+                "pending_deletion_count": 0,
+                "still_present_count": 0,
+                "unexpected_error_count": 0,
+                "still_present": [],
+                "unexpected_errors": [],
+                "resources": {},
+            }
+
         results: Dict[str, Dict[str, Any]] = {}
 
         # 1. DynamoDB Tables
@@ -800,7 +889,7 @@ class TeardownAbsenceVerifier:
 
         total = len(results)
 
-        # Fail-closed guard: empty or unverified inventory evaluates to FAIL
+        # Fail-closed guard 2: empty or unverified inventory evaluates to FAIL
         if total == 0:
             return {
                 "timestamp_utc": _iso_utc_now(),
@@ -842,15 +931,31 @@ class TeardownAbsenceVerifier:
         return summary
 
     def export_summary(self, output_path: Path) -> Path:
-        """Runs verification and writes structured JSON ledger to output_path with 0600 permissions."""
-        p = Path(output_path)
+        """
+        Runs verification and writes structured JSON ledger to output_path.
+        Guarantees restricted 0600 permissions even when overwriting an existing file.
+        Uses atomic temp file replacement to prevent symlink attacks and race conditions.
+        """
+        p = Path(output_path).resolve()
         p.parent.mkdir(parents=True, exist_ok=True)
         summary = self.verify_all()
         payload = json.dumps(summary, indent=2) + "\n"
 
-        fd = os.open(str(p), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(payload)
+        tmp_path = p.with_suffix(f".tmp.{os.getpid()}")
+        fd = os.open(str(tmp_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+            os.replace(str(tmp_path), str(p))
+            os.chmod(str(p), 0o600)
+        finally:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
         return p
 
 
@@ -915,7 +1020,8 @@ def main():
 
     summary = json.loads(out_p.read_text(encoding="utf-8"))
     if summary.get("status") == "UNVERIFIED":
-        print(f"FAIL: Teardown verification status is UNVERIFIED ({summary.get('error')}).", file=sys.stderr)
+        err_detail = summary.get("error") or summary.get("missing_expected_types")
+        print(f"FAIL: Teardown verification status is UNVERIFIED ({err_detail}).", file=sys.stderr)
         return 1
     if summary["all_absent"]:
         print(f"PASS: All {summary['total_checked']} resources verified absent ({summary['absent_count']} absent, {summary['pending_deletion_count']} pending deletion). Mode: {summary['mode']}.")
