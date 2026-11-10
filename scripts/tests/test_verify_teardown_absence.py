@@ -1070,6 +1070,311 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(summary24["pending_deletion_count"], 2)
         self.assertEqual(summary24["absent_count"], 22)
 
+    def test_nat_and_eip_cardinality_mismatch_fails_closed(self):
+        """
+        [P1 Regression] Re-review HEAD c74c6ed finding:
+        Verifies that when declared nat_count=2, but outputs or manifest list only 1 NAT ID
+        and 1 EIP ID (or vice versa), Gate E fails closed with UNVERIFIED (all_absent=False)
+        and never produces a false PASS for State 0 teardown.
+        """
+        # 1. Extaseq reproduction scenario:
+        # nat_count=2 declared, but outputs contain only 1 NAT ID and 1 EIP ID.
+        tf_partial_nat_outputs = {
+            "network_inventory": {
+                "value": {
+                    "vpc_id": "vpc-0123456789abcdef0",
+                    "nat_count": 2,
+                    "nat_gateway_ids": {"ap-southeast-1a": "nat-0123456789abcdef0"},
+                    "elastic_ip_allocation_ids": {"ap-southeast-1a": "eipalloc-0123456789abcdef0"},
+                    "public_subnets": {"ap-southeast-1a": "subnet-pub1"},
+                    "private_subnets": {"ap-southeast-1a": "subnet-priv1"},
+                    "security_groups": {"runtime": "sg-111"},
+                    "gateway_endpoints": {"s3": "vpce-gw-s3"},
+                    "interface_endpoints": {"ec2": "vpce-if-ec2"},
+                }
+            },
+            "runtime_inventory": {
+                "value": {
+                    "iam_roles": {"worker": "arn:aws:iam::123456789012:role/worker-role"},
+                    "data_bucket_name": "miles-dev-data-123456789012",
+                    "expected_tables": ["miles-dev-records"],
+                }
+            },
+            "alarm_contract": {
+                "value": {"drift_alarm": "arn:aws:cloudwatch:ap-southeast-1:123456789012:alarm:miles-drift"}
+            },
+        }
+
+        # Manifest constructed from that same partial inventory (declaring counts=1 and 1 ID each)
+        manifest_from_partial_inv = {
+            "schema_version": "miles-teardown-manifest/v1",
+            "run_id": "run-partial-nat-test",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles", "environment": "dev"},
+            "expected_types": [
+                "vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms",
+                "nat_gateways", "elastic_ips",
+            ],
+            "expected_counts": {
+                "vpc_id": 1,
+                "dynamodb_tables": 1,
+                "s3_buckets": 1,
+                "iam_roles": 1,
+                "cloudwatch_alarms": 1,
+                "nat_gateways": 1,  # Partial!
+                "elastic_ips": 1,   # Partial!
+            },
+            "expected_resources": {
+                "vpc_id": "vpc-0123456789abcdef0",
+                "dynamodb_tables": ["miles-dev-records"],
+                "s3_buckets": ["miles-dev-data-123456789012"],
+                "iam_roles": ["arn:aws:iam::123456789012:role/worker-role"],
+                "cloudwatch_alarms": ["miles-drift"],
+                "nat_gateways": ["nat-0123456789abcdef0"],
+                "elastic_ips": ["eipalloc-0123456789abcdef0"],
+            },
+            "provenance": {"source": "terraform", "created_at_utc": "2026-11-10T00:00:00Z"},
+        }
+
+        # Extract inventory from the partial outputs with manifest
+        inv = TeardownAbsenceVerifier.extract_inventory_from_outputs(
+            tf_partial_nat_outputs,
+            manifest=manifest_from_partial_inv,
+        )
+
+        # Inventory must have recorded declared nat_count=2
+        self.assertEqual(inv["nat_count"], 2)
+        # expected_missing must flag nat_gateway and elastic_ip cardinality mismatches
+        self.assertIn(
+            "nat_gateway_cardinality_mismatch:declared_2_vs_extracted_1",
+            inv["expected_missing"],
+        )
+        self.assertIn(
+            "elastic_ip_cardinality_mismatch:declared_2_vs_extracted_1",
+            inv["expected_missing"],
+        )
+        # Manifest reconciliation must also flag the mismatch against declared nat_count
+        self.assertIn(
+            "manifest_nat_count_mismatch:declared_2_vs_manifest_1",
+            inv["expected_missing"],
+        )
+        self.assertIn(
+            "manifest_elastic_ip_count_mismatch:declared_2_vs_manifest_1",
+            inv["expected_missing"],
+        )
+        self.assertIn(
+            "manifest_nat_resource_cardinality_mismatch:declared_2_vs_manifest_1",
+            inv["expected_missing"],
+        )
+        self.assertIn(
+            "manifest_elastic_ip_resource_cardinality_mismatch:declared_2_vs_manifest_1",
+            inv["expected_missing"],
+        )
+
+        # TeardownAbsenceVerifier must fail closed with UNVERIFIED
+        v1 = TeardownAbsenceVerifier(
+            inventory=inv,
+            manifest=manifest_from_partial_inv,
+            cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
+        )
+        res1 = v1.verify_all()
+        self.assertFalse(res1["all_absent"])
+        self.assertEqual(res1["status"], "UNVERIFIED")
+        self.assertEqual(res1["error"], "INVALID_MANIFEST_OR_RECONCILIATION_FAILURE")
+        self.assertEqual(res1["total_checked"], 0)
+
+        # 2. Standalone partial inventory without manifest must also fail closed
+        standalone_partial_inv = {
+            "vpc_id": "vpc-0123456789abcdef0",
+            "nat_count": 2,
+            "nat_gateways": ["nat-0123456789abcdef0"],
+            "elastic_ips": ["eipalloc-0123456789abcdef0"],
+            "dynamodb_tables": ["tbl-1"],
+            "s3_buckets": ["bkt-1"],
+            "iam_roles": ["role-1"],
+            "cloudwatch_alarms": ["alarm-1"],
+        }
+        v2 = TeardownAbsenceVerifier(
+            inventory=standalone_partial_inv,
+            cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
+        )
+        res2 = v2.verify_all()
+        self.assertFalse(res2["all_absent"])
+        self.assertEqual(res2["status"], "UNVERIFIED")
+        self.assertEqual(res2["error"], "INCOMPLETE_INVENTORY_MISSING_EXPECTED_RESOURCES")
+        self.assertIn(
+            "nat_gateway_cardinality_mismatch:declared_2_vs_extracted_1",
+            res2["missing_expected_types"],
+        )
+        self.assertIn(
+            "elastic_ip_cardinality_mismatch:declared_2_vs_extracted_1",
+            res2["missing_expected_types"],
+        )
+
+        # 3. Contract violation: NAT Gateway and Elastic IP not 1:1 (e.g. 2 NATs but 1 EIP)
+        inv_eip_missing = {
+            "vpc_id": "vpc-0123456789abcdef0",
+            "nat_count": 2,
+            "nat_gateways": ["nat-1", "nat-2"],
+            "elastic_ips": ["eipalloc-1"],
+            "dynamodb_tables": ["tbl-1"],
+            "s3_buckets": ["bkt-1"],
+            "iam_roles": ["role-1"],
+            "cloudwatch_alarms": ["alarm-1"],
+        }
+        v3 = TeardownAbsenceVerifier(
+            inventory=inv_eip_missing,
+            cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
+        )
+        res3 = v3.verify_all()
+        self.assertFalse(res3["all_absent"])
+        self.assertEqual(res3["status"], "UNVERIFIED")
+        self.assertIn(
+            "elastic_ip_cardinality_mismatch:declared_2_vs_extracted_1",
+            res3["missing_expected_types"],
+        )
+
+        # 4. Manifest ownership scope declaring nat_count=2 when manifest only declares 1
+        manifest_scope_nat2 = {
+            "schema_version": "miles-teardown-manifest/v1",
+            "run_id": "run-scope-nat2",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles", "nat_count": 2},
+            "expected_types": [
+                "vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms",
+                "nat_gateways", "elastic_ips",
+            ],
+            "expected_counts": {
+                "vpc_id": 1, "dynamodb_tables": 1, "s3_buckets": 1, "iam_roles": 1, "cloudwatch_alarms": 1,
+                "nat_gateways": 1, "elastic_ips": 1,
+            },
+            "expected_resources": {
+                "vpc_id": "vpc-1",
+                "dynamodb_tables": ["tbl-1"],
+                "s3_buckets": ["bkt-1"],
+                "iam_roles": ["role-1"],
+                "cloudwatch_alarms": ["alarm-1"],
+                "nat_gateways": ["nat-1"],
+                "elastic_ips": ["eipalloc-1"],
+            },
+            "provenance": {"source": "terraform", "created_at_utc": "2026-11-10T00:00:00Z"},
+        }
+        inv_no_nat_count = {
+            "vpc_id": "vpc-1",
+            "nat_gateways": ["nat-1"],
+            "elastic_ips": ["eipalloc-1"],
+            "dynamodb_tables": ["tbl-1"],
+            "s3_buckets": ["bkt-1"],
+            "iam_roles": ["role-1"],
+            "cloudwatch_alarms": ["alarm-1"],
+        }
+        v4 = TeardownAbsenceVerifier(
+            inventory=inv_no_nat_count,
+            manifest=manifest_scope_nat2,
+            cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
+        )
+        res4 = v4.verify_all()
+        self.assertFalse(res4["all_absent"])
+        self.assertEqual(res4["status"], "UNVERIFIED")
+        self.assertIn("manifest_scope_nat_count_mismatch:scope_2_vs_manifest_1", res4["manifest_errors"])
+        self.assertIn("manifest_scope_elastic_ip_count_mismatch:scope_2_vs_manifest_1", res4["manifest_errors"])
+
+        # 5. Positive control: complete nat_count=2 with 2 NAT IDs and 2 EIP IDs PASSES
+        complete_nat2_outputs = {
+            "network_inventory": {
+                "value": {
+                    "vpc_id": "vpc-0123456789abcdef0",
+                    "nat_count": 2,
+                    "nat_gateway_ids": {
+                        "ap-southeast-1a": "nat-01",
+                        "ap-southeast-1b": "nat-02",
+                    },
+                    "elastic_ip_allocation_ids": {
+                        "ap-southeast-1a": "eipalloc-01",
+                        "ap-southeast-1b": "eipalloc-02",
+                    },
+                    "public_subnets": {"ap-southeast-1a": "subnet-pub1"},
+                    "private_subnets": {"ap-southeast-1a": "subnet-priv1"},
+                    "security_groups": {"runtime": "sg-111"},
+                    "gateway_endpoints": {"s3": "vpce-gw-s3"},
+                    "interface_endpoints": {"ec2": "vpce-if-ec2"},
+                }
+            },
+            "runtime_inventory": {
+                "value": {
+                    "iam_roles": {"worker": "arn:aws:iam::123456789012:role/worker-role"},
+                    "data_bucket_name": "miles-dev-data-123456789012",
+                    "expected_tables": ["miles-dev-records"],
+                }
+            },
+            "alarm_contract": {
+                "value": {"drift_alarm": "arn:aws:cloudwatch:ap-southeast-1:123456789012:alarm:miles-drift"}
+            },
+        }
+        manifest_complete = {
+            "schema_version": "miles-teardown-manifest/v1",
+            "run_id": "run-complete-nat2-test",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles", "environment": "dev", "nat_count": 2},
+            "expected_types": [
+                "vpc_id", "subnets", "security_groups", "vpc_endpoints",
+                "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms",
+                "nat_gateways", "elastic_ips",
+            ],
+            "expected_counts": {
+                "vpc_id": 1,
+                "subnets": 2,
+                "security_groups": 1,
+                "vpc_endpoints": 2,
+                "dynamodb_tables": 1,
+                "s3_buckets": 1,
+                "iam_roles": 1,
+                "cloudwatch_alarms": 1,
+                "nat_gateways": 2,
+                "elastic_ips": 2,
+            },
+            "expected_resources": {
+                "vpc_id": "vpc-0123456789abcdef0",
+                "subnets": ["subnet-pub1", "subnet-priv1"],
+                "security_groups": ["sg-111"],
+                "vpc_endpoints": ["vpce-gw-s3", "vpce-if-ec2"],
+                "dynamodb_tables": ["miles-dev-records"],
+                "s3_buckets": ["miles-dev-data-123456789012"],
+                "iam_roles": ["worker-role"],
+                "cloudwatch_alarms": ["arn:aws:cloudwatch:ap-southeast-1:123456789012:alarm:miles-drift"],
+                "nat_gateways": ["nat-01", "nat-02"],
+                "elastic_ips": ["eipalloc-01", "eipalloc-02"],
+            },
+            "provenance": {"source": "terraform", "created_at_utc": "2026-11-10T00:00:00Z"},
+        }
+        inv_complete = TeardownAbsenceVerifier.extract_inventory_from_outputs(
+            complete_nat2_outputs,
+            manifest=manifest_complete,
+        )
+        self.assertEqual(inv_complete["expected_missing"], [])
+
+        def mock_clean_nat2_runner(cmd):
+            if "describe-nat-gateways" in cmd:
+                return 0, json.dumps({"NatGateways": [{"NatGatewayId": "nat-01", "State": "deleted"}, {"NatGatewayId": "nat-02", "State": "deleted"}]}), ""
+            if "describe-addresses" in cmd:
+                return 0, json.dumps({"Addresses": []}), ""
+            return 255, "", "ResourceNotFoundException 404 Not Found NoSuchEntity InvalidVpcID.NotFound InvalidSubnetID.NotFound InvalidGroup.NotFound InvalidVpcEndpointId.NotFound"
+
+        v5 = TeardownAbsenceVerifier(
+            inventory=inv_complete,
+            manifest=manifest_complete,
+            cli_runner=mock_clean_nat2_runner,
+        )
+        res5 = v5.verify_all()
+        self.assertTrue(res5["all_absent"])
+        self.assertEqual(res5["status"], "PASS")
+        self.assertEqual(res5["total_checked"], 14)
+        self.assertEqual(res5["absent_count"], 14)
+
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -111,6 +111,13 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     "secrets",
 })
 
+METADATA_INVENTORY_KEYS = frozenset({
+    "account_id",
+    "region",
+    "expected_missing",
+    "nat_count",
+})
+
 
 def _unwrap_val(d: Any) -> Any:
     if isinstance(d, dict) and "value" in d:
@@ -175,7 +182,7 @@ class TeardownAbsenceVerifier:
         # Check inventory directly for unsupported types or duplicate IDs
         self.inventory.setdefault("expected_missing", [])
         for inv_key, inv_val in list(self.inventory.items()):
-            if inv_key in {"account_id", "region", "expected_missing"}:
+            if inv_key in METADATA_INVENTORY_KEYS:
                 continue
             if inv_key not in SUPPORTED_RESOURCE_TYPES:
                 self.inventory["expected_missing"].append(f"unsupported_inventory_resource_type:{inv_key}")
@@ -191,6 +198,37 @@ class TeardownAbsenceVerifier:
                         seen_inv_init.add(s_it)
                 if dupes_init:
                     self.inventory["expected_missing"].append(f"inventory_duplicate_resource_ids:{inv_key}:{sorted(dupes_init)}")
+
+        # Reconcile inventory NAT/EIP cardinality against declared nat_count if present
+        inv_nat_cnt = self.inventory.get("nat_count")
+        if inv_nat_cnt is not None:
+            try:
+                nat_int = int(inv_nat_cnt)
+                nats = [x for x in self.inventory.get("nat_gateways", []) if x]
+                eips = [x for x in self.inventory.get("elastic_ips", []) if x]
+                unique_nats = len(set(nats))
+                unique_eips = len(set(eips))
+                if unique_nats != nat_int:
+                    if unique_nats == 0:
+                        self.inventory["expected_missing"].append("nat_gateways")
+                    self.inventory["expected_missing"].append(
+                        f"nat_gateway_cardinality_mismatch:declared_{nat_int}_vs_extracted_{unique_nats}"
+                    )
+                if unique_eips != nat_int:
+                    if unique_eips == 0:
+                        self.inventory["expected_missing"].append("elastic_ips")
+                    self.inventory["expected_missing"].append(
+                        f"elastic_ip_cardinality_mismatch:declared_{nat_int}_vs_extracted_{unique_eips}"
+                    )
+            except (ValueError, TypeError):
+                self.inventory["expected_missing"].append(f"invalid_nat_count_format:{inv_nat_cnt}")
+        elif self.inventory.get("nat_gateways") or self.inventory.get("elastic_ips"):
+            nats = [x for x in self.inventory.get("nat_gateways", []) if x]
+            eips = [x for x in self.inventory.get("elastic_ips", []) if x]
+            if len(set(nats)) != len(set(eips)):
+                self.inventory["expected_missing"].append(
+                    f"nat_eip_cardinality_mismatch:nats_{len(set(nats))}_vs_eips_{len(set(eips))}"
+                )
 
         if self.manifest:
             manifest_obj, m_errs = self.validate_manifest_schema_and_reconciliation(
@@ -416,7 +454,7 @@ class TeardownAbsenceVerifier:
                 errors.append(f"inventory_unmanifested_vpc_id:{inventory['vpc_id']}")
 
         for inv_key, inv_val in inventory.items():
-            if inv_key in {"account_id", "region", "expected_missing", "vpc_id"}:
+            if inv_key in METADATA_INVENTORY_KEYS | {"vpc_id"}:
                 continue
             if inv_key not in SUPPORTED_RESOURCE_TYPES:
                 errors.append(f"unsupported_inventory_resource_type:{inv_key}")
@@ -435,7 +473,7 @@ class TeardownAbsenceVerifier:
 
         if isinstance(exp_res, dict):
             for inv_key, inv_val in inventory.items():
-                if inv_key in {"account_id", "region", "expected_missing", "vpc_id"}:
+                if inv_key in METADATA_INVENTORY_KEYS | {"vpc_id"}:
                     continue
                 if isinstance(inv_val, list) and inv_val:
                     manifest_list = exp_res.get(inv_key, [])
@@ -445,6 +483,108 @@ class TeardownAbsenceVerifier:
                         for inv_item in inv_val:
                             if inv_item not in manifest_list:
                                 errors.append(f"inventory_unmanifested_resource:{inv_key}:{inv_item}")
+
+        # Reconcile declared nat_count against manifest expected_counts and expected_resources
+        inv_nat_count = inventory.get("nat_count")
+        if inv_nat_count is not None:
+            try:
+                nat_int = int(inv_nat_count)
+                if isinstance(exp_counts, dict):
+                    m_nat_cnt = exp_counts.get("nat_gateways")
+                    if m_nat_cnt is not None and m_nat_cnt != nat_int:
+                        errors.append(
+                            f"manifest_nat_count_mismatch:declared_{nat_int}_vs_manifest_{m_nat_cnt}"
+                        )
+                    elif m_nat_cnt is None and nat_int > 0:
+                        errors.append(
+                            f"manifest_missing_nat_gateway_count_for_declared_{nat_int}"
+                        )
+
+                    m_eip_cnt = exp_counts.get("elastic_ips")
+                    if m_eip_cnt is not None and m_eip_cnt != nat_int:
+                        errors.append(
+                            f"manifest_elastic_ip_count_mismatch:declared_{nat_int}_vs_manifest_{m_eip_cnt}"
+                        )
+                    elif m_eip_cnt is None and nat_int > 0:
+                        errors.append(
+                            f"manifest_missing_elastic_ip_count_for_declared_{nat_int}"
+                        )
+
+                if isinstance(exp_res, dict):
+                    m_nat_list = exp_res.get("nat_gateways", [])
+                    if isinstance(m_nat_list, list):
+                        u_m_nat = len(set(str(x).strip() for x in m_nat_list if x and str(x).strip()))
+                        if u_m_nat != nat_int:
+                            errors.append(
+                                f"manifest_nat_resource_cardinality_mismatch:declared_{nat_int}_vs_manifest_{u_m_nat}"
+                            )
+                    elif nat_int > 0:
+                        errors.append(
+                            f"manifest_missing_nat_resources_for_declared_{nat_int}"
+                        )
+
+                    m_eip_list = exp_res.get("elastic_ips", [])
+                    if isinstance(m_eip_list, list):
+                        u_m_eip = len(set(str(x).strip() for x in m_eip_list if x and str(x).strip()))
+                        if u_m_eip != nat_int:
+                            errors.append(
+                                f"manifest_elastic_ip_resource_cardinality_mismatch:declared_{nat_int}_vs_manifest_{u_m_eip}"
+                            )
+                    elif nat_int > 0:
+                        errors.append(
+                            f"manifest_missing_elastic_ip_resources_for_declared_{nat_int}"
+                        )
+            except (ValueError, TypeError):
+                pass
+
+        o_scope = manifest.get("ownership_scope")
+        if isinstance(o_scope, dict) and "nat_count" in o_scope:
+            try:
+                scope_nat_int = int(o_scope["nat_count"])
+                if inv_nat_count is not None and int(inv_nat_count) != scope_nat_int:
+                    errors.append(
+                        f"manifest_scope_nat_count_vs_inventory_nat_count_mismatch:scope_{scope_nat_int}_vs_inv_{inv_nat_count}"
+                    )
+                if inv_nat_count is None:
+                    if isinstance(exp_counts, dict):
+                        m_nat_cnt = exp_counts.get("nat_gateways")
+                        if m_nat_cnt is not None and m_nat_cnt != scope_nat_int:
+                            errors.append(
+                                f"manifest_scope_nat_count_mismatch:scope_{scope_nat_int}_vs_manifest_{m_nat_cnt}"
+                            )
+                        m_eip_cnt = exp_counts.get("elastic_ips")
+                        if m_eip_cnt is not None and m_eip_cnt != scope_nat_int:
+                            errors.append(
+                                f"manifest_scope_elastic_ip_count_mismatch:scope_{scope_nat_int}_vs_manifest_{m_eip_cnt}"
+                            )
+                    if isinstance(exp_res, dict):
+                        m_nat_list = exp_res.get("nat_gateways", [])
+                        if isinstance(m_nat_list, list):
+                            u_m_nat = len(set(str(x).strip() for x in m_nat_list if x and str(x).strip()))
+                            if u_m_nat != scope_nat_int:
+                                errors.append(
+                                    f"manifest_scope_nat_resource_cardinality_mismatch:scope_{scope_nat_int}_vs_manifest_{u_m_nat}"
+                                )
+                        m_eip_list = exp_res.get("elastic_ips", [])
+                        if isinstance(m_eip_list, list):
+                            u_m_eip = len(set(str(x).strip() for x in m_eip_list if x and str(x).strip()))
+                            if u_m_eip != scope_nat_int:
+                                errors.append(
+                                    f"manifest_scope_elastic_ip_resource_cardinality_mismatch:scope_{scope_nat_int}_vs_manifest_{u_m_eip}"
+                                )
+                    # Reconcile inventory against scope_nat_int when inv_nat_count is None
+                    u_inv_nat = len(set(str(x).strip() for x in inventory.get("nat_gateways", []) if x and str(x).strip()))
+                    if u_inv_nat != scope_nat_int:
+                        errors.append(
+                            f"manifest_scope_nat_count_vs_inventory_mismatch:scope_{scope_nat_int}_vs_inventory_{u_inv_nat}"
+                        )
+                    u_inv_eip = len(set(str(x).strip() for x in inventory.get("elastic_ips", []) if x and str(x).strip()))
+                    if u_inv_eip != scope_nat_int:
+                        errors.append(
+                            f"manifest_scope_elastic_ip_count_vs_inventory_mismatch:scope_{scope_nat_int}_vs_inventory_{u_inv_eip}"
+                        )
+            except (ValueError, TypeError):
+                pass
 
         return manifest, errors
 
@@ -572,12 +712,6 @@ class TeardownAbsenceVerifier:
             _dedup_add("elastic_ips", _extract_id_list(net.get("elastic_ip_allocation_ids")))
             if net.get("alb_name"):
                 _dedup_add("alb_names", [str(net["alb_name"]).strip()])
-            nat_count = net.get("nat_count")
-            if isinstance(nat_count, int) and nat_count > 0:
-                if not inv["nat_gateways"]:
-                    inv["expected_missing"].append("nat_gateways")
-                if not inv["elastic_ips"]:
-                    inv["expected_missing"].append("elastic_ips")
 
         # 2. runtime_inventory
         rt = _unwrap_val(data.get("runtime_inventory", {}))
@@ -753,6 +887,48 @@ class TeardownAbsenceVerifier:
         # If alarm_contract has alarms but cloudwatch_alarms is empty
         if alarm_c and isinstance(alarm_c, dict) and len(alarm_c) > 0 and not inv["cloudwatch_alarms"]:
             inv["expected_missing"].append("cloudwatch_alarms")
+
+        # 8b. Reconcile NAT Gateway and Elastic IP cardinality against Terraform network contract
+        # (infra/terraform/cloud/modules/network/main.tf: aws_nat_gateway and aws_eip are 1:1 per NAT zone)
+        raw_nat_cnt = None
+        if isinstance(net, dict) and "nat_count" in net:
+            raw_nat_cnt = _unwrap_val(net.get("nat_count"))
+        elif "nat_count" in data:
+            raw_nat_cnt = _unwrap_val(data.get("nat_count"))
+
+        if raw_nat_cnt is not None:
+            try:
+                nat_int = int(raw_nat_cnt)
+                inv["nat_count"] = nat_int
+                unique_nats = len(set(inv["nat_gateways"]))
+                unique_eips = len(set(inv["elastic_ips"]))
+
+                if unique_nats != nat_int:
+                    if unique_nats == 0:
+                        inv["expected_missing"].append("nat_gateways")
+                    inv["expected_missing"].append(
+                        f"nat_gateway_cardinality_mismatch:declared_{nat_int}_vs_extracted_{unique_nats}"
+                    )
+                if unique_eips != nat_int:
+                    if unique_eips == 0:
+                        inv["expected_missing"].append("elastic_ips")
+                    inv["expected_missing"].append(
+                        f"elastic_ip_cardinality_mismatch:declared_{nat_int}_vs_extracted_{unique_eips}"
+                    )
+            except (ValueError, TypeError):
+                inv["expected_missing"].append(f"invalid_nat_count_format:{raw_nat_cnt}")
+        elif (isinstance(net, dict) and net.get("egress_mode") == "nat") or (
+            isinstance(session_cfg, dict) and session_cfg.get("egress_mode") == "nat"
+        ):
+            inv["expected_missing"].append("missing_nat_count_in_nat_egress_mode")
+        elif inv["nat_gateways"] or inv["elastic_ips"]:
+            # If nat_count was not declared but NAT/EIP resources are present, enforce 1:1 parity
+            unique_nats = len(set(inv["nat_gateways"]))
+            unique_eips = len(set(inv["elastic_ips"]))
+            if unique_nats != unique_eips:
+                inv["expected_missing"].append(
+                    f"nat_eip_cardinality_mismatch:nats_{unique_nats}_vs_eips_{unique_eips}"
+                )
 
         # 9. Completeness guard: detect truncated/partial Terraform outputs
         is_terraform_outputs = any(
@@ -1568,7 +1744,7 @@ class TeardownAbsenceVerifier:
                         expected_to_check.add((res_type, str(items).strip()))
 
         for k, v in self.inventory.items():
-            if k in {"account_id", "region", "expected_missing"}:
+            if k in METADATA_INVENTORY_KEYS:
                 continue
             if k == "vpc_id":
                 if v and str(v).strip():
@@ -1622,6 +1798,41 @@ class TeardownAbsenceVerifier:
                         "unexpected_errors": [r for r in results.values() if r["status"] == "UNEXPECTED_ERROR"],
                         "resources": results,
                     }
+
+        # Strict contract guard: Reconcile checked NATs and EIPs against declared nat_count
+        declared_nat_count = self.inventory.get("nat_count")
+        if declared_nat_count is None and isinstance(self.manifest, dict):
+            o_sc = self.manifest.get("ownership_scope")
+            if isinstance(o_sc, dict) and "nat_count" in o_sc:
+                declared_nat_count = o_sc.get("nat_count")
+
+        if declared_nat_count is not None:
+            try:
+                expected_nat_int = int(declared_nat_count)
+                checked_nats = sum(1 for (rt, _) in checked_resources if rt == "nat_gateways")
+                checked_eips = sum(1 for (rt, _) in checked_resources if rt == "elastic_ips")
+                if checked_nats != expected_nat_int or checked_eips != expected_nat_int:
+                    return {
+                        "timestamp_utc": _iso_utc_now(),
+                        "mode": self.mode,
+                        "status": "UNVERIFIED",
+                        "all_absent": False,
+                        "error": "NAT_EIP_CARDINALITY_MISMATCH",
+                        "reason": (
+                            f"Checked NAT gateways ({checked_nats}) or Elastic IPs ({checked_eips}) "
+                            f"do not match declared nat_count ({expected_nat_int})."
+                        ),
+                        "total_checked": len(results),
+                        "absent_count": sum(1 for r in results.values() if r["status"] == "ABSENT"),
+                        "pending_deletion_count": sum(1 for r in results.values() if r["status"] == "PENDING_DELETION"),
+                        "still_present_count": sum(1 for r in results.values() if r["status"] == "STILL_PRESENT"),
+                        "unexpected_error_count": sum(1 for r in results.values() if r["status"] == "UNEXPECTED_ERROR"),
+                        "still_present": [r["resource"] for r in results.values() if r["status"] == "STILL_PRESENT"],
+                        "unexpected_errors": [r for r in results.values() if r["status"] == "UNEXPECTED_ERROR"],
+                        "resources": results,
+                    }
+            except (ValueError, TypeError):
+                pass
 
         total = len(results)
 
