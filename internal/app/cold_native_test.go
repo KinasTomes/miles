@@ -285,6 +285,20 @@ func nativeColdFlows(t *testing.T, ctx context.Context, nodes []Dependencies, m 
 		if got, e := read("revived"); e != nil || !bytes.Equal(got, data) {
 			t.Fatal("successful revived PUT unreadable", e)
 		}
+		// The superseded archive keeps its retention; statistics record the
+		// revival from the writing node and list the archive as cold_dead.
+		retained, e := m.GetPacks(ctx, []storage.PackRef{old.Location.Pack})
+		if p := retained[old.Location.Pack]; e != nil || p.Class != class || p.State == "Retired" || !p.MinRetentionUntil.Equal(packs[old.Location.Pack].MinRetentionUntil) {
+			t.Fatal("revival changed the old archive", retained, e)
+		}
+		if e = nodes[0].Statistics.Refresh(ctx); e != nil {
+			t.Fatal(e)
+		}
+		g, e := nodes[0].Statistics.Global(ctx)
+		if e != nil || g.RevivedChunks == nil || *g.RevivedChunks != 1 || *g.RevivedBytes != uint64(rows[key].Location.Range.Length) ||
+			*g.OrphanedChunks != 0 || g.PhysicalLifecycle["cold_dead"] < retained[old.Location.Pack].Size || *g.DedupRatio != 3 {
+			t.Fatalf("revival statistics: %+v %v", g, e)
+		}
 	}
 	// IR has live canonical chunks; GLACIER was superseded by body revival, so
 	// promotion has no live plan and is intentionally not dispatched in that case.

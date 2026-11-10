@@ -807,6 +807,41 @@ func TestLocalLifecycleNodeClosureWinsLateCanonicalCAS(t *testing.T) {
 	}
 }
 
+// A body revival that wins the canonical race after promotion read the row is
+// kept; promotion finishes and its destination is only protected garbage.
+func TestLocalPromotionLosingRaceKeepsRevivedWinner(t *testing.T) {
+	m, w, j, policy, utc, _, chunk := lifeFixture(t, "pack_promote", s.GlacierIR)
+	peer, e := New(Options{API: m.api, Tables: m.tables, Authority: m.authority, Now: utc.Now})
+	if e != nil {
+		t.Fatal(e)
+	}
+	revived := chunk
+	revived.Location.Pack = s.PackRef{ID: "revived-pack", Generation: "generation-r"}
+	revived.LocationRevision++
+	seam := &lifeLateCASAPI{API: m.api, table: m.tables["Chunks"], before: func() {
+		if e := peer.update(t.Context(), func(tx *transaction) error { return put(tx, chunkKey(chunk.Key), revived) }); e != nil {
+			t.Fatal(e)
+		}
+	}}
+	m.api = seam
+	out, e := w.Step(t.Context(), j, policy)
+	if e != nil || !out.Done || !seam.fired {
+		t.Fatal(out, e, seam.fired)
+	}
+	a, e := peer.GetLifecycle(t.Context(), j.ID)
+	if e != nil || a.State != "Done" {
+		t.Fatal(a, e)
+	}
+	rows, e := peer.GetChunks(t.Context(), []s.ChunkKey{chunk.Key}, true)
+	if e != nil || rows[chunk.Key] != revived {
+		t.Fatal("promotion rebased over the revived winner", rows, e)
+	}
+	packs, e := peer.GetPacks(t.Context(), []s.PackRef{chunk.Location.Pack, a.Destination})
+	if e != nil || packs[chunk.Location.Pack].State != "Cold" || packs[a.Destination].State != "Warm" || !packs[a.Destination].ProtectedUntil.After(utc.Now()) {
+		t.Fatal("source/destination after lost race", packs, e)
+	}
+}
+
 func TestLocalWarmCompactionRetainsPinnedSource(t *testing.T) {
 	m, w, j, policy, utc, physical, old := lifeFixture(t, "compaction", s.Standard)
 	ctx := t.Context()

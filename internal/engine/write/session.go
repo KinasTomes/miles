@@ -149,7 +149,7 @@ func (s *WriteSession) prepare(kind byte, pipeline Pipeline, body io.Reader, man
 		return PreparedObject{}, nil, err
 	}
 	pipeline.Lookup = s.metadata
-	packs := &packRecorder{Publisher: &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil, WriteCache: pipeline.WriteCache, AdmitOnWrite: pipeline.AdmitOnWrite}, packs: map[storage.PackRef]struct{}{}}
+	packs := &packRecorder{Publisher: &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil, WriteCache: pipeline.WriteCache, AdmitOnWrite: pipeline.AdmitOnWrite, Counters: pipeline.Counters}, packs: map[storage.PackRef]struct{}{}}
 	pipeline.Publisher = packs
 	p, err := prepare(s.ctx, kind, pipeline, pages, s.writer.Fence(), body, s.auth.Bucket.Domain, manifestID)
 	if err != nil {
