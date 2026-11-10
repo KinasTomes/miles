@@ -19,7 +19,7 @@ There are **two separate permissions**. They are not implied by this document or
 
 | Item | Evidence-backed proposal / state | Must be decided |
 |---|---|---|
-| Repository baseline | `main` has PR #74 + #75; candidate latest reviewed runtime baseline `633cb0e0dfcdb75fb2ff3f6642beec0a55f3b0ab` | Confirm at Gate C; rebuild and pin linux/arm64 binary SHA-256 |
+| Repository baseline | `main` has PR #74 + #75 + #77; candidate latest reviewed runtime baseline `1dcc352054ff296eebc89d51f280a5814e5a9531` | Confirm at Gate C; rebuild and pin linux/arm64 binary SHA-256 |
 | Account / Region | Proposed account `499388132734` in `ap-southeast-1`; **not** the independent Sydney S3 Glacier demo | Authorize and revalidate via non-root scoped CLI after Decision A |
 | Pending Edge RCA | 46/90 success; 44/90 fail; 44/44 exact gateway matches; underlying cause still unresolved | Implement/test or authorize diagnostic-only collector before D2 |
 | Dataset | Proposed `backup30`, 90 objects, synthetic; previous manifest `04014dd767e799d9f70081536d01c988fa6a02c0b7653c34db11a48c9abc1556` is **reference only** | Regenerate/verify actual dataset and sign its hash |
@@ -36,10 +36,10 @@ There are **two separate permissions**. They are not implied by this document or
 - [ ] New saved Terraform plans **and destruction path** reviewed, with frozen plan hashes. No reliance on saved plans from the last run.
 - [ ] Offline test matrix PASS on pinned source: `make check`, `make test-local`, `go test -race ./internal/benchmark ./cmd/warmbench`, documentation naming and `git diff --check`.
 - [ ] linux/arm64 binaries built from verified source and SHA-256 pinned; actual `backup30` manifest hash/size verified, no customer data.
-- [ ] Host Chrony/OS diagnostic sampling **implemented and tested**, not merely described in RCA; local timestamp provenance, command duration, scheduler/CPU steal, ring-buffer limits and graceful export verified. Otherwise restrict scope explicitly to owner-approved `diagnostic-only`.
+- [x] Host Chrony/OS diagnostic sampling **implemented and tested** (PR #77: `scripts/edge_host_telemetry.py` & tests); local timestamp provenance, command duration, scheduler/CPU steal, ring-buffer limits and graceful export verified offline.
 - [ ] Cost envelope calculated from current plan: EC2/EBS, ALB, endpoints/data transfer, S3 operations/versions, DynamoDB/PITR, CloudWatch logs/alarms, KMS, retention/deletion effects; values and billing-delay assumptions reviewed.
 - [ ] Run operator, independent stop/teardown owner and fallback contact assigned; latest workload start, final teardown UTC and response to quota/clock/permission failure documented.
-- [ ] Native service checks and teardown/absence verifier exist and are dry-reviewed; the earlier historical `41/41` is not treated as current proof.
+- [x] Native service checks and teardown/absence verifier exist and are tested offline (PR #77: `scripts/verify_teardown_absence.py` & tests); the earlier historical `41/41` is not treated as current proof.
 - [ ] Private approvals B and paid window recorded **after** checks complete. If any box remains unchecked: **NO-GO**.
 
 ## 4. Prepared cost/window worksheet (fill only after authorized preflight)
@@ -86,7 +86,7 @@ Copy the following fields into a *private, owner-controlled* run-specific record
   "account_id": "499388132734",
   "region": "ap-southeast-1",
   "scope": "read-only-inventory-and-plan-only",
-  "source_sha": "633cb0e0dfcdb75fb2ff3f6642beec0a55f3b0ab",
+  "source_sha": "1dcc352054ff296eebc89d51f280a5814e5a9531",
   "arm64_release_sha256": null,
   "dataset_manifest_sha256": null,
   "terraform_saved_plan_sha256": null,

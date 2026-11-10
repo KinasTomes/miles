@@ -1,9 +1,9 @@
 # Miles — Edge / recovery / alarms AWS live acceptance run plan
 
 **Status:** DRAFT / DO NOT EXECUTE / NOT OWNER-APPROVED
-**Prepared:** 2026-11-10, after merged PR #74 (Gate F, run harness) and PR #75 (Gate R, offline evidence).
+**Prepared:** 2026-11-10, after merged PR #74 (Gate F, run harness), PR #75 (Gate R, offline evidence), and PR #77 (Gate D0/E diagnostic sampling and teardown verifier).
 **Related:** [Owner approval package](edge-aws-approval-package.md), [follow-up plan](edge-acceptance-followup-plan.md), [offline RCA](../testing/edge-clock-rca-followup.md), [previous live report](../testing/live-acceptance-20261108-report.md).
-**Candidate code baseline:** `633cb0e0dfcdb75fb2ff3f6642beec0a55f3b0ab` (PR #75 squash merge). Pin the reviewed release **at Gate C**; the SHA here is not an approved release or binary checksum.
+**Candidate code baseline:** `1dcc352054ff296eebc89d51f280a5814e5a9531` (PR #77 squash merge). Pin the reviewed release **at Gate C**; the SHA here is not an approved release or binary checksum.
 
 ## 1. Scope and explicitly excluded claims
 
@@ -23,7 +23,7 @@ All `TBD` items must be filled in **private, versioned signed approval** before 
 | Run ID, responsible operator, approving owner, UTC approval timestamp | Fresh ID; record named people privately | **TBD** |
 | Account, Region | Account `499388132734`; `ap-southeast-1` (Singapore), confirm after read-only authorization | **TBD confirmation** |
 | Target role + identity/expiry | Scoped non-root `miles-dev-deploy` session, MFA/role policy and required trust verified; no sharing access keys | **TBD** |
-| Exact release source + architecture | Candidate source `633cb0e`; build/test **linux/arm64** release; persist binary SHA-256 and source tree provenance | **TBD / not pinned** |
+| Exact release source + architecture | Candidate source `1dcc352`; build/test **linux/arm64** release; persist binary SHA-256 and source tree provenance | **TBD / not pinned** |
 | Manifest and dataset | Proposed `backup30`: 90 × approximately 8 MiB; regenerate/verify and pin actual manifest SHA-256; previous hash is historical only | **TBD** |
 | Infrastructure ownership | Planned <=4 EC2 `t4g.small` (2 Cloud, 1 Edge, 1 client); EBS encrypted; 0 NAT; private SSM; DDB/ALB/endpoints/alarms only as reviewed plans | **TBD quotas/plans** |
 | Ingress and data | Explicit operator `/32`, no public SSH/metrics/admin, synthetic fixtures only; network access paths reviewed | **TBD** |
@@ -50,7 +50,7 @@ All `TBD` items must be filled in **private, versioned signed approval** before 
 
 ## 4. Host evidence contract / Gate D0 instrumentation
 
-The `scripts/edge_clock_rca.py` module (PR #75) is an **offline analyzer**, not a deployed recorder. The following host sampling is a **design**, not already-implemented runtime instrumentation. Implement/review/test the host collector before a full run; if unavailable, limit the session to an owner-approved diagnostic-only probe or NO-GO.
+The host diagnostic collector is implemented in `scripts/edge_host_telemetry.py` (PR #77) and verified offline with 6 unit tests covering Chrony allowlist commands, monotonic execution timing, `/proc/stat` CPU steal deltas, PSI pressure, and bounded 0600 ring-buffer compaction. The runtime sampling contract is:
 
 | Host stream | Sampling / fields | Provenance and guardrails |
 |---|---|---|
@@ -85,7 +85,7 @@ Example benchmark arguments only (sensitive config and output directories are re
 
 1. Stop new workload; resolve/drain in-flight request outcomes within approved limits; freeze private logs, telemetry, S3/version and DDB state and sanitized per-gate evidence. If an outcome is indeterminate, keep it explicitly tracked for native reconciliation.
 2. Destroy **only owned resources** per reviewed Terraform destroy plan and verified resource tags; include S3 versions/markers/multipart, ALB/ASG/EC2, DDB, endpoints, networking, IAM/SLRs as created, KMS/Secrets deletion schedules. Preserve documented bootstrap/state resources. Never delete shared Hung/Phong IAM roles/policies without explicit ownership.
-3. Perform **new service-native final absence checks** matching the owned resource inventory. The prior `41/41` verification script and proof must be located/reviewed or recreated if not present in this checkout; do not imply an executable verifier is bundled here. Disclose pending deletion and IAM/SLR eventual consistency.
+3. Perform **new service-native final absence checks** matching the owned resource inventory using `scripts/verify_teardown_absence.py` (PR #77), which parses Terraform outputs dynamically and verifies absence across all owned AWS services without reliance on historical 2026-11-08 static proofs. Disclose pending deletion and IAM/SLR eventual consistency.
 4. Record `PASS / FAIL / DEFERRED / UNVERIFIED` by gate, actual runtime state (including pending deletions), resource counts and Terraform drift, cost estimate at shutdown, later observed/billed reconciliations and owner acknowledgment.
 
 **Escalation:** teardown incomplete, unknown billing, missing native proofs or absent final verifier → label **OPEN / ATTENTION REQUIRED**, notify owner through the approved escalation path; do not claim State 0 merely because Terraform returned 0.
