@@ -322,9 +322,22 @@ type CommitResult struct {
 	AlreadyCommitted bool
 }
 
+// MaxRestoreDays is the DSG cap on a temporary archive copy (API v2 4.4); it
+// equals the policy limit MaxAutoRestoreDays.
+const MaxRestoreDays = 30
+
 type RestoreRequest struct {
 	Days int
 	Tier string
+}
+
+// Validate is the one RestoreObject/pack_restore parameter check shared by the
+// HTTP handler, the read path and lifecycle jobs.
+func (r RestoreRequest) Validate() error {
+	if r.Days < 1 || r.Days > MaxRestoreDays || r.Tier != "Expedited" && r.Tier != "Standard" && r.Tier != "Bulk" {
+		return ErrInvalid
+	}
+	return nil
 }
 
 type CacheKey struct {

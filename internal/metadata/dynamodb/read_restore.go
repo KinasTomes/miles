@@ -18,11 +18,16 @@ import (
 // Enqueue and read lease/root/pin/policy validation share one native transaction.
 // It grants no readability and never performs physical I/O. Admission auth was
 // pinned by the reader; grant revocation does not reauthorize an admitted GET.
-func (m *Store) QueueReadRestore(ctx context.Context, reader s.WriterFence, head s.ObjectHead, ref s.PackRef, revision uint64, required time.Time) (out jobs.Job, err error) {
+// A nil explicit request is GET's auto-restore, gated by and parameterized with
+// the pinned policy; RestoreObject passes its validated Days/Tier and is not
+// gated by auto_restore. Both share one stable job per pack generation state,
+// so created reports whether this call queued it.
+func (m *Store) QueueReadRestore(ctx context.Context, reader s.WriterFence, head s.ObjectHead, ref s.PackRef, revision uint64, required time.Time, explicit *s.RestoreRequest) (out jobs.Job, created bool, err error) {
 	if head.Object.Validate() != nil || head.Revision == 0 || head.ManifestID == "" || ref.Validate() != nil || revision == 0 || required.IsZero() || required.UTC().Year() < 1 || required.UTC().Year() > 9999 {
-		return out, s.ErrInvalid
+		return out, false, s.ErrInvalid
 	}
 	err = m.update(ctx, func(t *transaction) error {
+		created = false // a retried transaction decides afresh
 		lease, e := m.r1Check(t, reader)
 		if e != nil {
 			return e
@@ -74,7 +79,8 @@ func (m *Store) QueueReadRestore(ctx context.Context, reader s.WriterFence, head
 		if e != nil {
 			return e
 		}
-		if !policy.Policy().Tiering.AutoRestore {
+		settings := policy.Policy().Tiering
+		if explicit == nil && !settings.AutoRestore {
 			return s.ErrAccessDenied
 		}
 		if p.State == "Restoring" {
@@ -85,7 +91,13 @@ func (m *Store) QueueReadRestore(ctx context.Context, reader s.WriterFence, head
 			out, e = get[jobs.Job](t, key("jobs", owner.ID))
 			return e // acceptance already exists, never re-send it from GET
 		}
-		settings := policy.Policy().Tiering
+		params := lifecycle.Params{PackID: ref.ID, Generation: ref.Generation, Days: int(settings.AutoRestoreDays), Tier: settings.AutoRestoreTier, RequiredUntil: required.UTC()}
+		if explicit != nil {
+			params.Days, params.Tier = explicit.Days, explicit.Tier
+		}
+		if e := params.Validate("pack_restore"); e != nil {
+			return e
+		}
 		// State revision changes after completed restore. Concurrent reads of one
 		// generation share a job; a completed/expired generation gets a new ID.
 		identity, _ := json.Marshal(struct {
@@ -108,15 +120,17 @@ func (m *Store) QueueReadRestore(ctx context.Context, reader s.WriterFence, head
 		if !errors.Is(e, s.ErrNotFound) {
 			return e
 		}
-		params, _ := json.Marshal(lifecycle.Params{PackID: ref.ID, Generation: ref.Generation, Days: int(settings.AutoRestoreDays), Tier: settings.AutoRestoreTier, RequiredUntil: required.UTC()})
-		out = jobs.Job{ID: id, Type: "pack_restore", State: jobs.Queued, Params: params, PolicyRevision: revision, Revision: 1, CreatedAt: b.Upper, Progress: map[string]uint64{}}
+		body, _ := json.Marshal(params)
+		out = jobs.Job{ID: id, Type: "pack_restore", State: jobs.Queued, Params: body, PolicyRevision: revision, Revision: 1, CreatedAt: b.Upper, Progress: map[string]uint64{}}
 		if e := out.Validate(); e != nil {
 			return e
 		}
 		if _, e = m.r1Check(t, reader); e != nil {
 			return e
 		} // fresh dispatch permission after slow reads
+		created = true
 		return put(t, key("jobs", id), out)
 	})
+	created = created && err == nil
 	return
 }

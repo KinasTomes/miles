@@ -39,13 +39,14 @@ func TestLocalReadRestoreAtomicAdmissionAndDedup(t *testing.T) {
 	m, _, _, _, utc, _, chunk := lifeFixture(t, "pack_restore", s.Glacier)
 	f, head := restoreReader(t, m, utc, chunk.Location.Pack)
 	required := utc.Now().Add(7 * time.Minute)
-	first, e := m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, required)
-	if e != nil || first.ID == "" || first.State != jobs.Queued {
-		t.Fatal(first, e)
+	first, created, e := m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, required, nil)
+	if e != nil || !created || first.ID == "" || first.State != jobs.Queued {
+		t.Fatal(first, created, e)
 	}
-	second, e := m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, required.Add(time.Second))
-	if e != nil || second.ID != first.ID || second.Revision != 1 {
-		t.Fatal(second, e)
+	// RestoreObject shares the generation's job: no second restore, no override.
+	second, created, e := m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, required.Add(time.Second), &s.RestoreRequest{Days: 5, Tier: "Bulk"})
+	if e != nil || created || second.ID != first.ID || second.Revision != 1 {
+		t.Fatal(second, created, e)
 	}
 	params, e := lifecycle.Decode(first.Params, first.Type)
 	if e != nil || params.RequiredUntil.Before(required) || params.Days != 1 || params.Tier != "Standard" {
@@ -53,7 +54,7 @@ func TestLocalReadRestoreAtomicAdmissionAndDedup(t *testing.T) {
 	}
 	bad := head
 	bad.ManifestID = "unbound-root"
-	if _, e = m.QueueReadRestore(t.Context(), f, bad, chunk.Location.Pack, 1, required); !errors.Is(e, s.ErrFenced) {
+	if _, _, e = m.QueueReadRestore(t.Context(), f, bad, chunk.Location.Pack, 1, required, nil); !errors.Is(e, s.ErrFenced) {
 		t.Fatal("root bypass", e)
 	}
 	unpinned := s.PackRef{ID: chunk.Location.Pack.ID, Generation: "existing-unpinned"}
@@ -67,7 +68,7 @@ func TestLocalReadRestoreAtomicAdmissionAndDedup(t *testing.T) {
 	}); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = m.QueueReadRestore(t.Context(), f, head, unpinned, 1, required); e == nil {
+	if _, _, e = m.QueueReadRestore(t.Context(), f, head, unpinned, 1, required, nil); e == nil {
 		t.Fatal("unpinned restore")
 	}
 	if e = m.update(t.Context(), func(tx *transaction) error {
@@ -80,7 +81,7 @@ func TestLocalReadRestoreAtomicAdmissionAndDedup(t *testing.T) {
 	}); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, required); !errors.Is(e, s.ErrFenced) {
+	if _, _, e = m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, required, nil); !errors.Is(e, s.ErrFenced) {
 		t.Fatal("inactive bucket queued restore", e)
 	}
 	if e = m.update(t.Context(), func(tx *transaction) error {
@@ -96,8 +97,27 @@ func TestLocalReadRestoreAtomicAdmissionAndDedup(t *testing.T) {
 	if e = m.CloseR1(t.Context(), f); e != nil {
 		t.Fatal(e)
 	}
-	if _, e = m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, required); e == nil {
+	if _, _, e = m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, required, nil); e == nil {
 		t.Fatal("closed reader queued restore")
+	}
+}
+
+// RestoreObject carries the caller's Days/Tier through the same pinned reader
+// admission; bad parameters queue nothing.
+func TestLocalExplicitRestoreUsesRequestParameters(t *testing.T) {
+	m, _, _, _, utc, _, chunk := lifeFixture(t, "pack_restore", s.Glacier)
+	f, head := restoreReader(t, m, utc, chunk.Location.Pack)
+	required := utc.Now().Add(7 * time.Minute)
+	if _, _, e := m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, required, &s.RestoreRequest{Days: 31, Tier: "Bulk"}); !errors.Is(e, s.ErrInvalid) {
+		t.Fatal("31 days queued", e)
+	}
+	job, created, e := m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, required, &s.RestoreRequest{Days: 5, Tier: "Bulk"})
+	if e != nil || !created {
+		t.Fatal(job, e)
+	}
+	params, e := lifecycle.Decode(job.Params, job.Type)
+	if e != nil || params.Days != 5 || params.Tier != "Bulk" || params.RequiredUntil.Before(required) {
+		t.Fatal(params, e)
 	}
 }
 
@@ -106,7 +126,7 @@ func TestLocalReadRestoreLostACKReconcilesStableJob(t *testing.T) {
 	f, head := restoreReader(t, m, utc, chunk.Location.Pack)
 	fault := &lifeAckAPI{API: m.api, attribute: "job_id"}
 	m.api = fault
-	one, e := m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, utc.Now().Add(7*time.Minute))
+	one, _, e := m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, utc.Now().Add(7*time.Minute), nil)
 	if e == nil || !fault.fired || one.ID == "" {
 		t.Fatal("missing injected ACK loss", one, e, fault.fired)
 	}
@@ -114,8 +134,8 @@ func TestLocalReadRestoreLostACKReconcilesStableJob(t *testing.T) {
 	if e != nil || stored.State != jobs.Queued {
 		t.Fatal(stored, e)
 	}
-	again, e := m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, utc.Now().Add(7*time.Minute))
-	if e != nil || again.ID != one.ID || again.Revision != 1 {
+	again, created, e := m.QueueReadRestore(t.Context(), f, head, chunk.Location.Pack, 1, utc.Now().Add(7*time.Minute), nil)
+	if e != nil || created || again.ID != one.ID || again.Revision != 1 {
 		t.Fatal(again, e)
 	}
 	page, e := m.ListJobs(t.Context(), jobs.PageRequest{Limit: 100, ActiveOnly: true})
