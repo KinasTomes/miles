@@ -93,7 +93,7 @@ Chưa hoàn thành:
 - [x] Đối chiếu evidence offline (R1–R7); không xuất private telemetry vào repo. Báo cáo RCA tại `docs/testing/edge-clock-rca-followup.md`.
 - [x] PR #75 (Gate R) squash merge vào `main` tại `633cb0e`; PR #74 (Gate F) tại `d4c6ead`.
 - [x] Soạn bộ hồ sơ AWS bước tiếp theo: `docs/planning/edge-aws-approval-package.md` và cập nhật `edge-acceptance-aws-run-plan-draft.md` (DRAFT; không cấp quyền thực thi).
-- [x] Hoàn thiện/kiểm thử offline host clock sampler và native absence verifier (PR #77 squash merge vào `main` tại `1dcc35298bd0432f434492d3a59f936738b61d27`, hotfix PR #76).
+- [ ] BLOCKED — pending reviewer hotfix verification: Hoàn thiện/kiểm thử offline host clock sampler và native absence verifier (PR #77 squash merge tại `1dcc35298bd0432f434492d3a59f936738b61d27`; PR #76 hotfix hoàn thiện 5/5 findings).
 - [ ] Xin phê duyệt phiên AWS sau khi hoàn thành offline (đặc biệt D3/D4 không được tuyên bố PASS trước).
 
 **Lưu ý:** Bản kế hoạch này là tài liệu định hướng công việc, không phải quyền truy cập AWS hay giấy phép tiêu tiền.
