@@ -1,53 +1,95 @@
-# Miles — Edge & recovery/alarms AWS run plan (DRAFT — NOT APPROVED)
+# Miles — Edge / recovery / alarms AWS live acceptance run plan
 
-**Status:** `DRAFT / DO NOT EXECUTE` — created after PR #73 merged, 2026-11-08.
-**Companion:** [edge-acceptance-followup-plan.md](edge-acceptance-followup-plan.md)
-**Reference only:** [previous executed AWS plan](aws-live-acceptance-run-plan.md) / [live run report](../testing/live-acceptance-20261108-report.md). **Previous approval, plans, AMI/credentials and budget window cannot be reused.**
+**Status:** DRAFT / DO NOT EXECUTE / NOT OWNER-APPROVED
+**Prepared:** 2026-11-10, after merged PR #74 (Gate F, run harness) and PR #75 (Gate R, offline evidence).
+**Related:** [Owner approval package](edge-aws-approval-package.md), [follow-up plan](edge-acceptance-followup-plan.md), [offline RCA](../testing/edge-clock-rca-followup.md), [previous live report](../testing/live-acceptance-20261108-report.md).
+**Candidate code baseline:** `633cb0e0dfcdb75fb2ff3f6642beec0a55f3b0ab` (PR #75 squash merge). Pin the reviewed release **at Gate C**; the SHA here is not an approved release or binary checksum.
 
-## 1. Owner approval required before any AWS API activity
+## 1. Scope and explicitly excluded claims
 
-| Field | To fill/approve |
-|---|---|
-| Account / Region | `499388132734` / `ap-southeast-1` — confirm by scoped caller identity |
-| Fresh run ID, owner, approval timestamp | **TBD / NOT APPROVED** |
-| Source commit SHA & tested arm64 release SHA-256 | **TBD**, pin from reviewed merged code |
-| Dataset / manifest hash | Suggest `backup30`, 90 × ~8 MiB; **revalidate hash** |
-| Deployer non-root role & permission boundary | **TBD**, do not use root |
-| Maximum EC2 count/type, DDB/endpoint/ALB, S3 buckets | **TBD**, explicitly scoped |
-| Network ingress, allowed client CIDR /32 | **TBD**, private/SSM-only admin |
-| Max duration including teardown + start/deadline | **TBD** |
-| Soft budget in USD, stop threshold, teardown threshold | **TBD** — previous $10 soft cap is historical, not approval |
-| Teardown ownership, KMS/Secrets pending deletion & bootstrap exceptions | **TBD** |
-| Data classification | Synthetic only; no customer data |
-| Gate authority / escalation contact | **TBD** |
+- **Goal 1 / Edge stability:** distinguish the real cause of `clock_uncertainty_exceeded` at PUT #47, then prove Edge C1 and only then Edge C4 complete without hidden retry, weakened fail-closed policy, or unknown commits.
+- **Goal 2 / native recovery:** prove R1 lease/fencing/closed-writer and R2 outbox export/seal/cut, checkpoint/GC using native AWS and application evidence; DDB ACTIVE/PITR alone does not prove recovery.
+- **Goal 3 / alarms:** prove 8 shallow CloudWatch alarms traverse `OK → ALARM → OK` from real, isolated signals and thresholds.
+- **Goal 4 / teardown:** verify owned resources absent, disclose pending deletion and reconcile estimated, observed and eventually billed costs.
+- Earlier Cloud C1/C4 and direct-S3 PASS may be referenced with scope and date, but are **not** a fresh run result. Edge C1 had 46/90 PUT PASS and 44/90 503 at the 2026-11-08 session. Gate R confirmed 44/44 gateway correlations; **missed Chrony polls versus local chronyc command timeout remain hypotheses**.
+- This document authorizes **zero** AWS operations. Do not reuse previous approvals, release artifact, Terraform saved plans, profile sessions or credentials. No root account. No change to `internal/coordination/chrony.go`, `minpoll 4 maxpoll 4`, or fail-closed R1 policy.
 
-**Hard stop:** Không dùng quyền/phê duyệt phiên cũ; không gọi AWS để chạy preflight trước approval cho giai đoạn này. CloudWatch billing/cost reports có độ trễ; budget alarms không bảo đảm hard cap. Chỉ dùng scoped IAM session với expiry/time window được owner xác nhận.
+## 2. Owner decisions / immutable run envelope
 
-## 2. Readiness & run steps (sẽ áp dụng sau approval)
+All `TBD` items must be filled in **private, versioned signed approval** before any AWS API call, including read-only inventory. A separate owner go/no-go is required before any paid provisioning.
 
-| Gate | Procedure | Acceptance / evidence | On failure |
+| Field | Prepared candidate / condition | Approval state |
+|---|---|---|
+| Run ID, responsible operator, approving owner, UTC approval timestamp | Fresh ID; record named people privately | **TBD** |
+| Account, Region | Account `499388132734`; `ap-southeast-1` (Singapore), confirm after read-only authorization | **TBD confirmation** |
+| Target role + identity/expiry | Scoped non-root `miles-dev-deploy` session, MFA/role policy and required trust verified; no sharing access keys | **TBD** |
+| Exact release source + architecture | Candidate source `633cb0e`; build/test **linux/arm64** release; persist binary SHA-256 and source tree provenance | **TBD / not pinned** |
+| Manifest and dataset | Proposed `backup30`: 90 × approximately 8 MiB; regenerate/verify and pin actual manifest SHA-256; previous hash is historical only | **TBD** |
+| Infrastructure ownership | Planned <=4 EC2 `t4g.small` (2 Cloud, 1 Edge, 1 client); EBS encrypted; 0 NAT; private SSM; DDB/ALB/endpoints/alarms only as reviewed plans | **TBD quotas/plans** |
+| Ingress and data | Explicit operator `/32`, no public SSH/metrics/admin, synthetic fixtures only; network access paths reviewed | **TBD** |
+| Allowed UTC window and responsible teardown operator | Start, latest trial start, stop-new-work, absolute teardown deadline and fallback contact; must fit all 8 alarm transitions | **TBD** |
+| Cost envelope and triggers | Fresh estimate by resource × hours, S3 ops/storage, DDB, network, Logs/metrics, KMS and possible pending costs. Proposed soft/hard triggers require owner values; billing metrics are delayed and **not** a hard cap | **TBD** |
+| State ownership, exclusions | Owned Terraform state and resource tags; bootstrap/state bucket exceptions documented; KMS/Secrets pending deletion explicitly handled | **TBD** |
+| Run mode | `diagnostic-only` if sub-reason instrumentation is unproven, or `full-acceptance` if Gate C and D0 complete | **TBD** |
+
+**Hard NO-GO:** absent owner signature, uncertain caller/Region, unreviewed plan, missing arm64 hashes, missing clock-source verification, inadequate teardown capacity, unavailable fresh inventory, missing evidence capture or inability to finish before the approved deadline.
+
+## 3. Offline preparation and Gate C (requires separately authorized read-only AWS preflight)
+
+**Before any AWS API:** review PR #74/#75 merged SHAs, rerun `make check` / `make test-local` / Go race for benchmark, verify `git diff --check`, inspect IaC and billable resource inventory locally. Freeze evidence schema and hashes. Prepare **but do not use** the read-only preflight checklist.
+
+**After owner explicitly authorizes read-only Gate C only:**
+
+1. Confirm role/account/Region with scoped `sts:GetCallerIdentity` and record sanitized identity / MFA session expiry. Verify effective service permissions and any SCP/boundary, not just IAM simulator; prevent accidental use of root or Sydney Glacier profile.
+2. Take a **fresh** service-native baseline of owned resources, bootstrap exceptions and pending deletions. The 41/41 absence result from 2026-11-08 is historical and cannot substitute.
+3. Validate refreshed Terraform root/module configuration and generate **new saved plans** from approved variables, including a review of IAM, KMS, Secrets, endpoints, DDB, logging, all 8 alarms and teardown; no blind `apply`. Verify that plan outputs do not leak secrets.
+4. Check EC2 limits, disk, subnet IPs, profile capacity, client network, chrony Amazon Time Sync source and DNS dependency, S3 bucket availability and diagnostics access. Calculate costs within owner envelope, reserve teardown time and explicitly approve final plans/hashes.
+5. Only after second recorded owner authorization to spend may D0 provisioning begin.
+
+**Gate C evidence:** `run-id`, auth scope & expiry, repository/release/dataset hashes, saved-plan hashes, reviewed resource counts/tags, preflight decision, private owner approvals, UTC spend/stop/deadline. No unapproved ad hoc plan substitutions.
+
+## 4. Host evidence contract / Gate D0 instrumentation
+
+The `scripts/edge_clock_rca.py` module (PR #75) is an **offline analyzer**, not a deployed recorder. The following host sampling is a **design**, not already-implemented runtime instrumentation. Implement/review/test the host collector before a full run; if unavailable, limit the session to an owner-approved diagnostic-only probe or NO-GO.
+
+| Host stream | Sampling / fields | Provenance and guardrails |
+|---|---|---|
+| Chrony | Every ~2 s on Edge: `chronyc -c tracking`, `sources`, `sourcestats`, source reach/poll, last reference, sample age, stratum/leap, offset/drift/dispersion | Sample `host_observed_utc` **per command**, monotonic start/end and execution duration, success/return code/timeout. No global frozen T0; no SSH/SSM RTT conflated with host execution |
+| CPU/IO scheduling | Every ~1 s: `/proc/stat` CPU user/system/steal deltas, `/proc/loadavg`, `/proc/pressure/{cpu,io}`, memory and disk pressure | Measure on host before/during/after load; report missing counters explicitly |
+| AWS credit context | `CPUCreditBalance` and `CPUCreditUsage` with actual CloudWatch dimensions, periods and timestamps when approved/available | Low-resolution CloudWatch credit measurements cannot establish a per-request scheduling cause |
+| Gateway/client | Stable **private** join of client request ID, gateway journal UTC + stage (`prepare`/`writer_admission`), HTTP status, failure class, benchmark `planned/dispatched/completed/skipped` and `indeterminate` | Export only pseudonyms and redacted aggregate evidence to Git; raw join remains operator-private (0600) |
+| Post-run reference | Sample source health before, during, after and after recovery; include expected versus measured cadence / dropped samples | Avoid using post-workload healthy Chrony as proof of status at error onset |
+
+Collector is read-only to Chrony and kernel metrics; no repeated `makestep`, forced sync, synthetic clock adjustments or altering policy thresholds. Keep a bounded private ring buffer (design target ≤10 MiB in `/run/miles/`, permissions 0600), verify overhead and dropped-sample behavior offline. Preserve a private copy on failure **before** teardown, sanitize before any Git publication. Verify fields against the actual host Chrony version and timestamp contract, not just a schema mock.
+
+**D0 GO:** approved setup, release and chrony host provenance, host recorder running with correct durations and timestamps, 2 Cloud + 1 Edge readiness where provisioned, private ALB, PITR, isolated synthetic test fixtures, metrics and private evidence paths all verified. Diagnostic collector unable to capture reliable host timing → **do not** treat Edge PASS as conclusive RCA.
+
+## 5. Staged acceptance and stop-the-line
+
+| Stage | Action | Native PASS evidence | Failure action |
 |---|---|---|---|
-| C: Preflight | Validate IAM/caller, read-only baseline 41-check inventory, quota, fresh Terraform plans, CI, release/manifest checksums, stop conditions | New owner approval+paid window; reviewed plan hashes, clean baseline within owned scope | Do not apply |
-| D0: Provision | Fresh Cloud/Edge stack only as approved; chronyc host wrapper, metrics, readiness, ALB, DDB/PITR, alarms enabled | Host UTC provenance & runtime-equivalence verified, cloud and edge readiness, safe synthetic fixture | Capture & teardown |
-| D2-A: Edge C1 | `warmbench --fail-fast`, C1, `backup30`, SHA256 GET, 4 read passes | 90/90 PUT, 90/90 HEAD, 360/360 GET hashes, zero 500/503 and no new clock rejections | Stop dispatch, wait in-flight, persist failed-window, teardown |
-| D2-B: Edge C4 | Only if Edge C1 PASS, same release, dataset and policy | Same completeness and zero-error gate; record transport + host UTC + credits/scheduling | Stop, capture, teardown |
-| D3: Native recovery | R1 lease/fence/closed writer, R2 outbox export/seal/cut, checkpoint/GC, DDB PITR/capacity | Versioned, timestamped native proof for each item; failure injection isolated and controlled | Stop, capture, teardown |
-| D4: Shallow alarms | `deep_observation=false`, 4 metrics/profile × Cloud and Edge; threshold-driven real signals | 8 native histories `OK → ALARM → OK` + dimensions & timestamps, no `SetAlarmState` | Mark FAIL/DEFERRED, follow stop policy |
-| E: Cleanup | Export sanitized evidence, drain, destroy OWNED resources, restore policy/SLR if created, direct absence checks | Workload state 0, new 41-check proof (scope stated), exceptions/pending deletion explicit, billing estimated now/invoice later | Escalate; do not conceal leaks |
+| **D2-A / Edge C1** | `warmbench --fail-fast --concurrency=1 --read-repeats=3` using pinned synthetic `backup30` | 90/90 PUT; 90/90 HEAD; **360/360 SHA-256 GET** (initial + 3 repeats); 0 500/503/checksum errors; clock source trusted | Stop new dispatch, drain accepted requests, capture trigger and host clock sample; skip C4/D3/D4 |
+| **D2-B / Edge C4** | Only after **C1 PASS**; same release/manifest/policy and `--concurrency=4` | Same 90/90 PUT, 90/90 HEAD, 360/360 GET; no unaccounted requests or unknown commit | Stop, persist/reconcile indeterminate PUTs, skip remaining gated work |
+| **D3 / native R1/R2** | Isolated lease/fence/closed-writer tests; R2 export/seal/cut, checkpoint/GC; DDB capacity/PITR/throttles | Time-stamped native lease and cut proof, DDB responses and logs, expected state transitions and no cross-fixture corruption | Stop, preserve proof and teardown. DDB `ACTIVE` alone is not R1/R2 PASS |
+| **D4 / 8 shallow alarms** | Cloud/Edge × recovery_cut_age, integrity, throttling, telemetry_age; derive transitions from real, safe fixture signals | 8 alarm ARNs/dimensions and complete native `OK → ALARM → OK` histories with actual metric periods/thresholds; `deep_observation=false` | Record FAIL/DEFERRED; no forced `SetAlarmState` and no false healthy-zero metrics |
 
-**D4 shallow alarm identities (actual Terraform contract):** `recovery_cut_age` (`miles_recovery_cut_age_seconds` > 3600, missing=breaching); `integrity` (`miles_warm_read_integrity_failures_total` > 0, missing=notBreaching); `throttling` (`miles_ddb_throttles_total` > 0, missing=notBreaching); `telemetry_age` (`miles_runtime_observation_age_seconds` > 60, missing=breaching). Dimensions `profile` and `installation`; period 60s, evaluation periods 3, datapoints-to-alarm 1. The 8 alarms are exactly the 4 above × Cloud and Edge; test with safe isolated native metric sources, **not** forced state changes. Require sufficient time for state transitions and clear recovery before teardown.
+Example benchmark arguments only (sensitive config and output directories are resolved privately and must be newly created per trial):
 
-## 3. Evidence to capture (private / sanitized)
+`warmbench --config <PRIVATE_CONFIG_0600> --manifest <PINNED_MANIFEST> --out <NEW_PRIVATE_RUN_DIR> --fail-fast --concurrency 1 --read-repeats 3 --drain-timeout 120s`
 
-- Private: signed approval, expected launch manifest and hashes, Terraform state/plans, AWS IDs/credentials if necessary, raw requests/logs and mapping, stored with least privilege and 0600 where applicable. Never commit.
-- Git-publishable: pseudonymous request join IDs, versioned summary tables, per-gate verdict, host Chrony timing/provenance, CPU-credit correlation with source/resolution/confidence, redacted alarm history, owned-resource absence counts, cost estimate with later billed reconciliation.
-- Each failure: error onset request/timestamp, admitted vs dispatched vs in-flight vs skipped, gateway stage and HTTP status, genuine host-chronyc elapsed, NTP source/poll/age, node CPU/credits and timestamp resolution. If a signal is missing, label **UNVERIFIED**, never guess.
-- Protect unknown-commit: do not retry PUT merely because client timeout; reconcile durable state first. Preserve owned prefix when stop triggers, then include it in cleanup inventory.
+`--drain-timeout` bounds an **operator interruption**, not the initial request-failure latch. Any HTTP 500/503, mismatched checksum, clock rejection or lease failure is a hard stop for **new** work. Previously claimed requests must finish or be marked `indeterminate`; never retry or bulk-delete before durable reconciliation. Every trial records `planned = dispatched + skipped` and `completed = dispatched`, per-request errors, and run result status. Do not change production clock thresholds to force PASS.
 
-## 4. Explicit decision gates
+**Actual Terraform shallow alarm contract** (`infra/terraform/cloud/modules/observability/main.tf`): metric `miles_recovery_cut_age_seconds` >3600 (missing=breaching); `miles_warm_read_integrity_failures_total` >0 (missing=notBreaching); `miles_ddb_throttles_total` >0 (missing=notBreaching); `miles_runtime_observation_age_seconds` >60 (missing=breaching). Evaluation periods=3, datapoints-to-alarm=1, period=60 seconds, dimensions `profile` + `installation`. Reserve enough time for both alarm and recovery evaluation before paid-window deadline. Use only safe isolated signals, not harmful live data tampering.
 
-- **NO-GO** if prior P0 telemetry corrections/`--fail-fast` are unmerged or their offline tests fail; missing owner approval; unbounded cost/teardown; missing scoped IAM; unknown artifact provenance; or clock source not verified at startup.
-- **STOP-THE-LINE** if any 500/503/checksum/lease rejection/clock-uncertainty breach. Fail-fast only prevents new dispatch; wait/reconcile all in-flight and capture evidence. Do not escalate C1→C4 while failing.
-- **TEARDOWN ALWAYS** even on D2/D3/D4 FAIL; no implicit overnight retention. A new AWS run requires its own explicit owner approval, source release pin and billing window.
+## 6. Phase E — mandatory teardown, including failed runs
 
-**Execution status: NOT STARTED.** Editing this file is planning only; it does not authorize AWS activity.
+1. Stop new workload; resolve/drain in-flight request outcomes within approved limits; freeze private logs, telemetry, S3/version and DDB state and sanitized per-gate evidence. If an outcome is indeterminate, keep it explicitly tracked for native reconciliation.
+2. Destroy **only owned resources** per reviewed Terraform destroy plan and verified resource tags; include S3 versions/markers/multipart, ALB/ASG/EC2, DDB, endpoints, networking, IAM/SLRs as created, KMS/Secrets deletion schedules. Preserve documented bootstrap/state resources. Never delete shared Hung/Phong IAM roles/policies without explicit ownership.
+3. Perform **new service-native final absence checks** matching the owned resource inventory. The prior `41/41` verification script and proof must be located/reviewed or recreated if not present in this checkout; do not imply an executable verifier is bundled here. Disclose pending deletion and IAM/SLR eventual consistency.
+4. Record `PASS / FAIL / DEFERRED / UNVERIFIED` by gate, actual runtime state (including pending deletions), resource counts and Terraform drift, cost estimate at shutdown, later observed/billed reconciliations and owner acknowledgment.
+
+**Escalation:** teardown incomplete, unknown billing, missing native proofs or absent final verifier → label **OPEN / ATTENTION REQUIRED**, notify owner through the approved escalation path; do not claim State 0 merely because Terraform returned 0.
+
+## 7. Next decision
+
+This draft is **ready for operator/owner review, not execution**. The associated [approval package](edge-aws-approval-package.md) captures the remaining release hashes, IAM, fresh baseline, budget/deadline, diagnostic implementation gate and signature. Neither a green CI nor an earlier signed approval authorizes this future live run.
