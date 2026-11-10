@@ -1,5 +1,10 @@
 """
-Unit and integration tests for Edge Host Diagnostic Sampler & Ring Buffer (scripts/edge_host_telemetry.py).
+Unit and regression tests for Edge Host Diagnostic Sampler & Ring Buffer (scripts/edge_host_telemetry.py).
+Includes regression tests for:
+- [P1] Preflight validation for chronyc binary and tracking parser; fail-closed on missing dependencies.
+- [P1] Empty window failure propagation: summarize_window returns UNVERIFIED with clock_evidence_verified=False.
+- [P2] Ring buffer hard-cap bounding invariant: oversized records (> max_bytes) are dropped; file size strictly bounded.
+- [P2] Local monotonic clock timing and read-only chrony command allowlist enforcement.
 """
 
 import datetime
@@ -16,6 +21,7 @@ from scripts.edge_host_telemetry import (
     ChronyProbe,
     HostTelemetryRecorder,
     OSPressureProbe,
+    preflight_check,
 )
 
 
@@ -49,10 +55,10 @@ class EdgeHostTelemetryTests(unittest.TestCase):
 
     def test_chrony_probe_monotonic_duration_and_timeout(self):
         """Verifies high-resolution duration measurement and timeout detection."""
-        # Fast runner
         def fast_runner(cmd, timeout):
             time.sleep(0.01)
-            return 0, "A9FEA97B,169.254.169.123,4,1794112023.0,0.000001,0.000001,0.000001,0.1,0.001,0.001,16.2,Normal", ""
+            t_ref = time.time() - 2.0
+            return 0, f"A9FEA97B,169.254.169.123,3,{t_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n", ""
 
         probe = ChronyProbe(command_timeout=1.0, runner=fast_runner)
         res = probe.execute_chrony_subcommand("tracking")
@@ -63,7 +69,6 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         self.assertIn("host_observed_utc", res)
         self.assertIn("host_observed_unix", res)
 
-        # Timed out runner (> 1.0s)
         def timeout_runner(cmd, timeout):
             return -1, "", "Command timed out"
 
@@ -72,19 +77,37 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         self.assertEqual(res_timeout["returncode"], -1)
         self.assertTrue(res_timeout["timed_out"])
 
+    def test_preflight_check(self):
+        """[P1 Regression] Preflight check verifies tracking parser and chronyc availability."""
+        # 1. With mock probe runner, binary is not required -> PASS
+        mock_probe = ChronyProbe(runner=lambda c, t: (0, "", ""))
+        ok, errors = preflight_check(chrony_probe=mock_probe, require_chrony=True)
+        self.assertTrue(ok)
+        self.assertEqual(len(errors), 0)
+
+        # 2. When chronyc is required without mock runner on systems without chronyc
+        import shutil
+        original_which = shutil.which
+        try:
+            shutil.which = lambda cmd: None
+            default_probe = ChronyProbe()
+            ok_fail, errors_fail = preflight_check(chrony_probe=default_probe, require_chrony=True)
+            self.assertFalse(ok_fail)
+            self.assertTrue(any("chronyc binary not found" in e for e in errors_fail))
+        finally:
+            shutil.which = original_which
+
     def test_os_pressure_probe_cpu_stat_deltas_and_steal(self):
         """Verifies /proc/stat tick delta calculation for hypervisor steal and iowait."""
         proc_dir = self.tmppath / "proc"
         proc_dir.mkdir(parents=True, exist_ok=True)
         stat_file = proc_dir / "stat"
 
-        # Sample 1: initial ticks
         stat_file.write_text("cpu  1000 0 500 8000 200 0 50 100 0 0\n")
         probe = OSPressureProbe(proc_root=proc_dir)
         s1 = probe.read_stat()
-        self.assertIsNone(s1["deltas"])  # First sample establishes baseline
+        self.assertIsNone(s1["deltas"])
 
-        # Sample 2: ticks incremented (50 steal ticks out of 200 total delta -> 25% steal)
         stat_file.write_text("cpu  1050 0 520 8080 200 0 50 150 0 0\n")
         s2 = probe.read_stat()
         self.assertIsNotNone(s2["deltas"])
@@ -99,12 +122,10 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         proc_dir = self.tmppath / "proc"
         proc_dir.mkdir(parents=True, exist_ok=True)
 
-        # Missing PSI returns enabled=False without crashing
         probe = OSPressureProbe(proc_root=proc_dir)
         psi_cpu = probe.read_psi("cpu")
         self.assertFalse(psi_cpu["enabled"])
 
-        # Populate PSI
         psi_dir = proc_dir / "pressure"
         psi_dir.mkdir(parents=True, exist_ok=True)
         (psi_dir / "cpu").write_text("some avg10=1.25 avg60=0.85 avg300=0.40 total=1254300\n")
@@ -120,7 +141,6 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         self.assertEqual(psi_io_ok["some"]["avg10"], 2.50)
         self.assertEqual(psi_io_ok["full"]["avg10"], 0.50)
 
-        # Loadavg
         (proc_dir / "loadavg").write_text("0.45 0.30 0.15 2/180 12345\n")
         load = probe.read_loadavg()
         self.assertEqual(load["load_1m"], 0.45)
@@ -130,8 +150,7 @@ class EdgeHostTelemetryTests(unittest.TestCase):
     def test_bounded_ring_buffer_permissions_and_size_capping(self):
         """Verifies file permission 0600 and bounded size trimming when exceeding max_bytes."""
         buf_file = self.tmppath / "telemetry-ring.jsonl"
-        # Minimum bounded size: 1 MB
-        max_bytes = 1024 * 1024
+        max_bytes = 1024 * 1024  # 1 MB
         ring = BoundedRingBuffer(buf_file, max_bytes=max_bytes)
 
         # File permissions check (0600)
@@ -149,20 +168,33 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         self.assertGreater(ring.dropped_records_count, 0)
         self.assertGreater(ring.trimmed_bytes_total, 0)
 
-        # Read back records
         records = ring.read_records()
         self.assertGreater(len(records), 0)
-        # Sequence numbers in file must be sequential
         seqs = [r["seq"] for r in records]
         self.assertEqual(seqs, sorted(seqs))
+
+    def test_bounded_ring_buffer_hard_cap_oversized_record(self):
+        """[P2 Regression] Records larger than max_bytes are dropped immediately, preserving bounds."""
+        buf_file = self.tmppath / "telemetry-oversized.jsonl"
+        max_bytes = 1024 * 1024  # 1 MB
+        ring = BoundedRingBuffer(buf_file, max_bytes=max_bytes)
+
+        # Attempt to write single record exceeding max_bytes (1.5 MB)
+        oversized_payload = "Z" * (1500 * 1024)
+        ring.write_record({"payload": oversized_payload})
+
+        # Must be dropped without writing to file
+        self.assertEqual(buf_file.stat().st_size, 0)
+        self.assertEqual(ring.dropped_records_count, 1)
+        self.assertGreaterEqual(ring.trimmed_bytes_total, 1500 * 1024)
 
     def test_host_telemetry_recorder_lifecycle_and_summary(self):
         """Verifies coordinated recording loop, sampling cadences, and window summary."""
         output_file = self.tmppath / "daemon-test.jsonl"
 
         def mock_chrony_runner(cmd, timeout):
-            # Returns valid CSV tracking
-            return 0, "A9FEA97B,169.254.169.123,4,1794112023.0,0.000001,0.000001,0.000001,0.1,0.001,0.001,16.2,Normal", ""
+            t_ref = time.time() - 2.0
+            return 0, f"A9FEA97B,169.254.169.123,3,{t_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n", ""
 
         proc_dir = self.tmppath / "proc"
         proc_dir.mkdir(parents=True, exist_ok=True)
@@ -178,23 +210,31 @@ class EdgeHostTelemetryTests(unittest.TestCase):
             proc_root=proc_dir,
         )
 
-        # Run background recorder for 1.2s (~6 OS samples, ~3 chrony samples)
         recorder.start_background()
         time.sleep(1.2)
         recorder.stop()
 
+        self.assertGreater(recorder.samples_collected, 0)
         records = recorder.ring_buffer.read_records()
         self.assertGreaterEqual(len(records), 3)
 
-        chrony_samples = [r for r in records if r.get("chrony") is not None]
-        self.assertGreaterEqual(len(chrony_samples), 1)
-
         summary = recorder.summarize_window()
         self.assertEqual(summary["record_count"], len(records))
+        self.assertEqual(summary["status"], "OK")
+        self.assertTrue(summary["clock_evidence_verified"])
         self.assertGreaterEqual(summary["chrony_sample_count"], 1)
         self.assertIsNotNone(summary["chrony_timing"]["avg_duration_s"])
-        self.assertEqual(summary["chrony_timing"]["timeouts"], 0)
-        self.assertEqual(summary["chrony_timing"]["slow_commands_over_1s"], 0)
+
+    def test_empty_window_summary_fail_closed(self):
+        """[P1 Regression] Empty window returns UNVERIFIED with clock_evidence_verified=False."""
+        output_file = self.tmppath / "empty.jsonl"
+        recorder = HostTelemetryRecorder(output_file=output_file)
+
+        summary = recorder.summarize_window()
+        self.assertEqual(summary["record_count"], 0)
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertFalse(summary["clock_evidence_verified"])
+        self.assertEqual(summary["reason"], "no_records_in_window")
 
 
 if __name__ == "__main__":

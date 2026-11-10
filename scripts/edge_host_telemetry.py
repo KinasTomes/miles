@@ -12,7 +12,9 @@ Strict Guardrails:
 - Zero sensitive data leakage: records numerical metrics and chrony status only.
 - Read-only to chrony: only runs allowlisted read commands (tracking, sources, sourcestats).
 - Local execution duration measurement: nanosecond monotonic timers capture true host duration.
-- Bounded private ring buffer: defaults to <= 10 MiB in /run/miles with 0600 permissions.
+- Bounded private ring buffer: strictly bounded to <= max_bytes in /run/miles with 0600 permissions.
+- Hard cap invariant: oversized records (> max_bytes) are safely dropped; file size strictly bounded.
+- Preflight validation and fail-closed empty-window propagation.
 """
 
 import argparse
@@ -21,6 +23,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -28,11 +31,21 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+# Ensure scripts directory and repo root are in sys.path regardless of execution CWD
+_this_dir = Path(__file__).resolve().parent
+_repo_root = _this_dir.parent
+for _p in [str(_repo_root), str(_this_dir)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 try:
     from scripts.runner_diagnostics import parse_chrony_tracking
 except ImportError:
-    # Fallback for standalone execution on remote hosts
-    parse_chrony_tracking = None  # type: ignore
+    try:
+        from runner_diagnostics import parse_chrony_tracking
+    except ImportError:
+        # Fallback for standalone execution on remote hosts
+        parse_chrony_tracking = None  # type: ignore
 
 
 ALLOWLISTED_CHRONY_COMMANDS = frozenset({"tracking", "sources", "sourcestats", "serverstats"})
@@ -52,6 +65,31 @@ def _parse_iso_timestamp(ts: Optional[str]) -> Optional[datetime.datetime]:
         return datetime.datetime.fromisoformat(ts)
     except Exception:
         return None
+
+
+def preflight_check(
+    chrony_probe: Optional["ChronyProbe"] = None,
+    require_chrony: bool = True,
+) -> Tuple[bool, List[str]]:
+    """
+    Verifies that required dependencies and tools are present before sampling:
+    - parse_chrony_tracking parser is loaded.
+    - chronyc executable is available on PATH (or mock runner provided).
+    """
+    errors: List[str] = []
+
+    if parse_chrony_tracking is None:
+        errors.append("parse_chrony_tracking parser function is unavailable (import failed)")
+
+    if require_chrony:
+        if chrony_probe is not None and chrony_probe._runner != chrony_probe._default_runner:
+            # Custom mock runner in use, skip binary check
+            pass
+        else:
+            if not shutil.which("chronyc"):
+                errors.append("chronyc binary not found on system PATH")
+
+    return (len(errors) == 0, errors)
 
 
 class ChronyProbe:
@@ -274,6 +312,7 @@ class BoundedRingBuffer:
     Thread-safe, append-only JSONL ring buffer file with strict size bounding
     and restricted private file permissions (0600).
     When file exceeds max_bytes, trims the oldest lines to maintain bounds.
+    Maintains the invariant: file.stat().st_size <= max_bytes at all times.
     """
 
     def __init__(self, file_path: Path, max_bytes: int = 10 * 1024 * 1024):
@@ -301,19 +340,33 @@ class BoundedRingBuffer:
         line = json.dumps(record, separators=(",", ":")) + "\n"
         encoded = line.encode("utf-8")
 
+        # Invariant guard: if a single record exceeds max_bytes, drop it immediately
+        if len(encoded) > self.max_bytes:
+            with self._lock:
+                self.dropped_records_count += 1
+                self.trimmed_bytes_total += len(encoded)
+            return
+
         with self._lock:
-            # Check size before appending
             current_size = self.file_path.stat().st_size if self.file_path.exists() else 0
             if current_size + len(encoded) > self.max_bytes:
-                self._trim_oldest()
+                self._trim_to_fit(len(encoded))
+
+            # Re-check size after trimming; if still insufficient, drop record
+            current_size = self.file_path.stat().st_size if self.file_path.exists() else 0
+            if current_size + len(encoded) > self.max_bytes:
+                self.dropped_records_count += 1
+                self.trimmed_bytes_total += len(encoded)
+                return
 
             with open(self.file_path, "a", encoding="utf-8") as f:
                 f.write(line)
                 f.flush()
 
-    def _trim_oldest(self) -> None:
+    def _trim_to_fit(self, needed_bytes: int) -> None:
         """
-        Trims approximately the oldest 30% of lines to stay under max_bytes.
+        Trims oldest lines until remaining_size + needed_bytes <= max_bytes,
+        freeing at least 30% headroom.
         """
         if not self.file_path.exists():
             return
@@ -322,20 +375,39 @@ class BoundedRingBuffer:
                 lines = f.readlines()
             if not lines:
                 return
-            # Keep newest 70%
-            keep_count = max(1, int(len(lines) * 0.7))
-            trimmed_count = len(lines) - keep_count
-            trimmed_lines = lines[trimmed_count:]
 
+            line_bytes = [len(l.encode("utf-8")) for l in lines]
+            total_size = sum(line_bytes)
+
+            # Target size: leave 30% buffer below max_bytes or enough room for needed_bytes
+            target_size = min(int(self.max_bytes * 0.7), self.max_bytes - needed_bytes)
+            if target_size < 0:
+                target_size = 0
+
+            dropped_count = 0
+            dropped_bytes = 0
+            current_size = total_size
+
+            while dropped_count < len(lines) and current_size > target_size:
+                dropped_bytes += line_bytes[dropped_count]
+                current_size -= line_bytes[dropped_count]
+                dropped_count += 1
+
+            # Ensure at least 1 line is dropped if capacity is breached
+            if dropped_count == 0 and len(lines) > 0 and (total_size + needed_bytes > self.max_bytes):
+                dropped_count = 1
+                dropped_bytes = line_bytes[0]
+
+            keep_lines = lines[dropped_count:]
             tmp_path = self.file_path.with_suffix(".tmp")
             fd = os.open(str(tmp_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.writelines(trimmed_lines)
+                f.writelines(keep_lines)
                 f.flush()
             os.replace(tmp_path, self.file_path)
 
-            self.dropped_records_count += trimmed_count
-            self.trimmed_bytes_total += sum(len(l.encode("utf-8")) for l in lines[:trimmed_count])
+            self.dropped_records_count += dropped_count
+            self.trimmed_bytes_total += dropped_bytes
         except Exception:
             pass
 
@@ -401,6 +473,7 @@ class HostTelemetryRecorder:
         self._thread: Optional[threading.Thread] = None
         self._sequence = 0
         self._last_chrony_sample_mono = 0.0
+        self.samples_collected = 0
 
     def sample_now(self) -> Dict[str, Any]:
         """Takes an immediate coordinated sample and writes to the ring buffer."""
@@ -427,6 +500,7 @@ class HostTelemetryRecorder:
         }
 
         self.ring_buffer.write_record(record)
+        self.samples_collected += 1
         return record
 
     def run_loop(self, duration_seconds: Optional[float] = None) -> None:
@@ -442,7 +516,7 @@ class HostTelemetryRecorder:
                 break
             try:
                 self.sample_now()
-            except Exception as e:
+            except Exception:
                 # Never crash the diagnostic loop on transient sampling errors
                 pass
 
@@ -475,7 +549,12 @@ class HostTelemetryRecorder:
         """
         records = self.ring_buffer.read_records(since_utc, until_utc)
         if not records:
-            return {"record_count": 0, "status": "no_records_in_window"}
+            return {
+                "record_count": 0,
+                "status": "UNVERIFIED",
+                "clock_evidence_verified": False,
+                "reason": "no_records_in_window",
+            }
 
         chrony_records = [r for r in records if r.get("chrony") is not None]
         durations = [r["chrony"]["command_duration_seconds"] for r in chrony_records if "command_duration_seconds" in r["chrony"]]
@@ -509,8 +588,16 @@ class HostTelemetryRecorder:
             if "iowait_pct" in stat:
                 iowait_percentages.append(stat["iowait_pct"])
 
+        clock_evidence_verified = (
+            len(chrony_records) > 0
+            and len(timeouts) == 0
+            and len(sample_ages) > 0
+        )
+
         return {
             "record_count": len(records),
+            "status": "OK" if clock_evidence_verified else "UNVERIFIED",
+            "clock_evidence_verified": clock_evidence_verified,
             "chrony_sample_count": len(chrony_records),
             "window_start_utc": records[0]["timestamp_utc"],
             "window_end_utc": records[-1]["timestamp_utc"],
@@ -563,6 +650,12 @@ def main():
 
     if args.subcommand == "probe":
         cp = ChronyProbe()
+        ok, errors = preflight_check(chrony_probe=cp, require_chrony=True)
+        if not ok:
+            for err in errors:
+                print(f"Preflight error: {err}", file=sys.stderr)
+            return 1
+
         op = OSPressureProbe()
         chrony_data = cp.sample_full()
         os_data = op.sample_all()
@@ -576,6 +669,13 @@ def main():
         return 0
 
     if args.subcommand == "run":
+        cp = ChronyProbe()
+        ok, errors = preflight_check(chrony_probe=cp, require_chrony=True)
+        if not ok:
+            for err in errors:
+                print(f"Preflight error: {err}", file=sys.stderr)
+            return 1
+
         recorder = HostTelemetryRecorder(
             output_file=Path(args.output_file),
             os_interval=args.os_interval,
@@ -591,6 +691,9 @@ def main():
         signal.signal(signal.SIGTERM, sig_handler)
 
         recorder.run_loop(duration_seconds=args.duration)
+        if recorder.samples_collected == 0:
+            print("Error: Telemetry run loop collected 0 samples (run failed or window empty)", file=sys.stderr)
+            return 1
         return 0
 
     if args.subcommand == "summarize":

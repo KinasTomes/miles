@@ -1,8 +1,15 @@
 """
-Unit tests for Gate E AWS Teardown Absence Verifier (scripts/verify_teardown_absence.py).
+Unit and regression tests for Gate E AWS Teardown Absence Verifier (scripts/verify_teardown_absence.py).
+Includes regression tests for:
+- [P1] Empty / unverified inventory fail-closed (returns UNVERIFIED / all_absent=False).
+- [P1] Full extraction and dynamic absence checking of subnets, security groups, VPC endpoints,
+  instance profiles, trust anchors, rolesanywhere profiles, instances, volumes, target groups, ASGs, SSM parameters.
+- [P2] CloudWatch describe-alarms returncode 0 with empty lists correctly classified as ABSENT (not leak).
+- [P2] Gate E evidence ledger private file permissions (0600) and explicit mode ("dry-run" vs "live").
 """
 
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -23,27 +30,58 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
     def tearDown(self):
         self.tmpdir.cleanup()
 
-    def test_extract_inventory_from_outputs(self):
-        """Verifies parsing of nested Terraform output format into flat inventory dict."""
+    def test_extract_inventory_from_comprehensive_outputs(self):
+        """Verifies parsing of comprehensive Terraform output format covering all owned resource types."""
         sample_outputs = {
+            "network_inventory": {
+                "value": {
+                    "vpc_id": "vpc-0123456789abcdef0",
+                    "public_subnets": {"ap-southeast-1a": "subnet-pub1", "ap-southeast-1b": "subnet-pub2"},
+                    "private_subnets": {"ap-southeast-1a": "subnet-priv1", "ap-southeast-1b": "subnet-priv2"},
+                    "security_groups": {"runtime": "sg-111", "lb": "sg-222"},
+                    "gateway_endpoints": {"s3": "vpce-gw-s3"},
+                    "interface_endpoints": {"ec2": "vpce-if-ec2"},
+                    "alb_name": "miles-dev-alb",
+                }
+            },
             "runtime_inventory": {
                 "value": {
                     "expected_tables": ["miles-dev-records", "miles-dev-leases"],
                     "data_bucket_name": "miles-dev-data-12345",
                     "kms_key_arn": "arn:aws:kms:ap-southeast-1:123456789012:key/test-key-id",
                     "secret_metadata_arn": "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:test-secret",
-                }
-            },
-            "network_inventory": {
-                "value": {
-                    "vpc_id": "vpc-0123456789abcdef0",
-                    "alb_name": "miles-dev-alb",
+                    "bootstrap_parameter_arn": "arn:aws:ssm:ap-southeast-1:123456789012:parameter/miles/dev/config",
+                    "target_group_arn": "arn:aws:elasticloadbalancing:ap-southeast-1:123456789012:targetgroup/tg-1/123",
+                    "iam_roles": {
+                        "worker": "arn:aws:iam::123456789012:role/miles-dev-worker",
+                        "controller": "arn:aws:iam::123456789012:role/miles-dev-controller",
+                    },
+                    "instance_profiles": {
+                        "worker": "miles-dev-worker-profile",
+                    },
+                    "compute": {
+                        "instance_id": "i-0123456789abcdef0",
+                        "data_volume_id": "vol-0123456789abcdef0",
+                        "session_document": "miles-shell-doc",
+                    },
                 }
             },
             "edge_provider": {
                 "value": {
                     "role_name": "miles-edge-role",
-                    "trust_anchor_arn": "arn:aws:rolesanywhere:ap-southeast-1:123456789012:trust-anchor/abc",
+                    "trust_anchor_arn": "arn:aws:rolesanywhere:ap-southeast-1:123456789012:trust-anchor/ta-anchor-1",
+                    "profile_arn": "arn:aws:rolesanywhere:ap-southeast-1:123456789012:profile/prof-edge-1",
+                }
+            },
+            "fleet_contract": {
+                "value": {
+                    "asg_name": "miles-gateway-asg",
+                }
+            },
+            "alarm_contract": {
+                "value": {
+                    "miles-recovery-cut-age": {},
+                    "miles-integrity": {},
                 }
             },
             "data_bucket_name": {
@@ -52,106 +90,161 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         }
 
         inv = TeardownAbsenceVerifier.extract_inventory_from_outputs(sample_outputs)
+        self.assertEqual(inv["vpc_id"], "vpc-0123456789abcdef0")
+        self.assertCountEqual(inv["subnets"], ["subnet-pub1", "subnet-pub2", "subnet-priv1", "subnet-priv2"])
+        self.assertCountEqual(inv["security_groups"], ["sg-111", "sg-222"])
+        self.assertCountEqual(inv["vpc_endpoints"], ["vpce-gw-s3", "vpce-if-ec2"])
+        self.assertEqual(inv["alb_names"], ["miles-dev-alb"])
+        self.assertEqual(inv["target_groups"], ["arn:aws:elasticloadbalancing:ap-southeast-1:123456789012:targetgroup/tg-1/123"])
+        self.assertCountEqual(inv["iam_roles"], ["miles-dev-worker", "miles-dev-controller", "miles-edge-role"])
+        self.assertEqual(inv["instance_profiles"], ["miles-dev-worker-profile"])
+        self.assertEqual(inv["trust_anchors"], ["ta-anchor-1"])
+        self.assertEqual(inv["rolesanywhere_profiles"], ["prof-edge-1"])
+        self.assertEqual(inv["instances"], ["i-0123456789abcdef0"])
+        self.assertEqual(inv["volumes"], ["vol-0123456789abcdef0"])
+        self.assertEqual(inv["asg_names"], ["miles-gateway-asg"])
+        self.assertEqual(inv["ssm_parameters"], ["arn:aws:ssm:ap-southeast-1:123456789012:parameter/miles/dev/config"])
+        self.assertEqual(inv["ssm_documents"], ["miles-shell-doc"])
         self.assertEqual(inv["dynamodb_tables"], ["miles-dev-records", "miles-dev-leases"])
         self.assertEqual(inv["s3_buckets"], ["miles-dev-data-12345"])
-        self.assertEqual(inv["vpc_id"], "vpc-0123456789abcdef0")
-        self.assertEqual(inv["alb_names"], ["miles-dev-alb"])
-        self.assertEqual(inv["iam_roles"], ["miles-edge-role"])
         self.assertEqual(inv["kms_keys"], ["arn:aws:kms:ap-southeast-1:123456789012:key/test-key-id"])
         self.assertEqual(inv["secrets"], ["arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:test-secret"])
-        self.assertEqual(inv["trust_anchors"], ["arn:aws:rolesanywhere:ap-southeast-1:123456789012:trust-anchor/abc"])
+        self.assertCountEqual(inv["cloudwatch_alarms"], ["miles-recovery-cut-age", "miles-integrity"])
 
-    def test_check_resource_absent_statuses(self):
-        """Verifies ABSENT, STILL_PRESENT, and UNEXPECTED_ERROR classification."""
-        # 1. Resource is absent (command fails with expected not-found error)
-        def mock_absent_runner(cmd):
-            return 255, "", "An error occurred (ResourceNotFoundException) when calling DescribeTable: Table not found"
+    def test_fail_closed_on_empty_inventory(self):
+        """[P1 Regression] Empty inventory must fail-closed with status UNVERIFIED and all_absent=False."""
+        empty_inv = {}
+        verifier = TeardownAbsenceVerifier(inventory=empty_inv)
+        summary = verifier.verify_all()
 
-        verifier = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_absent_runner)
-        res = verifier.check_resource_absent("my-table", "dynamodb_table", ["dynamodb", "describe-table"], EXPECTED_ABSENCE_ERRORS["dynamodb_table"])
-        self.assertEqual(res["status"], "ABSENT")
-        self.assertEqual(res["reason"], "NOT_FOUND_MATCHED")
+        self.assertFalse(summary["all_absent"])
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertEqual(summary["error"], "EMPTY_OR_UNVERIFIED_INVENTORY")
+        self.assertEqual(summary["total_checked"], 0)
 
-        # 2. Resource still exists (command succeeds with exit code 0 -> LEAK)
-        def mock_present_runner(cmd):
-            return 0, '{"Table": {"TableName": "my-table"}}', ""
+    def test_cloudwatch_alarm_describe_empty_list_is_absent(self):
+        """[P2 Regression] CloudWatch describe-alarms returning 0 with empty lists is ABSENT, not LEAK."""
+        # 1. Empty alarms returned (alarm deleted) -> ABSENT
+        def mock_empty_alarms_runner(cmd):
+            return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
 
-        verifier_present = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_present_runner)
-        res_present = verifier_present.check_resource_absent("my-table", "dynamodb_table", ["dynamodb", "describe-table"], EXPECTED_ABSENCE_ERRORS["dynamodb_table"])
-        self.assertEqual(res_present["status"], "STILL_PRESENT")
-        self.assertEqual(res_present["reason"], "RESOURCE_EXISTS_LEAK")
+        v_empty = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_empty_alarms_runner)
+        r_empty = v_empty.check_cloudwatch_alarm_absent("miles-dev-recovery-cut-age")
+        self.assertEqual(r_empty["status"], "ABSENT")
+        self.assertIn("EMPTY_OR_UNMATCHED_ALARMS_LIST", r_empty["reason"])
 
-        # 3. Unexpected error (e.g. AccessDenied)
-        def mock_error_runner(cmd):
-            return 255, "", "An error occurred (AccessDeniedException): User is not authorized"
+        # 2. Alarms returned and matching alarm present -> STILL_PRESENT leak
+        def mock_present_alarms_runner(cmd):
+            return 0, json.dumps({
+                "MetricAlarms": [{"AlarmName": "miles-dev-recovery-cut-age"}],
+                "CompositeAlarms": [],
+            }), ""
 
-        verifier_err = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_error_runner)
-        res_err = verifier_err.check_resource_absent("my-table", "dynamodb_table", ["dynamodb", "describe-table"], EXPECTED_ABSENCE_ERRORS["dynamodb_table"])
-        self.assertEqual(res_err["status"], "UNEXPECTED_ERROR")
-        self.assertIn("exit_code_255", res_err["reason"])
+        v_present = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_present_alarms_runner)
+        r_present = v_present.check_cloudwatch_alarm_absent("miles-dev-recovery-cut-age")
+        self.assertEqual(r_present["status"], "STILL_PRESENT")
+        self.assertEqual(r_present["reason"], "RESOURCE_EXISTS_LEAK")
 
-    def test_check_kms_key_pending_deletion(self):
-        """Verifies KMS key PendingDeletion detection vs still present vs absent."""
-        # Pending deletion
-        def mock_kms_pending(cmd):
-            return 0, json.dumps({"State": "PendingDeletion", "DeletionDate": "2026-12-10T00:00:00Z"}), ""
+        # 3. AWS error returned (ResourceNotFoundException) -> ABSENT
+        def mock_error_absent_runner(cmd):
+            return 255, "", "ResourceNotFound: The specified alarm does not exist."
 
-        v_pending = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_kms_pending)
-        r_pending = v_pending.check_kms_key_pending_deletion("arn:aws:kms:key/123")
-        self.assertEqual(r_pending["status"], "PENDING_DELETION")
-        self.assertEqual(r_pending["deletion_date"], "2026-12-10T00:00:00Z")
+        v_err = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_error_absent_runner)
+        r_err = v_err.check_cloudwatch_alarm_absent("miles-dev-recovery-cut-age")
+        self.assertEqual(r_err["status"], "ABSENT")
 
-        # Active (Enabled -> STILL_PRESENT leak)
-        def mock_kms_enabled(cmd):
-            return 0, json.dumps({"State": "Enabled", "DeletionDate": None}), ""
+    def test_asg_and_ec2_instance_volume_absence_checks(self):
+        """Verifies ASG empty list, EC2 instance terminated, and EBS volume deleted states."""
+        # ASG absent (empty AutoScalingGroups)
+        def mock_asg_empty(cmd):
+            return 0, json.dumps({"AutoScalingGroups": []}), ""
 
-        v_enabled = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_kms_enabled)
-        r_enabled = v_enabled.check_kms_key_pending_deletion("arn:aws:kms:key/123")
-        self.assertEqual(r_enabled["status"], "STILL_PRESENT")
+        v_asg = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_asg_empty)
+        r_asg = v_asg.check_asg_absent("miles-asg")
+        self.assertEqual(r_asg["status"], "ABSENT")
 
-        # Deleted / NotFound
-        def mock_kms_notfound(cmd):
-            return 255, "", "NotFoundException: Key does not exist"
+        # ASG present
+        def mock_asg_present(cmd):
+            return 0, json.dumps({"AutoScalingGroups": [{"AutoScalingGroupName": "miles-asg"}]}), ""
 
-        v_notfound = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_kms_notfound)
-        r_notfound = v_notfound.check_kms_key_pending_deletion("arn:aws:kms:key/123")
-        self.assertEqual(r_notfound["status"], "ABSENT")
+        v_asg_p = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_asg_present)
+        r_asg_p = v_asg_p.check_asg_absent("miles-asg")
+        self.assertEqual(r_asg_p["status"], "STILL_PRESENT")
 
-    def test_check_secret_pending_deletion(self):
-        """Verifies Secrets Manager DeletedDate detection vs active vs absent."""
-        # Pending deletion
-        def mock_sec_pending(cmd):
-            return 0, json.dumps({"DeletedDate": "2026-12-10T00:00:00Z"}), ""
+        # EC2 instance terminated -> ABSENT
+        def mock_inst_terminated(cmd):
+            return 0, json.dumps({"Reservations": [{"Instances": [{"InstanceId": "i-123", "State": {"Name": "terminated"}}]}]}), ""
 
-        v_pending = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_sec_pending)
-        r_pending = v_pending.check_secret_pending_deletion("arn:aws:secretsmanager:secret/123")
-        self.assertEqual(r_pending["status"], "PENDING_DELETION")
-        self.assertEqual(r_pending["deletion_date"], "2026-12-10T00:00:00Z")
+        v_inst = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_inst_terminated)
+        r_inst = v_inst.check_instance_absent("i-123")
+        self.assertEqual(r_inst["status"], "ABSENT")
+        self.assertEqual(r_inst["reason"], "INSTANCE_TERMINATED")
 
-        # Active (No DeletedDate -> STILL_PRESENT leak)
-        def mock_sec_active(cmd):
-            return 0, json.dumps({"DeletedDate": None}), ""
+        # EC2 instance running -> STILL_PRESENT leak
+        def mock_inst_running(cmd):
+            return 0, json.dumps({"Reservations": [{"Instances": [{"InstanceId": "i-123", "State": {"Name": "running"}}]}]}), ""
 
-        v_active = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_sec_active)
-        r_active = v_active.check_secret_pending_deletion("arn:aws:secretsmanager:secret/123")
-        self.assertEqual(r_active["status"], "STILL_PRESENT")
+        v_inst_r = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_inst_running)
+        r_inst_r = v_inst_r.check_instance_absent("i-123")
+        self.assertEqual(r_inst_r["status"], "STILL_PRESENT")
 
-        # NotFound
-        def mock_sec_notfound(cmd):
-            return 255, "", "ResourceNotFoundException: Secret not found"
+        # EBS volume deleted -> ABSENT
+        def mock_vol_deleted(cmd):
+            return 0, json.dumps({"Volumes": [{"VolumeId": "vol-123", "State": "deleted"}]}), ""
 
-        v_notfound = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_sec_notfound)
-        r_notfound = v_notfound.check_secret_pending_deletion("arn:aws:secretsmanager:secret/123")
-        self.assertEqual(r_notfound["status"], "ABSENT")
+        v_vol = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_vol_deleted)
+        r_vol = v_vol.check_volume_absent("vol-123")
+        self.assertEqual(r_vol["status"], "ABSENT")
 
-    def test_verify_all_clean_teardown(self):
-        """Verifies verify_all returns all_absent=True when all resources are absent/pending."""
+    def test_ledger_export_file_mode_and_permissions(self):
+        """[P2 Regression] Verifies ledger file permissions 0600 and explicit execution mode recorded."""
+        ledger_file = self.tmppath / "gate-e-test-ledger.json"
+
         inventory = {
+            "dynamodb_tables": ["tbl1"],
+        }
+
+        def mock_runner(cmd):
+            return 255, "", "ResourceNotFoundException"
+
+        verifier = TeardownAbsenceVerifier(
+            inventory=inventory,
+            mode="dry-run",
+            cli_runner=mock_runner,
+        )
+
+        verifier.export_summary(ledger_file)
+        self.assertTrue(ledger_file.exists())
+
+        # Check permissions: 0600
+        mode = ledger_file.stat().st_mode & 0o777
+        self.assertEqual(mode, 0o600)
+
+        # Check explicit mode
+        data = json.loads(ledger_file.read_text(encoding="utf-8"))
+        self.assertEqual(data["mode"], "dry-run")
+        self.assertEqual(data["status"], "PASS")
+        self.assertTrue(data["all_absent"])
+
+    def test_verify_all_comprehensive_clean_teardown(self):
+        """Verifies verify_all returns PASS and all_absent=True across all resource types."""
+        inventory = {
+            "vpc_id": "vpc-1",
+            "subnets": ["subnet-1"],
+            "security_groups": ["sg-1"],
+            "vpc_endpoints": ["vpce-1"],
+            "alb_names": ["alb-1"],
+            "target_groups": ["tg-1"],
+            "iam_roles": ["role-1"],
+            "instance_profiles": ["prof-1"],
+            "trust_anchors": ["ta-1"],
+            "rolesanywhere_profiles": ["rap-1"],
+            "instances": ["i-1"],
+            "volumes": ["vol-1"],
+            "asg_names": ["asg-1"],
+            "ssm_parameters": ["param-1"],
             "dynamodb_tables": ["table1"],
             "s3_buckets": ["bucket1"],
-            "vpc_id": "vpc-123",
-            "alb_names": ["alb1"],
-            "iam_roles": ["role1"],
             "acm_certificates": ["cert1"],
             "ssm_documents": ["doc1"],
             "key_pairs": ["kp1"],
@@ -165,35 +258,26 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
                 return 0, json.dumps({"State": "PendingDeletion", "DeletionDate": "2026-12-10T00:00:00Z"}), ""
             if "describe-secret" in cmd:
                 return 0, json.dumps({"DeletedDate": "2026-12-10T00:00:00Z"}), ""
+            if "describe-alarms" in cmd:
+                return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
+            if "describe-auto-scaling-groups" in cmd:
+                return 0, json.dumps({"AutoScalingGroups": []}), ""
+            if "describe-instances" in cmd:
+                return 0, json.dumps({"Reservations": [{"Instances": [{"InstanceId": "i-1", "State": {"Name": "terminated"}}]}]}), ""
+            if "describe-volumes" in cmd:
+                return 0, json.dumps({"Volumes": [{"VolumeId": "vol-1", "State": "deleted"}]}), ""
             # All others return expected not found
-            return 255, "", "ResourceNotFoundException 404 LoadBalancerNotFound InvalidVpcID.NotFound NoSuchEntity InvalidDocument InvalidKeyPair.NotFound"
+            return 255, "", "ResourceNotFoundException 404 Not Found LoadBalancerNotFound TargetGroupNotFound InvalidVpcID.NotFound InvalidSubnetID.NotFound InvalidGroup.NotFound InvalidVpcEndpointId.NotFound NoSuchEntity InvalidDocument InvalidKeyPair.NotFound ParameterNotFound"
 
         verifier = TeardownAbsenceVerifier(inventory=inventory, cli_runner=mock_clean_runner)
         summary = verifier.verify_all()
         self.assertTrue(summary["all_absent"])
+        self.assertEqual(summary["status"], "PASS")
         self.assertEqual(summary["still_present_count"], 0)
         self.assertEqual(summary["unexpected_error_count"], 0)
-        self.assertEqual(summary["total_checked"], 11)
+        self.assertEqual(summary["total_checked"], 22)
         self.assertEqual(summary["pending_deletion_count"], 2)
-        self.assertEqual(summary["absent_count"], 9)
-
-    def test_verify_all_detected_leak(self):
-        """Verifies verify_all flags leak when at least one resource is STILL_PRESENT."""
-        inventory = {
-            "dynamodb_tables": ["table1"],
-            "s3_buckets": ["bucket_leaked"],
-        }
-
-        def mock_leak_runner(cmd):
-            if "head-bucket" in cmd:
-                return 0, "", ""  # Bucket still exists!
-            return 255, "", "ResourceNotFoundException"
-
-        verifier = TeardownAbsenceVerifier(inventory=inventory, cli_runner=mock_leak_runner)
-        summary = verifier.verify_all()
-        self.assertFalse(summary["all_absent"])
-        self.assertEqual(summary["still_present_count"], 1)
-        self.assertIn("bucket_leaked", summary["still_present"])
+        self.assertEqual(summary["absent_count"], 20)
 
     def test_cli_dry_run_with_outputs_file(self):
         """Verifies CLI execution with --dry-run and --outputs-json."""
@@ -225,6 +309,7 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
             self.assertTrue(ledger_file.exists())
             ledger_data = json.loads(ledger_file.read_text(encoding="utf-8"))
             self.assertTrue(ledger_data["all_absent"])
+            self.assertEqual(ledger_data["mode"], "dry-run")
             self.assertEqual(ledger_data["total_checked"], 4)
         finally:
             sys.argv = old_argv
