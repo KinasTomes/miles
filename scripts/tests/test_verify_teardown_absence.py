@@ -11,6 +11,7 @@ Includes regression tests for:
 """
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import tempfile
@@ -63,6 +64,32 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         result = verifier.verify_all()
         self.assertFalse(result["all_absent"])
         self.assertEqual(result["error"], "TERRAFORM_STATE_RECONCILIATION_UNAVAILABLE")
+
+    def test_live_state_and_manifest_must_include_independent_resources(self):
+        inventory = {"account_id": "123456789012", "vpc_id": "vpc-1", "dynamodb_tables": ["table"], "s3_buckets": ["bucket"], "iam_roles": ["role"], "cloudwatch_alarms": ["alarm"]}
+        kinds = [("aws_vpc", "vpc-1"), ("aws_dynamodb_table", "table"), ("aws_s3_bucket", "bucket"), ("aws_iam_role", "role"), ("aws_cloudwatch_metric_alarm", "alarm")]
+        resources = [{"mode": "managed", "address": f"{kind}.example", "type": kind, "values": {"id": identity}} for kind, identity in kinds]
+        state = json.dumps({"values": {"root_module": {"resources": resources}}}).encode()
+        digest = hashlib.sha256(state).hexdigest()
+        expected = {key: value for key, value in inventory.items() if key != "account_id"}
+        manifest = {"schema_version": "miles-teardown-manifest/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "ownership_scope": {"project": "miles"}, "expected_types": list(expected), "expected_counts": {key: 1 for key in expected}, "expected_resources": expected, "provenance": {"source": "terraform_pre_destroy", "created_at_utc": "2026-11-10T00:00:00Z", "state_sha256": digest}}
+        def runner(cmd):
+            if "get-caller-identity" in cmd:
+                return 0, json.dumps({"Account": "123456789012"}), ""
+            if "describe-alarms" in cmd:
+                return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
+            return 255, "", "ResourceNotFoundException NoSuchBucket NoSuchEntity InvalidVpcID.NotFound"
+        verifier = TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", state_json=state, state_sha256=digest, cli_runner=runner)
+        self.assertIn("native_runtime_inventory_reconciliation_unavailable", verifier.verify_all()["state_errors"])
+        resources.append({"mode": "managed", "address": "aws_cloudwatch_log_group.runtime", "type": "aws_cloudwatch_log_group", "values": {"id": "/missing"}})
+        changed_state = json.dumps({"values": {"root_module": {"resources": resources}}}).encode()
+        changed_hash = hashlib.sha256(changed_state).hexdigest()
+        manifest["provenance"]["state_sha256"] = changed_hash
+        truncated = TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", state_json=changed_state, state_sha256=changed_hash, cli_runner=runner)
+        self.assertEqual(truncated.verify_all()["status"], "UNVERIFIED")
+        self.assertTrue(any("state_resource_missing:aws_cloudwatch_log_group.runtime" in error for error in truncated.verify_all()["state_errors"]))
+        bad_hash = TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", state_json=changed_state, state_sha256="0" * 64, cli_runner=runner)
+        self.assertIn("frozen_state_hash_mismatch", bad_hash.verify_all()["state_errors"])
 
     def test_extract_inventory_from_real_terraform_schema(self):
         """

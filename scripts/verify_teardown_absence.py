@@ -21,6 +21,8 @@ Strict Guardrails:
 
 import argparse
 import datetime
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -28,6 +30,11 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+
+try:
+    from scripts.freeze_terraform_inventory import compare_inventory, extract_resources
+except ModuleNotFoundError:
+    from freeze_terraform_inventory import compare_inventory, extract_resources
 
 
 def _iso_utc_now() -> str:
@@ -167,6 +174,8 @@ class TeardownAbsenceVerifier:
         cli_runner: Optional[Callable[[List[str]], Tuple[int, str, str]]] = None,
         manifest: Optional[Union[Dict[str, Any], Path, str]] = None,
         manifest_required: Optional[bool] = None,
+        state_json: Optional[bytes] = None,
+        state_sha256: Optional[str] = None,
     ):
         self.inventory = inventory
         self.profile = profile
@@ -175,6 +184,8 @@ class TeardownAbsenceVerifier:
         self.mode = mode
         self._runner = cli_runner or self._default_aws_runner
         self.manifest = manifest
+        self.state_json = state_json
+        self.state_sha256 = state_sha256
         if manifest_required is not None:
             self.manifest_required = manifest_required
         else:
@@ -636,6 +647,8 @@ class TeardownAbsenceVerifier:
         mode: str = "dry-run",
         cli_runner: Optional[Callable[[List[str]], Tuple[int, str, str]]] = None,
         manifest_required: Optional[bool] = None,
+        state_json: Optional[bytes] = None,
+        state_sha256: Optional[str] = None,
     ) -> "TeardownAbsenceVerifier":
         """
         Parses active-outputs.json or `terraform output -json` and extracts
@@ -651,6 +664,8 @@ class TeardownAbsenceVerifier:
             cli_runner=cli_runner,
             manifest=manifest_path,
             manifest_required=manifest_required,
+            state_json=state_json,
+            state_sha256=state_sha256,
         )
 
     @classmethod
@@ -1498,19 +1513,33 @@ class TeardownAbsenceVerifier:
                     "resources": {},
                 }
 
-            # Outputs and a caller-supplied manifest can omit the same resource.
-            # Until state-derived inventory is independently reconciled, no live
-            # verification can establish completeness.
-            return {
-                "timestamp_utc": _iso_utc_now(),
-                "mode": self.mode,
-                "status": "UNVERIFIED",
-                "all_absent": False,
-                "error": "TERRAFORM_STATE_RECONCILIATION_UNAVAILABLE",
-                "reason": "Native checks cannot prove completeness without independent pre-destroy Terraform state reconciliation.",
-                "total_checked": 0,
-                "resources": {},
-            }
+            state_errors = []
+            if not self.state_json or not self.state_sha256:
+                state_errors.append("missing_frozen_state_or_hash")
+            else:
+                actual_hash = hashlib.sha256(self.state_json).hexdigest()
+                if not hmac.compare_digest(actual_hash, self.state_sha256):
+                    state_errors.append("frozen_state_hash_mismatch")
+                provenance = self.manifest.get("provenance", {}) if isinstance(self.manifest, dict) else {}
+                if not isinstance(provenance, dict) or provenance.get("state_sha256") != actual_hash or provenance.get("source") != "terraform_pre_destroy":
+                    state_errors.append("manifest_state_provenance_mismatch")
+                try:
+                    resources = extract_resources(json.loads(self.state_json))
+                    state_errors.extend(compare_inventory(resources, self.inventory))
+                    expected = self.manifest.get("expected_resources", {}) if isinstance(self.manifest, dict) else {}
+                    state_errors.extend(compare_inventory(resources, expected if isinstance(expected, dict) else {}))
+                except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+                    state_errors.append("invalid_frozen_state")
+            # Terraform state does not enumerate instances and disks created by ASG.
+            # A separate native pre-destroy inventory must be reconciled before PASS.
+            state_errors.append("native_runtime_inventory_reconciliation_unavailable")
+            if state_errors:
+                return {
+                    "timestamp_utc": _iso_utc_now(), "mode": self.mode,
+                    "status": "UNVERIFIED", "all_absent": False,
+                    "error": "TERRAFORM_STATE_RECONCILIATION_UNAVAILABLE",
+                    "state_errors": state_errors, "total_checked": 0, "resources": {},
+                }
 
         # Guard 0.8: Manifest schema validation or two-way reconciliation failure
         if self.manifest_errors:
@@ -1964,6 +1993,8 @@ def main():
     parser = argparse.ArgumentParser(description="Verify AWS teardown absence (Gate E).")
     parser.add_argument("--outputs-json", help="Path to active-outputs.json or terraform outputs.")
     parser.add_argument("--manifest", help="Path to frozen pre-teardown authoritative manifest JSON.")
+    parser.add_argument("--state-json", help="Private frozen pre-destroy terraform show -json state")
+    parser.add_argument("--state-sha256", help="Independently recorded SHA-256 of frozen state")
     parser.add_argument("--inventory-json", help="Direct inventory JSON file path.")
     parser.add_argument("--output-ledger", default="gate-e-absence-summary.json", help="Output path for summary.")
     parser.add_argument("--profile", default=None, help="AWS CLI profile.")
@@ -2012,6 +2043,8 @@ def main():
             region=args.region,
             mode=mode,
             cli_runner=cli_runner,
+            state_json=Path(args.state_json).read_bytes() if args.state_json else None,
+            state_sha256=args.state_sha256,
         )
     elif args.inventory_json:
         inv = json.loads(Path(args.inventory_json).read_text(encoding="utf-8"))
@@ -2022,6 +2055,8 @@ def main():
             region=args.region,
             mode=mode,
             cli_runner=cli_runner,
+            state_json=Path(args.state_json).read_bytes() if args.state_json else None,
+            state_sha256=args.state_sha256,
         )
     else:
         print("Error: must provide --outputs-json or --inventory-json", file=sys.stderr)
