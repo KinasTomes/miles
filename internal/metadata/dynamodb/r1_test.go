@@ -36,6 +36,14 @@ func sharedFixture(t *testing.T) (*Store, *Store, contracttest.Fixture, *r1Clock
 		f.Packs[i].StateRevision = 1
 	}
 	m, client := fixtureStore(t, f)
+	return sharedFixtureWith(t, f, m, client)
+}
+
+func sharedFixtureWith(t *testing.T, f contracttest.Fixture, m *Store, client *ddb.Client) (*Store, *Store, contracttest.Fixture, *r1Clock) {
+	t.Helper()
+	for i := range f.Packs {
+		f.Packs[i].StateRevision = 1
+	}
 	c := &r1Clock{now: f.Now}
 	a := &SharedAuthority{Time: c, Lifetime: 30 * time.Second}
 	m.authority = a
@@ -53,8 +61,13 @@ func r1Request(f contracttest.Fixture, id string, epoch uint64) s.R1Acquire {
 	return s.R1Acquire{Fence: s.WriterFence{LeaseID: id, Epoch: epoch, ServiceIncarnation: "shared-service"}, Owner: "worker-a", Kind: "writer", Object: f.Request("root", 0).Head.Object, Deadline: f.Now.Add(5 * time.Minute)}
 }
 func TestLocalR1AdmissionClosureRenewalAndTakeover(t *testing.T) {
-	ctx := context.Background()
 	m, peer, f, c := sharedFixture(t)
+	runR1AdmissionClosureRenewalAndTakeover(t, m, peer, f, c)
+}
+
+func runR1AdmissionClosureRenewalAndTakeover(t *testing.T, m, peer *Store, f contracttest.Fixture, c *r1Clock) {
+	t.Helper()
+	ctx := context.Background()
 	r := r1Request(f, "same-slot", 1)
 	type result struct {
 		err   error
