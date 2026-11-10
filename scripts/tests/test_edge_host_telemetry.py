@@ -18,6 +18,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from scripts.edge_host_telemetry import (
     ALLOWLISTED_CHRONY_COMMANDS,
@@ -38,6 +39,13 @@ class EdgeHostTelemetryTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmpdir.cleanup()
+
+    def test_sampling_exception_is_recorded_at_stop(self):
+        recorder = HostTelemetryRecorder(output_file=self.tmppath / "failed.jsonl", os_interval=0.2)
+        with mock.patch.object(recorder, "sample_now", side_effect=RuntimeError("sampler failed")):
+            recorder.run_loop(duration_seconds=0.21)
+        self.assertGreater(recorder.sampling_errors, 0)
+        self.assertIsNotNone(recorder.stopped_at_utc)
 
     def test_chrony_probe_allowlist_enforcement(self):
         """Verifies that unauthorized chrony commands raise ValueError (read-only guard)."""

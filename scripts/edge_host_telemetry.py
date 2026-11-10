@@ -517,6 +517,8 @@ class HostTelemetryRecorder:
         self.valid_chrony_samples = 0
         self.consecutive_chrony_errors = 0
         self.max_consecutive_chrony_errors = 0
+        self.sampling_errors = 0
+        self.stopped_at_utc = None
 
         # Cumulative durability counters (survive ring buffer compaction/eviction)
         self.cumulative_chrony_attempts = 0
@@ -602,13 +604,13 @@ class HostTelemetryRecorder:
             try:
                 self.sample_now()
             except Exception:
-                # Never crash the diagnostic loop on transient sampling errors
-                pass
+                self.sampling_errors += 1
 
             if self._stop_event.wait(self.os_interval):
                 break
 
         self._running = False
+        self.stopped_at_utc = _iso_utc_now()
 
     def start_background(self) -> None:
         """Starts the sampling loop in a daemon background thread."""
@@ -927,7 +929,10 @@ def main():
             print("Error: Gate D0 telemetry failure: 0 valid chrony clock tracking samples collected", file=sys.stderr)
             return 1
 
-        summary = recorder.summarize_window()
+        summary = recorder.summarize_window(until_utc=recorder.stopped_at_utc)
+        if recorder.sampling_errors:
+            print(f"Error: {recorder.sampling_errors} telemetry sampling attempts failed", file=sys.stderr)
+            return 1
         if summary.get("status") != "OK" or not summary.get("clock_evidence_verified"):
             reason = summary.get("reason") or "clock uncertainty or timeouts in window"
             print(f"Error: Gate D0 clock evidence unverified: {reason}", file=sys.stderr)
