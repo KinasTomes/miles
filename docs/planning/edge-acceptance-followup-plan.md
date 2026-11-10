@@ -46,17 +46,17 @@ Chưa hoàn thành:
 
 ## 4. Workstream R — Edge clock RCA & offline correlation (P0/P1)
 
-**Vị trí dự kiến:** `scripts/` module phân tích offline + `scripts/tests/`; báo cáo `docs/testing/edge-clock-rca-followup.md` (chỉ sanitized evidence). Sử dụng PR #73 telemetry contract, không sửa R1 runtime.
+**Vị trí dự kiến:** `scripts/` module phân tích offline (`scripts/edge_clock_rca.py`) + `scripts/tests/test_edge_clock_rca.py`; báo cáo `docs/testing/edge-clock-rca-followup.md` (chỉ sanitized evidence). Sử dụng PR #73 telemetry contract, không sửa R1 runtime.
 
-- [ ] R1. Inventory dữ liệu sẵn có **offline** từ phiên 2026-11-08: `edge-c1-t1-result.json`, `edge-c1-t1-failed-window.json`, gateway journal, chrony tracking/sources/sourcestats, OS telemetry, CPU metrics nếu có. Bảng `observed / correlated / hypothesized / missing`; tuyệt đối không suy đoán metrics không tồn tại.
-- [ ] R2. Map stable pseudonymous request IDs → UTC timestamps / stage `writer_admission` / HTTP 503; kiểm tra 46 successes + 44 failures. Chuẩn hóa timestamp/provenance/timezone và uncertainty của từng nguồn. **Không tái dùng tuổi mẫu âm từ collector cũ để xác nhận NTP age.**
-- [ ] R3. Script đối chiếu timeline có kiểm tra schema, ordering, missing-data và granularity: error onset, host `chronyc` sample age, poll interval, last reference UTC, stratum/leap/offset/drift, CPU utilization & credits (`CPUCreditBalance` / `CPUCreditUsage` khi có), CPU steal/run queue, memory pressure và SSH/SSM RTT. Độ phân giải CloudWatch 1 phút không chứng minh jitter ở mức một request; không dựng causal claim từ tương quan thô.
-- [ ] R4. Lập bảng phân biệt tối thiểu `sample_age_exceeded`, `chrony_command_duration_exceeded_1s`, `horizon_uncertainty_exceeded_2s`, NTP unsync/leap/offset và `ErrClockUnavailable`. Log AWS gateway hiện chỉ có `clock_uncertainty_exceeded` chung nên nguyên nhân con chưa được xác nhận.
-- [ ] R5. Thiết kế safe diagnostic sampling cho phiên mới (nếu cần) để đọc source reach/poll/sourcestats, OS scheduler and credit metrics *before/during/after* Edge load, với artifact host timestamp và monotonic duration đúng. Không gọi AWS ở giai đoạn này. Chỉ thêm instrumentation nếu offline tests chứng minh không gây nhạy cảm/overhead cao.
-- [ ] R6. Deterministic simulation: missed NTP updates ở chu kỳ 16s, CPU scheduling delay, jitter, SSH/SSM slow RTT với remote chronyc nhanh, stale→fresh, partial telemetry, evidence capture failure. Verify fail-closed, không tự chỉnh NTP threshold.
-- [ ] R7. RCA output phân cấp: `Confirmed` (có native evidence), `Correlated`, `Hypothesis`, `Unverified`; kết luận không vượt quá bằng chứng. Nếu thiếu telemetry tại đúng phút lỗi, công khai blocker và thêm mục thu dữ liệu ở phiên AWS tiếp theo.
+- [x] R1. Inventory dữ liệu sẵn có **offline** từ phiên 2026-11-08: `edge-c1-t1-result.json`, `edge-c1-t1-failed-window.json`, gateway journal, chrony tracking/sources/sourcestats, OS telemetry, CPU metrics nếu có. Bảng `observed / correlated / hypothesized / missing`; tuyệt đối không suy đoán metrics không tồn tại.
+- [x] R2. Map stable pseudonymous request IDs → UTC timestamps / stage `writer_admission` / HTTP 503; kiểm tra 46 successes + 44 failures. Chuẩn hóa timestamp/provenance/timezone và uncertainty của từng nguồn. **Không tái dùng tuổi mẫu âm từ collector cũ để xác nhận NTP age.**
+- [x] R3. Script đối chiếu timeline có kiểm tra schema, ordering, missing-data và granularity: error onset, host `chronyc` sample age, poll interval, last reference UTC, stratum/leap/offset/drift, CPU utilization & credits (`CPUCreditBalance` / `CPUCreditUsage` khi có), CPU steal/run queue, memory pressure và SSH/SSM RTT. Độ phân giải CloudWatch 1 phút không chứng minh jitter ở mức một request; không dựng causal claim từ tương quan thô.
+- [x] R4. Lập bảng phân biệt tối thiểu `sample_age_exceeded`, `chrony_command_duration_exceeded_1s`, `horizon_uncertainty_exceeded_2s`, NTP unsync/leap/offset và `ErrClockUnavailable`. Log AWS gateway hiện chỉ có `clock_uncertainty_exceeded` chung nên nguyên nhân con chưa được xác nhận.
+- [x] R5. Thiết kế safe diagnostic sampling cho phiên mới (nếu cần) để đọc source reach/poll/sourcestats, OS scheduler and credit metrics *before/during/after* Edge load, với artifact host timestamp và monotonic duration đúng. Không gọi AWS ở giai đoạn này. Chỉ thêm instrumentation nếu offline tests chứng minh không gây nhạy cảm/overhead cao.
+- [x] R6. Deterministic simulation: missed NTP updates ở chu kỳ 16s, CPU scheduling delay, jitter, SSH/SSM slow RTT với remote chronyc nhanh, stale→fresh, partial telemetry, evidence capture failure. Verify fail-closed, không tự chỉnh NTP threshold.
+- [x] R7. RCA output phân cấp: `Confirmed` (có native evidence), `Correlated`, `Hypothesis`, `Unverified`; kết luận không vượt quá bằng chứng. Báo cáo hoàn chỉnh: `docs/testing/edge-clock-rca-followup.md`.
 
-**Gate R:** Có thể diễn giải đúng nguồn gốc/độ tin cậy của mỗi timestamp; không false-positive do remote transport hoặc frozen T0; không lộ private identifiers; biết chính xác còn thiếu bằng chứng gì trước live Edge C1. Có thể cần một *diagnostic-only* AWS probe do owner duyệt nếu RCA offline không đủ, không mặc định coi nguyên nhân đã tìm ra.
+**Gate R:** ĐẠT (PASS) — Có thể diễn giải đúng nguồn gốc/độ tin cậy của mỗi timestamp; không false-positive do remote transport hoặc frozen T0; không lộ private identifiers; biết chính xác còn thiếu bằng chứng gì trước live Edge C1. Safe diagnostic sampling đã được thiết kế sẵn sàng cho phiên AWS tiếp theo.
 
 ## 5. Workstream L — AWS follow-up acceptance (chỉ viết plan, CHƯA THỰC THI)
 
@@ -89,8 +89,8 @@ Chưa hoàn thành:
 - [x] PR #73 đã squash merge thành `7f6533e`.
 - [x] `main` local cập nhật; worktree `feat/edge-acceptance-followup` tạo từ merged `main`.
 - [x] Bắt đầu F1–F3 (không apply AWS).
-- [x] Kiểm thử race/stop/reconcile và cập nhật contract/docs cho F4–F7.
-- [ ] Đối chiếu evidence offline (R1–R4); không xuất private telemetry vào repo.
+- [x] Kiểm thử race/stop/reconcile và cập nhật contract/docs cho F4–F7. PR #74 đã merge vào `main`.
+- [x] Đối chiếu evidence offline (R1–R7); không xuất private telemetry vào repo. Báo cáo RCA tại `docs/testing/edge-clock-rca-followup.md`.
 - [ ] Review/merge các PR kế tiếp.
 - [ ] Xin phê duyệt phiên AWS sau khi hoàn thành offline (đặc biệt D3/D4 không được tuyên bố PASS trước).
 
