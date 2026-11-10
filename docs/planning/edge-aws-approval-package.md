@@ -19,7 +19,7 @@ There are **two separate permissions**. They are not implied by this document or
 
 | Item | Evidence-backed proposal / state | Must be decided |
 |---|---|---|
-| Repository baseline | `main` has PR #74 + #75 + #77; candidate latest reviewed runtime baseline `1dcc35298bd0432f434492d3a59f936738b61d27` | Confirm at Gate C; rebuild and pin linux/arm64 binary SHA-256 |
+| Repository baseline | PR #76 incorporates current `main`; its verifier and telemetry changes still need independent review | Select the final reviewed source at Gate C; rebuild and pin linux/arm64 binary SHA-256 |
 | Account / Region | Proposed account `499388132734` in `ap-southeast-1`; **not** the independent Sydney S3 Glacier demo | Authorize and revalidate via non-root scoped CLI after Decision A |
 | Pending Edge RCA | 46/90 success; 44/90 fail; 44/44 exact gateway matches; underlying cause still unresolved | Implement/test or authorize diagnostic-only collector before D2 |
 | Dataset | Proposed `backup30`, 90 objects, synthetic; previous manifest `04014dd767e799d9f70081536d01c988fa6a02c0b7653c34db11a48c9abc1556` is **reference only** | Regenerate/verify actual dataset and sign its hash |
@@ -86,7 +86,7 @@ Copy the following fields into a *private, owner-controlled* run-specific record
   "account_id": "499388132734",
   "region": "ap-southeast-1",
   "scope": "read-only-inventory-and-plan-only",
-  "source_sha": "1dcc35298bd0432f434492d3a59f936738b61d27",
+  "source_sha": null,
   "arm64_release_sha256": null,
   "dataset_manifest_sha256": null,
   "terraform_saved_plan_sha256": null,

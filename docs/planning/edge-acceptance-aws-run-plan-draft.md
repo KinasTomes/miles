@@ -3,7 +3,7 @@
 **Status:** DRAFT / DO NOT EXECUTE / NOT OWNER-APPROVED
 **Prepared:** 2026-11-10, after merged PR #74 (Gate F, run harness), PR #75 (Gate R, offline evidence), and PR #77 (Gate D0/E diagnostic sampling and teardown verifier).
 **Related:** [Owner approval package](edge-aws-approval-package.md), [follow-up plan](edge-acceptance-followup-plan.md), [offline RCA](../testing/edge-clock-rca-followup.md), [previous live report](../testing/live-acceptance-20261108-report.md).
-**Candidate code baseline:** `1dcc35298bd0432f434492d3a59f936738b61d27` (PR #77 squash merge). Pin the reviewed release **at Gate C**; the SHA here is not an approved release or binary checksum.
+**Candidate code baseline:** PR #76 incorporates current `main` and contains verifier/telemetry fixes awaiting independent review. Select and pin the final reviewed release **at Gate C**.
 
 ## 1. Scope and explicitly excluded claims
 
@@ -23,7 +23,7 @@ All `TBD` items must be filled in **private, versioned signed approval** before 
 | Run ID, responsible operator, approving owner, UTC approval timestamp | Fresh ID; record named people privately | **TBD** |
 | Account, Region | Account `499388132734`; `ap-southeast-1` (Singapore), confirm after read-only authorization | **TBD confirmation** |
 | Target role + identity/expiry | Scoped non-root `miles-dev-deploy` session, MFA/role policy and required trust verified; no sharing access keys | **TBD** |
-| Exact release source + architecture | Candidate source `1dcc35298bd0432f434492d3a59f936738b61d27` (`1dcc352`); build/test **linux/arm64** release; persist binary SHA-256 and source tree provenance | **TBD / not pinned** |
+| Exact release source + architecture | Select reviewed source; build/test **linux/arm64** release; persist binary SHA-256 and source tree provenance | **TBD / not pinned** |
 | Manifest and dataset | Proposed `backup30`: 90 × approximately 8 MiB; regenerate/verify and pin actual manifest SHA-256; previous hash is historical only | **TBD** |
 | Infrastructure ownership | Planned <=4 EC2 `t4g.small` (2 Cloud, 1 Edge, 1 client); EBS encrypted; 0 NAT; private SSM; DDB/ALB/endpoints/alarms only as reviewed plans | **TBD quotas/plans** |
 | Ingress and data | Explicit operator `/32`, no public SSH/metrics/admin, synthetic fixtures only; network access paths reviewed | **TBD** |
