@@ -33,8 +33,12 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 try:
     from scripts.freeze_terraform_inventory import augment_inventory, compare_inventory, extract_resources
+    from scripts.capture_runtime_inventory import reconcile_snapshot, runtime_residuals, validate_volume_baseline
+    from scripts.capture_account_inventory import collect as collect_account_inventory, compare_baseline as compare_account_baseline, validate_baseline as validate_account_baseline
 except ModuleNotFoundError:
     from freeze_terraform_inventory import augment_inventory, compare_inventory, extract_resources
+    from capture_runtime_inventory import reconcile_snapshot, runtime_residuals, validate_volume_baseline
+    from capture_account_inventory import collect as collect_account_inventory, compare_baseline as compare_account_baseline, validate_baseline as validate_account_baseline
 
 
 def _iso_utc_now() -> str:
@@ -180,6 +184,10 @@ class TeardownAbsenceVerifier:
         manifest_required: Optional[bool] = None,
         state_json: Optional[bytes] = None,
         state_sha256: Optional[str] = None,
+        runtime_json: Optional[bytes] = None,
+        runtime_sha256: Optional[str] = None,
+        volume_baseline_json: Optional[bytes] = None,
+        account_baseline_json: Optional[bytes] = None,
     ):
         self.inventory = inventory
         self.profile = profile
@@ -190,6 +198,11 @@ class TeardownAbsenceVerifier:
         self.manifest = manifest
         self.state_json = state_json
         self.state_sha256 = state_sha256
+        self.runtime_json = runtime_json
+        self.runtime_sha256 = runtime_sha256
+        self.volume_baseline_json = volume_baseline_json
+        self.account_baseline_json = account_baseline_json
+        self.caller_role = None
         if manifest_required is not None:
             self.manifest_required = manifest_required
         else:
@@ -626,6 +639,11 @@ class TeardownAbsenceVerifier:
                 return "sts_caller_identity_missing_Account_field"
             if str(actual_account).strip() != str(self.account_id).strip():
                 return f"caller_account_mismatch:cli_account_{actual_account}_manifest_{self.account_id}"
+            arn = data.get("Arn", "")
+            marker = f":sts::{self.account_id}:assumed-role/"
+            if marker not in arn or len(arn.split(marker, 1)[1].split("/")) < 2:
+                return "caller_must_be_assumed_role"
+            self.caller_role = arn.split(marker, 1)[1].split("/", 1)[0]
         except Exception as e:
             return f"sts_caller_identity_parse_error:{e}"
         return None
@@ -653,6 +671,10 @@ class TeardownAbsenceVerifier:
         manifest_required: Optional[bool] = None,
         state_json: Optional[bytes] = None,
         state_sha256: Optional[str] = None,
+        runtime_json: Optional[bytes] = None,
+        runtime_sha256: Optional[str] = None,
+        volume_baseline_json: Optional[bytes] = None,
+        account_baseline_json: Optional[bytes] = None,
     ) -> "TeardownAbsenceVerifier":
         """
         Parses active-outputs.json or `terraform output -json` and extracts
@@ -672,6 +694,10 @@ class TeardownAbsenceVerifier:
             manifest_required=manifest_required,
             state_json=state_json,
             state_sha256=state_sha256,
+            runtime_json=runtime_json,
+            runtime_sha256=runtime_sha256,
+            volume_baseline_json=volume_baseline_json,
+            account_baseline_json=account_baseline_json,
         )
 
     @classmethod
@@ -1481,6 +1507,7 @@ class TeardownAbsenceVerifier:
         Produces structured absence ledger.
         Fails closed on missing expected resources or empty inventory.
         """
+        external_inventory_unverified = False
         # Guard 0: Live mode strictly requires an authoritative pre-teardown manifest
         if self.manifest_required and not self.manifest:
             return {
@@ -1538,9 +1565,37 @@ class TeardownAbsenceVerifier:
                     state_errors.extend(compare_inventory(resources, expected if isinstance(expected, dict) else {}))
                 except (ValueError, TypeError, KeyError, json.JSONDecodeError):
                     state_errors.append("invalid_frozen_state")
-            # Terraform state does not enumerate instances and disks created by ASG.
-            # A separate native pre-destroy inventory must be reconciled before PASS.
-            state_errors.append("native_runtime_inventory_reconciliation_unavailable")
+            if self.runtime_json and self.runtime_sha256 and self.state_json and self.volume_baseline_json:
+                runtime_hash = hashlib.sha256(self.runtime_json).hexdigest()
+                if not hmac.compare_digest(runtime_hash, self.runtime_sha256):
+                    state_errors.append("runtime_snapshot_hash_mismatch")
+                provenance = self.manifest.get("provenance", {}) if isinstance(self.manifest, dict) else {}
+                if not isinstance(provenance, dict) or provenance.get("runtime_sha256") != runtime_hash:
+                    state_errors.append("manifest_runtime_provenance_mismatch")
+                try:
+                    snapshot = json.loads(self.runtime_json)
+                    resources = extract_resources(json.loads(self.state_json))
+                    for target in (self.inventory, self.manifest.get("expected_resources", {})):
+                        state_errors.extend(reconcile_snapshot(snapshot, resources, target, self.manifest.get("run_id"), self.account_id, self.region))
+                    baseline_ids = validate_volume_baseline(self.volume_baseline_json, snapshot.get("volume_baseline_sha256", ""), self.manifest.get("run_id"), self.account_id, self.region)
+                except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
+                    state_errors.append("invalid_runtime_snapshot")
+            else:
+                state_errors.append("missing_runtime_snapshot_or_baseline")
+            if self.account_baseline_json and isinstance(self.manifest, dict):
+                try:
+                    provenance = self.manifest.get("provenance", {})
+                    account_baseline = validate_account_baseline(self.account_baseline_json, provenance.get("account_baseline_sha256"), self.manifest.get("run_id"), self.account_id, self.region)
+                    audit_roles = json.loads(self.account_baseline_json)["iam_roles_to_audit"]
+                    if self.caller_role not in audit_roles:
+                        state_errors.append("caller_role_missing_from_iam_baseline")
+                except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
+                    state_errors.append("invalid_account_baseline")
+            else:
+                state_errors.append("missing_account_baseline")
+            approved_pending = self.manifest.get("provenance", {}).get("approved_pending_deletion", []) if isinstance(self.manifest, dict) and isinstance(self.manifest.get("provenance"), dict) else []
+            if not isinstance(approved_pending, list) or any(not isinstance(item, str) or item not in ("kms_key", "secret") for item in approved_pending) or len(approved_pending) != len(set(approved_pending)):
+                state_errors.append("invalid_pending_deletion_approval")
             if state_errors:
                 return {
                     "timestamp_utc": _iso_utc_now(), "mode": self.mode,
@@ -1548,6 +1603,43 @@ class TeardownAbsenceVerifier:
                     "error": "TERRAFORM_STATE_RECONCILIATION_UNAVAILABLE",
                     "state_errors": state_errors, "total_checked": 0, "resources": {},
                 }
+
+            instance_rc, instance_out, _ = self._runner(["ec2", "describe-instances", "--filters", f"Name=vpc-id,Values={snapshot['vpc_id']}", "--output", "json"])
+            volume_rc, volume_out, _ = self._runner(["ec2", "describe-volumes", "--output", "json"])
+            try:
+                if instance_rc or volume_rc:
+                    raise ValueError("native discovery failed")
+                residuals = runtime_residuals(json.loads(instance_out), json.loads(volume_out), baseline_ids, snapshot["vpc_id"])
+            except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
+                return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "UNVERIFIED", "all_absent": False, "error": "NATIVE_RUNTIME_DISCOVERY_FAILED", "total_checked": 0, "resources": {}}
+            if residuals["instances"] or residuals["new_regional_volumes"]:
+                return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "FAIL", "all_absent": False, "error": "NATIVE_RUNTIME_RESOURCES_REMAIN", "residuals": residuals, "total_checked": 0, "resources": {}}
+            def fetch_account(_profile, _region, *command):
+                rc, output, _ = self._runner([*command, "--output", "json"])
+                if rc:
+                    raise ValueError("account discovery failed")
+                return json.loads(output)
+            try:
+                account_now = collect_account_inventory(self.profile, self.region, fetch=fetch_account, iam_roles=audit_roles)
+                account_residuals = compare_account_baseline(account_baseline, account_now)
+            except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
+                return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "UNVERIFIED", "all_absent": False, "error": "ACCOUNT_DISCOVERY_FAILED", "total_checked": 0, "resources": {}}
+            if "kms_key" in approved_pending and "kms_keys" in account_residuals:
+                owned_keys = {str(key).rsplit("/", 1)[-1] for key in self.inventory.get("kms_keys", [])}
+                pending_keys = [key for key in account_residuals["kms_keys"] if key in owned_keys and self.check_kms_key_pending_deletion(key)["status"] == "PENDING_DELETION"]
+                account_residuals["kms_keys"] = [key for key in account_residuals["kms_keys"] if key not in pending_keys]
+                if not account_residuals["kms_keys"]:
+                    del account_residuals["kms_keys"]
+            if "secret" in approved_pending and "secrets" in account_residuals:
+                owned_secrets = set(self.inventory.get("secrets", []))
+                pending_secrets = [secret for secret in account_residuals["secrets"] if secret in owned_secrets and self.check_secret_pending_deletion(secret)["status"] == "PENDING_DELETION"]
+                account_residuals["secrets"] = [secret for secret in account_residuals["secrets"] if secret not in pending_secrets]
+                if not account_residuals["secrets"]:
+                    del account_residuals["secrets"]
+            if account_residuals:
+                return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "FAIL", "all_absent": False, "error": "ACCOUNT_RESOURCES_REMAIN", "residuals": account_residuals, "total_checked": 0, "resources": {}}
+            # Account-wide list coverage needs an independent contract audit before PASS.
+            external_inventory_unverified = True
 
         # Guard 0.8: Manifest schema validation or two-way reconciliation failure
         if self.manifest_errors:
@@ -1948,8 +2040,9 @@ class TeardownAbsenceVerifier:
         pending_del_count = sum(1 for r in results.values() if r["status"] == "PENDING_DELETION")
         still_present = [r["resource"] for r in results.values() if r["status"] == "STILL_PRESENT"]
         unexpected_errors = [r for r in results.values() if r["status"] == "UNEXPECTED_ERROR"]
+        unapproved_pending = [r["resource"] for r in results.values() if r["status"] == "PENDING_DELETION" and self.mode == "live" and r.get("type") not in approved_pending]
 
-        all_absent = (len(still_present) == 0 and len(unexpected_errors) == 0)
+        all_absent = (len(still_present) == 0 and len(unexpected_errors) == 0 and not unapproved_pending)
 
         summary = {
             "timestamp_utc": _iso_utc_now(),
@@ -1963,8 +2056,13 @@ class TeardownAbsenceVerifier:
             "unexpected_error_count": len(unexpected_errors),
             "still_present": still_present,
             "unexpected_errors": unexpected_errors,
+            "unapproved_pending": unapproved_pending,
             "resources": results,
         }
+        if external_inventory_unverified and all_absent:
+            summary["status"] = "UNVERIFIED"
+            summary["all_absent"] = False
+            summary["error"] = "EXTERNAL_RESOURCE_RECONCILIATION_UNAVAILABLE"
         return summary
 
     def export_summary(self, output_path: Path) -> Path:
@@ -2011,6 +2109,10 @@ def main():
     parser.add_argument("--manifest", help="Path to frozen pre-teardown authoritative manifest JSON.")
     parser.add_argument("--state-json", help="Private frozen pre-destroy terraform show -json state")
     parser.add_argument("--state-sha256", help="Independently recorded SHA-256 of frozen state")
+    parser.add_argument("--runtime-json", help="Private frozen native ASG/instance/volume inventory")
+    parser.add_argument("--runtime-sha256", help="Independently recorded SHA-256 of native inventory")
+    parser.add_argument("--volume-baseline", help="Private pre-run regional volume baseline")
+    parser.add_argument("--account-baseline", help="Private pre-run account resource baseline")
     parser.add_argument("--inventory-json", help="Direct inventory JSON file path.")
     parser.add_argument("--output-ledger", default="gate-e-absence-summary.json", help="Output path for summary.")
     parser.add_argument("--profile", default=None, help="AWS CLI profile.")
@@ -2061,6 +2163,10 @@ def main():
             cli_runner=cli_runner,
             state_json=Path(args.state_json).read_bytes() if args.state_json else None,
             state_sha256=args.state_sha256,
+            runtime_json=Path(args.runtime_json).read_bytes() if args.runtime_json else None,
+            runtime_sha256=args.runtime_sha256,
+            volume_baseline_json=Path(args.volume_baseline).read_bytes() if args.volume_baseline else None,
+            account_baseline_json=Path(args.account_baseline).read_bytes() if args.account_baseline else None,
         )
     elif args.inventory_json:
         inv = json.loads(Path(args.inventory_json).read_text(encoding="utf-8"))
@@ -2073,6 +2179,10 @@ def main():
             cli_runner=cli_runner,
             state_json=Path(args.state_json).read_bytes() if args.state_json else None,
             state_sha256=args.state_sha256,
+            runtime_json=Path(args.runtime_json).read_bytes() if args.runtime_json else None,
+            runtime_sha256=args.runtime_sha256,
+            volume_baseline_json=Path(args.volume_baseline).read_bytes() if args.volume_baseline else None,
+            account_baseline_json=Path(args.account_baseline).read_bytes() if args.account_baseline else None,
         )
     else:
         print("Error: must provide --outputs-json or --inventory-json", file=sys.stderr)

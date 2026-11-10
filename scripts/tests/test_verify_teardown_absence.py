@@ -23,6 +23,7 @@ from scripts.verify_teardown_absence import (
     TeardownAbsenceVerifier,
     main,
 )
+from scripts.capture_account_inventory import SPECS
 
 
 class VerifyTeardownAbsenceTests(unittest.TestCase):
@@ -59,7 +60,7 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
 
     def test_live_never_passes_without_state_reconciliation(self):
         inventory = {"account_id": "123456789012", "dynamodb_tables": ["table"]}
-        runner = lambda cmd: (0, json.dumps({"Account": "123456789012"}), "")
+        runner = lambda cmd: (0, json.dumps({"Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/deploy/session"}), "")
         verifier = TeardownAbsenceVerifier(inventory=inventory, mode="live", manifest={"run_id": "test"}, cli_runner=runner)
         result = verifier.verify_all()
         self.assertFalse(result["all_absent"])
@@ -75,12 +76,50 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         manifest = {"schema_version": "miles-teardown-manifest/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "ownership_scope": {"project": "miles"}, "expected_types": list(expected), "expected_counts": {key: 1 for key in expected}, "expected_resources": expected, "provenance": {"source": "terraform_pre_destroy", "created_at_utc": "2026-11-10T00:00:00Z", "state_sha256": digest}}
         def runner(cmd):
             if "get-caller-identity" in cmd:
-                return 0, json.dumps({"Account": "123456789012"}), ""
+                return 0, json.dumps({"Account": "123456789012", "Arn": "arn:aws:sts::123456789012:assumed-role/deploy/session"}), ""
             if "describe-alarms" in cmd:
                 return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
             return 255, "", "ResourceNotFoundException NoSuchBucket NoSuchEntity InvalidVpcID.NotFound"
         verifier = TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", state_json=state, state_sha256=digest, cli_runner=runner)
-        self.assertIn("native_runtime_inventory_reconciliation_unavailable", verifier.verify_all()["state_errors"])
+        self.assertIn("missing_runtime_snapshot_or_baseline", verifier.verify_all()["state_errors"])
+        baseline = json.dumps({"schema_version": "miles-volume-baseline/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "volumes": []}).encode()
+        runtime = json.dumps({"schema_version": "miles-runtime-inventory/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "vpc_id": "vpc-1", "asg_names": [], "instances": [], "volumes": [], "new_regional_volumes": [], "volume_baseline_sha256": hashlib.sha256(baseline).hexdigest()}).encode()
+        runtime_hash = hashlib.sha256(runtime).hexdigest()
+        manifest["provenance"]["runtime_sha256"] = runtime_hash
+        account_resources = {key: [] for key in SPECS}
+        account_resources.update(nat_gateways=[], metric_alarms=[], composite_alarms=[], role_policies=[], managed_policy_versions=[])
+        account_baseline = json.dumps({"schema_version": "miles-account-inventory/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "iam_roles_to_audit": ["deploy"], "resources": account_resources}).encode()
+        manifest["provenance"]["account_baseline_sha256"] = hashlib.sha256(account_baseline).hexdigest()
+        def runner_with_replacement(cmd):
+            if "describe-instances" in cmd:
+                return 0, json.dumps({"Reservations": [{"Instances": [{"InstanceId": "i-new", "VpcId": "vpc-1", "State": {"Name": "running"}}]}]}), ""
+            if "describe-volumes" in cmd:
+                return 0, json.dumps({"Volumes": []}), ""
+            return runner(cmd)
+        residual = TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", state_json=state, state_sha256=digest, runtime_json=runtime, runtime_sha256=runtime_hash, volume_baseline_json=baseline, account_baseline_json=account_baseline, cli_runner=runner_with_replacement).verify_all()
+        self.assertEqual(residual["error"], "NATIVE_RUNTIME_RESOURCES_REMAIN")
+        def runner_clean_runtime(cmd):
+            if "describe-instances" in cmd:
+                return 0, json.dumps({"Reservations": []}), ""
+            if "describe-volumes" in cmd:
+                return 0, json.dumps({"Volumes": []}), ""
+            if "describe-nat-gateways" in cmd:
+                return 0, json.dumps({"NatGateways": []}), ""
+            if "list-role-policies" in cmd:
+                return 0, json.dumps({"PolicyNames": []}), ""
+            if "list-attached-role-policies" in cmd:
+                return 0, json.dumps({"AttachedPolicies": []}), ""
+            if "describe-alarms" in cmd:
+                return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
+            if "--vpc-ids" in cmd:
+                return runner(cmd)
+            for command, list_key, _ in SPECS.values():
+                if cmd[:len(command)] == list(command):
+                    return 0, json.dumps({list_key: []}), ""
+            return runner(cmd)
+        unverified = TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", state_json=state, state_sha256=digest, runtime_json=runtime, runtime_sha256=runtime_hash, volume_baseline_json=baseline, account_baseline_json=account_baseline, cli_runner=runner_clean_runtime).verify_all()
+        self.assertEqual(unverified["error"], "EXTERNAL_RESOURCE_RECONCILIATION_UNAVAILABLE")
+        self.assertFalse(unverified["all_absent"])
         resources.append({"mode": "managed", "address": "aws_cloudwatch_log_group.runtime", "type": "aws_cloudwatch_log_group", "values": {"id": "/missing"}})
         changed_state = json.dumps({"values": {"root_module": {"resources": resources}}}).encode()
         changed_hash = hashlib.sha256(changed_state).hexdigest()

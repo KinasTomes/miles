@@ -11,10 +11,12 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.freeze_terraform_inventory import augment_inventory, compare_inventory, extract_resources
+from scripts.capture_runtime_inventory import reconcile_snapshot
+from scripts.capture_account_inventory import validate_baseline
 from scripts.verify_teardown_absence import METADATA_INVENTORY_KEYS, TeardownAbsenceVerifier
 
 
-def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region):
+def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region, runtime_bytes=None, runtime_sha256=None, account_baseline_bytes=None, account_baseline_sha256=None, approved_pending=None):
     actual_hash = hashlib.sha256(state_bytes).hexdigest()
     if not hmac.compare_digest(actual_hash, state_sha256):
         raise ValueError("frozen state hash mismatch")
@@ -26,6 +28,21 @@ def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region
         raise ValueError("inventory account or region mismatch")
     state_resources = extract_resources(json.loads(state_bytes))
     inventory = augment_inventory(state_resources, inventory)
+    if (runtime_bytes is None) != (runtime_sha256 is None):
+        raise ValueError("runtime inventory and hash must be provided together")
+    if (account_baseline_bytes is None) != (account_baseline_sha256 is None):
+        raise ValueError("account baseline and hash must be provided together")
+    if account_baseline_bytes is not None:
+        validate_baseline(account_baseline_bytes, account_baseline_sha256, run_id, account, region)
+    if runtime_bytes is not None:
+        if not hmac.compare_digest(hashlib.sha256(runtime_bytes).hexdigest(), runtime_sha256):
+            raise ValueError("runtime inventory hash mismatch")
+        snapshot = json.loads(runtime_bytes)
+        errors = reconcile_snapshot(snapshot, state_resources, snapshot, run_id, account, region)
+        if errors:
+            raise ValueError("runtime inventory invalid: " + "; ".join(errors))
+        for key in ("asg_names", "instances", "volumes"):
+            inventory[key] = sorted(set(inventory.get(key, [])) | set(snapshot[key]))
     errors = compare_inventory(state_resources, inventory)
     if errors:
         raise ValueError("state reconciliation failed: " + "; ".join(errors))
@@ -38,6 +55,14 @@ def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region
         "expected_types": sorted(resources), "expected_counts": counts, "expected_resources": resources,
         "provenance": {"source": "terraform_pre_destroy", "created_at_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(), "state_sha256": actual_hash},
     }
+    if runtime_bytes is not None:
+        manifest["provenance"]["runtime_sha256"] = runtime_sha256
+    if account_baseline_bytes is not None:
+        manifest["provenance"]["account_baseline_sha256"] = account_baseline_sha256
+    pending = approved_pending or []
+    if len(pending) != len(set(pending)) or any(item not in ("kms_key", "secret") for item in pending):
+        raise ValueError("invalid pending-deletion exception")
+    manifest["provenance"]["approved_pending_deletion"] = sorted(pending)
     _, validation_errors = TeardownAbsenceVerifier.validate_manifest_schema_and_reconciliation(manifest, inventory, account_id=account, region=region)
     if validation_errors:
         raise ValueError("manifest validation failed: " + "; ".join(validation_errors))
@@ -48,8 +73,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for option in ("state-json", "state-sha256", "inventory-json", "run-id", "account-id", "region", "output"):
         parser.add_argument("--" + option, required=True)
+    parser.add_argument("--runtime-json")
+    parser.add_argument("--runtime-sha256")
+    parser.add_argument("--account-baseline")
+    parser.add_argument("--account-baseline-sha256")
+    parser.add_argument("--approve-pending-deletion", action="append", choices=("kms_key", "secret"), default=[])
     args = parser.parse_args()
-    manifest = build_manifest(Path(args.state_json).read_bytes(), args.state_sha256, json.loads(Path(args.inventory_json).read_text()), args.run_id, args.account_id, args.region)
+    manifest = build_manifest(Path(args.state_json).read_bytes(), args.state_sha256, json.loads(Path(args.inventory_json).read_text()), args.run_id, args.account_id, args.region, Path(args.runtime_json).read_bytes() if args.runtime_json else None, args.runtime_sha256, Path(args.account_baseline).read_bytes() if args.account_baseline else None, args.account_baseline_sha256, args.approve_pending_deletion)
     payload = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as output:
