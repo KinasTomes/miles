@@ -117,7 +117,7 @@ resource "aws_vpc_security_group_ingress_rule" "client_alb" {
 }
 resource "aws_instance" "node" {
   for_each                    = local.nodes
-  ami                         = data.aws_ami.host[0].id
+  ami                         = var.ami_id
   instance_type               = var.instance_type
   subnet_id                   = var.subnet_id
   associate_public_ip_address = false
@@ -143,6 +143,12 @@ resource "aws_instance" "node" {
     tags                  = { Project = "Miles", Environment = "dev" }
   }
   tags       = { Name = "${var.name}-acceptance-${each.key}", Purpose = "EdgeAcceptance" }
+  lifecycle {
+    precondition {
+      condition     = data.aws_ami.host[0].id == var.ami_id
+      error_message = "The pinned host image must be an Amazon Linux ARM64 EBS image."
+    }
+  }
   depends_on = [aws_iam_role_policy.node, aws_vpc_security_group_ingress_rule.endpoints]
 }
 output "nodes" {
