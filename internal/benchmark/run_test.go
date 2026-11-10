@@ -1000,21 +1000,20 @@ func TestFailFastAdversarialStopConcurrentWithJobReadiness(t *testing.T) {
 	o.Concurrency = 3
 	o.FailFast = true
 
-	// In the smoke profile, there are 9 files.
-	// With Concurrency = 3, workers 0, 1, and 2 claim jobs 0, 1, and 2.
-	// We want to force a stop on job 0 while jobs 1 and 2 are in-flight.
-	// When job 0 fails with 503, the stop latches and worker 0 becomes ready
-	// to claim a new job while workers 1 & 2 are still in-flight.
-	// Invariant: NO post-stop operations (jobs >= 3) may start.
-	// Previously accepted in-flight operations (jobs 1 & 2) must drain to completion.
-	// planned = dispatched + skipped and completed = dispatched.
 	var (
-		job0Started       = make(chan struct{})
-		inFlightActive    = make(chan struct{}, 2)
+		mu                sync.Mutex
+		arrivedCount      int
+		threeArrived      = make(chan struct{})
+		threeArrivedOnce  sync.Once
 		releaseInFlight   = make(chan struct{})
+		releaseOnce       sync.Once
 		postStopAttempted atomic.Bool
 		postStopCount     atomic.Int32
 	)
+	safeRelease := func() {
+		releaseOnce.Do(func() { close(releaseInFlight) })
+	}
+	defer safeRelease()
 
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
@@ -1025,10 +1024,23 @@ func TestFailFastAdversarialStopConcurrentWithJobReadiness(t *testing.T) {
 		if r.Method == "PUT" {
 			key := r.URL.Path
 
+			mu.Lock()
+			arrivedCount++
+			count := arrivedCount
+			if count == 3 {
+				threeArrivedOnce.Do(func() { close(threeArrived) })
+			}
+			mu.Unlock()
+
 			// Check which file this PUT is for based on manifest ordering
 			if strings.HasSuffix(key, "low-entropy-v00.bin") {
-				// Job 0: fail immediately with 503 SlowDown to latch stop
-				close(job0Started)
+				// Barrier: wait for all 3 concurrent PUTs to arrive at server
+				// before returning 503 to latch stop.
+				select {
+				case <-threeArrived:
+				case <-releaseInFlight:
+				case <-r.Context().Done():
+				}
 				w.WriteHeader(503)
 				io.WriteString(w, "<Error><Code>SlowDown</Code><Message>rate limited</Message></Error>")
 				return
@@ -1036,8 +1048,10 @@ func TestFailFastAdversarialStopConcurrentWithJobReadiness(t *testing.T) {
 
 			if strings.HasSuffix(key, "compressed-identical-v00.gz") || strings.HasSuffix(key, "random-distinct-v00.bin") {
 				// Jobs 1 & 2: in-flight requests that hold until released
-				inFlightActive <- struct{}{}
-				<-releaseInFlight
+				select {
+				case <-releaseInFlight:
+				case <-r.Context().Done():
+				}
 				w.WriteHeader(200)
 				return
 			}
@@ -1063,24 +1077,16 @@ func TestFailFastAdversarialStopConcurrentWithJobReadiness(t *testing.T) {
 		done <- runRes{res, err}
 	}()
 
-	// Wait until job 0 starts and fails, and in-flight jobs 1 & 2 are active
+	// Wait until all 3 initial PUTs have arrived at the server
 	select {
-	case <-job0Started:
+	case <-threeArrived:
 	case <-time.After(5 * time.Second):
-		t.Fatal("job 0 never started")
+		t.Fatal("initial 3 concurrent PUTs never arrived")
 	}
 
-	for i := 0; i < 2; i++ {
-		select {
-		case <-inFlightActive:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("in-flight job %d never started", i+1)
-		}
-	}
-
-	// At this exact moment:
-	// - Job 0 failed, so stop has latched.
-	// - Worker 0 has finished job 0 and is immediately ready to claim the next job.
+	// At this point:
+	// - Job 0 returns 503 and latches stop in Worker 0.
+	// - Worker 0 finishes job 0 and becomes ready to claim the next job.
 	// - Workers 1 & 2 are still in-flight holding on the server.
 	// Give worker 0 ample time to attempt claiming a job if there were any race.
 	time.Sleep(30 * time.Millisecond)
@@ -1090,7 +1096,7 @@ func TestFailFastAdversarialStopConcurrentWithJobReadiness(t *testing.T) {
 	}
 
 	// Release in-flight operations 1 and 2 to drain
-	close(releaseInFlight)
+	safeRelease()
 
 	var res runRes
 	select {
@@ -1146,6 +1152,160 @@ func TestFailFastAdversarialStopConcurrentWithJobReadiness(t *testing.T) {
 	// In-flight operations 1 & 2 completed successfully and their payload bytes were counted
 	if putPhase.SuccessfulBytes <= 0 {
 		t.Fatalf("expected SuccessfulBytes > 0 from in-flight drain, got %d", putPhase.SuccessfulBytes)
+	}
+}
+
+func TestFailFastSIGINTAfterFailureArmsDrainTimeout(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 2
+	o.FailFast = true
+	o.DrainTimeout = 50 * time.Millisecond
+
+	var (
+		job0Done        = make(chan struct{})
+		job1Started     = make(chan struct{})
+		releaseJob1     = make(chan struct{})
+		releaseJob1Once sync.Once
+	)
+	safeRelease := func() {
+		releaseJob1Once.Do(func() { close(releaseJob1) })
+	}
+	defer safeRelease()
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			key := r.URL.Path
+
+			if strings.HasSuffix(key, "low-entropy-v00.bin") {
+				// Job 0: fail with 503 to latch stop first
+				defer func() {
+					select {
+					case <-job0Done:
+					default:
+						close(job0Done)
+					}
+				}()
+				w.Header().Set("Content-Type", "application/xml")
+				w.Header().Set("X-Amz-Request-Id", "SLOWDOWN12345678")
+				w.WriteHeader(503)
+				io.WriteString(w, "<Error><Code>SlowDown</Code><Message>rate limited</Message></Error>")
+				return
+			}
+
+			if strings.HasSuffix(key, "compressed-identical-v00.gz") {
+				// Job 1: signal started, then hold until released or client aborts
+				select {
+				case <-job1Started:
+				default:
+					close(job1Started)
+				}
+				select {
+				case <-releaseJob1:
+					w.WriteHeader(200)
+				case <-r.Context().Done():
+					// client canceled due to emergency drain timeout
+				}
+				return
+			}
+
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type runRes struct {
+		r   Result
+		err error
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		res, err := Run(ctx, c, o)
+		done <- runRes{res, err}
+	}()
+
+	// Wait for job 0 to finish with 503 (latching stopReason="SlowDown", stopped=true)
+	select {
+	case <-job0Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("job 0 never completed")
+	}
+
+	// Wait for job 1 to be active in-flight on the server
+	select {
+	case <-job1Started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("job 1 never started")
+	}
+
+	// At this point:
+	// - Job 0 failed with 503, so coord.stopped is ALREADY true and stopReason is "SlowDown".
+	// - Job 1 is currently in-flight, blocked on the server.
+	// Give worker 0 brief slack to process the 503 response and latch triggerStop("SlowDown").
+	time.Sleep(25 * time.Millisecond)
+
+	// Now simulate late operator SIGINT / cancellation while job 1 is in-flight:
+	cancel()
+
+	// Measure that Run returns within bounded emergency drain timeout (50ms + slack),
+	// NOT waiting for 30-minute requestTimeout.
+	var res runRes
+	select {
+	case res = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emergency drain timeout was not armed when SIGINT arrived after stop was already latched")
+	}
+	safeRelease()
+
+	// Invariant checks:
+	// 1. Status is failed, error is interrupted
+	if res.r.Status != "failed" {
+		t.Fatalf("expected Status='failed', got %q", res.r.Status)
+	}
+	if !errors.Is(res.err, ErrInterrupted) {
+		t.Fatalf("expected ErrInterrupted, got %v", res.err)
+	}
+	if res.r.Error != "interrupted" {
+		t.Fatalf("expected Error='interrupted', got %q", res.r.Error)
+	}
+
+	// 2. Initial stop trigger is preserved
+	if res.r.StopTrigger != "SlowDown" {
+		t.Fatalf("expected initial StopTrigger='SlowDown' preserved, got %q", res.r.StopTrigger)
+	}
+
+	// 3. Unresolved in-flight PUT was aborted by emergency drain timeout, so it is indeterminate
+	// and demands durable reconciliation
+	if !res.r.NeedsReconciliation {
+		t.Fatal("expected NeedsReconciliation=true for aborted in-flight PUT")
+	}
+	if res.r.Cleanup != "objects_may_remain_indeterminate_outcome" {
+		t.Fatalf("expected Cleanup='objects_may_remain_indeterminate_outcome', got %q", res.r.Cleanup)
+	}
+
+	// Verify sample 1 is marked indeterminate
+	foundIndeterminate := false
+	for _, s := range res.r.Samples {
+		if strings.HasSuffix(s.File, "compressed-identical-v00.gz") {
+			if !s.Indeterminate {
+				t.Fatalf("expected sample to be marked indeterminate: %+v", s)
+			}
+			if s.Reconciliation != "needs_reconciliation" {
+				t.Fatalf("expected Reconciliation='needs_reconciliation', got %q", s.Reconciliation)
+			}
+			foundIndeterminate = true
+		}
+	}
+	if !foundIndeterminate {
+		t.Fatal("expected indeterminate sample for held in-flight PUT")
 	}
 }
 

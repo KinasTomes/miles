@@ -252,29 +252,34 @@ func filePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Confi
 	triggerStop := func(reason string) {
 		coord.mu.Lock()
 		defer coord.mu.Unlock()
+		if reason == "interrupted" {
+			coord.interrupted = true
+			coord.stopped = true
+			scheduleDrainTimeoutLocked()
+			if coord.stopReason == "" {
+				coord.stopReason = "interrupted"
+			}
+			return
+		}
 		if !coord.stopped {
 			coord.stopped = true
 			coord.stopReason = sanitizeStopTrigger(reason)
-			if reason == "interrupted" {
-				coord.interrupted = true
-				scheduleDrainTimeoutLocked()
-			}
 		}
 	}
 
 	claimJob := func() (int, bool) {
 		coord.mu.Lock()
 		defer coord.mu.Unlock()
-		if coord.stopped || coord.interrupted || coord.nextIndex >= total {
-			return -1, false
-		}
 		if ctx.Err() != nil {
 			coord.interrupted = true
 			coord.stopped = true
+			scheduleDrainTimeoutLocked()
 			if coord.stopReason == "" {
 				coord.stopReason = "interrupted"
 			}
-			scheduleDrainTimeoutLocked()
+			return -1, false
+		}
+		if coord.stopped || coord.interrupted || coord.nextIndex >= total {
 			return -1, false
 		}
 		idx := coord.nextIndex
