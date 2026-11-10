@@ -196,9 +196,28 @@ func TestLocalRestoreExtensionWaitsForRequiredExpiry(t *testing.T) {
 
 func TestLocalColdGCRetentionAndRoots(t *testing.T) {
 	for _, class := range []s.StorageClass{s.GlacierIR, s.Glacier} {
-		for _, mode := range []string{"before-retention", "missing-retention", "root-protected", "eligible"} {
+		for _, mode := range []string{"before-retention", "missing-retention", "reader-pin", "root-protected", "eligible"} {
 			t.Run(string(class)+"/"+mode, func(t *testing.T) {
 				m, w, j, snapshot, utc, physical, chunk := lifeFixture(t, "gc", class)
+				if mode == "reader-pin" {
+					page, err := m.ObservePage(t.Context(), s.ObservationRequest{Kind: "heads", Limit: 100})
+					if err != nil || len(page.Heads) != 1 {
+						t.Fatal(page, err)
+					}
+					fence := s.WriterFence{LeaseID: "cold-old-reader", Epoch: 1, ServiceIncarnation: j.Worker.ServiceIncarnation}
+					if _, err = m.AcquireR1(t.Context(), s.R1Acquire{Fence: fence, Owner: "reader", Kind: "reader", Object: page.Heads[0].Object, Deadline: utc.Now().Add(time.Minute)}); err != nil {
+						t.Fatal(err)
+					}
+					if err = m.BindR1(t.Context(), fence, page.Heads[0]); err != nil {
+						t.Fatal(err)
+					}
+					if err = m.PinR1(t.Context(), fence, []s.PackRef{chunk.Location.Pack}); err != nil {
+						t.Fatal(err)
+					}
+					if err = m.ResolvedR1(t.Context(), fence); err != nil {
+						t.Fatal(err)
+					}
+				}
 				if e := m.update(t.Context(), func(tx *transaction) error {
 					p, e := get[s.PackInfo](tx, packKey(chunk.Location.Pack))
 					if e != nil {
@@ -318,7 +337,7 @@ func TestLocalColdCompactionNeverReadsOrMutatesPayload(t *testing.T) {
 
 func TestLocalRetiredColdSweepRequiresEveryProtection(t *testing.T) {
 	for _, class := range []s.StorageClass{s.GlacierIR, s.Glacier} {
-		for _, mode := range []string{"min-retention", "recovery-root", "cut-unverified", "eligible", "unknown-delete"} {
+		for _, mode := range []string{"min-retention", "retention-expired", "protection", "writer", "recovery-root", "roots-unavailable", "cut-unverified", "eligible", "unknown-delete"} {
 			t.Run(string(class)+"/"+mode, func(t *testing.T) {
 				m, w, j, policy, utc, _, row := lifeFixture(t, "gc", s.Standard)
 				rows, e := m.GetPacks(t.Context(), []s.PackRef{row.Location.Pack})
@@ -333,6 +352,12 @@ func TestLocalRetiredColdSweepRequiresEveryProtection(t *testing.T) {
 				if mode == "min-retention" {
 					dead.MinRetentionUntil = utc.Now().Add(time.Nanosecond)
 				}
+				if mode == "retention-expired" {
+					dead.MinRetentionUntil = utc.Now().Add(-time.Nanosecond)
+				}
+				if mode == "protection" {
+					dead.ProtectedUntil = utc.Now().Add(time.Nanosecond)
+				}
 				retired := utc.Now().Add(-24*time.Hour - 10*time.Minute)
 				j.Params, _ = json.Marshal(lifecycle.Params{PackID: dead.Ref.ID, Generation: dead.Ref.Generation})
 				if e = m.update(t.Context(), func(tx *transaction) error {
@@ -346,7 +371,20 @@ func TestLocalRetiredColdSweepRequiresEveryProtection(t *testing.T) {
 				}); e != nil {
 					t.Fatal(e)
 				}
+				if mode == "writer" {
+					page, err := m.ObservePage(t.Context(), s.ObservationRequest{Kind: "heads", Limit: 100})
+					if err != nil || len(page.Heads) != 1 {
+						t.Fatal(page, err)
+					}
+					fence := s.WriterFence{LeaseID: "retired-pack-protector", Epoch: 1, ServiceIncarnation: j.Worker.ServiceIncarnation}
+					if _, err = m.AcquireR1(t.Context(), s.R1Acquire{Fence: fence, Owner: "protector", Kind: "writer", Object: page.Heads[0].Object, Deadline: utc.Now().Add(time.Minute)}); err != nil {
+						t.Fatal(err)
+					}
+				}
 				w.Marker = &lifecycle.Marker{Store: m, Pinned: m.ObservePackPins, MaxRecords: 1000, MaxReferences: 1000, RecoveryRoots: func(context.Context) ([]s.PackRef, error) {
+					if mode == "roots-unavailable" {
+						return nil, s.ErrUnavailable
+					}
 					if mode == "recovery-root" {
 						return []s.PackRef{dead.Ref}, nil
 					}
@@ -364,7 +402,7 @@ func TestLocalRetiredColdSweepRequiresEveryProtection(t *testing.T) {
 				physical := &sweepPhysicalFixture{unknown: mode == "unknown-delete"}
 				w.Sweep = physical
 				out, e := w.Step(t.Context(), j, policy)
-				if mode == "eligible" {
+				if mode == "eligible" || mode == "retention-expired" {
 					if e != nil || !out.Done || len(physical.calls) != 2 {
 						t.Fatal(out, e, physical.calls)
 					}

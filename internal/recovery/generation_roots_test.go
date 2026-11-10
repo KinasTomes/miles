@@ -3,6 +3,7 @@ package recovery
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -94,6 +95,25 @@ func generationCuts(t *testing.T) (Retention, []AttachmentReference, []s.Chunk) 
 		project("Objects", string(headID), head.Revision, head),
 	})
 	return r, cuts, locations
+}
+
+func TestRecoveryMissingHistoricalGenerationFailsWholeEnumeration(t *testing.T) {
+	r, _, locations := generationCuts(t)
+	// The current head and its newest generation remain intact. Losing an
+	// intermediate historical generation must invalidate the complete report.
+	if err := r.Packs.DeletePack(t.Context(), locations[1].Location.Pack); err != nil {
+		t.Fatal(err)
+	}
+	if roots, err := r.EnumerateProtectedData(t.Context(), 9); roots != nil || !errors.Is(err, s.ErrNotFound) {
+		t.Fatal("partial physical recovery proof escaped", roots, err)
+	}
+	if _, err := r.Packs.HeadPack(t.Context(), locations[2].Location.Pack); err != nil {
+		t.Fatal("fixture also lost current generation", err)
+	}
+	protected, err := r.ProtectedRoots(t.Context())
+	if err != nil || len(protected) != 3 {
+		t.Fatal("missing payload silently withdrew a protected cut", protected, err)
+	}
 }
 
 func TestRecoveryRootsKeepExactGenerationsAcrossDeleteAndRecreate(t *testing.T) {
