@@ -49,6 +49,20 @@ run "active_fleet" {
     error_message = "Fleet uses shared data, never the retained single-node dev disk."
   }
 }
+run "private_acceptance_fleet" {
+  command = plan
+  variables {
+    alb_internal                 = true
+    enable_acceptance_nodes      = true
+    enable_edge_private_endpoint = true
+    edge_ca_pem                  = "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----"
+    owner_ssh_public_key         = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixture"
+  }
+  assert {
+    condition     = output.alb_contract.internal && length(output.acceptance_nodes) == 2 && contains(keys(output.network_inventory.interface_endpoints), "rolesanywhere")
+    error_message = "Private acceptance requires the internal ALB, both nodes and Roles Anywhere endpoint."
+  }
+}
 run "paused_fleet_plan" {
   command = plan
   variables { paused = true }

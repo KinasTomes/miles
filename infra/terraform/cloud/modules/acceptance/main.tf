@@ -11,6 +11,14 @@ variable "alb_security_group_id" { type = string }
 variable "permissions_boundary_arn" { type = string }
 variable "kms_key_arn" { type = string }
 variable "data_bucket_name" { type = string }
+variable "owner_ssh_public_key" {
+  type    = string
+  default = null
+  validation {
+    condition     = !var.enabled || can(regex("^ssh-ed25519 [A-Za-z0-9+/=]+( .*)?$", var.owner_ssh_public_key))
+    error_message = "SSM-tunneled operator access requires an Ed25519 public key."
+  }
+}
 
 locals {
   nodes = var.enabled ? toset(["edge", "client"]) : toset([])
@@ -95,7 +103,10 @@ resource "aws_instance" "node" {
   associate_public_ip_address = false
   vpc_security_group_ids      = [aws_security_group.node[each.key].id]
   iam_instance_profile        = aws_iam_instance_profile.node[each.key].name
-  user_data                   = "#!/bin/bash\nset -euo pipefail\nsystemctl enable --now amazon-ssm-agent chronyd\n"
+  user_data = "#cloud-config\n${yamlencode({
+    users  = ["default", { name = "ec2-user", ssh_authorized_keys = [var.owner_ssh_public_key] }]
+    runcmd = [["systemctl", "enable", "--now", "amazon-ssm-agent", "chronyd"], ["cat", "/etc/ssh/ssh_host_ed25519_key.pub"]]
+  })}"
   user_data_replace_on_change = true
   metadata_options {
     http_endpoint               = "enabled"

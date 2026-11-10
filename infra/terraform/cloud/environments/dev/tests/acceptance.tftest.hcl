@@ -17,6 +17,7 @@ run "private_disposable_nodes" {
     permissions_boundary_arn   = "arn:aws:iam::123456789012:policy/boundary"
     kms_key_arn                = "arn:aws:kms:ap-southeast-1:123456789012:key/test"
     data_bucket_name           = "miles-fixture"
+    owner_ssh_public_key       = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixture"
   }
   assert {
     condition = length(aws_instance.node) == 2 && alltrue([for node in aws_instance.node :

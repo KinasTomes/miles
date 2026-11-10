@@ -143,6 +143,7 @@ module "acceptance" {
   permissions_boundary_arn   = var.runtime_permissions_boundary_arn
   kms_key_arn                = module.security.kms_key_arn
   data_bucket_name           = local.data_bucket_name
+  owner_ssh_public_key       = var.owner_ssh_public_key
   depends_on                 = [module.endpoints]
 }
 output "acceptance_nodes" { value = module.acceptance.nodes }

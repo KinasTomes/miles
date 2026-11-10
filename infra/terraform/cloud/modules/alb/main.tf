@@ -54,6 +54,7 @@ output "contract" {
   value = var.enabled ? {
     alb_name             = try(aws_lb.this[0].name, null)
     alb_arn              = try(aws_lb.this[0].arn, null)
+    internal             = aws_lb.this[0].internal
     preserve_host_header = aws_lb.this[0].preserve_host_header
     idle_timeout         = aws_lb.this[0].idle_timeout
     listener_protocol    = aws_lb_listener.https[0].protocol
