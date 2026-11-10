@@ -24,4 +24,14 @@ A private frozen manifest binds Terraform state, native instances/volumes, accou
 
 Cleanup required additional narrowly scoped permissions for DynamoDB deletion/readback, network disassociation, alias deletion, and IAM role readback. These gaps were recorded with the temporary grants and their rollback ledger. The temporary grants and newly created policy versions must be removed before final comparison.
 
-The final account audit and scheduled KMS/secret exceptions are recorded in operator-private evidence. Its final status is added below after completion. Billing reconciliation remains pending AWS reporting.
+The independent read-only final audit completed at 16:28 UTC with `PASS_WITH_PENDING`. It checked 82 identifiers, finding 80 absent and the newly created KMS key and secret scheduled for deletion in 30 days. There were zero unapproved residuals or unexpected errors. All temporary policies and created managed-policy versions were removed, deployment policies and runtime boundary matched the pre-run baseline, and the temporary audit role and both newly created service-linked roles were absent. Terraform state contained no managed resources. Bootstrap/state and baseline resources were preserved. The root login profile was logged out after the audit.
+
+The operating-cost estimate is approximately 1.25 USD before tax, using rounded endpoint/ALB hours and conservative service reserves. Observed DynamoDB consumption was 2,982 read units and 1,904 write units, approximately 0.0018 USD at the verified regional request prices. Metric arrival delays and billing reconciliation remain outstanding. The estimate excludes resources that existed before this run.
+
+## Conditions for the next run
+
+- Build the release containing the virtual bucket-policy default and telemetry parser fixes. Confirm the recorder probe and a recorded window before dispatch.
+- Query the custom Auto Scaling service-linked role before planning. If it already exists, reconcile/import it with the matching active variables before the saved fleet plan, record it as a baseline exclusion, and preserve it during teardown.
+- Prepare cleanup grants against the frozen resource identifiers before starting workload. Include deleted-table readback, both key and alias resources for alias deletion, and the Edge role’s instance-profile readback.
+- Include certificate key usage `keyCertSign` in the test CA. Create and verify the complete chain before attempting the trust anchor.
+- Preserve original failed evidence and use a fresh trial identity for the next workload. Re-run C1 before C4 and keep later gates conditional on successful C1/C4.
