@@ -42,6 +42,16 @@ class AlarmEvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate(document)
 
+    def test_counter_recovery_uses_missing_data_and_live_telemetry(self):
+        document = self.fixture()
+        for key in ("cloud/integrity", "edge/throttling"):
+            document["alarms"][key]["metric_result"]["Timestamps"] = ["2026-11-10T00:00:00Z"]
+            document["alarms"][key]["metric_result"]["Values"] = [1]
+        validate(document)
+        document["alarms"]["edge/telemetry_age"]["metric_result"]["Timestamps"] = ["2026-11-10T00:00:00Z", "2026-11-10T00:00:30Z"]
+        with self.assertRaises(ValueError):
+            validate(document)
+
     def test_native_capture_collects_eight_matched_alarms(self):
         fixture = self.fixture()
         by_name = {item["alarm"]["AlarmName"]: item for item in fixture["alarms"].values()}

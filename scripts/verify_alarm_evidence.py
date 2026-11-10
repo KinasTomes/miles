@@ -58,8 +58,18 @@ def validate_alarm(item, profile, kind, installation, start, end):
     samples = [(timestamp(t), float(v)) for t, v in zip(times, values)]
     if any(not start <= t <= end or not math.isfinite(value) or value < 0 for t, value in samples) or len({t for t, _ in samples}) != len(samples):
         raise ValueError("invalid metric sample")
-    if not any(any(at - datetime.timedelta(seconds=240) <= t <= at and value > threshold for t, value in samples) and any(at <= t <= recovery and value <= threshold for t, value in samples) for at in alarms for recovery in recoveries if at < recovery):
-        raise ValueError("metric samples do not cover the alarm and recovery window")
+    pairs = [(at, recovery) for at in alarms for recovery in recoveries if at < recovery and any(at - datetime.timedelta(seconds=240) <= t <= at and value > threshold for t, value in samples)]
+    if not pairs:
+        raise ValueError("no breaching metric in the alarm window")
+    if kind in ("integrity", "throttling"):
+        # Zero counter deltas are intentionally not exported; notBreaching
+        # recovery may therefore have no datapoints instead of a fake zero.
+        pairs = [(at, recovery) for at, recovery in pairs if (recovery - at).total_seconds() >= 120 and not any(at < t <= recovery and value > threshold for t, value in samples)]
+    else:
+        pairs = [(at, recovery) for at, recovery in pairs if any(at <= t <= recovery and value <= threshold for t, value in samples)]
+    if not pairs:
+        raise ValueError("metric samples do not cover the recovery window")
+    return pairs
 
 
 def validate(document):
@@ -72,9 +82,16 @@ def validate(document):
     cases = document["alarms"]
     if set(cases) != {f"{profile}/{kind}" for profile in ("cloud", "edge") for kind in CONTRACT}:
         raise ValueError("expected exactly eight alarms")
+    transitions = {}
     for key, item in cases.items():
         profile, kind = key.split("/", 1)
-        validate_alarm(item, profile, kind, installation, start, end)
+        transitions[key] = validate_alarm(item, profile, kind, installation, start, end)
+    for profile in ("cloud", "edge"):
+        telemetry = cases[f"{profile}/telemetry_age"]["metric_result"]
+        healthy = [(timestamp(t), float(value)) for t, value in zip(telemetry["Timestamps"], telemetry["Values"]) if float(value) <= 60]
+        for kind in ("integrity", "throttling"):
+            if not any(any(alarm_time <= t <= recovery and (recovery - t).total_seconds() <= 120 for t, _ in healthy) for alarm_time, recovery in transitions[f"{profile}/{kind}"]):
+                raise ValueError("counter recovery lacks fresh runtime telemetry")
 
 
 def main():
