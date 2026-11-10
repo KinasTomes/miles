@@ -676,6 +676,400 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(summary["pending_deletion_count"], 2)
         self.assertEqual(summary["absent_count"], 20)
 
+    def test_unsupported_resource_type_in_manifest_and_inventory_fails_closed(self):
+        """
+        [P1 Regression] Verifies that manifest or inventory declaring a resource type
+        unsupported by native verifier checkers fails closed with UNVERIFIED (all_absent=False).
+        """
+        # 1. Unsupported type in manifest expected_types & expected_resources
+        manifest_unsupported = {
+            "schema_version": "miles-teardown-manifest/v1",
+            "run_id": "run-test-unsupported",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles"},
+            "expected_types": [
+                "vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms",
+                "unsupported_widget_type",
+            ],
+            "expected_counts": {
+                "vpc_id": 1, "dynamodb_tables": 1, "s3_buckets": 1, "iam_roles": 1, "cloudwatch_alarms": 1,
+                "unsupported_widget_type": 1,
+            },
+            "expected_resources": {
+                "vpc_id": "vpc-1",
+                "dynamodb_tables": ["tbl-1"],
+                "s3_buckets": ["bkt-1"],
+                "iam_roles": ["role-1"],
+                "cloudwatch_alarms": ["alarm-1"],
+                "unsupported_widget_type": ["widget-001"],
+            },
+            "provenance": {"source": "terraform", "created_at_utc": "2026-11-10T00:00:00Z"},
+        }
+        inv_unsupported = {
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "vpc_id": "vpc-1",
+            "dynamodb_tables": ["tbl-1"],
+            "s3_buckets": ["bkt-1"],
+            "iam_roles": ["role-1"],
+            "cloudwatch_alarms": ["alarm-1"],
+            "unsupported_widget_type": ["widget-001"],
+        }
+        v1 = TeardownAbsenceVerifier(
+            inventory=inv_unsupported,
+            manifest=manifest_unsupported,
+            cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
+        )
+        s1 = v1.verify_all()
+        self.assertFalse(s1["all_absent"])
+        self.assertEqual(s1["status"], "UNVERIFIED")
+        self.assertIn("unsupported_resource_type:unsupported_widget_type", s1["manifest_errors"])
+        self.assertIn("unsupported_inventory_resource_type:unsupported_widget_type", s1["manifest_errors"])
+
+        # 2. Unsupported type in standalone inventory (without manifest)
+        inv_standalone_unsupported = {
+            "dynamodb_tables": ["tbl-1"],
+            "unsupported_custom_service": ["service-123"],
+        }
+        v2 = TeardownAbsenceVerifier(
+            inventory=inv_standalone_unsupported,
+            cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
+        )
+        s2 = v2.verify_all()
+        self.assertFalse(s2["all_absent"])
+        self.assertEqual(s2["status"], "UNVERIFIED")
+        self.assertEqual(s2["error"], "INCOMPLETE_INVENTORY_MISSING_EXPECTED_RESOURCES")
+        self.assertIn("unsupported_inventory_resource_type:unsupported_custom_service", s2["missing_expected_types"])
+
+    def test_unchecked_declared_resource_guard_fails_closed(self):
+        """
+        [P1 Regression] Verifies that if any resource declared in manifest or inventory
+        is not queried by a native checker, verify_all fails closed with UNCHECKED_RESOURCES_DETECTED.
+        """
+        inventory = {
+            "dynamodb_tables": ["tbl-1"],
+            "s3_buckets": ["bkt-1"],
+        }
+        verifier = TeardownAbsenceVerifier(
+            inventory=inventory,
+            cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
+        )
+
+        # Adversarially simulate a bug where s3_buckets loop is bypassed
+        original_check_resource_absent = verifier.check_resource_absent
+
+        def selective_runner(name, resource_type, args, errors):
+            if resource_type == "s3_bucket":
+                # Simulate caller skipping s3 check or not registering to results
+                return {"resource": name, "type": resource_type, "status": "SKIPPED"}
+            return original_check_resource_absent(name, resource_type, args, errors)
+
+        # Inject an unchecked resource into expected_resources via manifest
+        manifest = {
+            "schema_version": "miles-teardown-manifest/v1",
+            "run_id": "run-unchecked-test",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles"},
+            "expected_types": ["vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms"],
+            "expected_counts": {"vpc_id": 1, "dynamodb_tables": 1, "s3_buckets": 1, "iam_roles": 1, "cloudwatch_alarms": 1},
+            "expected_resources": {
+                "vpc_id": "vpc-1",
+                "dynamodb_tables": ["tbl-1"],
+                "s3_buckets": ["bkt-1"],
+                "iam_roles": ["role-1"],
+                "cloudwatch_alarms": ["alarm-1"],
+            },
+            "provenance": {"source": "terraform", "created_at_utc": "2026-11-10T00:00:00Z"},
+        }
+        full_inv = {
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "vpc_id": "vpc-1",
+            "dynamodb_tables": ["tbl-1"],
+            "s3_buckets": ["bkt-1"],
+            "iam_roles": ["role-1"],
+            "cloudwatch_alarms": ["alarm-1"],
+        }
+        v = TeardownAbsenceVerifier(
+            inventory=full_inv,
+            manifest=manifest,
+            cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
+        )
+        # Artificially remove one resource from the checked inventory
+        v.inventory["s3_buckets"] = []  # S3 bucket won't be checked in verify_all loop!
+        v.manifest_errors = []          # Clear manifest reconciliation error to specifically test verify_all guard
+
+        summary = v.verify_all()
+        self.assertFalse(summary["all_absent"])
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertEqual(summary["error"], "UNCHECKED_RESOURCES_DETECTED")
+        self.assertIn("s3_buckets:bkt-1", summary["unchecked_resources"])
+
+    def test_duplicate_resource_ids_in_manifest_and_inventory_fails_closed(self):
+        """
+        [P2 Regression] Verifies that duplicate resource IDs in manifest or inventory
+        (e.g. same role declared twice with expected_counts=2) fail closed with UNVERIFIED.
+        """
+        # 1. Manifest with duplicate IAM role IDs and expected_counts=2
+        manifest_dupe_count2 = {
+            "schema_version": "miles-teardown-manifest/v1",
+            "run_id": "run-dupe-1",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles"},
+            "expected_types": ["vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms"],
+            "expected_counts": {
+                "vpc_id": 1,
+                "dynamodb_tables": 1,
+                "s3_buckets": 1,
+                "iam_roles": 2,  # Declaring 2 roles, but duplicating 'miles-role-1'!
+                "cloudwatch_alarms": 1,
+            },
+            "expected_resources": {
+                "vpc_id": "vpc-1",
+                "dynamodb_tables": ["tbl-1"],
+                "s3_buckets": ["bkt-1"],
+                "iam_roles": ["miles-role-1", "miles-role-1"],  # Duplicate!
+                "cloudwatch_alarms": ["alarm-1"],
+            },
+            "provenance": {"source": "terraform", "created_at_utc": "2026-11-10T00:00:00Z"},
+        }
+        inv1 = {
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "vpc_id": "vpc-1",
+            "dynamodb_tables": ["tbl-1"],
+            "s3_buckets": ["bkt-1"],
+            "iam_roles": ["miles-role-1"],
+            "cloudwatch_alarms": ["alarm-1"],
+        }
+        v1 = TeardownAbsenceVerifier(
+            inventory=inv1,
+            manifest=manifest_dupe_count2,
+            cli_runner=lambda cmd: (255, "", "NoSuchEntity ResourceNotFoundException"),
+        )
+        s1 = v1.verify_all()
+        self.assertFalse(s1["all_absent"])
+        self.assertEqual(s1["status"], "UNVERIFIED")
+        self.assertIn("manifest_duplicate_resource_ids:iam_roles:['miles-role-1']", s1["manifest_errors"])
+        self.assertIn("manifest_count_mismatch:iam_roles:expected_2_got_1", s1["manifest_errors"])
+
+        # 2. Manifest with duplicate IAM role IDs and expected_counts=1
+        manifest_dupe_count1 = {
+            "schema_version": "miles-teardown-manifest/v1",
+            "run_id": "run-dupe-2",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles"},
+            "expected_types": ["vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms"],
+            "expected_counts": {
+                "vpc_id": 1,
+                "dynamodb_tables": 1,
+                "s3_buckets": 1,
+                "iam_roles": 1,
+                "cloudwatch_alarms": 1,
+            },
+            "expected_resources": {
+                "vpc_id": "vpc-1",
+                "dynamodb_tables": ["tbl-1"],
+                "s3_buckets": ["bkt-1"],
+                "iam_roles": ["miles-role-1", "miles-role-1"],  # Duplicate!
+                "cloudwatch_alarms": ["alarm-1"],
+            },
+            "provenance": {"source": "terraform", "created_at_utc": "2026-11-10T00:00:00Z"},
+        }
+        v2 = TeardownAbsenceVerifier(
+            inventory=inv1,
+            manifest=manifest_dupe_count1,
+            cli_runner=lambda cmd: (255, "", "NoSuchEntity ResourceNotFoundException"),
+        )
+        s2 = v2.verify_all()
+        self.assertFalse(s2["all_absent"])
+        self.assertEqual(s2["status"], "UNVERIFIED")
+        self.assertIn("manifest_duplicate_resource_ids:iam_roles:['miles-role-1']", s2["manifest_errors"])
+        self.assertIn("manifest_non_unique_resource_ids:iam_roles:unique_1_total_2", s2["manifest_errors"])
+
+        # 3. Inventory with duplicate IDs
+        inv_dupe = {
+            "dynamodb_tables": ["table-dup", "table-dup"],
+        }
+        v3 = TeardownAbsenceVerifier(
+            inventory=inv_dupe,
+            cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
+        )
+        s3 = v3.verify_all()
+        self.assertFalse(s3["all_absent"])
+        self.assertEqual(s3["status"], "UNVERIFIED")
+        self.assertEqual(s3["error"], "INCOMPLETE_INVENTORY_MISSING_EXPECTED_RESOURCES")
+        self.assertIn("inventory_duplicate_resource_ids:dynamodb_tables:['table-dup']", s3["missing_expected_types"])
+
+    def test_nat_gateway_and_elastic_ip_native_absence_and_leak_detection(self):
+        """
+        [P1 Regression] Verifies native absence and leak checking for NAT Gateways and Elastic IPs.
+        - NAT Gateway: not found -> ABSENT; state deleted -> ABSENT; state deleting -> PENDING_DELETION; available -> STILL_PRESENT
+        - Elastic IP: not found -> ABSENT; empty list -> ABSENT; allocated in list -> STILL_PRESENT
+        """
+        # 1. NAT Gateway absent via error code
+        v_nat_err = TeardownAbsenceVerifier(
+            inventory={},
+            cli_runner=lambda cmd: (255, "", "NatGatewayNotFound: NatGateway nat-0123 not found"),
+        )
+        res_nat_err = v_nat_err.check_nat_gateway_absent("nat-0123")
+        self.assertEqual(res_nat_err["status"], "ABSENT")
+        self.assertEqual(res_nat_err["reason"], "NAT_GATEWAY_NOT_FOUND")
+
+        # 2. NAT Gateway state == 'deleted' -> ABSENT
+        v_nat_del = TeardownAbsenceVerifier(
+            inventory={},
+            cli_runner=lambda cmd: (0, json.dumps({"NatGateways": [{"NatGatewayId": "nat-0123", "State": "deleted"}]}), ""),
+        )
+        res_nat_del = v_nat_del.check_nat_gateway_absent("nat-0123")
+        self.assertEqual(res_nat_del["status"], "ABSENT")
+        self.assertEqual(res_nat_del["reason"], "NAT_GATEWAY_DELETED")
+
+        # 3. NAT Gateway state == 'deleting' -> PENDING_DELETION
+        v_nat_deleting = TeardownAbsenceVerifier(
+            inventory={},
+            cli_runner=lambda cmd: (0, json.dumps({"NatGateways": [{"NatGatewayId": "nat-0123", "State": "deleting"}]}), ""),
+        )
+        res_nat_deleting = v_nat_deleting.check_nat_gateway_absent("nat-0123")
+        self.assertEqual(res_nat_deleting["status"], "PENDING_DELETION")
+
+        # 4. NAT Gateway state == 'available' -> STILL_PRESENT leak!
+        v_nat_avail = TeardownAbsenceVerifier(
+            inventory={},
+            cli_runner=lambda cmd: (0, json.dumps({"NatGateways": [{"NatGatewayId": "nat-0123", "State": "available"}]}), ""),
+        )
+        res_nat_avail = v_nat_avail.check_nat_gateway_absent("nat-0123")
+        self.assertEqual(res_nat_avail["status"], "STILL_PRESENT")
+        self.assertEqual(res_nat_avail["reason"], "NAT_GATEWAY_STATE_AVAILABLE_LEAK")
+
+        # 5. Elastic IP absent via error code
+        v_eip_err = TeardownAbsenceVerifier(
+            inventory={},
+            cli_runner=lambda cmd: (255, "", "InvalidAllocationID.NotFound: The allocation ID 'eipalloc-0123' does not exist"),
+        )
+        res_eip_err = v_eip_err.check_elastic_ip_absent("eipalloc-0123")
+        self.assertEqual(res_eip_err["status"], "ABSENT")
+        self.assertEqual(res_eip_err["reason"], "ALLOCATION_ID_NOT_FOUND")
+
+        # 6. Elastic IP empty list -> ABSENT
+        v_eip_empty = TeardownAbsenceVerifier(
+            inventory={},
+            cli_runner=lambda cmd: (0, json.dumps({"Addresses": []}), ""),
+        )
+        res_eip_empty = v_eip_empty.check_elastic_ip_absent("eipalloc-0123")
+        self.assertEqual(res_eip_empty["status"], "ABSENT")
+        self.assertEqual(res_eip_empty["reason"], "ALLOCATION_ID_NOT_IN_LIST")
+
+        # 7. Elastic IP present in Addresses list -> STILL_PRESENT leak!
+        v_eip_leak = TeardownAbsenceVerifier(
+            inventory={},
+            cli_runner=lambda cmd: (0, json.dumps({"Addresses": [{"AllocationId": "eipalloc-0123", "PublicIp": "198.51.100.1"}]}), ""),
+        )
+        res_eip_leak = v_eip_leak.check_elastic_ip_absent("eipalloc-0123")
+        self.assertEqual(res_eip_leak["status"], "STILL_PRESENT")
+        self.assertEqual(res_eip_leak["reason"], "ELASTIC_IP_STILL_ALLOCATED_LEAK")
+
+    def test_nat_gateway_and_elastic_ip_extraction_and_full_verification(self):
+        """
+        [P1 Regression] Verifies extraction of nat_gateway_ids and elastic_ip_allocation_ids
+        from Terraform outputs, checks missing expected types when nat_count > 0, and
+        verifies full clean teardown across all 24 resource types.
+        """
+        tf_outputs_with_nat = {
+            "network_inventory": {
+                "value": {
+                    "vpc_id": "vpc-0123456789abcdef0",
+                    "nat_count": 1,
+                    "nat_gateway_ids": {"ap-southeast-1a": "nat-0123456789abcdef0"},
+                    "elastic_ip_allocation_ids": {"ap-southeast-1a": "eipalloc-0123456789abcdef0"},
+                    "public_subnets": {"ap-southeast-1a": "subnet-pub1"},
+                    "private_subnets": {"ap-southeast-1a": "subnet-priv1"},
+                    "security_groups": {"runtime": "sg-111"},
+                    "gateway_endpoints": {"s3": "vpce-gw-s3"},
+                    "interface_endpoints": {"ec2": "vpce-if-ec2"},
+                }
+            },
+        }
+
+        inv = TeardownAbsenceVerifier.extract_inventory_from_outputs(tf_outputs_with_nat)
+        self.assertIn("nat-0123456789abcdef0", inv["nat_gateways"])
+        self.assertIn("eipalloc-0123456789abcdef0", inv["elastic_ips"])
+
+        # When nat_count > 0 but nat_gateway_ids is omitted, must flag expected_missing
+        tf_outputs_nat_omitted = {
+            "network_inventory": {
+                "value": {
+                    "vpc_id": "vpc-0123456789abcdef0",
+                    "nat_count": 1,
+                    # nat_gateway_ids and elastic_ip_allocation_ids omitted
+                }
+            }
+        }
+        inv_omitted = TeardownAbsenceVerifier.extract_inventory_from_outputs(tf_outputs_nat_omitted)
+        self.assertIn("nat_gateways", inv_omitted["expected_missing"])
+        self.assertIn("elastic_ips", inv_omitted["expected_missing"])
+
+        # Comprehensive 24-resource verification including NAT Gateway and Elastic IP
+        full_24_inventory = {
+            "vpc_id": "vpc-1",
+            "subnets": ["subnet-1"],
+            "security_groups": ["sg-1"],
+            "vpc_endpoints": ["vpce-1"],
+            "alb_names": ["alb-1"],
+            "target_groups": ["tg-1"],
+            "iam_roles": ["role-1"],
+            "instance_profiles": ["prof-1"],
+            "trust_anchors": ["ta-1"],
+            "rolesanywhere_profiles": ["rap-1"],
+            "instances": ["i-1"],
+            "volumes": ["vol-1"],
+            "asg_names": ["asg-1"],
+            "ssm_parameters": ["param-1"],
+            "dynamodb_tables": ["table1"],
+            "s3_buckets": ["bucket1"],
+            "acm_certificates": ["cert1"],
+            "ssm_documents": ["doc1"],
+            "key_pairs": ["kp1"],
+            "cloudwatch_alarms": ["alarm1"],
+            "kms_keys": ["kms1"],
+            "secrets": ["secret1"],
+            "nat_gateways": ["nat-1"],
+            "elastic_ips": ["eipalloc-1"],
+        }
+
+        def mock_clean_24_runner(cmd):
+            if "describe-key" in cmd:
+                return 0, json.dumps({"State": "PendingDeletion", "DeletionDate": "2026-12-10T00:00:00Z"}), ""
+            if "describe-secret" in cmd:
+                return 0, json.dumps({"DeletedDate": "2026-12-10T00:00:00Z"}), ""
+            if "describe-alarms" in cmd:
+                return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
+            if "describe-auto-scaling-groups" in cmd:
+                return 0, json.dumps({"AutoScalingGroups": []}), ""
+            if "describe-instances" in cmd:
+                return 0, json.dumps({"Reservations": [{"Instances": [{"InstanceId": "i-1", "State": {"Name": "terminated"}}]}]}), ""
+            if "describe-volumes" in cmd:
+                return 0, json.dumps({"Volumes": [{"VolumeId": "vol-1", "State": "deleted"}]}), ""
+            if "describe-nat-gateways" in cmd:
+                return 0, json.dumps({"NatGateways": [{"NatGatewayId": "nat-1", "State": "deleted"}]}), ""
+            if "describe-addresses" in cmd:
+                return 0, json.dumps({"Addresses": []}), ""
+            return 255, "", "ResourceNotFoundException 404 Not Found LoadBalancerNotFound TargetGroupNotFound InvalidVpcID.NotFound InvalidSubnetID.NotFound InvalidGroup.NotFound InvalidVpcEndpointId.NotFound NoSuchEntity InvalidDocument InvalidKeyPair.NotFound ParameterNotFound"
+
+        verifier24 = TeardownAbsenceVerifier(inventory=full_24_inventory, cli_runner=mock_clean_24_runner)
+        summary24 = verifier24.verify_all()
+        self.assertTrue(summary24["all_absent"])
+        self.assertEqual(summary24["status"], "PASS")
+        self.assertEqual(summary24["still_present_count"], 0)
+        self.assertEqual(summary24["unexpected_error_count"], 0)
+        self.assertEqual(summary24["total_checked"], 24)
+        self.assertEqual(summary24["pending_deletion_count"], 2)
+        self.assertEqual(summary24["absent_count"], 22)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,7 +27,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 
 def _iso_utc_now() -> str:
@@ -49,6 +49,8 @@ EXPECTED_ABSENCE_ERRORS = {
     "key_pair": ["InvalidKeyPair.NotFound"],
     "cloudwatch_alarm": ["ResourceNotFound", "ValidationError"],
     "vpc_endpoint": ["InvalidVpcEndpointId.NotFound"],
+    "nat_gateway": ["NatGatewayNotFound", "InvalidNatGatewayID.NotFound", "InvalidNatGatewayId.NotFound"],
+    "elastic_ip": ["InvalidAllocationID.NotFound", "InvalidAllocationId.NotFound", "InvalidAddress.NotFound"],
     "instance": ["InvalidInstanceID.NotFound"],
     "volume": ["InvalidVolume.NotFound"],
     "asg": ["AutoScalingGroupNotFound"],
@@ -80,6 +82,33 @@ ESSENTIAL_MILES_RESOURCE_TYPES = frozenset({
     "iam_roles",
     "cloudwatch_alarms",
     "vpc_id",
+})
+
+SUPPORTED_RESOURCE_TYPES = frozenset({
+    "dynamodb_tables",
+    "s3_buckets",
+    "vpc_id",
+    "subnets",
+    "security_groups",
+    "vpc_endpoints",
+    "nat_gateways",
+    "elastic_ips",
+    "alb_names",
+    "target_groups",
+    "iam_roles",
+    "instance_profiles",
+    "trust_anchors",
+    "rolesanywhere_profiles",
+    "instances",
+    "volumes",
+    "asg_names",
+    "ssm_parameters",
+    "acm_certificates",
+    "ssm_documents",
+    "key_pairs",
+    "cloudwatch_alarms",
+    "kms_keys",
+    "secrets",
 })
 
 
@@ -142,6 +171,26 @@ class TeardownAbsenceVerifier:
         else:
             self.manifest_required = (self.mode == "live")
         self.manifest_errors: List[str] = []
+
+        # Check inventory directly for unsupported types or duplicate IDs
+        self.inventory.setdefault("expected_missing", [])
+        for inv_key, inv_val in list(self.inventory.items()):
+            if inv_key in {"account_id", "region", "expected_missing"}:
+                continue
+            if inv_key not in SUPPORTED_RESOURCE_TYPES:
+                self.inventory["expected_missing"].append(f"unsupported_inventory_resource_type:{inv_key}")
+            if isinstance(inv_val, list):
+                seen_inv_init: Set[str] = set()
+                dupes_init: List[str] = []
+                for it in inv_val:
+                    s_it = str(it).strip() if it is not None else ""
+                    if s_it in seen_inv_init:
+                        if s_it not in dupes_init:
+                            dupes_init.append(s_it)
+                    else:
+                        seen_inv_init.add(s_it)
+                if dupes_init:
+                    self.inventory["expected_missing"].append(f"inventory_duplicate_resource_ids:{inv_key}:{sorted(dupes_init)}")
 
         if self.manifest:
             manifest_obj, m_errs = self.validate_manifest_schema_and_reconciliation(
@@ -237,9 +286,17 @@ class TeardownAbsenceVerifier:
         else:
             if len(exp_types) == 0:
                 errors.append("invalid_manifest_expected_types_empty")
+            seen_types: Set[str] = set()
             for idx, item in enumerate(exp_types):
                 if not isinstance(item, str) or not item.strip():
                     errors.append(f"invalid_manifest_expected_types_element_at_{idx}")
+                else:
+                    t_str = item.strip()
+                    if t_str not in SUPPORTED_RESOURCE_TYPES:
+                        errors.append(f"unsupported_resource_type:{t_str}")
+                    if t_str in seen_types:
+                        errors.append(f"manifest_duplicate_expected_type:{t_str}")
+                    seen_types.add(t_str)
 
             # If complete scope is required (e.g. live acceptance or full Miles stack)
             if require_complete_scope:
@@ -252,6 +309,9 @@ class TeardownAbsenceVerifier:
         if not isinstance(exp_counts, dict):
             errors.append("invalid_manifest_expected_counts_not_a_dict")
         else:
+            for k in sorted(exp_counts.keys()):
+                if k not in SUPPORTED_RESOURCE_TYPES:
+                    errors.append(f"unsupported_resource_type:{k}")
             if isinstance(exp_types, list):
                 for t in exp_types:
                     if t not in exp_counts:
@@ -264,19 +324,38 @@ class TeardownAbsenceVerifier:
         if not isinstance(exp_res, dict) or not exp_res:
             errors.append("invalid_manifest_missing_expected_resources")
         else:
+            for k in sorted(exp_res.keys()):
+                if k not in SUPPORTED_RESOURCE_TYPES:
+                    errors.append(f"unsupported_resource_type:{k}")
             if isinstance(exp_types, list):
                 for t in exp_res.keys():
                     if t not in exp_types:
                         errors.append(f"manifest_unregistered_resource_type:{t}")
 
-            # Count reconciliation between expected_counts and expected_resources
+            # Check for duplicate resource IDs within expected_resources lists
+            for t, val in exp_res.items():
+                if isinstance(val, list):
+                    seen_ids: Set[str] = set()
+                    dupe_ids: List[str] = []
+                    for item in val:
+                        s_id = str(item).strip() if item is not None else ""
+                        if s_id in seen_ids:
+                            if s_id not in dupe_ids:
+                                dupe_ids.append(s_id)
+                        else:
+                            seen_ids.add(s_id)
+                    if dupe_ids:
+                        errors.append(f"manifest_duplicate_resource_ids:{t}:{sorted(dupe_ids)}")
+                        errors.append(f"manifest_non_unique_resource_ids:{t}:unique_{len(seen_ids)}_total_{len(val)}")
+
+            # Count reconciliation between expected_counts and unique expected_resources
             if isinstance(exp_counts, dict):
                 for t, expected_count in exp_counts.items():
                     res_val = exp_res.get(t)
                     if res_val is None:
                         actual_res_count = 0
                     elif isinstance(res_val, list):
-                        actual_res_count = len(res_val)
+                        actual_res_count = len(set(str(x).strip() for x in res_val if x is not None and str(x).strip()))
                     elif isinstance(res_val, str):
                         actual_res_count = 1 if res_val.strip() else 0
                     else:
@@ -335,6 +414,24 @@ class TeardownAbsenceVerifier:
         if inventory.get("vpc_id") and isinstance(exp_res, dict):
             if inventory.get("vpc_id") != str(exp_res.get("vpc_id", "")).strip():
                 errors.append(f"inventory_unmanifested_vpc_id:{inventory['vpc_id']}")
+
+        for inv_key, inv_val in inventory.items():
+            if inv_key in {"account_id", "region", "expected_missing", "vpc_id"}:
+                continue
+            if inv_key not in SUPPORTED_RESOURCE_TYPES:
+                errors.append(f"unsupported_inventory_resource_type:{inv_key}")
+            if isinstance(inv_val, list):
+                seen_inv_ids: Set[str] = set()
+                dupe_inv_ids: List[str] = []
+                for item in inv_val:
+                    s_id = str(item).strip() if item is not None else ""
+                    if s_id in seen_inv_ids:
+                        if s_id not in dupe_inv_ids:
+                            dupe_inv_ids.append(s_id)
+                    else:
+                        seen_inv_ids.add(s_id)
+                if dupe_inv_ids:
+                    errors.append(f"inventory_duplicate_resource_ids:{inv_key}:{sorted(dupe_inv_ids)}")
 
         if isinstance(exp_res, dict):
             for inv_key, inv_val in inventory.items():
@@ -424,7 +521,6 @@ class TeardownAbsenceVerifier:
         Extracts owned resource identifiers from nested Terraform output structure.
         Detects expected resource types based on deployment contract / session config
         and flags missing expected types.
-        and flags missing expected types.
         """
         inv: Dict[str, Any] = {
             "dynamodb_tables": [],
@@ -433,6 +529,8 @@ class TeardownAbsenceVerifier:
             "subnets": [],
             "security_groups": [],
             "vpc_endpoints": [],
+            "nat_gateways": [],
+            "elastic_ips": [],
             "alb_names": [],
             "target_groups": [],
             "iam_roles": [],
@@ -470,8 +568,16 @@ class TeardownAbsenceVerifier:
             _dedup_add("security_groups", _extract_id_list(net.get("security_groups")))
             _dedup_add("vpc_endpoints", _extract_id_list(net.get("gateway_endpoints")))
             _dedup_add("vpc_endpoints", _extract_id_list(net.get("interface_endpoints")))
+            _dedup_add("nat_gateways", _extract_id_list(net.get("nat_gateway_ids")))
+            _dedup_add("elastic_ips", _extract_id_list(net.get("elastic_ip_allocation_ids")))
             if net.get("alb_name"):
                 _dedup_add("alb_names", [str(net["alb_name"]).strip()])
+            nat_count = net.get("nat_count")
+            if isinstance(nat_count, int) and nat_count > 0:
+                if not inv["nat_gateways"]:
+                    inv["expected_missing"].append("nat_gateways")
+                if not inv["elastic_ips"]:
+                    inv["expected_missing"].append("elastic_ips")
 
         # 2. runtime_inventory
         rt = _unwrap_val(data.get("runtime_inventory", {}))
@@ -623,6 +729,14 @@ class TeardownAbsenceVerifier:
             _dedup_add("ssm_documents", _extract_id_list(_unwrap_val(data["ssm_documents"])))
         if data.get("alb_names"):
             _dedup_add("alb_names", _extract_id_list(_unwrap_val(data["alb_names"])))
+        if data.get("nat_gateway_ids"):
+            _dedup_add("nat_gateways", _extract_id_list(_unwrap_val(data["nat_gateway_ids"])))
+        if data.get("nat_gateways"):
+            _dedup_add("nat_gateways", _extract_id_list(_unwrap_val(data["nat_gateways"])))
+        if data.get("elastic_ip_allocation_ids"):
+            _dedup_add("elastic_ips", _extract_id_list(_unwrap_val(data["elastic_ip_allocation_ids"])))
+        if data.get("elastic_ips"):
+            _dedup_add("elastic_ips", _extract_id_list(_unwrap_val(data["elastic_ips"])))
 
         # 8. Check for expected resources based on session configuration and contract
         session_cfg = _unwrap_val(data.get("session_configuration", {}))
@@ -1025,6 +1139,124 @@ class TeardownAbsenceVerifier:
         except Exception as e:
             return {"resource": secret_arn_or_name, "type": "secret", "status": "UNEXPECTED_ERROR", "reason": str(e)}
 
+    def check_nat_gateway_absent(self, nat_gw_id: str) -> Dict[str, Any]:
+        """
+        Verifies that an owned NAT Gateway is absent or deleted.
+        AWS NAT Gateways transition to 'deleted' state before disappearing completely.
+        """
+        rc, stdout, stderr = self._runner([
+            "ec2", "describe-nat-gateways",
+            "--nat-gateway-ids", nat_gw_id,
+            "--output", "json",
+        ])
+        if rc != 0:
+            combined_err = f"{stdout} {stderr}"
+            if any(s.lower() in combined_err.lower() for s in EXPECTED_ABSENCE_ERRORS["nat_gateway"]):
+                return {
+                    "resource": nat_gw_id,
+                    "type": "nat_gateway",
+                    "status": "ABSENT",
+                    "reason": "NAT_GATEWAY_NOT_FOUND",
+                    "details": stderr.strip() or stdout.strip(),
+                }
+            return {
+                "resource": nat_gw_id,
+                "type": "nat_gateway",
+                "status": "UNEXPECTED_ERROR",
+                "reason": f"exit_code_{rc}",
+                "details": stderr.strip() or stdout.strip(),
+            }
+
+        try:
+            data = json.loads(stdout)
+            gws = [g for g in data.get("NatGateways", []) if g.get("NatGatewayId") == nat_gw_id]
+            if not gws:
+                return {
+                    "resource": nat_gw_id,
+                    "type": "nat_gateway",
+                    "status": "ABSENT",
+                    "reason": "NAT_GATEWAY_NOT_FOUND_IN_LIST",
+                }
+            state = str(gws[0].get("State", "")).lower()
+            if state == "deleted":
+                return {
+                    "resource": nat_gw_id,
+                    "type": "nat_gateway",
+                    "status": "ABSENT",
+                    "reason": "NAT_GATEWAY_DELETED",
+                }
+            if state == "deleting":
+                return {
+                    "resource": nat_gw_id,
+                    "type": "nat_gateway",
+                    "status": "PENDING_DELETION",
+                    "reason": "NAT_GATEWAY_DELETING",
+                }
+            return {
+                "resource": nat_gw_id,
+                "type": "nat_gateway",
+                "status": "STILL_PRESENT",
+                "reason": f"NAT_GATEWAY_STATE_{state.upper()}_LEAK",
+            }
+        except Exception as e:
+            return {
+                "resource": nat_gw_id,
+                "type": "nat_gateway",
+                "status": "UNEXPECTED_ERROR",
+                "reason": f"json_decode_error: {e}",
+            }
+
+    def check_elastic_ip_absent(self, alloc_id: str) -> Dict[str, Any]:
+        """
+        Verifies that an owned Elastic IP allocation is released / absent.
+        """
+        rc, stdout, stderr = self._runner([
+            "ec2", "describe-addresses",
+            "--allocation-ids", alloc_id,
+            "--output", "json",
+        ])
+        if rc != 0:
+            combined_err = f"{stdout} {stderr}"
+            if any(s.lower() in combined_err.lower() for s in EXPECTED_ABSENCE_ERRORS["elastic_ip"]):
+                return {
+                    "resource": alloc_id,
+                    "type": "elastic_ip",
+                    "status": "ABSENT",
+                    "reason": "ALLOCATION_ID_NOT_FOUND",
+                    "details": stderr.strip() or stdout.strip(),
+                }
+            return {
+                "resource": alloc_id,
+                "type": "elastic_ip",
+                "status": "UNEXPECTED_ERROR",
+                "reason": f"exit_code_{rc}",
+                "details": stderr.strip() or stdout.strip(),
+            }
+
+        try:
+            data = json.loads(stdout)
+            addresses = [a for a in data.get("Addresses", []) if a.get("AllocationId") == alloc_id]
+            if not addresses:
+                return {
+                    "resource": alloc_id,
+                    "type": "elastic_ip",
+                    "status": "ABSENT",
+                    "reason": "ALLOCATION_ID_NOT_IN_LIST",
+                }
+            return {
+                "resource": alloc_id,
+                "type": "elastic_ip",
+                "status": "STILL_PRESENT",
+                "reason": "ELASTIC_IP_STILL_ALLOCATED_LEAK",
+            }
+        except Exception as e:
+            return {
+                "resource": alloc_id,
+                "type": "elastic_ip",
+                "status": "UNEXPECTED_ERROR",
+                "reason": f"json_decode_error: {e}",
+            }
+
     def verify_all(self) -> Dict[str, Any]:
         """
         Executes absence verification across all registered resources in inventory.
@@ -1112,6 +1344,7 @@ class TeardownAbsenceVerifier:
             }
 
         results: Dict[str, Dict[str, Any]] = {}
+        checked_resources: Set[Tuple[str, str]] = set()
 
         # 1. DynamoDB Tables
         for table in self.inventory.get("dynamodb_tables", []):
@@ -1121,6 +1354,7 @@ class TeardownAbsenceVerifier:
                 ["dynamodb", "describe-table", "--table-name", table],
                 EXPECTED_ABSENCE_ERRORS["dynamodb_table"],
             )
+            checked_resources.add(("dynamodb_tables", table))
 
         # 2. S3 Buckets
         for bucket in self.inventory.get("s3_buckets", []):
@@ -1133,6 +1367,7 @@ class TeardownAbsenceVerifier:
                 args,
                 EXPECTED_ABSENCE_ERRORS["s3_bucket"],
             )
+            checked_resources.add(("s3_buckets", bucket))
 
         # 3. VPC
         vpc_id = self.inventory.get("vpc_id")
@@ -1143,6 +1378,7 @@ class TeardownAbsenceVerifier:
                 ["ec2", "describe-vpcs", "--vpc-ids", vpc_id],
                 EXPECTED_ABSENCE_ERRORS["vpc"],
             )
+            checked_resources.add(("vpc_id", vpc_id))
 
         # 4. Subnets
         for subnet in self.inventory.get("subnets", []):
@@ -1152,6 +1388,7 @@ class TeardownAbsenceVerifier:
                 ["ec2", "describe-subnets", "--subnet-ids", subnet],
                 EXPECTED_ABSENCE_ERRORS["subnet"],
             )
+            checked_resources.add(("subnets", subnet))
 
         # 5. Security Groups
         for sg in self.inventory.get("security_groups", []):
@@ -1161,6 +1398,7 @@ class TeardownAbsenceVerifier:
                 ["ec2", "describe-security-groups", "--group-ids", sg],
                 EXPECTED_ABSENCE_ERRORS["security_group"],
             )
+            checked_resources.add(("security_groups", sg))
 
         # 6. VPC Endpoints
         for vpce in self.inventory.get("vpc_endpoints", []):
@@ -1170,6 +1408,7 @@ class TeardownAbsenceVerifier:
                 ["ec2", "describe-vpc-endpoints", "--vpc-endpoint-ids", vpce],
                 EXPECTED_ABSENCE_ERRORS["vpc_endpoint"],
             )
+            checked_resources.add(("vpc_endpoints", vpce))
 
         # 7. ALB
         for alb in self.inventory.get("alb_names", []):
@@ -1179,6 +1418,7 @@ class TeardownAbsenceVerifier:
                 ["elbv2", "describe-load-balancers", "--names", alb],
                 EXPECTED_ABSENCE_ERRORS["alb"],
             )
+            checked_resources.add(("alb_names", alb))
 
         # 8. Target Groups
         for tg in self.inventory.get("target_groups", []):
@@ -1188,6 +1428,7 @@ class TeardownAbsenceVerifier:
                 ["elbv2", "describe-target-groups", "--target-group-arns", tg],
                 EXPECTED_ABSENCE_ERRORS["target_group"],
             )
+            checked_resources.add(("target_groups", tg))
 
         # 9. IAM Roles
         for role in self.inventory.get("iam_roles", []):
@@ -1197,6 +1438,7 @@ class TeardownAbsenceVerifier:
                 ["iam", "get-role", "--role-name", role],
                 EXPECTED_ABSENCE_ERRORS["iam_role"],
             )
+            checked_resources.add(("iam_roles", role))
 
         # 10. Instance Profiles
         for prof in self.inventory.get("instance_profiles", []):
@@ -1206,6 +1448,7 @@ class TeardownAbsenceVerifier:
                 ["iam", "get-instance-profile", "--instance-profile-name", prof],
                 EXPECTED_ABSENCE_ERRORS["iam_instance_profile"],
             )
+            checked_resources.add(("instance_profiles", prof))
 
         # 11. Trust Anchors
         for anchor in self.inventory.get("trust_anchors", []):
@@ -1215,6 +1458,7 @@ class TeardownAbsenceVerifier:
                 ["rolesanywhere", "get-trust-anchor", "--trust-anchor-id", anchor],
                 EXPECTED_ABSENCE_ERRORS["trust_anchor"],
             )
+            checked_resources.add(("trust_anchors", anchor))
 
         # 12. Roles Anywhere Profiles
         for rap in self.inventory.get("rolesanywhere_profiles", []):
@@ -1224,18 +1468,22 @@ class TeardownAbsenceVerifier:
                 ["rolesanywhere", "get-profile", "--profile-id", rap],
                 EXPECTED_ABSENCE_ERRORS["rolesanywhere_profile"],
             )
+            checked_resources.add(("rolesanywhere_profiles", rap))
 
         # 13. EC2 Instances
         for inst in self.inventory.get("instances", []):
             results[f"inst_{inst}"] = self.check_instance_absent(inst)
+            checked_resources.add(("instances", inst))
 
         # 14. EBS Volumes
         for vol in self.inventory.get("volumes", []):
             results[f"vol_{vol}"] = self.check_volume_absent(vol)
+            checked_resources.add(("volumes", vol))
 
         # 15. Auto Scaling Groups
         for asg in self.inventory.get("asg_names", []):
             results[f"asg_{asg}"] = self.check_asg_absent(asg)
+            checked_resources.add(("asg_names", asg))
 
         # 16. SSM Parameters
         for param in self.inventory.get("ssm_parameters", []):
@@ -1245,6 +1493,7 @@ class TeardownAbsenceVerifier:
                 ["ssm", "get-parameter", "--name", param],
                 EXPECTED_ABSENCE_ERRORS["ssm_parameter"],
             )
+            checked_resources.add(("ssm_parameters", param))
 
         # 17. ACM Certificates
         for cert in self.inventory.get("acm_certificates", []):
@@ -1254,6 +1503,7 @@ class TeardownAbsenceVerifier:
                 ["acm", "describe-certificate", "--certificate-arn", cert],
                 EXPECTED_ABSENCE_ERRORS["acm_certificate"],
             )
+            checked_resources.add(("acm_certificates", cert))
 
         # 18. SSM Documents
         for doc in self.inventory.get("ssm_documents", []):
@@ -1263,6 +1513,7 @@ class TeardownAbsenceVerifier:
                 ["ssm", "describe-document", "--name", doc],
                 EXPECTED_ABSENCE_ERRORS["ssm_document"],
             )
+            checked_resources.add(("ssm_documents", doc))
 
         # 19. Key Pairs
         for kp in self.inventory.get("key_pairs", []):
@@ -1272,18 +1523,105 @@ class TeardownAbsenceVerifier:
                 ["ec2", "describe-key-pairs", "--key-names", kp],
                 EXPECTED_ABSENCE_ERRORS["key_pair"],
             )
+            checked_resources.add(("key_pairs", kp))
 
         # 20. CloudWatch Alarms
         for alarm in self.inventory.get("cloudwatch_alarms", []):
             results[f"alarm_{alarm}"] = self.check_cloudwatch_alarm_absent(alarm)
+            checked_resources.add(("cloudwatch_alarms", alarm))
 
         # 21. KMS Keys (PendingDeletion check)
         for kms_key in self.inventory.get("kms_keys", []):
             results[f"kms_{kms_key}"] = self.check_kms_key_pending_deletion(kms_key)
+            checked_resources.add(("kms_keys", kms_key))
 
         # 22. Secrets Manager Secrets (DeletedDate check)
         for secret in self.inventory.get("secrets", []):
             results[f"secret_{secret}"] = self.check_secret_pending_deletion(secret)
+            checked_resources.add(("secrets", secret))
+
+        # 23. NAT Gateways
+        for nat_gw in self.inventory.get("nat_gateways", []):
+            results[f"nat_{nat_gw}"] = self.check_nat_gateway_absent(nat_gw)
+            checked_resources.add(("nat_gateways", nat_gw))
+
+        # 24. Elastic IPs
+        for eip in self.inventory.get("elastic_ips", []):
+            results[f"eip_{eip}"] = self.check_elastic_ip_absent(eip)
+            checked_resources.add(("elastic_ips", eip))
+
+        # Completeness guard: ensure every resource expected by manifest and inventory was checked
+        expected_to_check: Set[Tuple[str, str]] = set()
+
+        if isinstance(self.manifest, dict):
+            exp_res_map = self.manifest.get("expected_resources", {})
+            if isinstance(exp_res_map, dict):
+                for res_type, items in exp_res_map.items():
+                    if res_type == "vpc_id":
+                        if items and str(items).strip():
+                            expected_to_check.add(("vpc_id", str(items).strip()))
+                    elif isinstance(items, list):
+                        for it in items:
+                            if it is not None and str(it).strip():
+                                expected_to_check.add((res_type, str(it).strip()))
+                    elif isinstance(items, str) and items.strip():
+                        expected_to_check.add((res_type, str(items).strip()))
+
+        for k, v in self.inventory.items():
+            if k in {"account_id", "region", "expected_missing"}:
+                continue
+            if k == "vpc_id":
+                if v and str(v).strip():
+                    expected_to_check.add(("vpc_id", str(v).strip()))
+            elif isinstance(v, list):
+                for it in v:
+                    if it is not None and str(it).strip():
+                        expected_to_check.add((k, str(it).strip()))
+            elif isinstance(v, str) and v.strip():
+                expected_to_check.add((k, str(v).strip()))
+
+        unchecked = expected_to_check - checked_resources
+        if unchecked:
+            return {
+                "timestamp_utc": _iso_utc_now(),
+                "mode": self.mode,
+                "status": "UNVERIFIED",
+                "all_absent": False,
+                "error": "UNCHECKED_RESOURCES_DETECTED",
+                "reason": f"Verifier failed to check {len(unchecked)} declared resources.",
+                "unchecked_resources": sorted([f"{t}:{i}" for t, i in unchecked]),
+                "total_checked": len(results),
+                "absent_count": sum(1 for r in results.values() if r["status"] == "ABSENT"),
+                "pending_deletion_count": sum(1 for r in results.values() if r["status"] == "PENDING_DELETION"),
+                "still_present_count": sum(1 for r in results.values() if r["status"] == "STILL_PRESENT"),
+                "unexpected_error_count": sum(1 for r in results.values() if r["status"] == "UNEXPECTED_ERROR"),
+                "still_present": [r["resource"] for r in results.values() if r["status"] == "STILL_PRESENT"],
+                "unexpected_errors": [r for r in results.values() if r["status"] == "UNEXPECTED_ERROR"],
+                "resources": results,
+            }
+
+        # Count check against manifest expected_counts if manifest is present
+        if isinstance(self.manifest, dict):
+            exp_counts = self.manifest.get("expected_counts")
+            if isinstance(exp_counts, dict):
+                total_expected_count = sum(c for c in exp_counts.values() if isinstance(c, int))
+                if len(results) != total_expected_count:
+                    return {
+                        "timestamp_utc": _iso_utc_now(),
+                        "mode": self.mode,
+                        "status": "UNVERIFIED",
+                        "all_absent": False,
+                        "error": "RESOURCE_COUNT_RECONCILIATION_MISMATCH",
+                        "reason": f"Results count {len(results)} does not match manifest total expected count {total_expected_count}.",
+                        "total_checked": len(results),
+                        "absent_count": sum(1 for r in results.values() if r["status"] == "ABSENT"),
+                        "pending_deletion_count": sum(1 for r in results.values() if r["status"] == "PENDING_DELETION"),
+                        "still_present_count": sum(1 for r in results.values() if r["status"] == "STILL_PRESENT"),
+                        "unexpected_error_count": sum(1 for r in results.values() if r["status"] == "UNEXPECTED_ERROR"),
+                        "still_present": [r["resource"] for r in results.values() if r["status"] == "STILL_PRESENT"],
+                        "unexpected_errors": [r for r in results.values() if r["status"] == "UNEXPECTED_ERROR"],
+                        "resources": results,
+                    }
 
         total = len(results)
 
@@ -1393,6 +1731,10 @@ def main():
                 return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
             if "describe-auto-scaling-groups" in cmd:
                 return 0, json.dumps({"AutoScalingGroups": []}), ""
+            if "describe-nat-gateways" in cmd:
+                return 0, json.dumps({"NatGateways": []}), ""
+            if "describe-addresses" in cmd:
+                return 0, json.dumps({"Addresses": []}), ""
             if "describe-instances" in cmd:
                 return 255, "", "InvalidInstanceID.NotFound: The instance ID does not exist"
             if "describe-volumes" in cmd:

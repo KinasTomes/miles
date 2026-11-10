@@ -8,6 +8,8 @@ output "network_inventory" {
     paused                    = var.paused
     egress_mode               = local.egress_mode
     nat_count                 = module.network.nat_count
+    nat_gateway_ids           = module.network.nat_gateway_ids
+    elastic_ip_allocation_ids = module.network.elastic_ip_allocation_ids
     aws_api_egress_configured = local.egress_mode != "isolated"
     public_subnet_cidrs       = module.network.public_subnet_cidrs
     gateway_endpoints         = module.endpoints.gateway_ids
