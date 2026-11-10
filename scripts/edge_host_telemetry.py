@@ -508,6 +508,7 @@ class HostTelemetryRecorder:
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
         self._sequence = 0
         self._last_chrony_sample_mono = 0.0
 
@@ -589,12 +590,13 @@ class HostTelemetryRecorder:
     def run_loop(self, duration_seconds: Optional[float] = None) -> None:
         """Runs the sampling loop in the foreground until stopped or duration expires."""
         self._running = True
+        self._stop_event.clear()
         t0 = time.perf_counter()
 
         # Prime initial os_probe delta
         self.os_probe.sample_all()
 
-        while self._running:
+        while self._running and not self._stop_event.is_set():
             if duration_seconds is not None and (time.perf_counter() - t0) >= duration_seconds:
                 break
             try:
@@ -603,7 +605,8 @@ class HostTelemetryRecorder:
                 # Never crash the diagnostic loop on transient sampling errors
                 pass
 
-            time.sleep(self.os_interval)
+            if self._stop_event.wait(self.os_interval):
+                break
 
         self._running = False
 
@@ -618,6 +621,7 @@ class HostTelemetryRecorder:
     def stop(self) -> None:
         """Signals the loop to stop and waits for completion."""
         self._running = False
+        self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
 
@@ -844,8 +848,8 @@ def main():
         )
 
         def sig_handler(sig, frame):
+            # Gracefully stop the sampling loop; unified verdict runs after loop exits
             recorder.stop()
-            sys.exit(0)
 
         signal.signal(signal.SIGINT, sig_handler)
         signal.signal(signal.SIGTERM, sig_handler)

@@ -12,6 +12,7 @@ import datetime
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -376,6 +377,68 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         # Victim file must remain completely untouched
         self.assertEqual(victim_file.read_text(encoding="utf-8"), "VICTIM_INTACT_DATA")
         self.assertEqual(buf_file.stat().st_mode & 0o777, 0o600)
+
+    def test_sigterm_stops_sampling_and_evaluates_unified_fail_closed_verdict(self):
+        """
+        [P1 Regression] Verifies that when SIGTERM stops the recording loop,
+        the unified verdict is evaluated and fails closed (exit 1) if Chrony errors occurred during runtime.
+        """
+        fake_bin_dir = self.tmppath / "fake_bin"
+        fake_bin_dir.mkdir(parents=True, exist_ok=True)
+        chrony_bin = fake_bin_dir / "chronyc"
+        state_file = self.tmppath / "chrony_state.txt"
+        state_file.write_text("0")
+
+        # Fake chronyc: returns 0 on first call (preflight), then 1 on runtime calls
+        fake_script = f"""#!/bin/sh
+call_count=$(cat "{state_file}")
+new_count=$((call_count + 1))
+echo "$new_count" > "{state_file}"
+if [ "$call_count" -le 1 ]; then
+    echo "A9FEA97B,169.254.169.123,3,$(date +%s),0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal"
+    exit 0
+else
+    echo "506 Cannot talk to daemon" >&2
+    exit 1
+fi
+"""
+        chrony_bin.write_text(fake_script)
+        chrony_bin.chmod(0o755)
+
+        output_file = self.tmppath / "sigterm_test.jsonl"
+        env = os.environ.copy()
+        env["PATH"] = f"{fake_bin_dir}:{env.get('PATH', '')}"
+
+        cmd = [
+            sys.executable,
+            "-B",
+            str(Path(__file__).resolve().parent.parent / "edge_host_telemetry.py"),
+            "run",
+            "--output-file",
+            str(output_file),
+            "--os-interval",
+            "0.1",
+            "--chrony-interval",
+            "0.2",
+            "--duration",
+            "30",
+        ]
+
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(1.2)
+        proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=5)
+
+        # Unified verdict must fail closed with exit code 1
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("Gate D0 clock evidence unverified", stderr)
+        self.assertTrue(output_file.exists())
+
+        # Standalone summarize also confirms UNVERIFIED
+        offline_recorder = HostTelemetryRecorder(output_file=output_file)
+        summary = offline_recorder.summarize_window()
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertFalse(summary["clock_evidence_verified"])
 
 
 if __name__ == "__main__":

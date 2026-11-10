@@ -100,9 +100,10 @@ class TeardownAbsenceVerifier:
         profile: Optional[str] = None,
         region: str = "ap-southeast-1",
         account_id: Optional[str] = None,
-        mode: str = "live",
+        mode: str = "dry-run",
         cli_runner: Optional[Callable[[List[str]], Tuple[int, str, str]]] = None,
         manifest: Optional[Union[Dict[str, Any], Path, str]] = None,
+        manifest_required: Optional[bool] = None,
     ):
         self.inventory = inventory
         self.profile = profile
@@ -111,6 +112,10 @@ class TeardownAbsenceVerifier:
         self.mode = mode
         self._runner = cli_runner or self._default_aws_runner
         self.manifest = manifest
+        if manifest_required is not None:
+            self.manifest_required = manifest_required
+        else:
+            self.manifest_required = (self.mode == "live")
         if self.manifest:
             self._apply_manifest(self.manifest)
 
@@ -122,20 +127,27 @@ class TeardownAbsenceVerifier:
 
         expected_missing = self.inventory.setdefault("expected_missing", [])
 
+        # Schema & provenance validation
+        if not manifest.get("run_id") and not manifest.get("session_id"):
+            expected_missing.append("invalid_manifest_missing_run_id")
+
+        exp_res = manifest.get("expected_resources")
+        if not isinstance(exp_res, dict) or not exp_res:
+            expected_missing.append("invalid_manifest_missing_expected_resources")
+            return
+
         # 1. Check expected_resources mapping
-        exp_res = manifest.get("expected_resources", {})
-        if isinstance(exp_res, dict):
-            for k, val in exp_res.items():
-                if k == "vpc_id":
-                    if self.inventory.get("vpc_id") != str(val).strip():
-                        expected_missing.append(f"manifest_mismatch:vpc_id_expected_{val}")
-                elif isinstance(val, list):
-                    for item in val:
-                        if item and item not in self.inventory.get(k, []):
-                            expected_missing.append(f"manifest_missing:{k}:{item}")
-                elif isinstance(val, str):
-                    if val and val not in self.inventory.get(k, []):
-                        expected_missing.append(f"manifest_missing:{k}:{val}")
+        for k, val in exp_res.items():
+            if k == "vpc_id":
+                if self.inventory.get("vpc_id") != str(val).strip():
+                    expected_missing.append(f"manifest_mismatch:vpc_id_expected_{val}")
+            elif isinstance(val, list):
+                for item in val:
+                    if item and item not in self.inventory.get(k, []):
+                        expected_missing.append(f"manifest_missing:{k}:{item}")
+            elif isinstance(val, str):
+                if val and val not in self.inventory.get(k, []):
+                    expected_missing.append(f"manifest_missing:{k}:{val}")
 
         # 2. Check expected_types list
         exp_types = manifest.get("expected_types", [])
@@ -165,8 +177,9 @@ class TeardownAbsenceVerifier:
         manifest_path: Optional[Union[Path, str, Dict[str, Any]]] = None,
         profile: Optional[str] = None,
         region: str = "ap-southeast-1",
-        mode: str = "live",
+        mode: str = "dry-run",
         cli_runner: Optional[Callable[[List[str]], Tuple[int, str, str]]] = None,
+        manifest_required: Optional[bool] = None,
     ) -> "TeardownAbsenceVerifier":
         """
         Parses active-outputs.json or `terraform output -json` and extracts
@@ -181,6 +194,7 @@ class TeardownAbsenceVerifier:
             mode=mode,
             cli_runner=cli_runner,
             manifest=manifest_path,
+            manifest_required=manifest_required,
         )
 
     @staticmethod
@@ -799,6 +813,25 @@ class TeardownAbsenceVerifier:
         Produces structured absence ledger.
         Fails closed on missing expected resources or empty inventory.
         """
+        # Guard 0: Live mode strictly requires an authoritative pre-teardown manifest
+        if self.manifest_required and not self.manifest:
+            return {
+                "timestamp_utc": _iso_utc_now(),
+                "mode": self.mode,
+                "status": "UNVERIFIED",
+                "all_absent": False,
+                "error": "MANIFEST_REQUIRED_IN_LIVE_MODE",
+                "reason": "Authoritative pre-teardown manifest is mandatory in live mode to guarantee inventory completeness.",
+                "total_checked": 0,
+                "absent_count": 0,
+                "pending_deletion_count": 0,
+                "still_present_count": 0,
+                "unexpected_error_count": 0,
+                "still_present": [],
+                "unexpected_errors": [],
+                "resources": {},
+            }
+
         # Guard 1: Incomplete inventory / missing expected resource types
         expected_missing = self.inventory.get("expected_missing", [])
         if expected_missing:
@@ -1041,9 +1074,12 @@ class TeardownAbsenceVerifier:
         Runs verification and writes structured JSON ledger to output_path.
         Guarantees restricted 0600 permissions even when overwriting an existing file.
         Uses unpredictable atomic temp file replacement (tempfile.mkstemp with O_CREAT|O_EXCL)
-        to prevent symlink attacks and race conditions.
+        and refuses to write through destination symlinks to prevent clobber attacks.
         """
-        p = Path(output_path).resolve()
+        dest_path = Path(output_path)
+        if dest_path.is_symlink() or os.path.islink(str(output_path)):
+            raise ValueError(f"Insecure destination: '{output_path}' is a symlink; writing through destination symlinks is prohibited.")
+        p = dest_path.absolute()
         p.parent.mkdir(parents=True, exist_ok=True)
         summary = self.verify_all()
         payload = json.dumps(summary, indent=2) + "\n"
@@ -1105,6 +1141,11 @@ def main():
             return 255, "", "ResourceNotFoundException 404 Not Found NoSuchBucket LoadBalancerNotFound TargetGroupNotFound InvalidVpcID.NotFound InvalidSubnetID.NotFound InvalidGroup.NotFound InvalidVpcEndpointId.NotFound NoSuchEntity InvalidDocument InvalidKeyPair.NotFound ParameterNotFound"
 
         cli_runner = mock_dry_runner
+    else:
+        # Live mode strictly requires authoritative pre-teardown manifest
+        if not args.manifest:
+            print("Error: --manifest is required in live mode to verify teardown completeness against authoritative pre-teardown state.", file=sys.stderr)
+            return 1
 
     if args.outputs_json:
         verifier = TeardownAbsenceVerifier.from_terraform_outputs(
@@ -1130,7 +1171,12 @@ def main():
         return 2
 
     out_p = Path(args.output_ledger)
-    verifier.export_summary(out_p)
+    try:
+        verifier.export_summary(out_p)
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
     print(f"Teardown absence ledger written to: {out_p}")
 
     summary = json.loads(out_p.read_text(encoding="utf-8"))

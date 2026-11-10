@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+import unittest.mock
 
 from scripts.verify_teardown_absence import (
     EXPECTED_ABSENCE_ERRORS,
@@ -341,39 +342,91 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(summary_clean["status"], "PASS")
         self.assertEqual(summary_clean["still_present_count"], 0)
 
+        # 3. Live mode strictly requires manifest; omitting manifest in live mode fails closed
+        verifier_live_no_manifest = TeardownAbsenceVerifier(
+            inventory=complete_inventory,
+            mode="live",
+            cli_runner=mock_all_absent_runner,
+        )
+        summary_no_manifest = verifier_live_no_manifest.verify_all()
+        self.assertFalse(summary_no_manifest["all_absent"])
+        self.assertEqual(summary_no_manifest["status"], "UNVERIFIED")
+        self.assertEqual(summary_no_manifest["error"], "MANIFEST_REQUIRED_IN_LIVE_MODE")
+
+        # 4. Removing one role that was provisioned in pre-teardown manifest causes UNVERIFIED
+        manifest_multi_role = {
+            "run_id": "run-20261110-edge-02",
+            "expected_resources": {
+                "vpc_id": "vpc-0123456789abcdef0",
+                "dynamodb_tables": ["miles-dev-records"],
+                "s3_buckets": ["miles-dev-data"],
+                "iam_roles": ["miles-dev-worker", "miles-dev-controller"],
+                "cloudwatch_alarms": ["miles-dev-alarm"],
+            },
+        }
+        manifest_multi_file = self.tmppath / "manifest-multi.json"
+        manifest_multi_file.write_text(json.dumps(manifest_multi_role), encoding="utf-8")
+
+        verifier_missing_role = TeardownAbsenceVerifier(
+            inventory=complete_inventory,  # only has miles-dev-worker, missing miles-dev-controller
+            manifest=manifest_multi_file,
+            cli_runner=mock_all_absent_runner,
+        )
+        summary_missing_role = verifier_missing_role.verify_all()
+        self.assertFalse(summary_missing_role["all_absent"])
+        self.assertEqual(summary_missing_role["status"], "UNVERIFIED")
+        self.assertIn("manifest_missing:iam_roles:miles-dev-controller", summary_missing_role["missing_expected_types"])
+
+        # 5. CLI in live mode without --manifest fails with exit code 1
+        with unittest.mock.patch("sys.argv", ["verify_teardown_absence.py", "--inventory-json", str(outputs_file)]):
+            rc = main()
+            self.assertEqual(rc, 1)
+
     def test_ledger_export_prevents_symlink_clobber(self):
         """
-        [P2 Regression] Verifies that a pre-planted symlink (e.g. ledger.tmp.<pid>) cannot clobber
-        another private file.
+        [P2 Regression] Verifies that both temporary file symlinks and destination symlinks
+        cannot clobber another private file, and destination symlinks are explicitly rejected.
         """
         sensitive_file = self.tmppath / "other-private-evidence.txt"
         sensitive_file.write_text("SUPER_SECRET_EVIDENCE_DO_NOT_OVERWRITE", encoding="utf-8")
         os.chmod(str(sensitive_file), 0o600)
-
-        ledger_file = self.tmppath / "absence-ledger.json"
-        # Pre-plant a symlink at the predictable tmp path location
-        predictable_tmp = self.tmppath / f"absence-ledger.tmp.{os.getpid()}"
-        try:
-            os.symlink(str(sensitive_file), str(predictable_tmp))
-        except OSError:
-            pass
 
         inventory = {
             "dynamodb_tables": ["tbl1"],
         }
         verifier = TeardownAbsenceVerifier(
             inventory=inventory,
+            mode="dry-run",
             cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
         )
 
-        verifier.export_summary(ledger_file)
+        # 1. Pre-planted temporary symlink at predictable tmp path location
+        ledger_file = self.tmppath / "absence-ledger.json"
+        predictable_tmp = self.tmppath / f"absence-ledger.tmp.{os.getpid()}"
+        try:
+            os.symlink(str(sensitive_file), str(predictable_tmp))
+        except OSError:
+            pass
 
+        verifier.export_summary(ledger_file)
         # Sensitive file must remain completely untouched!
         self.assertEqual(sensitive_file.read_text(encoding="utf-8"), "SUPER_SECRET_EVIDENCE_DO_NOT_OVERWRITE")
-
-        # Ledger file must exist with 0600 mode
         self.assertTrue(ledger_file.exists())
         self.assertEqual(ledger_file.stat().st_mode & 0o777, 0o600)
+
+        # 2. Pre-planted destination symlink: export_summary must refuse to write through symlink
+        dest_symlink = self.tmppath / "dest-symlink-ledger.json"
+        try:
+            os.symlink(str(sensitive_file), str(dest_symlink))
+        except OSError:
+            pass
+
+        with self.assertRaises(ValueError) as ctx:
+            verifier.export_summary(dest_symlink)
+        self.assertIn("is a symlink", str(ctx.exception))
+
+        # Target file must still be completely untouched
+        self.assertEqual(sensitive_file.read_text(encoding="utf-8"), "SUPER_SECRET_EVIDENCE_DO_NOT_OVERWRITE")
 
     def test_verify_all_comprehensive_clean_teardown(self):
         """Verifies verify_all returns PASS and all_absent=True across all resource types."""
