@@ -69,6 +69,8 @@ The telemetry summary contract (`summarize_window`) strictly distinguishes:
 
 **D0 GO:** approved setup, release and chrony host provenance, host recorder running with correct durations and timestamps, 2 Cloud + 1 Edge readiness where provisioned, private ALB, PITR, isolated synthetic test fixtures, metrics and private evidence paths all verified. Diagnostic collector unable to capture reliable host timing → **do not** treat Edge PASS as conclusive RCA.
 
+For each workload, start the recorder before recording the UTC workload start; record its UTC end after the final response. Stop the recorder only after that end, retain its raw JSONL in the private evidence directory, and run `summarize --input-file <raw.jsonl> --since <workload-start-utc> --until <workload-end-utc>`. Keep its JSON output and SHA-256 hashes of both files; a nonzero recorder or summary exit, incomplete coverage, or a missing artifact is NO-GO. Do not replace a failed window with an unbounded summary.
+
 ## 5. Staged acceptance and stop-the-line
 
 | Stage | Action | Native PASS evidence | Failure action |
@@ -87,6 +89,8 @@ Example benchmark arguments only (sensitive config and output directories are re
 **Actual Terraform shallow alarm contract** (`infra/terraform/cloud/modules/observability/main.tf`): metric `miles_recovery_cut_age_seconds` >3600 (missing=breaching); `miles_warm_read_integrity_failures_total` >0 (missing=notBreaching); `miles_ddb_throttles_total` >0 (missing=notBreaching); `miles_runtime_observation_age_seconds` >60 (missing=breaching). Evaluation periods=3, datapoints-to-alarm=1, period=60 seconds, dimensions `profile` + `installation`. Reserve enough time for both alarm and recovery evaluation before paid-window deadline. Use only safe isolated signals, not harmful live data tampering.
 
 ## 6. Phase E — mandatory teardown, including failed runs
+
+**Current blocker:** live verifier deliberately returns `UNVERIFIED` until independent Terraform-state reconciliation and complete native resource coverage are implemented. The commands below describe the intended process and cannot yet establish State 0. Recheck EBS and NAT while they are deleting; if either remains at the deadline, record the resource and escalate instead of claiming absence.
 
 1. Stop new workload; resolve/drain in-flight request outcomes within approved limits; freeze private logs, telemetry, S3/version and DDB state and sanitized per-gate evidence. If an outcome is indeterminate, keep it explicitly tracked for native reconciliation.
 2. **Freeze pre-teardown authoritative manifest**: Prior to `terraform destroy`, capture and seal the pre-teardown authoritative manifest from active Terraform state/outputs (`--manifest pre-teardown-manifest.json`). This manifest is strictly mandatory in live acceptance mode (`mode == "live"`).
