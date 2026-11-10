@@ -142,7 +142,7 @@ resource "aws_instance" "node" {
     delete_on_termination = true
     tags                  = { Project = "Miles", Environment = "dev" }
   }
-  tags       = { Name = "${var.name}-acceptance-${each.key}", Purpose = "EdgeAcceptance" }
+  tags = { Name = "${var.name}-acceptance-${each.key}", Purpose = "EdgeAcceptance" }
   lifecycle {
     precondition {
       condition     = data.aws_ami.host[0].id == var.ami_id
