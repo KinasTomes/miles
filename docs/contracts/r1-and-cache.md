@@ -1,4 +1,4 @@
-# W01-PHONG-02 — Draft R1 Read/Write View & Cache Contract
+# Draft R1 Read/Write View & Cache Contract
 
 ## 1. Document status, scope, source precedence và dependencies
 
@@ -562,7 +562,7 @@ Layer evidence: unit/property + shared port suite for local semantics; determini
 |---|---|---|
 | OQ-S1 | Bound maximum unchecked stream work, local lease-use budget, safe-point/suspend behavior; cannot atomically revoke already-sent bytes | Phong / Hưng, Clock/engine consumers |
 | OQ-S2 | Concrete bounded records, indexes/pagination and transaction encoding for roots/guards/pins; stable membership proof | Phong / Hưng, metadata consumer |
-| OQ-S3 | Outcome proof retention/reconstruction and unknown cleanup across R2 cut/incarnation; align W01-PHONG-03 | Phong / Hưng, recovery/metadata consumers |
+| OQ-S3 | Outcome proof retention/reconstruction and unknown cleanup across R2 cut/incarnation; align [R2](r2-recovery.md) | Phong / Hưng, recovery/metadata consumers |
 | C-OQ06 | Strict LRU versus sharded approximation and NVMe/RAM staging boundary | Phong / Hưng, cache/ops consumers |
 | C-OQ09 | Whether singleflight is needed; fetch lifetime/protection/cancellation ownership | Phong / Hưng, engine/coordinator consumers |
 | OQ-SYNC | Clock SYNC-API/SYNC-KT/SYNC-R1/R2 source alignment before affected consumer freeze | Phong / Hưng, Hải/Chiến as relevant |

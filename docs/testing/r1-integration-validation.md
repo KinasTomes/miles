@@ -1,7 +1,7 @@
-# W03-PHONG-02 — R1 integration skeleton trước chạy bảo trì
+# R1 integration skeleton trước chạy bảo trì
 
 Baseline: `aa219407850dd6178e3e8906e10599daf2a4e1c3` (`origin/main`, fetch ngày
-28/10/2026). Task chính thức: [W03-PHONG-02](https://miles.extase.dev/tasks/W03-PHONG-02).
+28/10/2026).
 Owner: Phong. Đây là skeleton **một process**, chờ review; API mới là PROPOSAL.
 Không tuyên bố R1 distributed, API Frozen hoặc task Done.
 
@@ -141,7 +141,7 @@ reconciliation, retention và bounded terminal-history cleanup. Không có TTL t
   chỉ chứng minh local model; không chứng minh backend commit-after-E support.
 - Chưa có durable shared closure/incarnation/CAS, UTC lease-bound attestation,
   grace takeover hoặc no-overlapping-authority proof giữa processes. Thuộc
-  W04-PHONG-03 phối hợp adapter của Hải.
+  [shared R1 trên DynamoDB](shared-r1-validation.md) phối hợp adapter của Hải.
 
 Không dùng recovery epoch làm execution authority. Không thay EvaluateRead,
 ValidateUTCSample hay protection/restore semantics. Warm-only path không cần

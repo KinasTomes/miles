@@ -1,7 +1,7 @@
 # Cost / simulator prototype validation
 
-Task: W04-HUNG-03. Hard dependencies W02-HUNG-02/W03-HUNG-02 and soft dependencies
-W04-HAI-01/W04-PHONG-02 are Done in the live backlog. Implementation starts from
+Hard dependencies (benchmark/cost inputs) and soft dependencies (DynamoDB metadata
+adapter, policy) are Done in the live backlog. Implementation starts from
 main893b9ff, including merged metadata/policy/jobs/cache/multipart producer ports.
 
 ## Verified
@@ -53,21 +53,21 @@ declared cache/backend profiles; it infers no cross-profile speedup or MVP resul
 
 ## Remaining integration
 
-W04-CHIEN-01 Admin APIs and W04-CHIEN-02 multipart APIs remain **Todo** in the
+Admin APIs and multipart part APIs remain **Todo** in the
 live backlog on2026-10-30. Those HTTP PRs cannot yet be merged/exercised here;
 the third task checklist is only satisfied at the existing port level. Keep the
 task under implementation/review until the full HTTP integration is accepted.
 
-W5 is not a dependency of W04-HUNG-03. W4 can measure preliminary Warm/DynamoDB
+W5 is not a dependency of this prototype. W4 can measure preliminary Warm/DynamoDB
 HTTP through the actual handlers/service/strict producers/engine/Warm reader in
 a single-process local fixture. Its authority remains test-only; production
 startup is unchanged. The new paired C1/C4 runs verify whole-file hashes against
 DynamoDB Local/Moto and direct Moto with a declared memory-only cache profile.
-W05-HUNG-01 consumes W4 outputs to deploy Cloud multi-node/Edge, rather than
+W5 Cloud/Edge composition consumes W4 outputs to deploy Cloud multi-node/Edge, rather than
 providing a prerequisite for this local W4 measurement. No AWS billed capacity,
 production distributed authority or final MVP gate is inferred from the fixture.
 
-W06-HUNG-01 owns four-policy comparisons, additional traces, retention/minimum
+W6 cost work owns four-policy comparisons, additional traces, retention/minimum
 charges, full route/infrastructure coverage, matched direct-S3 cost comparisons
 and final report/API wiring. W4 uses shared policy definitions and a dated pricing
 snapshot, emits partial supplied-usage costs and applies no provisional MVP target.

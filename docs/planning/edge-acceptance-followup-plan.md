@@ -11,7 +11,7 @@
 Đã hoàn thành/được duyệt:
 - #71: Phase A/B offline, Phase C preflight, Cloud C1/C4 và direct S3 thành công; Phase E teardown, 41/41 kiểm tra absence **trong phạm vi sở hữu, tại thời điểm phiên 2026-11-08**; không khẳng định inventory AWS hiện tại chỉ dựa vào báo cáo cũ.
 - #73: P0 sửa timestamp từng node, tách SSM/SSH RTT khỏi host-`chronyc` elapsed, xác minh schema/returncode/UTC provenance, fail-closed khi evidence không đáng tin; 86 Python tests và kiểm thử offline PASS.
-- `W05-HUNG-03 = Done` theo quyết định owner. **Không đồng nghĩa Phase D đã nghiệm thu toàn bộ.**
+- Task AWS live acceptance = Done theo quyết định owner. **Không đồng nghĩa Phase D đã nghiệm thu toàn bộ.**
 
 Chưa hoàn thành:
 - Edge C1: 46/90 PUT thành công, 44/90 HTTP 503 `clock_uncertainty_exceeded`. Edge C4 chưa chạy theo stop-the-line.

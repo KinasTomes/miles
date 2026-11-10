@@ -89,7 +89,7 @@ func readSnapshotCases(t *testing.T) []snapshotCase {
 // rows through Snapshots (a credential revoke) or a token Cache (expiry),
 // publish rows through the commit of the fake metadata store, which checks
 // the credential itself whatever the snapshot says. The stream row is the
-// GET handler's (W03-PHONG-01): an admitted stream is not re-authorized.
+// GET handler's: an admitted stream is not re-authorized.
 func TestSnapshotFixture(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range readSnapshotCases(t) {
@@ -98,7 +98,7 @@ func TestSnapshotFixture(t *testing.T) {
 			var got string
 			switch {
 			case c.Phase == "stream":
-				t.Skip("an admitted GET stream is the GET handler's (W03-PHONG-01)")
+				t.Skip("an admitted GET stream is the GET handler's")
 			case c.Phase == "admit" && c.ExpiresAt != nil:
 				got = w.admitToken(ctx, c)
 			case c.Phase == "admit":

@@ -1,6 +1,6 @@
 # Storage, manifest and publication handoff
 
-W03-HAI-03. This is the integration entry point for API/multipart and
+This is the integration entry point for API/multipart and
 lease/recovery consumers. Existing contracts remain the source for authority,
 serialization and retention. No consumer may obtain publication authority from a
 page, cached head, sidecar or this document alone.

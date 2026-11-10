@@ -1,7 +1,7 @@
 # Jobs / Nodes / metrics backend validation
 
-Task **W04-HUNG-02**, ngày29/10/2026. Hard dependencies W03-HUNG-03,
-W03-HAI-03 và W03-PHONG-02 đã Done trên backlog hiện hành. Acceptance W4:
+Ngày29/10/2026. Hard dependencies (Admin/runtime nền,
+storage handoff, coordination) đã Done trên backlog hiện hành. Acceptance W4:
 job contract kiểm thử bằng fake lease; job không chỉ tồn tại trong RAM request node.
 
 | Checklist | Implementation / proof |
@@ -93,13 +93,13 @@ its focused runtime/race tests and CI are run on the updated head.
 
 ## Downstream / remaining live integration
 
-The [contract](../contracts/jobs-and-nodes.md) is the handoff to W04-PHONG-03/04
+The [contract](../contracts/jobs-and-nodes.md) is the handoff to Phong's W4 coordination work
 for real job lease/renewal and maintenance/exporter ownership; cache/pack consumers
-use shared job/node records and per-node results. W04-CHIEN-01 owns identity and
+use shared job/node records and per-node results. Admin identity work owns identity and
 Admin authorization; HTTP composition must use system-admin checks, Job.View and
 MAC-bound public cursors, not expose raw store methods or internal page positions.
 
-W05-HUNG-01/02 supplies production startup composition, job executors/scheduling,
+W5 Cloud/Edge runtime and Jobs/Nodes work supplies production startup composition, job executors/scheduling,
 immediate remote gate routing, real fan-out/membership and R1/R2 physical drain proof.
 This foundation does not claim a GC/scrub/tiering job actually ran, a cluster purge
 completed, or a pack/outbox flushed. Unknown pending work is held for reconciliation.

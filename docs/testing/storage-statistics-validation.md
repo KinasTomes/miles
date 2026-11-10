@@ -1,6 +1,6 @@
 # Storage statistics validation
 
-W04-HAI-03 starts from main 92deb23, 2026-10-30. No AWS resources are provisioned.
+Storage statistics work starts from main 92deb23, 2026-10-30. No AWS resources are provisioned.
 
 ## Allocation and physical inventory
 

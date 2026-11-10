@@ -155,12 +155,12 @@ Offline analysis and negative fault-injection tests (PR #65 continuation) verifi
 - Full regression suites (`make check`, `make test-local`, `go test -race`, and Python
   runner unit tests) pass locally. Local PASS does not constitute AWS acceptance.
 
-## Live pilot acceptance run 2026-11-08 (W05-HUNG-03 Follow-Up)
+## Live pilot acceptance run 2026-11-08 (Follow-Up)
 
-Following approved run plan [`docs/planning/aws-live-acceptance-run-plan.md`](../planning/aws-live-acceptance-run-plan.md) and [`docs/planning/aws-live-acceptance-follow-up.md`](../planning/aws-live-acceptance-follow-up.md), a complete staged live acceptance run (`w05-hung03-live-20261108-0345`) was executed on 2026-11-08 (Window: 03:45Z – 05:17Z) on AWS Account `499388132734` in `ap-southeast-1`. See detailed execution report in [`live-acceptance-20261108-report.md`](./live-acceptance-20261108-report.md).
+Following approved run plan [`docs/planning/aws-live-acceptance-run-plan.md`](../planning/aws-live-acceptance-run-plan.md) and [`docs/planning/aws-live-acceptance-follow-up.md`](../planning/aws-live-acceptance-follow-up.md), a complete staged live acceptance run was executed on 2026-11-08 (Window: 03:45Z – 05:17Z) on AWS Account `499388132734` in `ap-southeast-1`. See detailed execution report in [`live-acceptance-20261108-report.md`](./live-acceptance-20261108-report.md).
 
 ### Topology and environment
-- **Release binary:** Built from source on `feat/w05-hung-03-aws-acceptance` (`miles-linux-arm64.tar.gz`), staged via S3 release upload.
+- **Release binary:** Built from source for PR #71 (`miles-linux-arm64.tar.gz`), staged via S3 release upload.
 - **Compute nodes:** 2 Cloud gateways (`cloud-a`, `cloud-b`) across two Availability Zones behind a private Application Load Balancer (`miles-dev`) with dynamic DNS resolution, 1 Edge gateway bootstrapped via AWS Roles Anywhere, and 1 dedicated client instance. All nodes are `t4g.small` ARM64 (2 vCPUs, 2 GiB RAM, burstable with 20% baseline per vCPU, Standard CPU credits).
 - **Storage and networking:** 20 DynamoDB tables in `PAY_PER_REQUEST` billing mode with Point-in-Time Recovery (PITR) enabled; 9 VPC interface endpoints; 2 S3 gateway endpoints; 0 NAT gateways.
 - **Security & IAM:** Non-root deployer `arn:aws:sts::499388132734:assumed-role/miles-dev-deploy/hung-deploy` (profile `miles-dev`). Root (`miles-iam-bootstrap`) strictly reserved for preflight IAM activation, temporary SLR management, and final zero-resource verification.

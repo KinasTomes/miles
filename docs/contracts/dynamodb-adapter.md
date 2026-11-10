@@ -1,9 +1,9 @@
 # DynamoDB adapter
 
-W03-HAI-03, **lead-approved W04 design baseline**, recorded in
+Storage handoff contract, **lead-approved W04 design baseline**, recorded in
 [PR #35 review and final acceptance gate](https://github.com/KinasTomes/miles/pull/35#issuecomment-6436239260).
 The design decisions below are settled; distributed authority proofs remain a
-separate gate. W04-HAI-01 implements the current `storage.MetadataStore`,
+separate gate. The DynamoDB adapter implements the current `storage.MetadataStore`,
 `ManifestPageReader`, `PackLifecycleStore`, `PartPageStore` and
 `OutboxExportStore` using native SDK reads and conditional transactions.
 It does not deploy tables or establish distributed R1/R2 authority.

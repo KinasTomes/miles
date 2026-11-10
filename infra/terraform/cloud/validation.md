@@ -1,6 +1,6 @@
-# Evidence W02-HUNG-01 — chưa apply
+# Evidence Terraform Cloud foundation — chưa apply
 
-Ngày thực hiện:2026-10-19 (UTC+7). Nhánh:`feat/w02-hung-01-terraform-foundation`, đã chuyển base sang `origin/main` tại commit `0c98d50` (W1 đã squash); toàn bộ thay đổi chưa commit được đối chiếu hash trước/sau để bảo toàn. Không đổi nguồn kiến trúc/API, backlog/report/apps, credential hoặc rules GitHub.
+Ngày thực hiện:2026-10-19 (UTC+7). PR #7, đã chuyển base sang `origin/main` tại commit `0c98d50` (W1 đã squash); toàn bộ thay đổi chưa commit được đối chiếu hash trước/sau để bảo toàn. Không đổi nguồn kiến trúc/API, backlog/report/apps, credential hoặc rules GitHub.
 
 ## Kiểm tra đã thực hiện
 

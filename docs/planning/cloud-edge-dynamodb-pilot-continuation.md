@@ -4,7 +4,7 @@
 > Repo: `KinasTomes/miles` · PR: https://github.com/KinasTomes/miles/pull/65
 > Worktree: `/home/ubuntu/miles-worktrees/dynamodb-pilot-observability`
 > Branch: `feat/dynamodb-pilot-observability` · Baseline HEAD: `0edbe2666f06f93bfb7cef9a327ffa32081b186d`
-> Task: `W05-HUNG-03` (`Doing`, chưa đủ 3 checklist). Đây là **kế hoạch thực hiện**, không phải báo cáo PASS.
+> Task: Cloud/Edge DynamoDB pilot AWS acceptance (`Doing`, chưa đủ 3 checklist). Đây là **kế hoạch thực hiện**, không phải báo cáo PASS.
 
 ## 0. Phạm vi và các quyết định bắt buộc
 
@@ -79,7 +79,7 @@ Giữ ba checklist gốc của PR #65, mỗi mục phải có evidence gắn **�
 - [ ] **Matched Warm Cloud/Edge/direct S3:** không PUT/GET 500/503, 90/90 PUT và full-file hashes, C1/C4, post-workload physical stats đầy đủ, mọi node/window hợp lệ, không trộn lần chạy/route.
 - [ ] **Alarms + pricing + cleanup:** 10 probe states threshold thực, current regional price/source/date, resource inventory và whole-window costs; AWS teardown native absence, IAM rollback. Vấn đề billing lag phải nêu rõ.
 
-Agent cập nhật `docs/testing/dynamodb-pilot-validation.md` và PR #65 với phần **passed/failed/unverified** thực tế; chèn private evidence path nếu thích hợp nhưng không chép file bí mật. PR vẫn **Draft** cho đến khi lead review và tất cả gate đạt; không tự đánh dấu W05-HUNG-03 `Done`, không merge/bypass. Khi không đủ điều kiện chạy AWS, dừng ở C và báo blockers cụ thể.
+Agent cập nhật `docs/testing/dynamodb-pilot-validation.md` và PR #65 với phần **passed/failed/unverified** thực tế; chèn private evidence path nếu thích hợp nhưng không chép file bí mật. PR vẫn **Draft** cho đến khi lead review và tất cả gate đạt; không tự đánh dấu task `Done`, không merge/bypass. Khi không đủ điều kiện chạy AWS, dừng ở C và báo blockers cụ thể.
 
 ## 7. Bàn giao đầu ra Agent cần trả
 

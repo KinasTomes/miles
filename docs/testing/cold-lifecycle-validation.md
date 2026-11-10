@@ -148,7 +148,7 @@ project/bucket đã được admin cấp quyền riêng.
 
 ## Validation và giới hạn
 
-Các native test sử dụng compose project riêng `miles-w06-phong-contract`, pinned
+Các native test sử dụng compose project riêng, pinned
 DynamoDB Local/Moto từ `deploy/local/compose.yaml`, Go 1.27.2 Linux, source mount
 read-only và endpoints loopback explicit. Không dùng credential hoặc tài nguyên
 AWS. Test forwarding chỉ ở container để nối hai disposable services.

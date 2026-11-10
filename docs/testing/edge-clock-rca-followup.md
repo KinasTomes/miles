@@ -1,6 +1,6 @@
 # Edge Clock Stability & Uncertainty Exceeded RCA Follow-Up
 
-- **Date / Baseline:** 2026-11-10 (Analysis of 2026-11-08 AWS Live Run `w05-hung03-live-20261108-0345`)
+- **Date / Baseline:** 2026-11-10 (Analysis of 2026-11-08 AWS Live Run)
 - **Target Scope:** Edge C1 Trial 1 (Singapore `ap-southeast-1`, Instance: `t4g.small` ARM64 via Roles Anywhere)
 - **Outcome:** 46/90 PUT PASS, 44/90 PUT FAIL (Gateway correlated: 44/44)
 - **Policy Enforced:** AWS State 0 (strictly offline analysis, zero live API calls, zero credentials, zero secret leakage)

@@ -128,7 +128,7 @@ func listIdentity[T any](m *Store, ctx context.Context, prefix string, r s.Ident
 
 // BootstrapAdmin commits marker, user, token and missing policy together.
 // It emits no outbox event: there is no mutation context offline; the R2
-// epoch-0 export (W04-PHONG-04) owns publishing this installation state.
+// epoch-0 export owns publishing this installation state.
 func (m *Store) BootstrapAdmin(ctx context.Context, b s.AdminBootstrap) error {
 	now := m.now()
 	if err := b.Validate(now); err != nil {

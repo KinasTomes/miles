@@ -1,11 +1,10 @@
-# W04-PHONG-02 — Policy persistence và tiering/revival eligibility
+# Policy persistence và tiering/revival eligibility
 
 Trạng thái: implementation chờ review, API extension là PROPOSAL, chưa Frozen.
 Task/AC lấy từ nội dung Miles do Phong cung cấp trong phiên làm việc. Không tự
 đánh dấu checklist hoặc Done trên Miles.
 
-Baseline `0e60828193a1f436408685df2d0b6ed82fcd34e7`, branch
-`codex/W04-PHONG-02-policy-eligibility`.
+Baseline `0e60828193a1f436408685df2d0b6ed82fcd34e7`, PR #45.
 
 ## Checklist và phạm vi
 
@@ -153,7 +152,7 @@ Admin HTTP/CLI wiring hoặc full simulator integration trong thay đổi này. 
   WithMutation và producer admission; map errors theo Admin contract đã có.
 - Hưng: cùng evaluator cho model; review safety-facts adapter và atomic protection
   extension. Chưa freeze API trước consumer review.
-- W05-PHONG-02/W06-PHONG-01: pack discovery/statistics, lifecycle scheduling,
+- [Pack lifecycle](pack-lifecycle-validation.md): pack discovery/statistics, lifecycle scheduling,
   atomic Transitioning gate, actual restore/transition/retention và reconciliation.
 
 ## PR #45 — xử lý review P1/P2

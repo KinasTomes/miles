@@ -1,4 +1,4 @@
-# Inventory mạng, IAM và chi phí W02-HUNG-01
+# Inventory mạng, IAM và chi phí Terraform Cloud
 
 Ngày tra: 2026-10-19; Region `ap-southeast-1`; currency USD; public On-Demand rates, chưa tính thuế/credit. Nguồn hợp đồng và cách chạy ở [README](README.md). Tất cả tài nguyên dưới đây là **Terraform planned**, chưa apply.
 

@@ -1,6 +1,6 @@
 # AWS Live Acceptance Run Report (2026-11-08 Follow-Up)
 
-- **Date / Window:** 2026-11-08 03:45 UTC to 05:17 UTC (Scope ID: `w05-hung03-live-20261108-0345`)
+- **Date / Window:** 2026-11-08 03:45 UTC to 05:17 UTC
 - **AWS Region / Account:** `ap-southeast-1` / `499388132734`
 - **Session Duration:** ~1.5 hours (well within 3.0-hour maximum window)
 - **Estimated Spend:** < $0.50 USD (soft cap: $10.00 USD; subject to standard AWS billing invoice lag)

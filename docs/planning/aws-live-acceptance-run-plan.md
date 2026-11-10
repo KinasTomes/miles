@@ -2,7 +2,7 @@
 
 **Mã văn kiện:** `aws-live-acceptance-run-plan`
 **Ngày lập:** 08/11/2026
-**Trạng thái:** Pre-execution Plan (Đã được phê duyệt tại run `w05-hung03-live-20261108-0345`; đã thực hiện Phase C, D1, D2, D3, E; teardown sạch 41/41 absence checks — xem kết quả tại [`docs/testing/live-acceptance-20261108-report.md`](../testing/live-acceptance-20261108-report.md))
+**Trạng thái:** Pre-execution Plan (Đã được phê duyệt tại run live 2026-11-08 03:45; đã thực hiện Phase C, D1, D2, D3, E; teardown sạch 41/41 absence checks — xem kết quả tại [`docs/testing/live-acceptance-20261108-report.md`](../testing/live-acceptance-20261108-report.md))
 **Căn cứ:** `docs/planning/aws-live-acceptance-follow-up.md` §2 (Phase C, D, E) và §4.
 
 ---
@@ -15,7 +15,7 @@ Theo quy định bắt buộc tại Gate C, việc triển khai trên AWS chỉ 
 | :--- | :--- | :--- |
 | **Tài khoản AWS** | `499388132734` | Chỉ sử dụng tài khoản dev/pilot được chỉ định; tuyệt đối không dùng account khác. |
 | **Commercial Region** | `ap-southeast-1` (Singapore) | Cố định cùng Region cho mọi tài nguyên và benchmark. |
-| **Source Commit SHA** | `0ef5aece2e2eca50bf7334db4e325860096b4e9b` | Commit HEAD tại branch `feat/w05-hung-03-aws-acceptance` (đã pass 70 offline tests & CI 5/5). |
+| **Source Commit SHA** | `0ef5aece2e2eca50bf7334db4e325860096b4e9b` | Commit HEAD của PR #71 (đã pass 70 offline tests & CI 5/5). |
 | **Release Binary SHA-256** | `87ac098b1549f0bc73632f086b09b38d4410bfce47ee6e278ece87f8e4238d63` | Build sạch linux/arm64 qua `deploy/build-release.py` (32,258,636 bytes). |
 | **Dataset chuẩn** | `backup30` (90 files, 754,994,670 bytes) | Sinh bằng `datasetgen` với seed `miles-w02-v1`; manifest sha256 `04014dd767e799d9f70081536d01c988fa6a02c0b7653c34db11a48c9abc1556`. |
 | **IAM Deployer Role** | `arn:aws:sts::499388132734:assumed-role/miles-dev-deploy/hung-deploy` | Bắt buộc dùng IAM Role có permission boundary; **tuyệt đối không dùng root** cho Terraform, workload hoặc runner. |
@@ -125,7 +125,7 @@ Chủ tài khoản kích hoạt Phase C bằng cách tạo hoặc cập nhật f
 
 ```json
 {
-  "scope": "W05-HUNG-03 AWS Live Acceptance Follow-Up (Phase C, D, E)",
+  "scope": "AWS Live Acceptance Follow-Up (Phase C, D, E)",
   "status": "approved_authenticated_preflight",
   "approval_received_at_utc": "2026-11-08T03:30:00+00:00",
   "approved_soft_spend_usd_min": 5.0,

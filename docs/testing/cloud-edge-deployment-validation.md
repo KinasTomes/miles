@@ -1,8 +1,8 @@
 # Cloud / Edge deployment validation
 
-Task **W04-HUNG-01** — ngày 29/10/2026. Scope: cấu hình Cloud ASG/ALB và Edge skeleton
+Ngày 29/10/2026. Scope: cấu hình Cloud ASG/ALB và Edge skeleton
 để thử thật W5, cùng binary/business logic; không phải nghiệm thu deployment AWS/
-non-AWS hay R1/R2. Dependencies W03-HUNG-01 và W03-HUNG-03 đã merge (PR #30/#38).
+non-AWS hay R1/R2. Dependencies AWS dev và Admin/runtime nền đã merge (PR #30/#38).
 
 ## Checklist và bằng chứng
 
@@ -64,11 +64,11 @@ riêng, gồm ASG delete timeout45m lớn hơn controller budget35m.
 
 | Phần cần nối/kiểm thật | Task nhận |
 |---|---|
-| Compose runtime Cloud/Edge: S3/Admin listeners, shared metadata, credential providers, R1/R2/workers | W05-HUNG-01, phối hợp các owner bên dưới |
-| Admin identity/auth APIs trên9000 | W04-CHIEN-01 |
-| Shared DDB R1 admission, exporter/epoch seal thật | W04-PHONG-03 / W04-PHONG-04 |
-| Jobs/Nodes/metrics và drain state vận hành | W04-HUNG-02, W05-HUNG-02 |
-| Signed/presigned compatibility qua ALB thật và host Edge ngoài AWS | W05-CHIEN-01 / W05-HUNG-01 |
+| Compose runtime Cloud/Edge: S3/Admin listeners, shared metadata, credential providers, R1/R2/workers | Hưng (W5), phối hợp các owner bên dưới |
+| Admin identity/auth APIs trên9000 | Chiến (W4) |
+| Shared DDB R1 admission, exporter/epoch seal thật | Phong (W4) |
+| Jobs/Nodes/metrics và drain state vận hành | Hưng (W4, W5) |
+| Signed/presigned compatibility qua ALB thật và host Edge ngoài AWS | Chiến / Hưng (W5) |
 
 Current production startup vẫn trả ready503 và chưa mở S3/Admin. Không chấp nhận
 `mode=dev/local`, fake backend/event hay đổi readiness thành200 để nghiệm thu fleet.
@@ -79,7 +79,7 @@ active request drain/R2 flush qua replacement/pause, IAM Access Analyzer/simulat
 cho delta fleet, Roles Anywhere token renewal/revocation, non-AWS Edge host.
 Các bước này cần runtime integration, host/certificate/identity và budget được duyệt
 cho W5. Timeout hook là best effort, không chứng minh data durability khi máy bị
-terminate đột ngột. Không thay đổi hay tạo resource AWS trong W04-HUNG-01.
+terminate đột ngột. Không thay đổi hay tạo resource AWS trong phần này.
 
 Runbooks: [release chung](../../deploy/README.md), [Cloud](../../deploy/cloud/README.md),
 [Edge](../../deploy/edge/README.md). Evidence local đầy đủ giữ ngoài Git tại

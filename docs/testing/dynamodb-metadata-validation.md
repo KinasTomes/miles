@@ -1,8 +1,8 @@
-# DynamoDB metadata validation — W04-HAI-01
+# DynamoDB metadata validation
 
 Implemented and checked on 2026-10-28, from main
 `aa219407850dd6178e3e8906e10599daf2a4e1c3` on
-`codex/w04-hai-01-dynamodb-metadata`. This is local adapter acceptance, not
+PR #36. This is local adapter acceptance, not
 AWS or multi-node acceptance. Historical W03 evidence remains unchanged.
 
 ## Checklist and commits

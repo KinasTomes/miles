@@ -22,7 +22,7 @@ var ErrPartTooLarge = errors.New("object: part exceeds 5 GiB")
 // a concurrent replacement of the same part number moved.
 const maxPartAttempts = 8
 
-// Uploads is the multipart slice of the shared store (W04-HAI-02): upload,
+// Uploads is the multipart slice of the shared store: upload,
 // part and publisher records, their recovery port, the upload ledger a
 // Complete commits against, and the receipt that answers a Completed upload.
 type Uploads interface {
