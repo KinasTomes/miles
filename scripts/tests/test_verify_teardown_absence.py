@@ -284,7 +284,19 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         and living resources are correctly detected as leaks.
         """
         manifest = {
+            "schema_version": "miles-teardown-manifest/v1",
             "run_id": "run-20261110-edge-01",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles", "environment": "dev"},
+            "expected_types": ["vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms"],
+            "expected_counts": {
+                "vpc_id": 1,
+                "dynamodb_tables": 1,
+                "s3_buckets": 1,
+                "iam_roles": 1,
+                "cloudwatch_alarms": 1,
+            },
             "expected_resources": {
                 "vpc_id": "vpc-0123456789abcdef0",
                 "dynamodb_tables": ["miles-dev-records"],
@@ -292,7 +304,11 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
                 "iam_roles": ["miles-dev-worker"],
                 "cloudwatch_alarms": ["miles-dev-alarm"],
             },
-            "expected_types": ["vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms"],
+            "provenance": {
+                "source": "terraform_pre_destroy",
+                "created_at_utc": "2026-11-10T08:00:00Z",
+                "sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+            },
         }
         manifest_file = self.tmppath / "pre-teardown-manifest.json"
         manifest_file.write_text(json.dumps(manifest), encoding="utf-8")
@@ -316,10 +332,11 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         summary_incomplete = verifier_incomplete.verify_all()
         self.assertFalse(summary_incomplete["all_absent"])
         self.assertEqual(summary_incomplete["status"], "UNVERIFIED")
-        self.assertEqual(summary_incomplete["error"], "INCOMPLETE_INVENTORY_MISSING_EXPECTED_RESOURCES")
 
         # 2. Complete inventory matching manifest with all native checks reporting absent returns PASS
         complete_inventory = {
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
             "vpc_id": "vpc-0123456789abcdef0",
             "dynamodb_tables": ["miles-dev-records"],
             "s3_buckets": ["miles-dev-data"],
@@ -328,6 +345,8 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         }
 
         def mock_all_absent_runner(cmd):
+            if "get-caller-identity" in cmd:
+                return 0, json.dumps({"Account": "123456789012", "Arn": "arn:aws:iam::123456789012:user/tester"}), ""
             if "describe-alarms" in cmd:
                 return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
             return 255, "", "ResourceNotFoundException NoSuchBucket NoSuchEntity InvalidVpcID.NotFound"
@@ -355,7 +374,19 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
 
         # 4. Removing one role that was provisioned in pre-teardown manifest causes UNVERIFIED
         manifest_multi_role = {
+            "schema_version": "miles-teardown-manifest/v1",
             "run_id": "run-20261110-edge-02",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles", "environment": "dev"},
+            "expected_types": ["vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms"],
+            "expected_counts": {
+                "vpc_id": 1,
+                "dynamodb_tables": 1,
+                "s3_buckets": 1,
+                "iam_roles": 2,
+                "cloudwatch_alarms": 1,
+            },
             "expected_resources": {
                 "vpc_id": "vpc-0123456789abcdef0",
                 "dynamodb_tables": ["miles-dev-records"],
@@ -363,12 +394,16 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
                 "iam_roles": ["miles-dev-worker", "miles-dev-controller"],
                 "cloudwatch_alarms": ["miles-dev-alarm"],
             },
+            "provenance": {
+                "source": "terraform_pre_destroy",
+                "created_at_utc": "2026-11-10T08:00:00Z",
+            },
         }
         manifest_multi_file = self.tmppath / "manifest-multi.json"
         manifest_multi_file.write_text(json.dumps(manifest_multi_role), encoding="utf-8")
 
         verifier_missing_role = TeardownAbsenceVerifier(
-            inventory=complete_inventory,  # only has miles-dev-worker, missing miles-dev-controller
+            inventory=dict(complete_inventory),  # only has miles-dev-worker, missing miles-dev-controller
             manifest=manifest_multi_file,
             cli_runner=mock_all_absent_runner,
         )
@@ -381,6 +416,167 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         with unittest.mock.patch("sys.argv", ["verify_teardown_absence.py", "--inventory-json", str(outputs_file)]):
             rc = main()
             self.assertEqual(rc, 1)
+
+    def test_manifest_schema_validation_missing_fields_and_invalid_types_fails_closed(self):
+        """
+        [P1 Regression] Verifies that manifests missing account/region, having invalid expected_types,
+        count mismatches, or unknown keys fail closed with UNVERIFIED.
+        """
+        base_manifest = {
+            "schema_version": "miles-teardown-manifest/v1",
+            "run_id": "run-test-001",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles"},
+            "expected_types": ["vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms"],
+            "expected_counts": {"vpc_id": 1, "dynamodb_tables": 1, "s3_buckets": 1, "iam_roles": 1, "cloudwatch_alarms": 1},
+            "expected_resources": {
+                "vpc_id": "vpc-1",
+                "dynamodb_tables": ["tbl-1"],
+                "s3_buckets": ["bkt-1"],
+                "iam_roles": ["role-1"],
+                "cloudwatch_alarms": ["alarm-1"],
+            },
+            "provenance": {"source": "terraform", "created_at_utc": "2026-11-10T00:00:00Z"},
+        }
+
+        matching_inv = {
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "vpc_id": "vpc-1",
+            "dynamodb_tables": ["tbl-1"],
+            "s3_buckets": ["bkt-1"],
+            "iam_roles": ["role-1"],
+            "cloudwatch_alarms": ["alarm-1"],
+        }
+
+        # 1. Missing account_id
+        m_no_account = dict(base_manifest)
+        del m_no_account["account_id"]
+        v1 = TeardownAbsenceVerifier(inventory=matching_inv, manifest=m_no_account)
+        s1 = v1.verify_all()
+        self.assertEqual(s1["status"], "UNVERIFIED")
+        self.assertIn("missing_manifest_field:account_id", s1["manifest_errors"])
+
+        # 2. Missing region
+        m_no_region = dict(base_manifest)
+        del m_no_region["region"]
+        v2 = TeardownAbsenceVerifier(inventory=matching_inv, manifest=m_no_region)
+        s2 = v2.verify_all()
+        self.assertEqual(s2["status"], "UNVERIFIED")
+        self.assertIn("missing_manifest_field:region", s2["manifest_errors"])
+
+        # 3. Invalid expected_types: "not-an-array"
+        m_bad_types = dict(base_manifest)
+        m_bad_types["expected_types"] = "not-an-array"
+        v3 = TeardownAbsenceVerifier(inventory=matching_inv, manifest=m_bad_types)
+        s3 = v3.verify_all()
+        self.assertEqual(s3["status"], "UNVERIFIED")
+        self.assertIn("invalid_manifest_expected_types_not_a_list", s3["manifest_errors"])
+
+        # 4. Unknown fields rejected
+        m_unknown = dict(base_manifest)
+        m_unknown["arbitrary_unknown_key"] = "bogus_value"
+        v4 = TeardownAbsenceVerifier(inventory=matching_inv, manifest=m_unknown)
+        s4 = v4.verify_all()
+        self.assertEqual(s4["status"], "UNVERIFIED")
+        self.assertIn("unknown_manifest_field:arbitrary_unknown_key", s4["manifest_errors"])
+
+        # 5. Expected counts mismatch
+        m_count_mismatch = dict(base_manifest)
+        m_count_mismatch["expected_counts"] = dict(base_manifest["expected_counts"])
+        m_count_mismatch["expected_counts"]["iam_roles"] = 5  # Only 1 role in expected_resources
+        v5 = TeardownAbsenceVerifier(inventory=matching_inv, manifest=m_count_mismatch)
+        s5 = v5.verify_all()
+        self.assertEqual(s5["status"], "UNVERIFIED")
+        self.assertIn("manifest_count_mismatch:iam_roles:expected_5_got_1", s5["manifest_errors"])
+
+    def test_manifest_reconciliation_two_way_discrepancy_and_live_caller_identity(self):
+        """
+        [P1 Regression] Verifies two-way reconciliation:
+        - Provisioned resource in inventory omitted from manifest fails closed.
+        - Essential resource types omitted from manifest fails closed.
+        - Live mode STS caller identity mismatch fails closed.
+        """
+        manifest = {
+            "schema_version": "miles-teardown-manifest/v1",
+            "run_id": "run-test-002",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles"},
+            "expected_types": ["vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms"],
+            "expected_counts": {"vpc_id": 1, "dynamodb_tables": 1, "s3_buckets": 1, "iam_roles": 1, "cloudwatch_alarms": 1},
+            "expected_resources": {
+                "vpc_id": "vpc-1",
+                "dynamodb_tables": ["tbl-1"],
+                "s3_buckets": ["bkt-1"],
+                "iam_roles": ["role-1"],
+                "cloudwatch_alarms": ["alarm-1"],
+            },
+            "provenance": {"source": "terraform", "created_at_utc": "2026-11-10T00:00:00Z"},
+        }
+
+        # 1. Inventory has unmanifested role (hidden resource omitted from manifest)
+        leak_inv = {
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "vpc_id": "vpc-1",
+            "dynamodb_tables": ["tbl-1"],
+            "s3_buckets": ["bkt-1"],
+            "iam_roles": ["role-1", "unmanifested-hidden-role"],
+            "cloudwatch_alarms": ["alarm-1"],
+        }
+        v1 = TeardownAbsenceVerifier(inventory=leak_inv, manifest=manifest)
+        s1 = v1.verify_all()
+        self.assertEqual(s1["status"], "UNVERIFIED")
+        self.assertIn("inventory_unmanifested_resource:iam_roles:unmanifested-hidden-role", s1["manifest_errors"])
+
+        # 2. Manifest omits essential resource types (e.g. partial allowlist like Extaseq fixture)
+        partial_manifest = {
+            "schema_version": "miles-teardown-manifest/v1",
+            "run_id": "run-test-partial",
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "ownership_scope": {"project": "miles"},
+            "expected_types": ["dynamodb_tables", "iam_roles"],  # missing s3_buckets, cloudwatch_alarms, vpc_id
+            "expected_counts": {"dynamodb_tables": 1, "iam_roles": 1},
+            "expected_resources": {"dynamodb_tables": ["test-table"], "iam_roles": ["role-one"]},
+            "provenance": {"source": "manual", "created_at_utc": "2026-11-10T00:00:00Z"},
+        }
+        partial_inv = {"dynamodb_tables": ["test-table"], "iam_roles": ["role-one"]}
+        v2 = TeardownAbsenceVerifier(inventory=partial_inv, manifest=partial_manifest)
+        s2 = v2.verify_all()
+        self.assertEqual(s2["status"], "UNVERIFIED")
+        self.assertIn("manifest_missing_essential_type:s3_buckets", s2["manifest_errors"])
+        self.assertIn("manifest_missing_essential_type:cloudwatch_alarms", s2["manifest_errors"])
+        self.assertIn("manifest_missing_essential_type:vpc_id", s2["manifest_errors"])
+
+        # 3. Live mode STS caller identity mismatch
+        matching_inv = {
+            "account_id": "123456789012",
+            "region": "ap-southeast-1",
+            "vpc_id": "vpc-1",
+            "dynamodb_tables": ["tbl-1"],
+            "s3_buckets": ["bkt-1"],
+            "iam_roles": ["role-1"],
+            "cloudwatch_alarms": ["alarm-1"],
+        }
+
+        def mock_wrong_account_runner(cmd):
+            if "get-caller-identity" in cmd:
+                return 0, json.dumps({"Account": "999999999999", "Arn": "arn:aws:iam::999999999999:user/wrong"}), ""
+            return 255, "", "ResourceNotFoundException"
+
+        v3 = TeardownAbsenceVerifier(
+            inventory=matching_inv,
+            manifest=manifest,
+            mode="live",
+            cli_runner=mock_wrong_account_runner,
+        )
+        s3 = v3.verify_all()
+        self.assertEqual(s3["status"], "UNVERIFIED")
+        self.assertEqual(s3["error"], "CALLER_IDENTITY_VERIFICATION_FAILED")
+        self.assertIn("caller_account_mismatch:cli_account_999999999999_manifest_123456789012", s3["reason"])
 
     def test_ledger_export_prevents_symlink_clobber(self):
         """

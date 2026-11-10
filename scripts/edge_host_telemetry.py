@@ -629,12 +629,14 @@ class HostTelemetryRecorder:
         self,
         since_utc: Optional[str] = None,
         until_utc: Optional[str] = None,
+        startup_grace_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Analyzes records in the ring buffer for a given window, producing key
         epistemological indicators for RCA hypothesis evaluation.
         Fails closed on missing or unverified chrony clock evidence.
         """
+        all_retained_records = self.ring_buffer.read_records(None, None)
         records = self.ring_buffer.read_records(since_utc, until_utc)
         if not records:
             return {
@@ -702,18 +704,51 @@ class HostTelemetryRecorder:
 
         dropped_records_in_buffer = max(self.ring_buffer.dropped_records_count, prov_dropped_records)
 
-        # Eviction / completeness check:
-        # If evaluating entire recording window (no since_utc) and records were evicted,
-        # or if there is an internal sequence gap, or if since_utc is earlier than first retained record:
-        window_evicted = False
+        # Baseline buffer coverage: earliest record retained
+        earliest_buf_record = all_retained_records[0] if all_retained_records else records[0]
+        earliest_buf_seq = earliest_buf_record.get("sequence") or earliest_buf_record.get("provenance", {}).get("sequence") or 1
+        earliest_buf_ts = earliest_buf_record.get("timestamp_utc")
+        earliest_buf_dt = _parse_iso_timestamp(earliest_buf_ts)
+
+        effective_startup_grace = startup_grace_seconds if startup_grace_seconds is not None else max(2.0, self.os_interval * 2, self.chrony_interval)
+
+        # Epistemological window classification:
+        # (a) unknown/unobserved interval before acquisition started
+        # (b) expected cadence/startup grace (contiguous start at sequence 1, zero drops, within grace)
+        # (c) provable eviction (internal sequence gap, buffer dropped records, or earliest retained sequence > 1)
+        is_provable_eviction = False
+        is_sequence_gap = False
+        is_unobserved_pre_recording = False
+        unobserved_reason = None
+        startup_grace_applied_seconds = None
+
+        if internal_sequence_gap > 0:
+            is_sequence_gap = True
+
         if since_utc is None:
-            if (first_seq is not None and first_seq > 1) or dropped_records_in_buffer > 0 or internal_sequence_gap > 0:
-                window_evicted = True
+            if (earliest_buf_seq > 1) or dropped_records_in_buffer > 0:
+                is_provable_eviction = True
         else:
-            if internal_sequence_gap > 0:
-                window_evicted = True
-            elif records and since_utc < records[0]["timestamp_utc"]:
-                window_evicted = True
+            since_dt = _parse_iso_timestamp(since_utc)
+            if since_dt and earliest_buf_dt:
+                if since_dt < earliest_buf_dt:
+                    lead_seconds = (earliest_buf_dt - since_dt).total_seconds()
+                    if (earliest_buf_seq > 1) or dropped_records_in_buffer > 0:
+                        is_provable_eviction = True
+                    elif lead_seconds <= effective_startup_grace:
+                        # Contiguous healthy recording starting at seq 1 with 0 drops within expected startup lag
+                        startup_grace_applied_seconds = round(lead_seconds, 3)
+                    else:
+                        is_unobserved_pre_recording = True
+                        unobserved_reason = (
+                            f"window_requires_unobserved_pre_recording_interval("
+                            f"requested_since={since_utc},first_sample={earliest_buf_ts},lead_seconds={round(lead_seconds, 3)})"
+                        )
+                else:
+                    # since_dt >= earliest_buf_dt: requested window starts after or at earliest retained record
+                    pass
+
+        window_intact = (not is_provable_eviction) and (not is_sequence_gap) and (not is_unobserved_pre_recording)
 
         total_failed_commands = max(failed_commands, self.cumulative_chrony_failures, prov_chrony_failures)
         total_timeouts = max(len(timeouts), self.cumulative_chrony_timeouts, prov_chrony_timeouts)
@@ -727,7 +762,7 @@ class HostTelemetryRecorder:
             and total_timeouts == 0
             and len(sample_ages) > 0
             and total_uncertainty_violations == 0
-            and not window_evicted
+            and window_intact
         )
 
         reason = None
@@ -743,11 +778,15 @@ class HostTelemetryRecorder:
                 reasons.append("no_valid_tracking_parsed")
             if total_uncertainty_violations > 0:
                 reasons.append(f"{total_uncertainty_violations}_uncertainty_violations")
-            if window_evicted:
-                reasons.append(f"window_completeness_broken_by_record_eviction({dropped_records_in_buffer}_dropped)")
+            if is_provable_eviction:
+                reasons.append(f"window_completeness_broken_by_record_eviction({dropped_records_in_buffer}_dropped,earliest_seq={earliest_buf_seq})")
+            if is_sequence_gap:
+                reasons.append(f"window_completeness_broken_by_internal_sequence_gap({internal_sequence_gap}_missing)")
+            if is_unobserved_pre_recording and unobserved_reason:
+                reasons.append(unobserved_reason)
             reason = "; ".join(reasons)
 
-        return {
+        summary_dict = {
             "record_count": len(records),
             "status": "OK" if clock_evidence_verified else "UNVERIFIED",
             "clock_evidence_verified": clock_evidence_verified,
@@ -779,6 +818,9 @@ class HostTelemetryRecorder:
             },
             "dropped_records_in_buffer": dropped_records_in_buffer,
         }
+        if startup_grace_applied_seconds is not None:
+            summary_dict["startup_grace_applied_seconds"] = startup_grace_applied_seconds
+        return summary_dict
 
 
 def main():

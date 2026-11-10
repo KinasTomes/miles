@@ -440,6 +440,114 @@ fi
         self.assertEqual(summary["status"], "UNVERIFIED")
         self.assertFalse(summary["clock_evidence_verified"])
 
+    def test_summarize_window_epistemological_classification_and_startup_grace(self):
+        """
+        [P2 Regression] Verifies epistemological distinction between:
+        (a) unknown/unobserved interval before acquisition started (does NOT assert eviction without proof),
+        (b) expected cadence/startup grace (healthy contiguous start at seq 1 within tolerance evaluates to OK),
+        (c) provable eviction (internal sequence gap or evicted earliest records assert eviction),
+        and (d) time-filtered bounded windows.
+        """
+        buf_file = self.tmppath / "epistemological-test.jsonl"
+        ring = BoundedRingBuffer(buf_file, max_bytes=1024 * 1024)
+
+        base_time = datetime.datetime(2026, 11, 10, 8, 0, 10, tzinfo=datetime.timezone.utc)
+
+        # Helper to generate valid chrony record
+        def make_record(seq, ts_dt, dropped_prior=0):
+            return {
+                "sequence": seq,
+                "timestamp_utc": ts_dt.isoformat(),
+                "timestamp_unix": ts_dt.timestamp(),
+                "os_pressure": {"stat": {"steal_pct": 0.0, "iowait_pct": 0.0}},
+                "chrony": {
+                    "command_duration_seconds": 0.002,
+                    "command_timed_out": False,
+                    "tracking": {"returncode": 0},
+                    "parsed_tracking": {
+                        "status": "ok",
+                        "sample_age_seconds": 1.5,
+                        "last_offset_seconds": 0.00005,
+                        "frequency_ppm": 0.1,
+                        "uncertainty_exceeded": False,
+                    },
+                },
+                "provenance": {
+                    "sequence": seq,
+                    "cumulative_chrony_failures": 0,
+                    "cumulative_chrony_timeouts": 0,
+                    "cumulative_uncertainty_violations": 0,
+                    "dropped_records_prior": dropped_prior,
+                },
+            }
+
+        # 1. Populate 5 contiguous healthy records (seq 1..5, 0 drops) spaced by 1 second
+        for i in range(1, 6):
+            t = base_time + datetime.timedelta(seconds=(i - 1))
+            ring.write_record(make_record(i, t, dropped_prior=0))
+
+        recorder = HostTelemetryRecorder(output_file=buf_file)
+
+        # Case 1: since_utc is 1.0 second before first sample -> within startup grace (2.0s) -> OK!
+        since_grace = (base_time - datetime.timedelta(seconds=1.0)).isoformat()
+        summary_grace = recorder.summarize_window(since_utc=since_grace, startup_grace_seconds=2.0)
+        self.assertEqual(summary_grace["status"], "OK")
+        self.assertTrue(summary_grace["clock_evidence_verified"])
+        self.assertEqual(summary_grace["startup_grace_applied_seconds"], 1.0)
+        self.assertIsNone(summary_grace["reason"])
+
+        # Case 2: since_utc is 30.0 seconds before first sample -> unobserved interval (NOT eviction!)
+        since_unobserved = (base_time - datetime.timedelta(seconds=30.0)).isoformat()
+        summary_unobserved = recorder.summarize_window(since_utc=since_unobserved, startup_grace_seconds=2.0)
+        self.assertEqual(summary_unobserved["status"], "UNVERIFIED")
+        self.assertFalse(summary_unobserved["clock_evidence_verified"])
+        self.assertIn("window_requires_unobserved_pre_recording_interval", summary_unobserved["reason"])
+        self.assertNotIn("record_eviction", summary_unobserved["reason"])
+
+        # Case 3: Actual evicted first record (seq starts at 5, dropped_records_prior=4)
+        evicted_buf_file = self.tmppath / "evicted-test.jsonl"
+        evicted_ring = BoundedRingBuffer(evicted_buf_file, max_bytes=1024 * 1024)
+        for i in range(5, 10):
+            t = base_time + datetime.timedelta(seconds=(i - 1))
+            evicted_ring.write_record(make_record(i, t, dropped_prior=4))
+
+        evicted_recorder = HostTelemetryRecorder(output_file=evicted_buf_file)
+        summary_evicted = evicted_recorder.summarize_window()
+        self.assertEqual(summary_evicted["status"], "UNVERIFIED")
+        self.assertFalse(summary_evicted["clock_evidence_verified"])
+        self.assertIn("window_completeness_broken_by_record_eviction(4_dropped,earliest_seq=5)", summary_evicted["reason"])
+
+        # Case 4: Internal sequence gap (seq 1, 2, 4, 5 - missing seq 3)
+        gap_buf_file = self.tmppath / "gap-test.jsonl"
+        gap_ring = BoundedRingBuffer(gap_buf_file, max_bytes=1024 * 1024)
+        for i in [1, 2, 4, 5]:
+            t = base_time + datetime.timedelta(seconds=(i - 1))
+            gap_ring.write_record(make_record(i, t, dropped_prior=0))
+
+        gap_recorder = HostTelemetryRecorder(output_file=gap_buf_file)
+        summary_gap = gap_recorder.summarize_window()
+        self.assertEqual(summary_gap["status"], "UNVERIFIED")
+        self.assertFalse(summary_gap["clock_evidence_verified"])
+        self.assertIn("window_completeness_broken_by_internal_sequence_gap(1_missing)", summary_gap["reason"])
+
+        # Case 5: Time-filtered bounded window within healthy buffer
+        # Buffer has records seq 1..10, query window covering seq 3..7
+        bounded_buf_file = self.tmppath / "bounded-test.jsonl"
+        bounded_ring = BoundedRingBuffer(bounded_buf_file, max_bytes=1024 * 1024)
+        for i in range(1, 11):
+            t = base_time + datetime.timedelta(seconds=(i - 1))
+            bounded_ring.write_record(make_record(i, t, dropped_prior=0))
+
+        bounded_recorder = HostTelemetryRecorder(output_file=bounded_buf_file)
+        t_start = (base_time + datetime.timedelta(seconds=2)).isoformat()  # seq 3
+        t_end = (base_time + datetime.timedelta(seconds=6)).isoformat()    # seq 7
+        summary_bounded = bounded_recorder.summarize_window(since_utc=t_start, until_utc=t_end)
+        self.assertEqual(summary_bounded["status"], "OK")
+        self.assertTrue(summary_bounded["clock_evidence_verified"])
+        self.assertEqual(summary_bounded["record_count"], 5)
+        self.assertEqual(summary_bounded["window_start_utc"], t_start)
+        self.assertEqual(summary_bounded["window_end_utc"], t_end)
+
 
 if __name__ == "__main__":
     unittest.main()

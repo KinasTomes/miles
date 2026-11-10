@@ -58,6 +58,31 @@ EXPECTED_ABSENCE_ERRORS = {
 }
 
 
+MANIFEST_SCHEMA_VERSIONS = frozenset({"1.0", "miles-teardown-manifest/v1"})
+
+REQUIRED_MANIFEST_FIELDS = frozenset({
+    "schema_version",
+    "run_id",
+    "account_id",
+    "region",
+    "ownership_scope",
+    "expected_types",
+    "expected_counts",
+    "expected_resources",
+    "provenance",
+})
+
+ALLOWED_MANIFEST_FIELDS = REQUIRED_MANIFEST_FIELDS | {"session_id"}
+
+ESSENTIAL_MILES_RESOURCE_TYPES = frozenset({
+    "dynamodb_tables",
+    "s3_buckets",
+    "iam_roles",
+    "cloudwatch_alarms",
+    "vpc_id",
+})
+
+
 def _unwrap_val(d: Any) -> Any:
     if isinstance(d, dict) and "value" in d:
         return d["value"]
@@ -116,48 +141,240 @@ class TeardownAbsenceVerifier:
             self.manifest_required = manifest_required
         else:
             self.manifest_required = (self.mode == "live")
+        self.manifest_errors: List[str] = []
+
         if self.manifest:
-            self._apply_manifest(self.manifest)
+            manifest_obj, m_errs = self.validate_manifest_schema_and_reconciliation(
+                self.manifest,
+                self.inventory,
+                account_id=self.account_id,
+                region=self.region,
+                require_complete_scope=True,
+            )
+            self.manifest_errors = m_errs
+            if m_errs:
+                self.inventory.setdefault("expected_missing", []).extend(m_errs)
+            if manifest_obj:
+                self.manifest = manifest_obj
+                if not self.account_id and manifest_obj.get("account_id"):
+                    self.account_id = str(manifest_obj.get("account_id")).strip()
+                if not self.region and manifest_obj.get("region"):
+                    self.region = str(manifest_obj.get("region")).strip()
 
-    def _apply_manifest(self, manifest: Union[Dict[str, Any], Path, str]) -> None:
-        if isinstance(manifest, (str, Path)):
-            manifest = json.loads(Path(manifest).read_text(encoding="utf-8"))
+    @classmethod
+    def validate_manifest_schema_and_reconciliation(
+        cls,
+        manifest_raw: Union[Dict[str, Any], Path, str],
+        inventory: Dict[str, Any],
+        account_id: Optional[str] = None,
+        region: Optional[str] = None,
+        require_complete_scope: bool = True,
+    ) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+        """
+        Strictly validates versioned pre-teardown manifest schema and performs two-way
+        reconciliation against captured inventory.
+        Fails closed on unknown, malformed, or missing required fields, or discrepancies.
+        """
+        errors: List[str] = []
+
+        manifest: Any = manifest_raw
+        if isinstance(manifest_raw, (str, Path)):
+            try:
+                content = Path(manifest_raw).read_text(encoding="utf-8")
+                manifest = json.loads(content)
+            except Exception as e:
+                errors.append(f"invalid_manifest_json_parse_error:{e}")
+                return None, errors
+
         if not isinstance(manifest, dict):
-            return
+            errors.append("invalid_manifest_not_a_json_object")
+            return None, errors
 
-        expected_missing = self.inventory.setdefault("expected_missing", [])
+        # 1. Unknown fields check
+        for k in sorted(manifest.keys()):
+            if k not in ALLOWED_MANIFEST_FIELDS:
+                errors.append(f"unknown_manifest_field:{k}")
 
-        # Schema & provenance validation
-        if not manifest.get("run_id") and not manifest.get("session_id"):
-            expected_missing.append("invalid_manifest_missing_run_id")
+        # 2. Required fields presence check
+        for req in sorted(REQUIRED_MANIFEST_FIELDS):
+            if req not in manifest or manifest[req] is None:
+                errors.append(f"missing_manifest_field:{req}")
 
+        # If any top-level required fields are missing, return early with recorded errors
+        if any(e.startswith("missing_manifest_field:") for e in errors):
+            return manifest, errors
+
+        # 3. Schema field types and constraints validation
+        # schema_version
+        s_ver = str(manifest.get("schema_version")).strip()
+        if s_ver not in MANIFEST_SCHEMA_VERSIONS:
+            errors.append(f"invalid_manifest_schema_version:{s_ver}")
+
+        # run_id
+        run_id = str(manifest.get("run_id") or "").strip()
+        if not run_id:
+            errors.append("invalid_manifest_missing_run_id")
+
+        # account_id
+        m_account = str(manifest.get("account_id") or "").strip()
+        if not m_account or not m_account.isdigit():
+            errors.append(f"invalid_manifest_account_id:{manifest.get('account_id')}")
+
+        # region
+        m_region = str(manifest.get("region") or "").strip()
+        if not m_region:
+            errors.append(f"invalid_manifest_region:{manifest.get('region')}")
+
+        # ownership_scope
+        o_scope = manifest.get("ownership_scope")
+        if not o_scope or not (isinstance(o_scope, dict) or (isinstance(o_scope, str) and o_scope.strip())):
+            errors.append("invalid_manifest_ownership_scope")
+
+        # expected_types
+        exp_types = manifest.get("expected_types")
+        if not isinstance(exp_types, list):
+            errors.append("invalid_manifest_expected_types_not_a_list")
+        else:
+            if len(exp_types) == 0:
+                errors.append("invalid_manifest_expected_types_empty")
+            for idx, item in enumerate(exp_types):
+                if not isinstance(item, str) or not item.strip():
+                    errors.append(f"invalid_manifest_expected_types_element_at_{idx}")
+
+            # If complete scope is required (e.g. live acceptance or full Miles stack)
+            if require_complete_scope:
+                for req_t in sorted(ESSENTIAL_MILES_RESOURCE_TYPES):
+                    if req_t not in exp_types:
+                        errors.append(f"manifest_missing_essential_type:{req_t}")
+
+        # expected_counts
+        exp_counts = manifest.get("expected_counts")
+        if not isinstance(exp_counts, dict):
+            errors.append("invalid_manifest_expected_counts_not_a_dict")
+        else:
+            if isinstance(exp_types, list):
+                for t in exp_types:
+                    if t not in exp_counts:
+                        errors.append(f"manifest_missing_count_for_type:{t}")
+                    elif not isinstance(exp_counts[t], int) or exp_counts[t] < 0:
+                        errors.append(f"invalid_manifest_count_for_type:{t}")
+
+        # expected_resources
         exp_res = manifest.get("expected_resources")
         if not isinstance(exp_res, dict) or not exp_res:
-            expected_missing.append("invalid_manifest_missing_expected_resources")
-            return
+            errors.append("invalid_manifest_missing_expected_resources")
+        else:
+            if isinstance(exp_types, list):
+                for t in exp_res.keys():
+                    if t not in exp_types:
+                        errors.append(f"manifest_unregistered_resource_type:{t}")
 
-        # 1. Check expected_resources mapping
-        for k, val in exp_res.items():
-            if k == "vpc_id":
-                if self.inventory.get("vpc_id") != str(val).strip():
-                    expected_missing.append(f"manifest_mismatch:vpc_id_expected_{val}")
-            elif isinstance(val, list):
-                for item in val:
-                    if item and item not in self.inventory.get(k, []):
-                        expected_missing.append(f"manifest_missing:{k}:{item}")
-            elif isinstance(val, str):
-                if val and val not in self.inventory.get(k, []):
-                    expected_missing.append(f"manifest_missing:{k}:{val}")
+            # Count reconciliation between expected_counts and expected_resources
+            if isinstance(exp_counts, dict):
+                for t, expected_count in exp_counts.items():
+                    res_val = exp_res.get(t)
+                    if res_val is None:
+                        actual_res_count = 0
+                    elif isinstance(res_val, list):
+                        actual_res_count = len(res_val)
+                    elif isinstance(res_val, str):
+                        actual_res_count = 1 if res_val.strip() else 0
+                    else:
+                        actual_res_count = 0
 
-        # 2. Check expected_types list
-        exp_types = manifest.get("expected_types", [])
+                    if expected_count != actual_res_count:
+                        errors.append(f"manifest_count_mismatch:{t}:expected_{expected_count}_got_{actual_res_count}")
+
+        # provenance
+        prov = manifest.get("provenance")
+        if not isinstance(prov, dict):
+            errors.append("invalid_manifest_missing_provenance")
+        else:
+            if not prov.get("source") or not str(prov.get("source")).strip():
+                errors.append("invalid_manifest_provenance_missing_source")
+            if not prov.get("created_at_utc") or not str(prov.get("created_at_utc")).strip():
+                errors.append("invalid_manifest_provenance_missing_created_at_utc")
+
+        # 4. Two-way reconciliation against inventory
+        # Account ID
+        effective_account = account_id or inventory.get("account_id")
+        if effective_account and m_account and effective_account.isdigit() and m_account.isdigit():
+            if str(effective_account).strip() != m_account:
+                errors.append(f"manifest_account_mismatch:expected_{m_account}_got_{effective_account}")
+
+        # Region
+        effective_region = region or inventory.get("region")
+        if effective_region and m_region:
+            if str(effective_region).strip() != m_region:
+                errors.append(f"manifest_region_mismatch:expected_{m_region}_got_{effective_region}")
+
+        # Check that inventory contains everything expected by manifest
         if isinstance(exp_types, list):
             for t in exp_types:
                 if t == "vpc_id":
-                    if not self.inventory.get("vpc_id"):
-                        expected_missing.append("manifest_missing_type:vpc_id")
-                elif not self.inventory.get(t):
-                    expected_missing.append(f"manifest_missing_type:{t}")
+                    if not inventory.get("vpc_id"):
+                        errors.append("manifest_missing_type:vpc_id")
+                elif not inventory.get(t):
+                    errors.append(f"manifest_missing_type:{t}")
+
+        if isinstance(exp_res, dict):
+            for k, val in exp_res.items():
+                if k == "vpc_id":
+                    if inventory.get("vpc_id") != str(val).strip():
+                        errors.append(f"manifest_mismatch:vpc_id_expected_{val}")
+                elif isinstance(val, list):
+                    for item in val:
+                        if item and item not in inventory.get(k, []):
+                            errors.append(f"manifest_missing:{k}:{item}")
+                elif isinstance(val, str):
+                    if val and val not in inventory.get(k, []):
+                        errors.append(f"manifest_missing:{k}:{val}")
+
+        # Reverse check: Check that manifest accounts for every resource in inventory!
+        # Caller cannot omit provisioned resources from manifest to hide them.
+        if inventory.get("vpc_id") and isinstance(exp_res, dict):
+            if inventory.get("vpc_id") != str(exp_res.get("vpc_id", "")).strip():
+                errors.append(f"inventory_unmanifested_vpc_id:{inventory['vpc_id']}")
+
+        if isinstance(exp_res, dict):
+            for inv_key, inv_val in inventory.items():
+                if inv_key in {"account_id", "region", "expected_missing", "vpc_id"}:
+                    continue
+                if isinstance(inv_val, list) and inv_val:
+                    manifest_list = exp_res.get(inv_key, [])
+                    if not isinstance(manifest_list, list):
+                        errors.append(f"inventory_unmanifested_resource_type:{inv_key}")
+                    else:
+                        for inv_item in inv_val:
+                            if inv_item not in manifest_list:
+                                errors.append(f"inventory_unmanifested_resource:{inv_key}:{inv_item}")
+
+        return manifest, errors
+
+    def _verify_caller_identity(self) -> Optional[str]:
+        """
+        In live mode, queries STS caller identity to ensure actual authenticated AWS session
+        matches the authoritative manifest account_id.
+        """
+        if self.mode != "live":
+            return None
+        if not self.account_id:
+            return "caller_identity_verification_missing_account_id"
+
+        cmd = ["sts", "get-caller-identity", "--output", "json"]
+        rc, stdout, stderr = self._runner(cmd)
+        if rc != 0:
+            return f"sts_get_caller_identity_failed:rc_{rc}:{stderr.strip()}"
+        try:
+            data = json.loads(stdout)
+            actual_account = data.get("Account")
+            if not actual_account:
+                return "sts_caller_identity_missing_Account_field"
+            if str(actual_account).strip() != str(self.account_id).strip():
+                return f"caller_account_mismatch:cli_account_{actual_account}_manifest_{self.account_id}"
+        except Exception as e:
+            return f"sts_caller_identity_parse_error:{e}"
+        return None
 
     def _default_aws_runner(self, args: List[str]) -> Tuple[int, str, str]:
         cmd = ["aws", "--region", self.region, "--no-cli-pager"]
@@ -197,8 +414,9 @@ class TeardownAbsenceVerifier:
             manifest_required=manifest_required,
         )
 
-    @staticmethod
+    @classmethod
     def extract_inventory_from_outputs(
+        cls,
         data: Dict[str, Any],
         manifest: Optional[Union[Dict[str, Any], Path, str]] = None,
     ) -> Dict[str, Any]:
@@ -277,6 +495,21 @@ class TeardownAbsenceVerifier:
                 _dedup_add("secrets", [str(rt["secret_metadata_arn"]).strip()])
             if rt.get("bootstrap_parameter_arn"):
                 _dedup_add("ssm_parameters", [str(rt["bootstrap_parameter_arn"]).strip()])
+
+            # Extract account_id and region from ARNs if present
+            for candidate_arn in [
+                rt.get("kms_key_arn"),
+                rt.get("secret_metadata_arn"),
+                rt.get("bootstrap_parameter_arn"),
+                rt.get("target_group_arn"),
+            ]:
+                if candidate_arn and isinstance(candidate_arn, str) and candidate_arn.startswith("arn:aws"):
+                    parts = candidate_arn.split(":")
+                    if len(parts) >= 5:
+                        if parts[3] and not inv.get("region"):
+                            inv["region"] = parts[3]
+                        if parts[4] and parts[4].isdigit() and not inv.get("account_id"):
+                            inv["account_id"] = parts[4]
 
             # Target Groups & ALB
             if rt.get("target_group_arn"):
@@ -438,30 +671,15 @@ class TeardownAbsenceVerifier:
 
         # 10. Check against authoritative pre-teardown manifest if supplied
         if manifest:
-            if isinstance(manifest, (str, Path)):
-                manifest = json.loads(Path(manifest).read_text(encoding="utf-8"))
-            if isinstance(manifest, dict):
-                exp_res = manifest.get("expected_resources", {})
-                if isinstance(exp_res, dict):
-                    for k, val in exp_res.items():
-                        if k == "vpc_id":
-                            if inv.get("vpc_id") != str(val).strip():
-                                inv["expected_missing"].append(f"manifest_mismatch:vpc_id_expected_{val}")
-                        elif isinstance(val, list):
-                            for item in val:
-                                if item and item not in inv.get(k, []):
-                                    inv["expected_missing"].append(f"manifest_missing:{k}:{item}")
-                        elif isinstance(val, str):
-                            if val and val not in inv.get(k, []):
-                                inv["expected_missing"].append(f"manifest_missing:{k}:{val}")
-                exp_types = manifest.get("expected_types", [])
-                if isinstance(exp_types, list):
-                    for t in exp_types:
-                        if t == "vpc_id":
-                            if not inv.get("vpc_id"):
-                                inv["expected_missing"].append("manifest_missing_type:vpc_id")
-                        elif not inv.get(t):
-                            inv["expected_missing"].append(f"manifest_missing_type:{t}")
+            manifest_obj, m_errs = cls.validate_manifest_schema_and_reconciliation(
+                manifest,
+                inv,
+                account_id=inv.get("account_id"),
+                region=inv.get("region"),
+                require_complete_scope=True,
+            )
+            if m_errs:
+                inv.setdefault("expected_missing", []).extend(m_errs)
 
         return inv
 
@@ -822,6 +1040,47 @@ class TeardownAbsenceVerifier:
                 "all_absent": False,
                 "error": "MANIFEST_REQUIRED_IN_LIVE_MODE",
                 "reason": "Authoritative pre-teardown manifest is mandatory in live mode to guarantee inventory completeness.",
+                "total_checked": 0,
+                "absent_count": 0,
+                "pending_deletion_count": 0,
+                "still_present_count": 0,
+                "unexpected_error_count": 0,
+                "still_present": [],
+                "unexpected_errors": [],
+                "resources": {},
+            }
+
+        # Guard 0.5: In live mode, verify CLI caller identity matches manifest account_id
+        if self.mode == "live":
+            identity_err = self._verify_caller_identity()
+            if identity_err:
+                return {
+                    "timestamp_utc": _iso_utc_now(),
+                    "mode": self.mode,
+                    "status": "UNVERIFIED",
+                    "all_absent": False,
+                    "error": "CALLER_IDENTITY_VERIFICATION_FAILED",
+                    "reason": identity_err,
+                    "total_checked": 0,
+                    "absent_count": 0,
+                    "pending_deletion_count": 0,
+                    "still_present_count": 0,
+                    "unexpected_error_count": 0,
+                    "still_present": [],
+                    "unexpected_errors": [],
+                    "resources": {},
+                }
+
+        # Guard 0.8: Manifest schema validation or two-way reconciliation failure
+        if self.manifest_errors:
+            return {
+                "timestamp_utc": _iso_utc_now(),
+                "mode": self.mode,
+                "status": "UNVERIFIED",
+                "all_absent": False,
+                "error": "INVALID_MANIFEST_OR_RECONCILIATION_FAILURE",
+                "manifest_errors": list(self.manifest_errors),
+                "missing_expected_types": list(self.manifest_errors),
                 "total_checked": 0,
                 "absent_count": 0,
                 "pending_deletion_count": 0,

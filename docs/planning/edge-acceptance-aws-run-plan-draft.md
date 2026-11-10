@@ -62,6 +62,11 @@ The host diagnostic collector is implemented in `scripts/edge_host_telemetry.py`
 
 Collector is read-only to Chrony and kernel metrics; no repeated `makestep`, forced sync, synthetic clock adjustments or altering policy thresholds. Keep a bounded private ring buffer (design target ≤10 MiB in `/run/miles/`, permissions 0600), verify overhead and dropped-sample behavior offline. Preserve a private copy on failure **before** teardown, sanitize before any Git publication. Verify fields against the actual host Chrony version and timestamp contract, not just a schema mock.
 
+The telemetry summary contract (`summarize_window`) strictly distinguishes:
+- **(a) Unknown/unobserved interval before acquisition**: When a requested `--since` precedes recorder start or first retained sample by more than the expected startup lag, the verdict is `UNVERIFIED` with reason `window_requires_unobserved_pre_recording_interval` (never falsely claiming eviction when zero records were dropped).
+- **(b) Expected cadence / startup grace**: When `--since` falls within normal startup grace (default 2.0 s, bounding the initial sampling tick) of the initial sample (sequence 1, zero drops), coverage is verified intact with status `OK` and `startup_grace_applied_seconds` recorded.
+- **(c) Provable eviction**: When sequence gaps exist within the queried window or earliest retained sequence > 1 / buffer dropped records > 0, the verdict is `UNVERIFIED` with reason `window_completeness_broken_by_record_eviction` or `window_completeness_broken_by_internal_sequence_gap`.
+
 **D0 GO:** approved setup, release and chrony host provenance, host recorder running with correct durations and timestamps, 2 Cloud + 1 Edge readiness where provisioned, private ALB, PITR, isolated synthetic test fixtures, metrics and private evidence paths all verified. Diagnostic collector unable to capture reliable host timing → **do not** treat Edge PASS as conclusive RCA.
 
 ## 5. Staged acceptance and stop-the-line
@@ -84,7 +89,25 @@ Example benchmark arguments only (sensitive config and output directories are re
 ## 6. Phase E — mandatory teardown, including failed runs
 
 1. Stop new workload; resolve/drain in-flight request outcomes within approved limits; freeze private logs, telemetry, S3/version and DDB state and sanitized per-gate evidence. If an outcome is indeterminate, keep it explicitly tracked for native reconciliation.
-2. **Freeze pre-teardown authoritative manifest**: Prior to `terraform destroy`, capture and seal the pre-teardown authoritative manifest from active Terraform state/outputs (`--manifest pre-teardown-manifest.json` containing `run_id`, account, region, exact resource IDs, types, and counts). This manifest is mandatory in live acceptance mode to prevent partial-output false PASS.
+2. **Freeze pre-teardown authoritative manifest**: Prior to `terraform destroy`, capture and seal the pre-teardown authoritative manifest from active Terraform state/outputs (`--manifest pre-teardown-manifest.json`). This manifest is strictly mandatory in live acceptance mode (`mode == "live"`).
+   - **Schema (`miles-teardown-manifest/v1`)**:
+     - `schema_version`: `"miles-teardown-manifest/v1"`
+     - `run_id`: non-empty string matching the Gate C session identifier
+     - `account_id`: 12-digit AWS account ID
+     - `region`: AWS region (e.g. `ap-southeast-1`)
+     - `ownership_scope`: `{"project": "miles", "environment": "dev", ...}`
+     - `expected_types`: array of resource type keys (`["dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms", "vpc_id", ...]`)
+     - `expected_counts`: object with exact non-negative integer count per expected resource type
+     - `expected_resources`: object with exact resource IDs, ARNs, and names
+     - `provenance`: `{"source": "terraform_pre_destroy", "created_at_utc": "...", "sha256": "..."}`
+   - **Generation & Freezing**:
+     - Extract pre-destroy resources from active Terraform outputs (`terraform output -json`) and state.
+     - Calculate SHA-256 (`sha256sum pre-teardown-manifest.json > pre-teardown-manifest.json.sha256`) and seal into the operator evidence vault before executing `terraform destroy`.
+   - **Validation Contract**:
+     - In live mode, verifier validates STS caller identity (`aws sts get-caller-identity`) against manifest `account_id` before querying native APIs.
+     - Unknown, malformed, or missing required schema fields fail closed with `UNVERIFIED`.
+     - Two-way reconciliation enforces that all manifest resources exist in inventory and all inventory resources exist in manifest (partial allowlists or concealed provisioned resources fail closed).
+     - Essential Miles stack resource types (`dynamodb_tables`, `s3_buckets`, `iam_roles`, `cloudwatch_alarms`, `vpc_id`) are strictly required.
 3. Destroy **only owned resources** per reviewed Terraform destroy plan and verified resource tags; include S3 versions/markers/multipart, ALB/ASG/EC2, DDB, endpoints, networking, IAM/SLRs as created, KMS/Secrets deletion schedules. Preserve documented bootstrap/state resources. Never delete shared Hung/Phong IAM roles/policies without explicit ownership.
 4. Perform **new service-native final absence checks** matching the owned resource inventory using `python3 scripts/verify_teardown_absence.py --outputs-json active-outputs.json --manifest pre-teardown-manifest.json --output-ledger gate-e-absence-summary.json` (PR #77 + PR #76 hotfix). The verifier cross-checks the inventory against the frozen manifest and native AWS APIs. In live mode, omitting `--manifest` fails closed with exit code 1 / `UNVERIFIED`.
 5. Record `PASS / FAIL / DEFERRED / UNVERIFIED` by gate, actual runtime state (including pending deletions), resource counts and Terraform drift, cost estimate at shutdown, later observed/billed reconciliations and owner acknowledgment.
