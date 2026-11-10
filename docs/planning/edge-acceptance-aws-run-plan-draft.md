@@ -16,7 +16,7 @@
 
 ## 2. Owner decisions / immutable run envelope
 
-All `TBD` items must be filled in **private, versioned signed approval** before any AWS API call, including read-only inventory. A separate owner go/no-go is required before any paid provisioning.
+The current proposed scope, four-hour window and 10 USD budget are recorded in the [approval package](edge-aws-approval-package.md). Read-only preflight was authorized and performed on 2026-11-10. Record the owner's approval from the conversation privately, complete the technical conditions in that package, and fill in the run-specific hashes and timestamps before paid provisioning.
 
 | Field | Prepared candidate / condition | Approval state |
 |---|---|---|
