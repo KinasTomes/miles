@@ -219,3 +219,17 @@ variable "enable_edge_private_endpoint" {
     error_message = "Private Edge needs interface endpoints and an Edge trust anchor."
   }
 }
+variable "alb_internal" {
+  type        = bool
+  default     = false
+  description = "Place the test ALB on private subnets with internal addressing."
+}
+variable "enable_acceptance_nodes" {
+  type        = bool
+  default     = false
+  description = "Provision private SSM-managed Edge/client test nodes with disposable disks."
+  validation {
+    condition     = !var.enable_acceptance_nodes || (var.enable_asg && var.alb_internal && var.enable_edge_private_endpoint && var.runtime_permissions_boundary_arn != null)
+    error_message = "Private acceptance nodes require the internal Cloud fleet, Edge endpoint and reviewed runtime boundary."
+  }
+}

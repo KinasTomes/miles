@@ -78,7 +78,8 @@ module "alb" {
   name                         = local.name
   enabled                      = !var.paused && var.enable_alb
   vpc_id                       = module.network.vpc_id
-  subnet_ids                   = values(module.network.public_subnets)
+  subnet_ids                   = var.alb_internal ? values(module.network.private_subnets) : values(module.network.public_subnets)
+  internal                     = var.alb_internal
   security_group_id            = module.network.security_groups.alb
   certificate_arn              = var.certificate_arn
   client_cidrs                 = var.client_cidrs
@@ -126,3 +127,22 @@ module "observability" {
   alarm_actions    = var.alarm_actions
   deep_observation = var.deep_observation
 }
+
+module "acceptance" {
+  source                     = "../../modules/acceptance"
+  enabled                    = var.enable_acceptance_nodes && !var.paused
+  name                       = local.name
+  region                     = var.region
+  account_id                 = var.account_id
+  ami_id                     = var.ami_id
+  instance_type              = var.fleet_instance_type
+  subnet_id                  = module.network.private_subnets[var.availability_zones[0]]
+  vpc_id                     = module.network.vpc_id
+  endpoint_security_group_id = module.endpoints.security_group_id
+  alb_security_group_id      = module.network.security_groups.alb
+  permissions_boundary_arn   = var.runtime_permissions_boundary_arn
+  kms_key_arn                = module.security.kms_key_arn
+  data_bucket_name           = local.data_bucket_name
+  depends_on                 = [module.endpoints]
+}
+output "acceptance_nodes" { value = module.acceptance.nodes }

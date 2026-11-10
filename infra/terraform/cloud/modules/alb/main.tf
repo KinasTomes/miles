@@ -1,7 +1,7 @@
 resource "aws_lb" "this" {
   count                      = var.enabled ? 1 : 0
   name                       = var.name
-  internal                   = false
+  internal                   = var.internal
   load_balancer_type         = "application"
   security_groups            = [var.security_group_id]
   subnets                    = var.subnet_ids
