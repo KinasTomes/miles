@@ -839,17 +839,30 @@ See [storage statistics](contracts/storage-statistics.md) for the measured scope
 For global stats, `listed_bytes_by_pack_lifecycle` and
 `listed_bytes_by_storage_class` partition the same listed bytes independently.
 A current pack or sidecar can be classified as `head_live`, `no_live_head`,
-`retired`, `orphan` or `unsettled`. The first two categories describe the
-observed generation as a whole, including its overhead. Cold generations with
-no observed live head remain in the totals. Older pack and sidecar versions
-are counted as `noncurrent`. Other objects are counted as `other`.
+`cold_dead`, `retired`, `orphan` or `unsettled`. The first three categories
+describe the observed generation as a whole, including its overhead.
+`no_live_head` is a Warm generation without an observed live head; `cold_dead`
+is a Cold, Restoring or Restored generation without one (for example an archive
+superseded by revival or promotion), still billed and retained until GC
+eligibility. Older pack and sidecar versions are counted as `noncurrent`.
+Other objects are counted as `other`.
 `listed_known_protected_bytes` overlaps those categories. It includes current
 objects with an observed protection deadline or a supplied generation root.
 It is a lower bound from approximate observations and cannot establish GC
-eligibility. None of these fields changes bucket allocation or logical quota.
+eligibility. `listed_pack_overhead_bytes` (complete inventory only) is the part
+of current `head_live` packs not covered by live canonical chunk ranges:
+header/footer/index plus dead or race-loser blobs. None of these fields changes
+bucket allocation or logical quota.
 
-Temporary restored billed bytes and revival counters without verified sources
-are null, not zero. Cached observations include timestamps, version scope,
+`revived_chunks_total`, `revived_bytes_stored_total`, `orphaned_chunks_total`
+and `orphaned_bytes_stored_total` are cumulative PUT/UploadPart counters of the
+serving process since `write_counters_since` (global report only; each Cloud
+node counts its own writes). Revived counts distinct domain/hash identities per
+request whose existing location the request's new Warm blob replaced through
+location CAS, with that blob's stored bytes; orphaned counts the request's
+race-loser blobs left in its own protected pack. Without a counter source they
+are null, not zero; temporary restored billed bytes stay null without a
+verified source. Cached observations include timestamps, version scope,
 allocation methodology and consistency=approximate. Layout is metadata-only,
 not an integrity certification. Physical allocation never changes user quota.
 
@@ -1194,7 +1207,7 @@ Cloud ALB override health port 9100. Edge probe local/private. Readiness là tí
 
 Drain: set node admission/draining ngay, trả 503 request mới + readyz=503; Cloud deregister ALB target và chờ deregistration delay, active requests, flush pack và outbox export checkpoint, heartbeat ASG lifecycle hook; báo incomplete nếu timeout. Edge cùng gate/drain, không gọi ALB. Health check có độ trễ và ALB fail-open khi tất cả target unhealthy, nên readyz=503 riêng lẻ không đủ. [AWS ALB health checks](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/target-group-health-checks.html).
 
-Metric đồng nhất kiến trúc: dedup_ratio, compression_ratio, total_reduction, cache_hit_ratio, s3_requests_total{type}, bytes_logical, bytes_physical, revived_chunks_total, revived_bytes_stored_total, gateway_s3_upload_bytes_total, s3_gateway_download_bytes_total, gateway_client_bytes_total, restore_count, pack_state_count{state}, ddb_throttle_count, integrity_error_total, mid_stream_abort_total, oldest_unexported_age_seconds, recovery_cut_age_seconds, gc_gate_duration_seconds, completion_takeover_total, s3_api_requests_total{op,code}, s3_api_latency_seconds{op}. Metrics vật lý chỉ quản trị; không key/user label cardinality cao. CloudWatch export theo batch/agent, không bắt buộc mỗi scrape gọi PutMetricData.
+Metric đồng nhất kiến trúc: dedup_ratio, compression_ratio, total_reduction, cache_hit_ratio, s3_requests_total{type}, bytes_logical, bytes_physical, revived_chunks_total, revived_bytes_stored_total, orphaned_chunks_total, orphaned_bytes_stored_total, gateway_s3_upload_bytes_total, s3_gateway_download_bytes_total, gateway_client_bytes_total, restore_count, pack_state_count{state}, ddb_throttle_count, integrity_error_total, mid_stream_abort_total, oldest_unexported_age_seconds, recovery_cut_age_seconds, gc_gate_duration_seconds, completion_takeover_total, s3_api_requests_total{op,code}, s3_api_latency_seconds{op}. Metrics vật lý chỉ quản trị; không key/user label cardinality cao. CloudWatch export theo batch/agent, không bắt buộc mỗi scrape gọi PutMetricData.
 
 ---
 

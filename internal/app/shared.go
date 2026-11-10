@@ -15,6 +15,7 @@ import (
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/engine"
+	"github.com/KinasTomes/miles/internal/engine/write"
 	"github.com/KinasTomes/miles/internal/faults"
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/lifecycle"
@@ -74,7 +75,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 		return d, err
 	}
 	faultReg := faults.NewRegistry(c.EnableFaultInjection)
-	runtimeMetrics := new(observability.Runtime)
+	runtimeMetrics := &observability.Runtime{Write: write.NewCounters(clk.Now().WallUTC)}
 	clients = clients.observed(runtimeMetrics, c.DDBTablePrefix+"Leases")
 	if c.EnableFaultInjection {
 		dOpt := clients.metadata.Options()
@@ -191,7 +192,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 				protected := maxTime(r.WallDeadline, bounds.Upper.Add(30*time.Minute)).Add(15 * time.Minute)
 				return object.AdmittedWriter{Producer: &mutation, Fence: mutation.Writer, ProtectedUntil: protected, Finish: func() { stop(); _ = w.Release() }}, nil
 			},
-			Chunking: engine.ChunkingParams{Min: int(p.Chunking.MinBytes), Avg: int(p.Chunking.AvgBytes), Max: int(p.Chunking.MaxBytes)}, Compression: engine.CompressionPolicy{Enabled: p.Compression.Enabled, Codec: p.Compression.Codec, Level: int(p.Compression.Level), MinSavingRatio: ratio},
+			Chunking: engine.ChunkingParams{Min: int(p.Chunking.MinBytes), Avg: int(p.Chunking.AvgBytes), Max: int(p.Chunking.MaxBytes)}, Compression: engine.CompressionPolicy{Enabled: p.Compression.Enabled, Codec: p.Compression.Codec, Level: int(p.Compression.Level), MinSavingRatio: ratio}, WriteCounters: runtimeMetrics.Write,
 			BucketPolicy: func(id string) (config.BucketSnapshot, error) {
 				record, e := m.GetBucketPolicy(ctx, bucket, id, 0)
 				if e != nil {
@@ -292,7 +293,7 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 	runner.Executors["tiering"] = tiering
 	scrubWorker := &jobs.ScrubWorker{Store: m, Packs: faultPacks}
 	runner.Executors["scrub"] = scrubWorker.Executor()
-	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: clients.packs, Bucket: c.PackBucket}, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second})
+	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: clients.packs, Bucket: c.PackBucket}, Now: func() time.Time { return clk.Now().WallUTC }, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second, WriteCounters: runtimeMetrics.Write})
 	if err != nil {
 		return d, err
 	}

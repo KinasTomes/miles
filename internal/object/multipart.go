@@ -175,7 +175,7 @@ func (s *Service) UploadPart(ctx context.Context, r PartRequest) (PartResult, er
 		s.cancelPart(ctx, req, pub.ID)
 		return PartResult{}, err
 	}
-	prepared, packs, err := session.PreparePart(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression, WriteCache: s.o.Cache, AdmitOnWrite: policy.Cache().AdmitOnWrite}, r.Body, manifestID)
+	prepared, packs, err := session.PreparePart(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression, WriteCache: s.o.Cache, AdmitOnWrite: policy.Cache().AdmitOnWrite, Counters: s.o.WriteCounters}, r.Body, manifestID)
 	if err != nil {
 		return fail(fmt.Errorf("prepare: %w", err))
 	}
