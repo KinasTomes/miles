@@ -548,6 +548,19 @@ fi
         self.assertEqual(summary_bounded["window_start_utc"], t_start)
         self.assertEqual(summary_bounded["window_end_utc"], t_end)
 
+        tail = (base_time + datetime.timedelta(seconds=60)).isoformat()
+        missing_tail = recorder.summarize_window(until_utc=tail)
+        self.assertEqual(missing_tail["status"], "UNVERIFIED")
+        self.assertIn("unobserved_chrony_window_end", missing_tail["reason"])
+
+        stalled_file = self.tmppath / "stalled.jsonl"
+        stalled_ring = BoundedRingBuffer(stalled_file)
+        stalled_ring.write_record(make_record(1, base_time))
+        stalled_ring.write_record(make_record(2, base_time + datetime.timedelta(seconds=300)))
+        stalled = HostTelemetryRecorder(output_file=stalled_file).summarize_window()
+        self.assertEqual(stalled["status"], "UNVERIFIED")
+        self.assertIn("chrony_sampling_gap", stalled["reason"])
+
 
 if __name__ == "__main__":
     unittest.main()

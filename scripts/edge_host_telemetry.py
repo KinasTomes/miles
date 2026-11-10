@@ -711,6 +711,26 @@ class HostTelemetryRecorder:
         earliest_buf_dt = _parse_iso_timestamp(earliest_buf_ts)
 
         effective_startup_grace = startup_grace_seconds if startup_grace_seconds is not None else max(2.0, self.os_interval * 2, self.chrony_interval)
+        # Permit one missed nominal sampling interval, but never an unobserved tail.
+        max_chrony_gap = 2 * self.chrony_interval + self.os_interval
+        chrony_times = [_parse_iso_timestamp(r.get("timestamp_utc")) for r in chrony_records]
+        since_dt = _parse_iso_timestamp(since_utc) if since_utc else None
+        until_dt = _parse_iso_timestamp(until_utc) if until_utc else None
+        coverage_errors = []
+        if (since_utc and since_dt is None) or (until_utc and until_dt is None):
+            coverage_errors.append("invalid_window_timestamp")
+        elif since_dt and until_dt and since_dt > until_dt:
+            coverage_errors.append("invalid_window_order")
+        if any(t is None for t in chrony_times):
+            coverage_errors.append("invalid_chrony_timestamp")
+        elif chrony_times:
+            if any((b - a).total_seconds() < 0 or (b - a).total_seconds() > max_chrony_gap
+                   for a, b in zip(chrony_times, chrony_times[1:])):
+                coverage_errors.append("chrony_sampling_gap")
+            if since_dt and (chrony_times[0] - since_dt).total_seconds() > max_chrony_gap:
+                coverage_errors.append("unobserved_chrony_window_start")
+            if until_dt and (until_dt - chrony_times[-1]).total_seconds() > max_chrony_gap:
+                coverage_errors.append("unobserved_chrony_window_end")
 
         # Epistemological window classification:
         # (a) unknown/unobserved interval before acquisition started
@@ -748,7 +768,7 @@ class HostTelemetryRecorder:
                     # since_dt >= earliest_buf_dt: requested window starts after or at earliest retained record
                     pass
 
-        window_intact = (not is_provable_eviction) and (not is_sequence_gap) and (not is_unobserved_pre_recording)
+        window_intact = (not is_provable_eviction) and (not is_sequence_gap) and (not is_unobserved_pre_recording) and not coverage_errors
 
         total_failed_commands = max(failed_commands, self.cumulative_chrony_failures, prov_chrony_failures)
         total_timeouts = max(len(timeouts), self.cumulative_chrony_timeouts, prov_chrony_timeouts)
@@ -784,6 +804,7 @@ class HostTelemetryRecorder:
                 reasons.append(f"window_completeness_broken_by_internal_sequence_gap({internal_sequence_gap}_missing)")
             if is_unobserved_pre_recording and unobserved_reason:
                 reasons.append(unobserved_reason)
+            reasons.extend(coverage_errors)
             reason = "; ".join(reasons)
 
         summary_dict = {
