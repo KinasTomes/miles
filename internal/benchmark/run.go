@@ -19,7 +19,6 @@ import (
 	"runtime/debug"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/benchmarkdata"
@@ -198,10 +197,10 @@ func filePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Confi
 	start := time.Now()
 	total := len(r.Dataset.Files)
 	samples := make([]Sample, total)
-	jobs := make(chan int)
 	var workers sync.WaitGroup
 
 	if !o.FailFast {
+		jobs := make(chan int)
 		for i := 0; i < min(o.Concurrency, total); i++ {
 			workers.Go(func() {
 				for index := range jobs {
@@ -222,56 +221,66 @@ func filePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Confi
 		return ErrInterrupted
 	}
 
-	var (
-		stopCh       = make(chan struct{})
-		stopOnce     sync.Once
-		stopMu       sync.Mutex
-		stopReason   string
-		stopped      atomic.Bool
-		interrupted  atomic.Bool
-		drainTimerMu sync.Mutex
-		drainTimer   *time.Timer
-	)
+	var coord struct {
+		mu              sync.Mutex
+		nextIndex       int
+		dispatchedCount int
+		stopped         bool
+		interrupted     bool
+		stopReason      string
+		drainTimer      *time.Timer
+	}
 
 	drainCtx, drainCancel := context.WithCancel(context.Background())
 	defer func() {
 		drainCancel()
-		drainTimerMu.Lock()
-		if drainTimer != nil {
-			drainTimer.Stop()
+		coord.mu.Lock()
+		if coord.drainTimer != nil {
+			coord.drainTimer.Stop()
 		}
-		drainTimerMu.Unlock()
+		coord.mu.Unlock()
 	}()
 
-	scheduleDrainTimeout := func() {
-		if o.DrainTimeout > 0 {
-			drainTimerMu.Lock()
-			if drainTimer == nil {
-				drainTimer = time.AfterFunc(o.DrainTimeout, func() {
-					drainCancel()
-				})
-			}
-			drainTimerMu.Unlock()
+	scheduleDrainTimeoutLocked := func() {
+		if o.DrainTimeout > 0 && coord.drainTimer == nil {
+			coord.drainTimer = time.AfterFunc(o.DrainTimeout, func() {
+				drainCancel()
+			})
 		}
 	}
 
 	triggerStop := func(reason string) {
-		stopOnce.Do(func() {
-			stopMu.Lock()
-			stopReason = sanitizeStopTrigger(reason)
-			stopMu.Unlock()
-			stopped.Store(true)
-			close(stopCh)
+		coord.mu.Lock()
+		defer coord.mu.Unlock()
+		if !coord.stopped {
+			coord.stopped = true
+			coord.stopReason = sanitizeStopTrigger(reason)
 			if reason == "interrupted" {
-				scheduleDrainTimeout()
+				coord.interrupted = true
+				scheduleDrainTimeoutLocked()
 			}
-		})
+		}
 	}
 
-	getStopReason := func() string {
-		stopMu.Lock()
-		defer stopMu.Unlock()
-		return stopReason
+	claimJob := func() (int, bool) {
+		coord.mu.Lock()
+		defer coord.mu.Unlock()
+		if coord.stopped || coord.interrupted || coord.nextIndex >= total {
+			return -1, false
+		}
+		if ctx.Err() != nil {
+			coord.interrupted = true
+			coord.stopped = true
+			if coord.stopReason == "" {
+				coord.stopReason = "interrupted"
+			}
+			scheduleDrainTimeoutLocked()
+			return -1, false
+		}
+		idx := coord.nextIndex
+		coord.nextIndex++
+		coord.dispatchedCount++
+		return idx, true
 	}
 
 	stopWatcher := make(chan struct{})
@@ -279,9 +288,7 @@ func filePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Confi
 	go func() {
 		select {
 		case <-ctx.Done():
-			interrupted.Store(true)
 			triggerStop("interrupted")
-			scheduleDrainTimeout()
 		case <-stopWatcher:
 			return
 		}
@@ -290,60 +297,29 @@ func filePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Confi
 	for i := 0; i < min(o.Concurrency, total); i++ {
 		workers.Go(func() {
 			for {
-				if stopped.Load() {
+				index, ok := claimJob()
+				if !ok {
 					return
 				}
-				select {
-				case index, ok := <-jobs:
-					if !ok {
-						return
-					}
-					entry := r.Dataset.Files[index]
-					s := fileOperation(drainCtx, client, root, c, r.Prefix+entry.Path, phase, entry, true)
-					samples[index] = s
+				entry := r.Dataset.Files[index]
+				s := fileOperation(drainCtx, client, root, c, r.Prefix+entry.Path, phase, entry, true)
+				samples[index] = s
 
-					if s.Error != "" {
-						triggerStop(s.Error)
-						return
-					}
-				case <-stopCh:
+				if s.Error != "" {
+					triggerStop(s.Error)
 					return
 				}
 			}
 		})
 	}
 
-	dispatchedCount := 0
-dispatchLoop:
-	for index := range samples {
-		if stopped.Load() {
-			break dispatchLoop
-		}
-		select {
-		case <-stopCh:
-			break dispatchLoop
-		case <-ctx.Done():
-			interrupted.Store(true)
-			triggerStop("interrupted")
-			scheduleDrainTimeout()
-			break dispatchLoop
-		default:
-		}
+	workers.Wait()
 
-		select {
-		case jobs <- index:
-			dispatchedCount++
-		case <-stopCh:
-			break dispatchLoop
-		case <-ctx.Done():
-			interrupted.Store(true)
-			triggerStop("interrupted")
-			scheduleDrainTimeout()
-			break dispatchLoop
-		}
-	}
-	close(jobs)
-	workers.Wait() // never write final artifacts while a worker can still mutate keys
+	coord.mu.Lock()
+	dispatchedCount := coord.dispatchedCount
+	stopReason := coord.stopReason
+	interruptedVal := coord.interrupted || (ctx.Err() != nil)
+	coord.mu.Unlock()
 
 	completedSamples := make([]Sample, 0, dispatchedCount)
 	for _, s := range samples {
@@ -356,12 +332,12 @@ dispatchLoop:
 	if skipped < 0 {
 		skipped = 0
 	}
-	trigger := getStopReason()
-	if trigger == "" && (interrupted.Load() || ctx.Err() != nil) {
+	trigger := stopReason
+	if trigger == "" && interruptedVal {
 		trigger = "interrupted"
 	}
 	err := finishPhaseWithStats(r, phase, start, completedSamples, total, dispatchedCount, skipped, trigger)
-	if interrupted.Load() || ctx.Err() != nil {
+	if interruptedVal {
 		return ErrInterrupted
 	}
 	return err
