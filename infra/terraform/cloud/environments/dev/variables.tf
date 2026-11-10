@@ -210,3 +210,12 @@ variable "enable_test_fault_injection" {
   default     = false
   description = "Enable node-scoped fault injection only for an isolated acceptance fleet."
 }
+variable "enable_edge_private_endpoint" {
+  type        = bool
+  default     = false
+  description = "Enable the Roles Anywhere interface endpoint for a private Edge test node."
+  validation {
+    condition     = !var.enable_edge_private_endpoint || (var.egress_mode == "interface" && var.edge_ca_pem != null)
+    error_message = "Private Edge needs interface endpoints and an Edge trust anchor."
+  }
+}

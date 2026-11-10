@@ -14,17 +14,19 @@ module "network" {
   admin_ssh_cidrs = var.admin_ssh_cidrs
 }
 module "endpoints" {
-  source            = "../../modules/endpoints"
-  name              = local.name
-  region            = var.region
-  vpc_id            = module.network.vpc_id
-  private_subnets   = module.network.private_subnets
-  route_table_ids   = module.network.private_route_table_ids
-  gateway_sg_id     = module.network.security_groups.gateway
-  jobs_sg_id        = module.network.security_groups.jobs
-  enable_interfaces = local.egress_mode == "interface"
-  data_bucket_name  = local.data_bucket_name
-  table_arns        = module.data.table_arns
+  source                          = "../../modules/endpoints"
+  name                            = local.name
+  region                          = var.region
+  vpc_id                          = module.network.vpc_id
+  private_subnets                 = module.network.private_subnets
+  route_table_ids                 = module.network.private_route_table_ids
+  gateway_sg_id                   = module.network.security_groups.gateway
+  jobs_sg_id                      = module.network.security_groups.jobs
+  enable_interfaces               = local.egress_mode == "interface"
+  enable_roles_anywhere           = var.enable_edge_private_endpoint
+  roles_anywhere_trust_anchor_arn = try(module.iam.edge_provider.trust_anchor_arn, null)
+  data_bucket_name                = local.data_bucket_name
+  table_arns                      = module.data.table_arns
 }
 module "security" {
   source               = "../../modules/security"
