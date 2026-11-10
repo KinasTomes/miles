@@ -125,7 +125,7 @@ type Metadata interface {
 }
 
 // CommitEvent is the input the outbox producer turns into the authoritative
-// event. MetadataEvents uses the W04-HAI-02 producer; only isolated service tests
+// event. MetadataEvents uses the strict outbox producer; only isolated service tests
 // may substitute an envelope fixture.
 // Head contains the complete prepared descriptor with Revision still zero;
 // Revision is the resulting revision assigned by the publication transaction.

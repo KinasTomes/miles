@@ -17,7 +17,7 @@ Number. Không dùng riêng `domain_id` làm partition key của Chunks.
 
 Các tên thuộc tính này là đầu vào bàn giao cho adapter DynamoDB W4. Chưa có adapter
 DynamoDB production trong checkout; thay schema sau khi có dữ liệu sẽ cần migration.
-W03-HAI-03 bổ sung [mapping adapter/record phụ, index và transaction](../../../docs/contracts/dynamodb-adapter.md).
+Storage/schema handoff bổ sung [mapping adapter/record phụ, index và transaction](../../../docs/contracts/dynamodb-adapter.md).
 Baseline W04 đã được lead duyệt tại
 [PR #35](https://github.com/KinasTomes/miles/pull/35#issuecomment-6436239260):
 giữ đúng **20 base tables, không GSI/LSI/TTL**. Go regression tests đối chiếu

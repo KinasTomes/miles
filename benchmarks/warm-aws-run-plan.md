@@ -1,6 +1,6 @@
 # Real AWS acceptance run and cleanup plan
 
-W03-HUNG-02 / PR #40. Approved within USD 1 including synthetic-data cleanup,
+PR #40. Approved within USD 1 including synthetic-data cleanup,
 and executed on 2026-10-28 UTC. [Results and cleanup](warm-aws-results.md)
 record the measured source, instance substitution and limits. The procedure
 below describes the bounded run; it does not authorize another execution.

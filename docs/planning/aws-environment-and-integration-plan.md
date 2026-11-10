@@ -1,10 +1,10 @@
 # Môi trường AWS, quyền GitHub và kế hoạch tích hợp Miles
 
-**Phạm vi:** W01-HUNG-03 (A01/A04) · **Owner:** Hưng (lead) · **Đối chiếu:** 19/10/2026, UTC+7.
+**Phạm vi:** môi trường AWS/GitHub và kế hoạch tích hợp (A01/A04) · **Owner:** Hưng (lead) · **Đối chiếu:** 19/10/2026, UTC+7.
 
 **Mục tiêu:** Xác nhận quyền hợp tác GitHub, lựa chọn môi trường AWS dev/benchmark, giới hạn chi phí và điểm bàn giao giữa các thành viên. Đây là **kế hoạch và kiểm tra readiness**, không phải bằng chứng Cloud/Edge đã triển khai hoặc benchmark đã đạt.
 
-**Nguồn:** [kiến trúc v4](../dedup-storage-gateway-architecture.md) §11–11.2, §13, §15.2, §19; [API v2](../dedup-storage-gateway-api.md) §1.1, §8, §12–13; [scope/DoD](../acceptance/scope-and-priorities.md). Dependency `W01-HUNG-02` đã **Done** trên Miles ([PR #3](https://github.com/KinasTomes/miles/pull/3)).
+**Nguồn:** [kiến trúc v4](../dedup-storage-gateway-architecture.md) §11–11.2, §13, §15.2, §19; [API v2](../dedup-storage-gateway-api.md) §1.1, §8, §12–13; [scope/DoD](../acceptance/scope-and-priorities.md). Dependency đã **Done** trên Miles ([PR #3](https://github.com/KinasTomes/miles/pull/3)).
 
 > **Bảo mật tài liệu public:** Repo `KinasTomes/miles` là public. Không đưa AWS account ID, VPC/subnet ID, ARN, credential, địa chỉ máy cá nhân, email nhận budget, số dư/hạn credit hay bằng chứng nội bộ có thông tin định danh vào Git/PR. Bằng chứng AWS chi tiết lưu trong kho riêng tư của nhóm, ghi người xác minh và thời điểm; chỉ công khai kết quả tổng hợp dưới đây.
 
@@ -72,7 +72,7 @@
 
 **Nhịp làm việc:** đầu tuần owner cập nhật dependency và ETA trong Miles; thứ Tư review interface; thứ Sáu chạy integration gate với CI, fixture, owner và evidence. Reviewer không cần cố định cặp, nhưng review member-PR vẫn phải khác tác giả. Chỉ commit contract sau review. Khi chậm, ghi task còn `Doing`/`Blocked`, không tự đánh Done.
 
-**Tiến độ W1 tại 19/10:** Hưng `W01-HUNG-01/02` và Chiến `W01-CHIEN-01/02/03` đã Done; `W01-HUNG-03` đang Doing. Các task W1 của Hải và Phong còn Todo trên Miles, là **rủi ro trực tiếp** với kế hoạch freeze W2. Cần xác nhận người phụ trách, đường bàn giao và chặn mục phụ thuộc cụ thể trước 23/10; không mặc định họ chưa làm chỉ vì chưa cập nhật Miles.
+**Tiến độ W1 tại 19/10:** các task W1 khác của Hưng và Chiến đã Done; task này đang Doing. Các task W1 của Hải và Phong còn Todo trên Miles, là **rủi ro trực tiếp** với kế hoạch freeze W2. Cần xác nhận người phụ trách, đường bàn giao và chặn mục phụ thuộc cụ thể trước 23/10; không mặc định họ chưa làm chỉ vì chưa cập nhật Miles.
 
 ## 5. Phạm vi xác minh, blocker và handoff
 
@@ -86,4 +86,4 @@
 | AWS credit khả dụng | **Chưa xác minh** | Kiểm tra riêng tư số dư, hạn và dịch vụ áp dụng; không chi tiêu dựa trên giả định |
 | Tài liệu W1 của Hải/Phong | **Chưa có trạng thái Done trên Miles** | Review draft/PR, xác minh format gate trước freeze W2 |
 
-**W01-HUNG-03 đủ điều kiện đề nghị review khi:** tài liệu này được commit trong PR, thông tin GitHub/AWS kiểm chứng được, Region và cách quản lý chi phí rõ, bảng môi trường thiếu + owner/hạn rõ, lịch bàn giao có gates, và 3 checklist/evidence trên Miles được cập nhật. Không đổi API/kiến trúc nguồn, không chỉnh settings AWS, không áp Terraform trong PR tài liệu này.
+**Kế hoạch này đủ điều kiện đề nghị review khi:** tài liệu này được commit trong PR, thông tin GitHub/AWS kiểm chứng được, Region và cách quản lý chi phí rõ, bảng môi trường thiếu + owner/hạn rõ, lịch bàn giao có gates, và 3 checklist/evidence trên Miles được cập nhật. Không đổi API/kiến trúc nguồn, không chỉnh settings AWS, không áp Terraform trong PR tài liệu này.

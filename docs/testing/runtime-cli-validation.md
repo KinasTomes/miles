@@ -1,6 +1,6 @@
 # Local runtime and CLI validation
 
-Task: W03-HUNG-03 — CLI nền, health thật và tích hợp MVP.
+Scope: CLI nền, health thật và tích hợp MVP.
 
 Validated on Linux arm64, 28/10/2026, from main
 `2da8a40bfcedb521c691f39dbbcd6b27f03f2648` (includes PRs #32–35 and R1 integration #37).
@@ -15,7 +15,7 @@ Tools: Go 1.27.2, Python 3.12.3, AWS CLI 2.38.1, Docker Engine 29.9.1.
 | Real dependency health and controlled shutdown | Cached bounded probe reads Badger, HEADs the physical local bucket. The in-memory LRU is validated at startup; readiness does not create synthetic cache entries. Process smoke removes the physical bucket: ready503, health200; it never auto-recreates the bucket. SIGTERM waits for admitted work, shuts both listeners, then closes Badger. Timeout reports incomplete and does not close storage under live work. |
 | Admin CLI transport | Read commands send bearer only to Admin paths. Tests check private regular token files, HTTPS/loopback boundary, no redirect, bounded JSON response, timeout, error redaction, auth failure, and unsupported exit behavior. The test Admin server checks the bearer; no production Admin route is claimed. |
 | Hard deadline and independent admission | S3 request context and socket read/write share one hard deadline. A stalled body read is interrupted. Cancellation keeps admission until handler quiescence. Draining rejects a signed request with S3 XML503. Dependency readiness is never an admission boolean: the process test still serves a metadata-only HEAD while the physical S3 bucket is absent. |
-| Integration with merged MVP modules | Real binary + AWS CLI exercise SigV4 CreateBucket/HeadBucket/ListBuckets on Badger. A backend credential is rejected and object GET returns NotImplemented. Existing whole-repo contract tests remain green. Object HTTP handlers remain W03-CHIEN-02/03. |
+| Integration with merged MVP modules | Real binary + AWS CLI exercise SigV4 CreateBucket/HeadBucket/ListBuckets on Badger. A backend credential is rejected and object GET returns NotImplemented. Existing whole-repo contract tests remain green. Object HTTP handlers remain separate object API work. |
 
 ## Reproduce
 
@@ -81,11 +81,11 @@ was not rerun for these validation/error-classification-only changes.
   handlers here; they inherit the process gate and immutable context deadline,
   and must retain their authorization, live dependency and R1 checks. A reader
   is available in `internal/readpath`; this task does not duplicate its logic or
-  add HTTP object handlers on behalf of W03-CHIEN-02/03.
-- W04-CHIEN-01 extends `cmd/dsgctl`/`internal/adminclient` with actual identity,
-  token/grant/policy routes. W04-HUNG-02 supplies job/node/cache implementations.
+  add HTTP object handlers on behalf of the object API work.
+- Admin API work extends `cmd/dsgctl`/`internal/adminclient` with actual identity,
+  token/grant/policy routes. Hưng's later work supplies job/node/cache implementations.
   Unsupported/missing endpoints and offline commands return errors today.
-- W04-HUNG-01 consumes health/drain for deployment. Local mode is loopback-only
+- Deployment work consumes health/drain for deployment. Local mode is loopback-only
   and explicitly labels simulated clock readiness. Runtime remains unready
   until real clock/backend authority is configured; this is not production
   Cloud/Edge deployment, TLS, ALB/ASG deregistration or distributed R1/R2 proof.

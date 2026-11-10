@@ -1,6 +1,6 @@
 # Harness validation
 
-Task: W03-HUNG-02. Runtime composition, LIST/DELETE and authoritative event producers
+Scope: Warm benchmark harness. Runtime composition, LIST/DELETE and authoritative event producers
 are now integrated after merged PR #41/#42. The complete direct-S3 versus
 single-node Miles Warm baseline has completed its dedicated real AWS run:
 [results, raw artifacts and cleanup](warm-aws-results.md). No further task is

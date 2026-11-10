@@ -1,6 +1,6 @@
 # Kiểm tra môi trường AWS dev Warm
 
-Task: W03-HUNG-01. Kiểm AWS thật ngày 25/10/2026 (UTC+7), sau khi đồng bộ
+Kiểm AWS thật ngày 25/10/2026 (UTC+7), sau khi đồng bộ
 `main` tại `65e9c04`. Phiên được lead cho phép chạy thật, dùng deploy role;
 phiên root riêng chỉ kiểm/cập nhật IAM và đã đăng xuất sau khi hoàn tất.
 
@@ -127,9 +127,9 @@ chưa tự coi Done trước review/CI/merge PR #30. Môi trường dev đã thu
 hợp AWS cần dựng lại khi dùng, lưu ý tên secret còn trong recovery window cần
 restore/reconcile hoặc chờ xóa trước khi tạo lại.
 
-Hai hard dependency W01-HUNG-03/W02-HUNG-01 và các task W2 liên quan đã Done;
+Các hard dependency và các task W2 liên quan đã Done;
 không còn chờ W2 để kiểm hạ tầng. [Mapping 20 bảng](../../infra/terraform/cloud/metadata-tables.md)
-là bàn giao cho adapter DynamoDB W03-HAI-03/W4. Phiên này chưa deploy DSG, chưa kiểm
+là bàn giao cho adapter DynamoDB W4. Phiên này chưa deploy DSG, chưa kiểm
 S3/Admin HTTP end-to-end, adapter DynamoDB production, recovery R1/R2 hoặc multi-node.
 Interface mode và ALB chưa được nghiệm thu live. Runbook vận hành:
 [dev sessions](../../infra/terraform/cloud/dev-sessions.md).

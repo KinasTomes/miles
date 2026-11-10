@@ -1,7 +1,7 @@
 # Decoder memory and ownership
 
-Contract: **DECODER-MEMORY-V1**, task W03-HUNG-04. Producer:
-`internal/pack`; consumer: W03-PHONG-01. This contract does not change pack v1
+Contract: **DECODER-MEMORY-V1**. Producer:
+`internal/pack`; consumer: the Warm GET/Range reader. This contract does not change pack v1
 bytes, codecs, CRC32C or SHA-256 verification.
 
 ## Admission API

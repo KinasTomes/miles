@@ -1,10 +1,10 @@
-# W01-PHONG-03 — R2 Recovery Epoch & Retention Roots Contract
+# R2 Recovery Epoch & Retention Roots Contract
 
 ## 1. Status, scope và checklist mapping
 
-**Status: Đã chọn thiết kế W1 — chờ xác minh tích hợp và review độc lập; chưa Frozen/production verified. Owner: Phong.** OQ-01–09 được chốt theo chỉ đạo lead trong follow-up của PR #16; không ghi nhận thay approval của impacted consumers. Baseline nguồn: `main` tại `56133b00f114464a66ea18dee9c21a29e3dc0f1b`. Branch: `docs/W01-PHONG-03-r2-recovery`. Thay đổi tài liệu R2 và các đoạn nguồn liên quan ở KT/API/ENGINE/SHARED; không sửa Go models/ports/fixtures hoặc trạng thái Miles.
+**Status: Đã chọn thiết kế W1 — chờ xác minh tích hợp và review độc lập; chưa Frozen/production verified. Owner: Phong.** OQ-01–09 được chốt theo chỉ đạo lead trong follow-up của PR #16; không ghi nhận thay approval của impacted consumers. Baseline nguồn: `main` tại `56133b00f114464a66ea18dee9c21a29e3dc0f1b`. PR #16. Thay đổi tài liệu R2 và các đoạn nguồn liên quan ở KT/API/ENGINE/SHARED; không sửa Go models/ports/fixtures hoặc trạng thái Miles.
 
-Task chính thức: [W01-PHONG-03 — Thiết kế R2 recovery epoch và retention roots](https://miles.extase.dev/tasks/W01-PHONG-03). Task snapshot đọc ở Phase 1: Phong, W01, Todo/Ready, checklist0/3, chưa evidence; không suy ra trạng thái live từ snapshot. Hard prerequisites W01-CHIEN-04, W01-CHIEN-05 và W01-PHONG-02 được board ghi Done lúc đọc. Đây là contract W1, không thay thế implementation/fault evidence của downstream tasks.
+Task chính thức: Thiết kế R2 recovery epoch và retention roots. Task snapshot đọc ở Phase 1: Phong, W01, Todo/Ready, checklist0/3, chưa evidence; không suy ra trạng thái live từ snapshot. Hard prerequisites [pack/pages](pack-and-pages.md), [chunking/commit](chunking-and-commit.md) và [R1](r1-and-cache.md) được board ghi Done lúc đọc. Đây là contract W1, không thay thế implementation/fault evidence của downstream tasks.
 
 | Checklist nguồn | Mapping contract |
 |---|---|
@@ -563,8 +563,8 @@ Evidence per vector: source/build/config revision, input identities/digests, fau
 | Hải/Chiến — shared models/metadata | Event identity/projections, bundle/outcome, history/epoch/closure conditions, R2 query/claim/mark/seal/checkpoint capabilities | Validate presently only Objects/global-policy; reviewed schema/ports delta, transaction-size/accounting and adapter tests |
 | Chiến — format/API/auth/MP | R2 serializer/golden, embedded FORMAT bodies, receipt/security/counter projection | Synchronize event_id and lease wording/fixtures; no kind1–4 extension without version review |
 | Engine consumer — ENGINE §8 | Distinct chunk mutation identity and outbox; new/old manifest roots; retry parameters | PutChunkIfAbsent/location CAS currently no event input; no duplicate storage interface to bypass this |
-| Phong — W02-PHONG-03 coordination/recovery harness | P3/P4/P5 and deterministic fault schedules | Stable registered membership, Q6 no-overlap/time-bound proof, not fake mutex proof |
-| Phong — W03-PHONG-03 and later exporter/recovery tasks | P6–P10/P12, catalog chain and receipts | Production adapters/serializer/exporter/replay implementation and restart/fault evidence |
+| Phong — coordination/recovery harness | P3/P4/P5 and deterministic fault schedules | Stable registered membership, Q6 no-overlap/time-bound proof, not fake mutex proof |
+| Phong — exporter/recovery tasks | P6–P10/P12, catalog chain and receipts | Production adapters/serializer/exporter/replay implementation and restart/fault evidence |
 | Hải — GC/compaction/refcount consumers | P10/P11 cut roots, exact generations, watermark and progress cleanup | Refcount_next/outcome/export/retention conjunction; historical-cut recovery after GC |
 | Clock/config/simulator consumers | Time predicates, immutable policy history/limits roots | No policy revision/epoch mixing, conservative cleanup horizon, shared evaluator not authority provider |
 

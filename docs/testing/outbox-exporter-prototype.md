@@ -1,6 +1,6 @@
 # Outbox exporter và recovery catalog prototype
 
-Task: [W03-PHONG-03](https://miles.extase.dev/tasks/W03-PHONG-03).
+Phạm vi: outbox exporter và recovery catalog prototype.
 Baseline: `origin/main` tại `87d0769` (26/10/2026).
 
 Implementation W4 now adds native shared-authority export/close/seal and paged
@@ -9,8 +9,8 @@ W03 statements below are historical prototype evidence, not current W4 limits.
 
 ## Readiness và phạm vi
 
-Khi đọc board, task Todo/Ready; hard prerequisites W01-PHONG-03,
-W02-PHONG-03 và W03-HAI-02 đều Done. Main có Badger sync writes,
+Khi đọc board, task Todo/Ready; các prerequisites (recovery/outbox nền và
+transaction outbox của Hải) đều Done. Main có Badger sync writes,
 object/config transaction outbox và coordination fault harness. Đủ điều kiện
 triển khai prototype W03. Không có bằng chứng live AWS hoặc complete recovery.
 

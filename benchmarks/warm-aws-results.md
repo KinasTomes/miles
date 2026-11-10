@@ -1,6 +1,6 @@
 # Preliminary single-node Badger/Warm results
 
-W03-HUNG-02: the real AWS run completed on 2026-10-28 UTC (2026-10-29 UTC+7).
+The real AWS run completed on 2026-10-28 UTC (2026-10-29 UTC+7).
 All six direct-S3/Miles pairs passed: concurrency 1 and 4, three independent
 trials per setting, 12 runs, 7596 operation samples, zero failures. Every run
 verified all 90 files in four GET passes: **4320 full-file SHA-256 checks**.
@@ -95,7 +95,7 @@ historical local smoke artifacts also retain their original source/profile.
 Neither this AWS run nor those old artifacts measure the newer disk-cache
 profile. Current local smoke declares the new profile and checks its protocol.
 
-W04-HUNG-03 may consume these raw logical samples and declared environment,
+The cost simulator may consume these raw logical samples and declared environment,
 but must keep measured values, operator declarations and modelled costs
 separate. Final DynamoDB, distributed UTC/R1/R2, exporter/GC, Cloud/Edge and
 cost/target acceptance remain integration/benchmark work in their own tasks.
@@ -103,7 +103,7 @@ cost/target acceptance remain integration/benchmark work in their own tasks.
 ## Follow-up after W4
 
 Owner: Hưng. Trigger: W4 integration is complete. Status: planned; not rerun.
-Accept W03-HUNG-02 for its harness, verified baseline and preliminary report;
+Accept the Warm benchmark work for its harness, verified baseline and preliminary report;
 keep PUT profiling/optimization as separate follow-up work. The measured PUT
 throughput ratios are **44.7% at C1** and **20.8% at C4**. The proposed
 [BEN-03 single-stream target of at least 50%](../docs/acceptance/definition-of-done.md#5-mục-tiêu-benchmark-đề-xuất--chưa-có-số-đo)

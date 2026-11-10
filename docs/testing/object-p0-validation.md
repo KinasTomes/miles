@@ -1,6 +1,6 @@
 # Object P0 handlers and service validation
 
-Task: W03-HUNG-05 — PUT/GET/HEAD/Range P0 và checksum (source task W03-CHIEN-02).
+Phạm vi: PUT/GET/HEAD/Range P0 và checksum.
 
 ## Scope
 
@@ -12,7 +12,7 @@ stateful side: quota reservation, the managed write session
 
 The Router map in `cmd/miles/s3.go` (#38, merged) still wires health and bucket
 operations only. Wiring the object handlers additionally needs the shared
-outbox producer/journal (W04-HAI-02) and concrete Warm reader/gate adapters
+outbox producer/journal and concrete Warm reader/gate adapters
 that `app.Dependencies` does not expose yet. The runtime must also supply the
 coordinator-backed per-request `Options.AdmitWriter`; test fixture fences are
 not a production admission provider.
@@ -66,7 +66,7 @@ performed. CI must be checked against the updated PR head separately.
   through its SDK interface only.
 - The outbox event is a test fixture built with `storage.EventID` and a fixed
   payload reference. A production producer (journal payload, history/epoch
-  source) is W04-HAI-02; without it a real commit would publish an event whose
+  source) is a separate outbox producer change; without it a real commit would publish an event whose
   payload pointer is not durable.
 - `ObjectHead` has no commit timestamp. Until the metadata owner adds one, the
   service stores the commit wall time in the head metadata map under
@@ -75,4 +75,4 @@ performed. CI must be checked against the updated PR head separately.
   only the operations of its own handler map.
 - Multipart, GET/HEAD `partNumber`, `GetObjectAttributes`, copy and restore
   remain out of scope (W04 tasks). DeleteObject and ListObjectsV2 were added
-  by W03-CHIEN-03 (API v2 §4.2 "Hiện thực (W03-CHIEN-03)").
+  by the DeleteObject/ListObjectsV2 implementation (API v2 §4.2 "Hiện thực").

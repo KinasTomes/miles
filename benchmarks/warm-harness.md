@@ -1,6 +1,6 @@
 # Warm benchmark harness
 
-Task: W03-HUNG-02. `cmd/warmbench` runs the same single-PUT workload against an
+`cmd/warmbench` runs the same single-PUT workload against an
 explicit direct S3 or Miles endpoint. It reuses dataset v1 and the installed Go
 S3 SDK. It does not provision infrastructure, start a gateway, or supply an
 event producer. All local executions use the small `smoke` profile.
@@ -152,14 +152,14 @@ flush and retained versions/tombstones/packs need external observations and an
 accounting window before drawing those conclusions. W3 data is preliminary
 Badger/Warm only, not the final R1/R2 or MVP performance gate.
 
-The downstream W04-HUNG-03 simulator may reuse these schema v1 inputs and samples;
+The downstream [cost simulator](cost-simulator.md) may reuse these schema v1 inputs and samples;
 it must keep measured fields separate from declarations and modelled/billed values.
 Do not combine unmatched manifests, toolchains, checksum settings, Regions,
 encryption, node configurations, isolation or concurrency into a claimed baseline.
 
 See [validation](warm-harness-validation.md) for checks actually executed.
 
-W04-HUNG-03 adds explicit `mvp_threshold_applied=false` to new artifacts and
+The cost simulator prototype adds explicit `mvp_threshold_applied=false` to new artifacts and
 [native metadata timing/integration smoke](cost-simulator.md). The harness can
 target the single-process DynamoDB Local/Moto test endpoint alongside the existing
 Badger smoke. Both use the same Warm workload runner and verify whole-file hashes;

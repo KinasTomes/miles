@@ -82,7 +82,7 @@ func NewWarmReader(o WarmOptions) (*WarmReader, error) {
 // Read emits only verified logical slices, in order. emit borrows each slice
 // until return. An error after prior emission requires the HTTP consumer to abort
 // the stream; it cannot send a new success/error body. No HTTP endpoint is owned
-// here (W03-CHIEN-02). WarmGate is a local no-maintenance boundary, not distributed R1.
+// here (the S3 GET handler owns it). WarmGate is a local no-maintenance boundary, not distributed R1.
 func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.Context, []byte) error) (result WarmResult, err error) {
 	if r == nil || r.options.Metadata == nil || ctx == nil || emit == nil || q.CredentialID == "" || q.MaxOutstanding <= 0 || !validBudget(q.Budget) || (q.Range != nil && q.SelectRange != nil) {
 		return result, storage.ErrInvalid

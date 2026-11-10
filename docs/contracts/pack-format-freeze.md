@@ -1,6 +1,6 @@
 # Pack serialization review / freeze record
 
-Task: W02-HAI-02. Date: 2026-10-21. Base: `origin/main` at `2227fe3` (W02-HAI-01 merged).
+Date: 2026-10-21. Base: `origin/main` at `2227fe3` (chunker/zstd merged).
 Status: **pack/footer/sidecar v1 candidate ready for independent review**; not a
 claim that the team has approved a global freeze or that live AWS integration
 has passed. No binary golden was regenerated from the production writer.
@@ -10,7 +10,7 @@ has passed. No binary golden was regenerated from the production writer.
 | Artifact | Current evidence | Freeze gate |
 | --- | --- | --- |
 | Pack header, blobs, footer index, 24-byte trailer, sidecar | Production writer/parser/range reader in `internal/pack`; `pack.json` v1 bytes/digests and corrupt stages pass; AWS SDK v2 physical adapter with controlled tests | Chiến (format), Hưng (shared location/CRC), Phong (read/R1) review; live S3 evidence when dev bucket exists |
-| Manifest/part pages (kinds 1–2) | `pages.json` v1 golden/reference test only | W02-HAI-03 production codec, Badger item/head fields and page-size tests; independent review |
+| Manifest/part pages (kinds 1–2) | `pages.json` v1 golden/reference test only | Badger adapter production codec, Badger item/head fields and page-size tests; independent review |
 | Completion input/snapshot pages (kinds 3–4) | `pages.json` v1 golden/reference test only | Multipart producer/frozen snapshot and production codec; Chiến/Hải review |
 | R2 event, membership/seal, checkpoint/catalog/marker | Logical R2 decisions in `r2-recovery.md`; no complete field schemas or production byte goldens | Phong plus format/metadata/auth consumers approve exact schemas, caps and negative goldens; these are **not** `MILESPAG` kinds 1–4 |
 
@@ -66,7 +66,7 @@ generation isolation and Cold/restore acceptance. Local tests do **not** prove
 S3 IAM/KMS, real restore completion/expiry, versioning behavior, or live AWS
 conditional-write races.
 
-Before declaring W02-HAI-02 globally Done/frozen, record the reviewers and
+Before declaring the pack writer globally Done/frozen, record the reviewers and
 live S3 evidence or an explicit team-approved waiver. Do not label pages or R2
 event/checkpoint formats production-frozen merely because their W1 reference
 fixtures pass. W03 write orchestration still owns `Uploading → Warm`, writer
