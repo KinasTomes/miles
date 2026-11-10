@@ -229,7 +229,7 @@ variable "enable_acceptance_nodes" {
   default     = false
   description = "Provision private SSM-managed Edge/client test nodes with disposable disks."
   validation {
-    condition     = !var.enable_acceptance_nodes || (var.enable_asg && var.alb_internal && var.enable_edge_private_endpoint && var.runtime_permissions_boundary_arn != null)
-    error_message = "Private acceptance nodes require the internal Cloud fleet, Edge endpoint and reviewed runtime boundary."
+    condition     = !var.enable_acceptance_nodes || (var.alb_internal && var.enable_edge_private_endpoint && var.runtime_permissions_boundary_arn != null)
+    error_message = "Private acceptance nodes require internal addressing, Edge endpoint and reviewed runtime boundary."
   }
 }

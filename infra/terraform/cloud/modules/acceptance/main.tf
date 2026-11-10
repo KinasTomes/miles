@@ -23,6 +23,26 @@ variable "owner_ssh_public_key" {
 locals {
   nodes = var.enabled ? toset(["edge", "client"]) : toset([])
 }
+data "aws_ami" "host" {
+  count  = var.enabled ? 1 : 0
+  owners = ["amazon"]
+  filter {
+    name   = "image-id"
+    values = [var.ami_id]
+  }
+  filter {
+    name   = "architecture"
+    values = ["arm64"]
+  }
+  filter {
+    name   = "name"
+    values = ["al2023-ami-2023.*-kernel-*-arm64"]
+  }
+  filter {
+    name   = "root-device-type"
+    values = ["ebs"]
+  }
+}
 resource "aws_iam_role" "node" {
   for_each             = local.nodes
   name                 = "${var.name}-acceptance-${each.key}"
@@ -97,7 +117,7 @@ resource "aws_vpc_security_group_ingress_rule" "client_alb" {
 }
 resource "aws_instance" "node" {
   for_each                    = local.nodes
-  ami                         = var.ami_id
+  ami                         = data.aws_ami.host[0].id
   instance_type               = var.instance_type
   subnet_id                   = var.subnet_id
   associate_public_ip_address = false
@@ -120,6 +140,7 @@ resource "aws_instance" "node" {
     encrypted             = true
     kms_key_id            = var.kms_key_arn
     delete_on_termination = true
+    tags                  = { Project = "Miles", Environment = "dev" }
   }
   tags       = { Name = "${var.name}-acceptance-${each.key}", Purpose = "EdgeAcceptance" }
   depends_on = [aws_iam_role_policy.node, aws_vpc_security_group_ingress_rule.endpoints]

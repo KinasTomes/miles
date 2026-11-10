@@ -63,6 +63,22 @@ run "private_acceptance_fleet" {
     error_message = "Private acceptance requires the internal ALB, both nodes and Roles Anywhere endpoint."
   }
 }
+run "private_bootstrap_before_fleet" {
+  command = plan
+  variables {
+    enable_asg                   = false
+    enable_alb                   = false
+    alb_internal                 = true
+    enable_acceptance_nodes      = true
+    enable_edge_private_endpoint = true
+    edge_ca_pem                  = "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----"
+    owner_ssh_public_key         = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixture"
+  }
+  assert {
+    condition     = output.fleet_contract == null && output.alb_contract == null && length(output.acceptance_nodes) == 2
+    error_message = "The private operator hosts must bootstrap the empty installation before gateways start."
+  }
+}
 run "paused_fleet_plan" {
   command = plan
   variables { paused = true }
