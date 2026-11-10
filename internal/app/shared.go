@@ -80,6 +80,9 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 		dOpt := clients.metadata.Options()
 		dOpt.HTTPClient = faults.WrapHTTPClient(dOpt.HTTPClient, faultReg, c.RuntimeNodeID)
 		clients.metadata = ddb.New(dOpt)
+		sOpt := clients.packs.Options()
+		sOpt.HTTPClient = faults.WrapS3HTTPClient(sOpt.HTTPClient, faultReg, c.RuntimeNodeID)
+		clients.packs = awss3.New(sOpt)
 	}
 	m, err := sharedStore(c, clients, utc)
 	if err != nil {

@@ -91,27 +91,28 @@ resource "aws_iam_service_linked_role" "autoscaling" {
   description      = "Miles ASG role for encrypted disposable node disks"
 }
 module "fleet" {
-  source                  = "../../modules/fleet"
-  depends_on              = [module.alb, module.endpoints]
-  enabled                 = var.enable_asg && !var.paused
-  name                    = local.name
-  account_id              = var.account_id
-  region                  = var.region
-  ami_id                  = var.ami_id
-  instance_type           = var.fleet_instance_type
-  architecture            = var.release_architecture
-  subnet_ids              = values(module.network.private_subnets)
-  security_group_id       = module.network.security_groups.gateway
-  instance_profile        = module.iam.instance_profile_names.gateway
-  service_linked_role_arn = try(aws_iam_service_linked_role.autoscaling[0].arn, null)
-  kms_key_arn             = module.security.kms_key_arn
-  target_group_arn        = module.alb.target_group_arn
-  data_bucket_name        = local.data_bucket_name
-  release_sha256          = var.release_sha256
-  release_version_id      = var.release_version_id
-  runtime_secret_arn      = module.security.secret_arn
-  owner_ssh_public_key    = var.owner_ssh_public_key
-  deep_observation        = var.deep_observation
+  source                      = "../../modules/fleet"
+  depends_on                  = [module.alb, module.endpoints]
+  enabled                     = var.enable_asg && !var.paused
+  name                        = local.name
+  account_id                  = var.account_id
+  region                      = var.region
+  ami_id                      = var.ami_id
+  instance_type               = var.fleet_instance_type
+  architecture                = var.release_architecture
+  subnet_ids                  = values(module.network.private_subnets)
+  security_group_id           = module.network.security_groups.gateway
+  instance_profile            = module.iam.instance_profile_names.gateway
+  service_linked_role_arn     = try(aws_iam_service_linked_role.autoscaling[0].arn, null)
+  kms_key_arn                 = module.security.kms_key_arn
+  target_group_arn            = module.alb.target_group_arn
+  data_bucket_name            = local.data_bucket_name
+  release_sha256              = var.release_sha256
+  release_version_id          = var.release_version_id
+  runtime_secret_arn          = module.security.secret_arn
+  owner_ssh_public_key        = var.owner_ssh_public_key
+  deep_observation            = var.deep_observation
+  enable_test_fault_injection = var.enable_test_fault_injection
 }
 
 module "observability" {
