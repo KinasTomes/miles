@@ -1659,7 +1659,7 @@ class TeardownAbsenceVerifier:
             def fetch_account(_profile, _region, *command):
                 rc, output, _ = self._runner([*command, "--output", "json"])
                 if rc:
-                    raise ValueError("account discovery failed")
+                    raise ValueError(f"account discovery failed for {command[0]} {command[1]} (exit {rc})")
                 return json.loads(output)
             try:
                 final_roles = [role for role in audit_roles if not self.final_audit or role != self.caller_role]
@@ -1668,8 +1668,8 @@ class TeardownAbsenceVerifier:
                     account_baseline = dict(account_baseline)
                     account_baseline["role_policies"] = [entry for entry in account_baseline["role_policies"] if not entry.startswith(self.caller_role + "|")]
                 account_residuals = compare_account_baseline(account_baseline, account_now)
-            except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
-                return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "UNVERIFIED", "all_absent": False, "error": "ACCOUNT_DISCOVERY_FAILED", "total_checked": 0, "resources": {}}
+            except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError) as error:
+                return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "UNVERIFIED", "all_absent": False, "error": "ACCOUNT_DISCOVERY_FAILED", "reason": str(error), "total_checked": 0, "resources": {}}
             account_residuals = remove_approved_pending(account_residuals, self.inventory, approved_pending, self.check_kms_key_pending_deletion, self.check_secret_pending_deletion)
             if account_residuals:
                 return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "FAIL", "all_absent": False, "error": "ACCOUNT_RESOURCES_REMAIN", "residuals": account_residuals, "total_checked": 0, "resources": {}}
