@@ -232,6 +232,149 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(data["status"], "PASS")
         self.assertTrue(data["all_absent"])
 
+    def test_partial_outputs_missing_essential_resources_fails_closed(self):
+        """
+        [P1 Regression] Verifies that partial Terraform outputs (e.g. VPC only, missing DDB/S3/IAM/alarms)
+        fails closed with UNVERIFIED, preventing false State 0 confirmation.
+        """
+        partial_outputs = {
+            "network_inventory": {
+                "value": {
+                    "vpc_id": "vpc-0123456789abcdef0",
+                }
+            },
+            "session_configuration": {
+                "value": {
+                    "enable_alb": False,
+                    "enable_compute": False,
+                }
+            },
+        }
+
+        inv = TeardownAbsenceVerifier.extract_inventory_from_outputs(partial_outputs)
+        self.assertIn("missing_root_output:runtime_inventory", inv["expected_missing"])
+        self.assertIn("missing_essential_resource:dynamodb_tables", inv["expected_missing"])
+        self.assertIn("missing_essential_resource:s3_buckets", inv["expected_missing"])
+        self.assertIn("missing_essential_resource:iam_roles", inv["expected_missing"])
+        self.assertIn("missing_essential_resource:cloudwatch_alarms", inv["expected_missing"])
+
+        # Even if mock runner reports NotFound for the VPC, summary must fail closed
+        def mock_vpc_absent_runner(cmd):
+            return 255, "", "InvalidVpcID.NotFound: The vpc ID does not exist"
+
+        outputs_file = self.tmppath / "partial-outputs.json"
+        outputs_file.write_text(json.dumps(partial_outputs), encoding="utf-8")
+
+        verifier = TeardownAbsenceVerifier.from_terraform_outputs(
+            outputs_file,
+            cli_runner=mock_vpc_absent_runner,
+        )
+        summary = verifier.verify_all()
+
+        self.assertFalse(summary["all_absent"])
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertEqual(summary["error"], "INCOMPLETE_INVENTORY_MISSING_EXPECTED_RESOURCES")
+        self.assertIn("missing_essential_resource:dynamodb_tables", summary["missing_expected_types"])
+
+    def test_authoritative_manifest_validation_fail_closed_on_missing_resource(self):
+        """
+        [P1 Regression] Verifies pre-teardown authoritative manifest enforcement:
+        missing manifest resources cause UNVERIFIED, complete manifest with all absent passes,
+        and living resources are correctly detected as leaks.
+        """
+        manifest = {
+            "run_id": "run-20261110-edge-01",
+            "expected_resources": {
+                "vpc_id": "vpc-0123456789abcdef0",
+                "dynamodb_tables": ["miles-dev-records"],
+                "s3_buckets": ["miles-dev-data"],
+                "iam_roles": ["miles-dev-worker"],
+                "cloudwatch_alarms": ["miles-dev-alarm"],
+            },
+            "expected_types": ["vpc_id", "dynamodb_tables", "s3_buckets", "iam_roles", "cloudwatch_alarms"],
+        }
+        manifest_file = self.tmppath / "pre-teardown-manifest.json"
+        manifest_file.write_text(json.dumps(manifest), encoding="utf-8")
+
+        # 1. Partial outputs missing DDB/S3/IAM/alarm fails closed against manifest
+        partial_outputs = {
+            "network_inventory": {
+                "value": {
+                    "vpc_id": "vpc-0123456789abcdef0",
+                }
+            }
+        }
+        outputs_file = self.tmppath / "partial-tf.json"
+        outputs_file.write_text(json.dumps(partial_outputs), encoding="utf-8")
+
+        verifier_incomplete = TeardownAbsenceVerifier.from_terraform_outputs(
+            outputs_file,
+            manifest_path=manifest_file,
+            cli_runner=lambda cmd: (255, "", "NotFound"),
+        )
+        summary_incomplete = verifier_incomplete.verify_all()
+        self.assertFalse(summary_incomplete["all_absent"])
+        self.assertEqual(summary_incomplete["status"], "UNVERIFIED")
+        self.assertEqual(summary_incomplete["error"], "INCOMPLETE_INVENTORY_MISSING_EXPECTED_RESOURCES")
+
+        # 2. Complete inventory matching manifest with all native checks reporting absent returns PASS
+        complete_inventory = {
+            "vpc_id": "vpc-0123456789abcdef0",
+            "dynamodb_tables": ["miles-dev-records"],
+            "s3_buckets": ["miles-dev-data"],
+            "iam_roles": ["miles-dev-worker"],
+            "cloudwatch_alarms": ["miles-dev-alarm"],
+        }
+
+        def mock_all_absent_runner(cmd):
+            if "describe-alarms" in cmd:
+                return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
+            return 255, "", "ResourceNotFoundException NoSuchBucket NoSuchEntity InvalidVpcID.NotFound"
+
+        verifier_clean = TeardownAbsenceVerifier(
+            inventory=complete_inventory,
+            manifest=manifest_file,
+            cli_runner=mock_all_absent_runner,
+        )
+        summary_clean = verifier_clean.verify_all()
+        self.assertTrue(summary_clean["all_absent"])
+        self.assertEqual(summary_clean["status"], "PASS")
+        self.assertEqual(summary_clean["still_present_count"], 0)
+
+    def test_ledger_export_prevents_symlink_clobber(self):
+        """
+        [P2 Regression] Verifies that a pre-planted symlink (e.g. ledger.tmp.<pid>) cannot clobber
+        another private file.
+        """
+        sensitive_file = self.tmppath / "other-private-evidence.txt"
+        sensitive_file.write_text("SUPER_SECRET_EVIDENCE_DO_NOT_OVERWRITE", encoding="utf-8")
+        os.chmod(str(sensitive_file), 0o600)
+
+        ledger_file = self.tmppath / "absence-ledger.json"
+        # Pre-plant a symlink at the predictable tmp path location
+        predictable_tmp = self.tmppath / f"absence-ledger.tmp.{os.getpid()}"
+        try:
+            os.symlink(str(sensitive_file), str(predictable_tmp))
+        except OSError:
+            pass
+
+        inventory = {
+            "dynamodb_tables": ["tbl1"],
+        }
+        verifier = TeardownAbsenceVerifier(
+            inventory=inventory,
+            cli_runner=lambda cmd: (255, "", "ResourceNotFoundException"),
+        )
+
+        verifier.export_summary(ledger_file)
+
+        # Sensitive file must remain completely untouched!
+        self.assertEqual(sensitive_file.read_text(encoding="utf-8"), "SUPER_SECRET_EVIDENCE_DO_NOT_OVERWRITE")
+
+        # Ledger file must exist with 0600 mode
+        self.assertTrue(ledger_file.exists())
+        self.assertEqual(ledger_file.stat().st_mode & 0o777, 0o600)
+
     def test_verify_all_comprehensive_clean_teardown(self):
         """Verifies verify_all returns PASS and all_absent=True across all resource types."""
         inventory = {

@@ -28,6 +28,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -418,12 +419,26 @@ class BoundedRingBuffer:
                 dropped_bytes = line_bytes[0]
 
             keep_lines = lines[dropped_count:]
-            tmp_path = self.file_path.with_suffix(".tmp")
-            fd = os.open(str(tmp_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.writelines(keep_lines)
-                f.flush()
-            os.replace(tmp_path, self.file_path)
+            fd, tmp_file_path = tempfile.mkstemp(
+                prefix=f".{self.file_path.stem}_",
+                suffix=".tmp",
+                dir=str(self.file_path.parent),
+            )
+            tmp_path = Path(tmp_file_path)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.writelines(keep_lines)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(str(tmp_path), str(self.file_path))
+                os.chmod(str(self.file_path), 0o600)
+            finally:
+                if tmp_path.exists() or os.path.islink(str(tmp_path)):
+                    try:
+                        tmp_path.unlink()
+                    except Exception:
+                        pass
 
             self.dropped_records_count += dropped_count
             self.trimmed_bytes_total += dropped_bytes
@@ -502,6 +517,12 @@ class HostTelemetryRecorder:
         self.consecutive_chrony_errors = 0
         self.max_consecutive_chrony_errors = 0
 
+        # Cumulative durability counters (survive ring buffer compaction/eviction)
+        self.cumulative_chrony_attempts = 0
+        self.cumulative_chrony_failures = 0
+        self.cumulative_chrony_timeouts = 0
+        self.cumulative_uncertainty_violations = 0
+
     def sample_now(self) -> Dict[str, Any]:
         """Takes an immediate coordinated sample and writes to the ring buffer."""
         self._sequence += 1
@@ -517,17 +538,27 @@ class HostTelemetryRecorder:
         if (mono_now - self._last_chrony_sample_mono) >= (self.chrony_interval * 0.95) or self._last_chrony_sample_mono == 0.0:
             chrony_data = self.chrony_probe.sample_full()
             self._last_chrony_sample_mono = mono_now
+            self.cumulative_chrony_attempts += 1
 
             # Track validity of chrony sample
             t_res = chrony_data.get("tracking", {})
             pt = chrony_data.get("parsed_tracking")
-            sample_ok = (
-                t_res.get("returncode") == 0
-                and not t_res.get("timed_out", False)
-                and isinstance(pt, dict)
-                and pt.get("status") == "ok"
-                and not pt.get("uncertainty_exceeded", False)
+            cmd_failed = (t_res.get("returncode") != 0)
+            timed_out = t_res.get("timed_out", False)
+            if cmd_failed:
+                self.cumulative_chrony_failures += 1
+            if timed_out:
+                self.cumulative_chrony_timeouts += 1
+
+            uncertainty_violated = (
+                not isinstance(pt, dict)
+                or pt.get("status") != "ok"
+                or pt.get("uncertainty_exceeded", False)
             )
+            if uncertainty_violated:
+                self.cumulative_uncertainty_violations += 1
+
+            sample_ok = not cmd_failed and not timed_out and not uncertainty_violated
             if sample_ok:
                 self.valid_chrony_samples += 1
                 self.consecutive_chrony_errors = 0
@@ -542,6 +573,13 @@ class HostTelemetryRecorder:
             "timestamp_unix": now_unix,
             "os_pressure": os_data,
             "chrony": chrony_data,
+            "provenance": {
+                "sequence": self._sequence,
+                "cumulative_chrony_failures": self.cumulative_chrony_failures,
+                "cumulative_chrony_timeouts": self.cumulative_chrony_timeouts,
+                "cumulative_uncertainty_violations": self.cumulative_uncertainty_violations,
+                "dropped_records_prior": self.ring_buffer.dropped_records_count,
+            },
         }
 
         self.ring_buffer.write_record(record)
@@ -645,14 +683,47 @@ class HostTelemetryRecorder:
             if "iowait_pct" in stat:
                 iowait_percentages.append(stat["iowait_pct"])
 
+        # Sequence continuity and compaction loss checks
+        first_seq = records[0].get("sequence") or records[0].get("provenance", {}).get("sequence")
+        last_seq = records[-1].get("sequence") or records[-1].get("provenance", {}).get("sequence")
+        expected_records_in_span = (last_seq - first_seq + 1) if (first_seq is not None and last_seq is not None) else len(records)
+        internal_sequence_gap = max(0, expected_records_in_span - len(records))
+
+        # Check provenance from records themselves (survives offline restart/reading from file)
+        last_prov = records[-1].get("provenance", {})
+        prov_chrony_failures = last_prov.get("cumulative_chrony_failures", 0)
+        prov_chrony_timeouts = last_prov.get("cumulative_chrony_timeouts", 0)
+        prov_uncertainty_violations = last_prov.get("cumulative_uncertainty_violations", 0)
+        prov_dropped_records = last_prov.get("dropped_records_prior", 0)
+
+        dropped_records_in_buffer = max(self.ring_buffer.dropped_records_count, prov_dropped_records)
+
+        # Eviction / completeness check:
+        # If evaluating entire recording window (no since_utc) and records were evicted,
+        # or if there is an internal sequence gap, or if since_utc is earlier than first retained record:
+        window_evicted = False
+        if since_utc is None:
+            if (first_seq is not None and first_seq > 1) or dropped_records_in_buffer > 0 or internal_sequence_gap > 0:
+                window_evicted = True
+        else:
+            if internal_sequence_gap > 0:
+                window_evicted = True
+            elif records and since_utc < records[0]["timestamp_utc"]:
+                window_evicted = True
+
+        total_failed_commands = max(failed_commands, self.cumulative_chrony_failures, prov_chrony_failures)
+        total_timeouts = max(len(timeouts), self.cumulative_chrony_timeouts, prov_chrony_timeouts)
+        total_uncertainty_violations = max(uncertainty_violations, self.cumulative_uncertainty_violations, prov_uncertainty_violations)
+
         # Clock evidence is verified ONLY if we have valid chrony samples, zero timeouts,
-        # zero command failures, and valid non-stale sample ages.
+        # zero command failures, valid non-stale sample ages, and unbroken window completeness.
         clock_evidence_verified = (
             len(chrony_records) > 0
-            and failed_commands == 0
-            and len(timeouts) == 0
+            and total_failed_commands == 0
+            and total_timeouts == 0
             and len(sample_ages) > 0
-            and uncertainty_violations == 0
+            and total_uncertainty_violations == 0
+            and not window_evicted
         )
 
         reason = None
@@ -660,14 +731,16 @@ class HostTelemetryRecorder:
             reasons = []
             if len(chrony_records) == 0:
                 reasons.append("no_chrony_samples")
-            if failed_commands > 0:
-                reasons.append(f"{failed_commands}_failed_chrony_commands")
-            if len(timeouts) > 0:
-                reasons.append(f"{len(timeouts)}_chrony_timeouts")
+            if total_failed_commands > 0:
+                reasons.append(f"{total_failed_commands}_failed_chrony_commands")
+            if total_timeouts > 0:
+                reasons.append(f"{total_timeouts}_chrony_timeouts")
             if len(sample_ages) == 0:
                 reasons.append("no_valid_tracking_parsed")
-            if uncertainty_violations > 0:
-                reasons.append(f"{uncertainty_violations}_uncertainty_violations")
+            if total_uncertainty_violations > 0:
+                reasons.append(f"{total_uncertainty_violations}_uncertainty_violations")
+            if window_evicted:
+                reasons.append(f"window_completeness_broken_by_record_eviction({dropped_records_in_buffer}_dropped)")
             reason = "; ".join(reasons)
 
         return {
@@ -677,7 +750,7 @@ class HostTelemetryRecorder:
             "reason": reason,
             "chrony_sample_count": len(chrony_records),
             "valid_tracking_samples": len(sample_ages),
-            "failed_chrony_commands": failed_commands,
+            "failed_chrony_commands": total_failed_commands,
             "window_start_utc": records[0]["timestamp_utc"],
             "window_end_utc": records[-1]["timestamp_utc"],
             "chrony_timing": {
@@ -686,7 +759,7 @@ class HostTelemetryRecorder:
                 "avg_duration_s": round(sum(durations) / len(durations), 4) if durations else None,
                 "max_duration_s": max(durations) if durations else None,
                 "slow_commands_over_1s": len(slow_chrony),
-                "timeouts": len(timeouts),
+                "timeouts": total_timeouts,
             },
             "clock_tracking": {
                 "max_sample_age_s": max(sample_ages) if sample_ages else None,
@@ -700,7 +773,7 @@ class HostTelemetryRecorder:
                 "max_iowait_pct": max(iowait_percentages) if iowait_percentages else None,
                 "avg_iowait_pct": round(sum(iowait_percentages) / len(iowait_percentages), 2) if iowait_percentages else None,
             },
-            "dropped_records_in_buffer": self.ring_buffer.dropped_records_count,
+            "dropped_records_in_buffer": dropped_records_in_buffer,
         }
 
 

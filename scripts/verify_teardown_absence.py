@@ -26,7 +26,8 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from typing import Any, Callable, Dict, List, Optional, Tuple
+import tempfile
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 
 def _iso_utc_now() -> str:
@@ -101,6 +102,7 @@ class TeardownAbsenceVerifier:
         account_id: Optional[str] = None,
         mode: str = "live",
         cli_runner: Optional[Callable[[List[str]], Tuple[int, str, str]]] = None,
+        manifest: Optional[Union[Dict[str, Any], Path, str]] = None,
     ):
         self.inventory = inventory
         self.profile = profile
@@ -108,6 +110,42 @@ class TeardownAbsenceVerifier:
         self.account_id = account_id or inventory.get("account_id")
         self.mode = mode
         self._runner = cli_runner or self._default_aws_runner
+        self.manifest = manifest
+        if self.manifest:
+            self._apply_manifest(self.manifest)
+
+    def _apply_manifest(self, manifest: Union[Dict[str, Any], Path, str]) -> None:
+        if isinstance(manifest, (str, Path)):
+            manifest = json.loads(Path(manifest).read_text(encoding="utf-8"))
+        if not isinstance(manifest, dict):
+            return
+
+        expected_missing = self.inventory.setdefault("expected_missing", [])
+
+        # 1. Check expected_resources mapping
+        exp_res = manifest.get("expected_resources", {})
+        if isinstance(exp_res, dict):
+            for k, val in exp_res.items():
+                if k == "vpc_id":
+                    if self.inventory.get("vpc_id") != str(val).strip():
+                        expected_missing.append(f"manifest_mismatch:vpc_id_expected_{val}")
+                elif isinstance(val, list):
+                    for item in val:
+                        if item and item not in self.inventory.get(k, []):
+                            expected_missing.append(f"manifest_missing:{k}:{item}")
+                elif isinstance(val, str):
+                    if val and val not in self.inventory.get(k, []):
+                        expected_missing.append(f"manifest_missing:{k}:{val}")
+
+        # 2. Check expected_types list
+        exp_types = manifest.get("expected_types", [])
+        if isinstance(exp_types, list):
+            for t in exp_types:
+                if t == "vpc_id":
+                    if not self.inventory.get("vpc_id"):
+                        expected_missing.append("manifest_missing_type:vpc_id")
+                elif not self.inventory.get(t):
+                    expected_missing.append(f"manifest_missing_type:{t}")
 
     def _default_aws_runner(self, args: List[str]) -> Tuple[int, str, str]:
         cmd = ["aws", "--region", self.region, "--no-cli-pager"]
@@ -124,6 +162,7 @@ class TeardownAbsenceVerifier:
     def from_terraform_outputs(
         cls,
         outputs_json_path: Path,
+        manifest_path: Optional[Union[Path, str, Dict[str, Any]]] = None,
         profile: Optional[str] = None,
         region: str = "ap-southeast-1",
         mode: str = "live",
@@ -131,17 +170,28 @@ class TeardownAbsenceVerifier:
     ) -> "TeardownAbsenceVerifier":
         """
         Parses active-outputs.json or `terraform output -json` and extracts
-        all owned resource identifiers dynamically.
+        all owned resource identifiers dynamically, cross-checking with pre-teardown manifest.
         """
         data = json.loads(Path(outputs_json_path).read_text(encoding="utf-8"))
-        inv = cls.extract_inventory_from_outputs(data)
-        return cls(inventory=inv, profile=profile, region=region, mode=mode, cli_runner=cli_runner)
+        inv = cls.extract_inventory_from_outputs(data, manifest=manifest_path)
+        return cls(
+            inventory=inv,
+            profile=profile,
+            region=region,
+            mode=mode,
+            cli_runner=cli_runner,
+            manifest=manifest_path,
+        )
 
     @staticmethod
-    def extract_inventory_from_outputs(data: Dict[str, Any]) -> Dict[str, Any]:
+    def extract_inventory_from_outputs(
+        data: Dict[str, Any],
+        manifest: Optional[Union[Dict[str, Any], Path, str]] = None,
+    ) -> Dict[str, Any]:
         """
         Extracts owned resource identifiers from nested Terraform output structure.
         Detects expected resource types based on deployment contract / session config
+        and flags missing expected types.
         and flags missing expected types.
         """
         inv: Dict[str, Any] = {
@@ -342,6 +392,62 @@ class TeardownAbsenceVerifier:
         # If alarm_contract has alarms but cloudwatch_alarms is empty
         if alarm_c and isinstance(alarm_c, dict) and len(alarm_c) > 0 and not inv["cloudwatch_alarms"]:
             inv["expected_missing"].append("cloudwatch_alarms")
+
+        # 9. Completeness guard: detect truncated/partial Terraform outputs
+        is_terraform_outputs = any(
+            k in data for k in [
+                "network_inventory", "runtime_inventory", "session_configuration",
+                "alarm_contract", "fleet_contract", "edge_provider"
+            ]
+        ) or any(isinstance(v, dict) and "value" in v for v in data.values())
+
+        if is_terraform_outputs:
+            # Check required root outputs for complete Miles stack
+            if "runtime_inventory" not in data:
+                inv["expected_missing"].append("missing_root_output:runtime_inventory")
+            if "alarm_contract" not in data and not inv["cloudwatch_alarms"]:
+                inv["expected_missing"].append("missing_root_output:alarm_contract")
+            if "network_inventory" not in data and not inv["vpc_id"]:
+                inv["expected_missing"].append("missing_root_output:network_inventory")
+
+            # Check essential baseline resource types for complete Miles environment
+            if not inv["dynamodb_tables"]:
+                inv["expected_missing"].append("missing_essential_resource:dynamodb_tables")
+            if not inv["s3_buckets"]:
+                inv["expected_missing"].append("missing_essential_resource:s3_buckets")
+            if not inv["iam_roles"]:
+                inv["expected_missing"].append("missing_essential_resource:iam_roles")
+            if not inv["cloudwatch_alarms"]:
+                inv["expected_missing"].append("missing_essential_resource:cloudwatch_alarms")
+            if not inv["vpc_id"]:
+                inv["expected_missing"].append("missing_essential_resource:vpc_id")
+
+        # 10. Check against authoritative pre-teardown manifest if supplied
+        if manifest:
+            if isinstance(manifest, (str, Path)):
+                manifest = json.loads(Path(manifest).read_text(encoding="utf-8"))
+            if isinstance(manifest, dict):
+                exp_res = manifest.get("expected_resources", {})
+                if isinstance(exp_res, dict):
+                    for k, val in exp_res.items():
+                        if k == "vpc_id":
+                            if inv.get("vpc_id") != str(val).strip():
+                                inv["expected_missing"].append(f"manifest_mismatch:vpc_id_expected_{val}")
+                        elif isinstance(val, list):
+                            for item in val:
+                                if item and item not in inv.get(k, []):
+                                    inv["expected_missing"].append(f"manifest_missing:{k}:{item}")
+                        elif isinstance(val, str):
+                            if val and val not in inv.get(k, []):
+                                inv["expected_missing"].append(f"manifest_missing:{k}:{val}")
+                exp_types = manifest.get("expected_types", [])
+                if isinstance(exp_types, list):
+                    for t in exp_types:
+                        if t == "vpc_id":
+                            if not inv.get("vpc_id"):
+                                inv["expected_missing"].append("manifest_missing_type:vpc_id")
+                        elif not inv.get(t):
+                            inv["expected_missing"].append(f"manifest_missing_type:{t}")
 
         return inv
 
@@ -934,24 +1040,30 @@ class TeardownAbsenceVerifier:
         """
         Runs verification and writes structured JSON ledger to output_path.
         Guarantees restricted 0600 permissions even when overwriting an existing file.
-        Uses atomic temp file replacement to prevent symlink attacks and race conditions.
+        Uses unpredictable atomic temp file replacement (tempfile.mkstemp with O_CREAT|O_EXCL)
+        to prevent symlink attacks and race conditions.
         """
         p = Path(output_path).resolve()
         p.parent.mkdir(parents=True, exist_ok=True)
         summary = self.verify_all()
         payload = json.dumps(summary, indent=2) + "\n"
 
-        tmp_path = p.with_suffix(f".tmp.{os.getpid()}")
-        fd = os.open(str(tmp_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        fd, tmp_file_path = tempfile.mkstemp(
+            prefix=f".{p.stem}_",
+            suffix=".tmp",
+            dir=str(p.parent),
+        )
+        tmp_path = Path(tmp_file_path)
         try:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(payload)
                 f.flush()
+                os.fsync(f.fileno())
             os.replace(str(tmp_path), str(p))
             os.chmod(str(p), 0o600)
         finally:
-            if tmp_path.exists():
+            if tmp_path.exists() or os.path.islink(str(tmp_path)):
                 try:
                     tmp_path.unlink()
                 except Exception:
@@ -962,6 +1074,7 @@ class TeardownAbsenceVerifier:
 def main():
     parser = argparse.ArgumentParser(description="Verify AWS teardown absence (Gate E).")
     parser.add_argument("--outputs-json", help="Path to active-outputs.json or terraform outputs.")
+    parser.add_argument("--manifest", help="Path to frozen pre-teardown authoritative manifest JSON.")
     parser.add_argument("--inventory-json", help="Direct inventory JSON file path.")
     parser.add_argument("--output-ledger", default="gate-e-absence-summary.json", help="Output path for summary.")
     parser.add_argument("--profile", default=None, help="AWS CLI profile.")
@@ -996,6 +1109,7 @@ def main():
     if args.outputs_json:
         verifier = TeardownAbsenceVerifier.from_terraform_outputs(
             Path(args.outputs_json),
+            manifest_path=args.manifest,
             profile=args.profile,
             region=args.region,
             mode=mode,
@@ -1005,6 +1119,7 @@ def main():
         inv = json.loads(Path(args.inventory_json).read_text(encoding="utf-8"))
         verifier = TeardownAbsenceVerifier(
             inventory=inv,
+            manifest=args.manifest,
             profile=args.profile,
             region=args.region,
             mode=mode,

@@ -253,6 +253,130 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         self.assertFalse(summary["clock_evidence_verified"])
         self.assertEqual(summary["reason"], "no_records_in_window")
 
+    def test_compaction_loss_preserves_chrony_failure_and_fails_closed(self):
+        """
+        [P1 Regression] Verifies that when a Chrony failure sample is evicted by ring buffer
+        compaction, the cumulative failure and window loss are preserved and summarize_window
+        fails closed with UNVERIFIED (never false OK).
+        """
+        output_file = self.tmppath / "telemetry-compaction.jsonl"
+        max_bytes = 1024 * 1024  # 1 MB
+
+        is_failed = True
+
+        def mock_chrony_runner(cmd, timeout):
+            nonlocal is_failed
+            if is_failed:
+                return 1, "", "506 Cannot talk to daemon"
+            t_ref = time.time() - 1.0
+            return 0, f"A9FEA97B,169.254.169.123,3,{t_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n", ""
+
+        proc_dir = self.tmppath / "proc"
+        proc_dir.mkdir(parents=True, exist_ok=True)
+        (proc_dir / "stat").write_text("cpu  1000 0 500 8000 200 0 50 100 0 0\n")
+        (proc_dir / "loadavg").write_text("0.10 0.10 0.10 1/100 100\n")
+
+        recorder = HostTelemetryRecorder(
+            output_file=output_file,
+            os_interval=0.01,
+            chrony_interval=0.01,
+            chrony_runner=mock_chrony_runner,
+            max_bytes=max_bytes,
+            proc_root=proc_dir,
+        )
+
+        # 1. First sample has chrony failure (rc=1)
+        is_failed = True
+        recorder.sample_now()
+        self.assertEqual(recorder.cumulative_chrony_failures, 1)
+
+        # 2. Write 850 valid samples (~2 KiB each) to exceed 1MB cap and trigger compaction
+        is_failed = False
+        large_extra = "Y" * 1800  # make each record ~2KB
+        for _ in range(850):
+            # force chrony sampling on each iteration
+            recorder._last_chrony_sample_mono = 0.0
+            rec = recorder.sample_now()
+
+        # Compaction must have occurred and evicted sample 0
+        self.assertGreater(recorder.ring_buffer.dropped_records_count, 0)
+        retained = recorder.ring_buffer.read_records()
+        self.assertGreater(retained[0]["sequence"], 1)
+
+        # 3. summarize_window must fail closed with UNVERIFIED
+        summary = recorder.summarize_window()
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertFalse(summary["clock_evidence_verified"])
+        self.assertGreaterEqual(summary["failed_chrony_commands"], 1)
+        self.assertIn("failed_chrony_commands", summary["reason"])
+        self.assertIn("window_completeness_broken_by_record_eviction", summary["reason"])
+
+        # 4. Standalone file summary (new recorder reading from disk) also detects failure provenance
+        offline_recorder = HostTelemetryRecorder(output_file=output_file)
+        offline_summary = offline_recorder.summarize_window()
+        self.assertEqual(offline_summary["status"], "UNVERIFIED")
+        self.assertFalse(offline_summary["clock_evidence_verified"])
+        self.assertGreaterEqual(offline_summary["failed_chrony_commands"], 1)
+
+    def test_bounded_window_without_loss_passes_summary(self):
+        """
+        Verifies that a valid bounded window without loss, gaps, or Chrony errors
+        evaluates to OK with clock_evidence_verified=True.
+        """
+        output_file = self.tmppath / "telemetry-clean.jsonl"
+
+        def mock_chrony_runner(cmd, timeout):
+            t_ref = time.time() - 1.0
+            return 0, f"A9FEA97B,169.254.169.123,3,{t_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n", ""
+
+        proc_dir = self.tmppath / "proc"
+        proc_dir.mkdir(parents=True, exist_ok=True)
+        (proc_dir / "stat").write_text("cpu  1000 0 500 8000 200 0 50 100 0 0\n")
+        (proc_dir / "loadavg").write_text("0.10 0.10 0.10 1/100 100\n")
+
+        recorder = HostTelemetryRecorder(
+            output_file=output_file,
+            os_interval=0.01,
+            chrony_interval=0.01,
+            chrony_runner=mock_chrony_runner,
+            proc_root=proc_dir,
+        )
+
+        for _ in range(15):
+            recorder._last_chrony_sample_mono = 0.0
+            recorder.sample_now()
+
+        summary = recorder.summarize_window()
+        self.assertEqual(summary["status"], "OK")
+        self.assertTrue(summary["clock_evidence_verified"])
+        self.assertEqual(summary["failed_chrony_commands"], 0)
+        self.assertEqual(summary["dropped_records_in_buffer"], 0)
+
+    def test_bounded_ring_buffer_trim_prevents_symlink_clobber(self):
+        """
+        [P2 Regression] Verifies that ring buffer trimming uses unpredictable temp files
+        and will not clobber target files through pre-planted symlinks.
+        """
+        victim_file = self.tmppath / "private-victim.txt"
+        victim_file.write_text("VICTIM_INTACT_DATA", encoding="utf-8")
+        os.chmod(str(victim_file), 0o600)
+
+        buf_file = self.tmppath / "trim-symlink-test.jsonl"
+        # Pre-plant predictable symlink if any
+        predictable_tmp = self.tmppath / "trim-symlink-test.jsonl.tmp"
+        try:
+            os.symlink(str(victim_file), str(predictable_tmp))
+        except OSError:
+            pass
+
+        ring = BoundedRingBuffer(buf_file, max_bytes=1024 * 1024)
+        for i in range(1200):
+            ring.write_record({"seq": i, "payload": "X" * 1000})
+
+        # Victim file must remain completely untouched
+        self.assertEqual(victim_file.read_text(encoding="utf-8"), "VICTIM_INTACT_DATA")
+        self.assertEqual(buf_file.stat().st_mode & 0o777, 0o600)
+
 
 if __name__ == "__main__":
     unittest.main()
