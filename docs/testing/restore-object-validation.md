@@ -1,7 +1,7 @@
 # RestoreObject và GET/HEAD archive contracts
 
-Task **W06-CHIEN-01**, ngày 10/11/2026, từ `origin/main` `1dcc352`. Hard
-dependencies W05-HUNG-04, W05-PHONG-02 và W06-PHONG-01 đã Done trên backlog.
+Ngày 10/11/2026, từ `origin/main` `1dcc352`, sau khi presigned/ALB compatibility,
+lifecycle jobs nền và Cold tiering/restore/promote đã hoàn tất.
 Acceptance: restore endpoint cùng read behavior pass thật/dev fixture cả IR và
 Flexible; quyền read là điều kiện bắt buộc. Hợp đồng: [API §2.2.3, §4.2, §4.4](../dedup-storage-gateway-api.md#44-cold-và-restoreobject).
 
@@ -11,7 +11,7 @@ Flexible; quyền read là điều kiện bắt buộc. Hợp đồng: [API §2.
 |---|---|
 | C1 — RestoreObject, restore headers/status, InvalidObjectState | `s3.Objects.RestoreObject` parse `RestoreRequest`, validate Days 1–30/Tier, map 202/409 `RestoreAlreadyInProgress`/200/400. `object.Service.RestoreObject` → `readpath.WarmReader.Restore` (cùng admission/view/pin như GET). HEAD trả `x-amz-restore` từ `WarmReader.ArchiveState`. GET archive chưa restore giữ 403 `InvalidObjectState` trước header. |
 | C2 — IR đọc ngay; GLACIER chưa restore 403 + auto-restore theo policy; không giữ request | IR: GET đọc ngay, RestoreObject 400 không gọi backend restore. GLACIER: GET trả `ErrCold` ngay sau pre-flight, auto-restore và RestoreObject dùng chung một job `pack_restore` mỗi generation; request không chờ restore. |
-| C3 — GET/Copy Restored deadline+120s, renewal, expired; không cần `aws --debug` | Restored chỉ đọc khi backend expiry ≥ hard deadline + 120 giây (W06-PHONG-01, giữ nguyên). Copy cùng domain chia pack với nguồn nên GET bản copy theo cùng biên. RestoreObject gia hạn bản Restored ngắn hơn Days và restore lại bản đã hết hạn. Header `x-amz-restore` là header S3 chuẩn, không cần debug. |
+| C3 — GET/Copy Restored deadline+120s, renewal, expired; không cần `aws --debug` | Restored chỉ đọc khi backend expiry ≥ hard deadline + 120 giây (đường đọc Cold có sẵn, giữ nguyên). Copy cùng domain chia pack với nguồn nên GET bản copy theo cùng biên. RestoreObject gia hạn bản Restored ngắn hơn Days và restore lại bản đã hết hạn. Header `x-amz-restore` là header S3 chuẩn, không cần debug. |
 
 ## Hành vi
 
@@ -61,13 +61,13 @@ Flexible; quyền read là điều kiện bắt buộc. Hợp đồng: [API §2.
 
 Boundary equality/+1 ns/expired của GET Restored vẫn do
 `TestFlexibleRestoreTimelineWithVirtualClock` và `TestRestoredReadBackendExpiryDeadlineAndUTC`
-(W06-PHONG-01) kiểm; Copy payload margin do `write.TestCopyRestoredExpiry`.
+([cold lifecycle](cold-lifecycle-validation.md)) kiểm; Copy payload margin do `write.TestCopyRestoredExpiry`.
 
 ## Validation
 
 Ngày 2026-11-10, Go 1.27.2 linux/amd64 trong WSL Ubuntu, compose project riêng
-`miles-w06-chien-01` từ `deploy/local/compose.yaml` (DynamoDB Local/Moto pinned,
-loopback). Không dùng credential hoặc tài nguyên AWS.
+từ `deploy/local/compose.yaml` (DynamoDB Local/Moto pinned, loopback). Không
+dùng credential hoặc tài nguyên AWS.
 
 - `gofmt`, `go vet ./...`: PASS.
 - `go test -count=1 ./...` với `MILES_DDB_LOCAL_REQUIRED=1`,
@@ -85,4 +85,4 @@ loopback). Không dùng credential hoặc tài nguyên AWS.
   (không pin): thêm I/O cho mọi HEAD; chưa có benchmark overhead.
 - Local mode (Badger) không có lifecycle nên không có pack GLACIER; restore chỉ
   hoạt động trong shared Cloud/Edge runtime.
-- Cross-domain CopyObject thuộc W06-CHIEN-02.
+- Cross-domain CopyObject chưa có trong thay đổi này.
