@@ -25,6 +25,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -205,6 +206,7 @@ class TeardownAbsenceVerifier:
         runtime_sha256: Optional[str] = None,
         volume_baseline_json: Optional[bytes] = None,
         account_baseline_json: Optional[bytes] = None,
+        final_audit: bool = False,
     ):
         self.inventory = inventory
         self.profile = profile
@@ -219,6 +221,7 @@ class TeardownAbsenceVerifier:
         self.runtime_sha256 = runtime_sha256
         self.volume_baseline_json = volume_baseline_json
         self.account_baseline_json = account_baseline_json
+        self.final_audit = final_audit
         self.caller_role = None
         if manifest_required is not None:
             self.manifest_required = manifest_required
@@ -657,6 +660,17 @@ class TeardownAbsenceVerifier:
             if str(actual_account).strip() != str(self.account_id).strip():
                 return f"caller_account_mismatch:cli_account_{actual_account}_manifest_{self.account_id}"
             arn = data.get("Arn", "")
+            if self.final_audit:
+                if arn != f"arn:aws:iam::{self.account_id}:root":
+                    return "final_audit_requires_independent_root_read_only_identity"
+                audit_role = self.manifest.get("provenance", {}).get("audit_role")
+                if not isinstance(audit_role, str) or not re.fullmatch(r"[A-Za-z0-9+=,.@_-]{1,64}", audit_role):
+                    return "final_audit_missing_frozen_audit_role"
+                rc, output, error = self._runner(["iam", "get-role", "--role-name", audit_role, "--output", "json"])
+                if rc == 0 or "NoSuchEntity" not in error + output:
+                    return "audit_role_not_proven_deleted"
+                self.caller_role = audit_role
+                return None
             marker = f":sts::{self.account_id}:assumed-role/"
             if marker not in arn or len(arn.split(marker, 1)[1].split("/")) < 2:
                 return "caller_must_be_assumed_role"
@@ -692,6 +706,7 @@ class TeardownAbsenceVerifier:
         runtime_sha256: Optional[str] = None,
         volume_baseline_json: Optional[bytes] = None,
         account_baseline_json: Optional[bytes] = None,
+        final_audit: bool = False,
     ) -> "TeardownAbsenceVerifier":
         """
         Parses active-outputs.json or `terraform output -json` and extracts
@@ -715,6 +730,7 @@ class TeardownAbsenceVerifier:
             runtime_sha256=runtime_sha256,
             volume_baseline_json=volume_baseline_json,
             account_baseline_json=account_baseline_json,
+            final_audit=final_audit,
         )
 
     @classmethod
@@ -1646,7 +1662,11 @@ class TeardownAbsenceVerifier:
                     raise ValueError("account discovery failed")
                 return json.loads(output)
             try:
-                account_now = collect_account_inventory(self.profile, self.region, fetch=fetch_account, iam_roles=audit_roles)
+                final_roles = [role for role in audit_roles if not self.final_audit or role != self.caller_role]
+                account_now = collect_account_inventory(self.profile, self.region, fetch=fetch_account, iam_roles=final_roles)
+                if self.final_audit:
+                    account_baseline = dict(account_baseline)
+                    account_baseline["role_policies"] = [entry for entry in account_baseline["role_policies"] if not entry.startswith(self.caller_role + "|")]
                 account_residuals = compare_account_baseline(account_baseline, account_now)
             except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError):
                 return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "UNVERIFIED", "all_absent": False, "error": "ACCOUNT_DISCOVERY_FAILED", "total_checked": 0, "resources": {}}
@@ -2075,8 +2095,13 @@ class TeardownAbsenceVerifier:
             "resources": results,
         }
         if self.mode == "live":
-            summary["retained_audit_role"] = self.caller_role
-            if accepted:
+            summary["run_id"] = self.manifest.get("run_id")
+            summary["account_id"] = self.account_id
+            summary["region"] = self.region
+            summary["state_sha256"] = self.state_sha256
+            summary["audit_role"] = self.caller_role
+            summary["audit_role_deleted"] = self.final_audit
+            if accepted and not self.final_audit:
                 # Native inventory coverage and removal of the audit role still
                 # require independent confirmation before declaring teardown complete.
                 summary["status"] = "UNVERIFIED"
@@ -2133,6 +2158,7 @@ def main():
     parser.add_argument("--runtime-sha256", help="Independently recorded SHA-256 of native inventory")
     parser.add_argument("--volume-baseline", help="Private pre-run regional volume baseline")
     parser.add_argument("--account-baseline", help="Private pre-run account resource baseline")
+    parser.add_argument("--final-audit", action="store_true", help="Read-only root verification after deleting the temporary audit role")
     parser.add_argument("--inventory-json", help="Direct inventory JSON file path.")
     parser.add_argument("--output-ledger", default="gate-e-absence-summary.json", help="Output path for summary.")
     parser.add_argument("--profile", default=None, help="AWS CLI profile.")
@@ -2187,6 +2213,7 @@ def main():
             runtime_sha256=args.runtime_sha256,
             volume_baseline_json=Path(args.volume_baseline).read_bytes() if args.volume_baseline else None,
             account_baseline_json=Path(args.account_baseline).read_bytes() if args.account_baseline else None,
+            final_audit=args.final_audit,
         )
     elif args.inventory_json:
         inv = json.loads(Path(args.inventory_json).read_text(encoding="utf-8"))
@@ -2203,6 +2230,7 @@ def main():
             runtime_sha256=args.runtime_sha256,
             volume_baseline_json=Path(args.volume_baseline).read_bytes() if args.volume_baseline else None,
             account_baseline_json=Path(args.account_baseline).read_bytes() if args.account_baseline else None,
+            final_audit=args.final_audit,
         )
     else:
         print("Error: must provide --outputs-json or --inventory-json", file=sys.stderr)

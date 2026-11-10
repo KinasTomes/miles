@@ -131,6 +131,29 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(verified["status"], "UNVERIFIED")
         self.assertFalse(verified["all_absent"])
         self.assertEqual(verified["error"], "EXTERNAL_RESOURCE_RECONCILIATION_UNAVAILABLE")
+        manifest["provenance"]["audit_role"] = "auditor"
+        def final_runner(cmd):
+            if "get-caller-identity" in cmd:
+                return 0, json.dumps({"Account": "123456789012", "Arn": "arn:aws:iam::123456789012:root"}), ""
+            if "get-role" in cmd:
+                return 255, "", "NoSuchEntity"
+            return runner_clean_runtime(cmd)
+        def final_verification(fetch):
+            return TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", final_audit=True, state_json=state, state_sha256=digest, runtime_json=runtime, runtime_sha256=runtime_hash, volume_baseline_json=baseline, account_baseline_json=account_baseline, cli_runner=fetch).verify_all()
+        final = final_verification(final_runner)
+        self.assertEqual(final["status"], "PASS")
+        self.assertTrue(final["audit_role_deleted"])
+        self.assertTrue(final["all_absent"])
+        for result in [(0, '{"Role": {}}', ''), (255, '', 'AccessDenied')]:
+            def unproven_role(cmd):
+                return result if "get-role" in cmd else final_runner(cmd)
+            self.assertEqual(final_verification(unproven_role)["error"], "CALLER_IDENTITY_VERIFICATION_FAILED")
+        def leftover(cmd):
+            if "list-tables" in cmd:
+                return 0, json.dumps({"TableNames": ["leftover"]}), ""
+            return final_runner(cmd)
+        self.assertEqual(final_verification(leftover)["error"], "ACCOUNT_RESOURCES_REMAIN")
+        self.assertEqual(final_verification(runner_clean_runtime)["error"], "CALLER_IDENTITY_VERIFICATION_FAILED")
         resources.append({"mode": "managed", "address": "aws_cloudwatch_log_group.runtime", "type": "aws_cloudwatch_log_group", "values": {"id": "/missing"}})
         changed_state = json.dumps({"values": {"root_module": {"resources": resources}}}).encode()
         changed_hash = hashlib.sha256(changed_state).hexdigest()
