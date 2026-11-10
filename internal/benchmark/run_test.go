@@ -1183,6 +1183,12 @@ func TestFailFastSIGINTAfterFailureArmsDrainTimeout(t *testing.T) {
 
 			if strings.HasSuffix(key, "low-entropy-v00.bin") {
 				// Job 0: fail with 503 to latch stop first
+				// Keep both requests in flight before the failure can stop dispatch.
+				select {
+				case <-job1Started:
+				case <-r.Context().Done():
+					return
+				}
 				defer func() {
 					select {
 					case <-job0Done:
@@ -1222,6 +1228,7 @@ func TestFailFastSIGINTAfterFailureArmsDrainTimeout(t *testing.T) {
 	c.Endpoint = s.URL
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	type runRes struct {
 		r   Result
 		err error
