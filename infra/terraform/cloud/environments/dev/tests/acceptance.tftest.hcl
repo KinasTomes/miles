@@ -1,4 +1,8 @@
-mock_provider "aws" {}
+mock_provider "aws" {
+  mock_data "aws_ami" {
+    defaults = { id = "ami-00000000000000001" }
+  }
+}
 
 run "private_disposable_nodes" {
   command = plan
