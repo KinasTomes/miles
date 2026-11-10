@@ -1,7 +1,6 @@
-# W06-PHONG-01 — Tiering, restore/promote và Cold retention
+# Chuyển tầng Cold, restore/promote và retention
 
-Baseline `ed3a405f681494c72e16291b3670103adf84542d`, branch
-`codex/W06-PHONG-01-tiering-restore`. Phạm vi lượt này là ba checklist
+Baseline `ed3a405f681494c72e16291b3670103adf84542d`. Phạm vi là ba checklist
 implementation đầu của Miles. Ngày 2026-11-10 bổ sung demo restore GLACIER trên
 S3 thật cho C4; checklist/status và nghiệm thu trên Miles chờ Lead xác nhận.
 
@@ -201,15 +200,20 @@ GitHub CI PASS khi chưa push/tạo PR và kiểm tra check runs.
 
 1. Runtime mặc định vẫn không có provider `SharedAuthority.LifecycleTerminal`
    chứng minh unknown mutable request đã terminal **và** worker/request đã bị
-   isolate. Unknown COPY/DELETE tiếp tục giữ Maintenance/protection. Hưng/Hải cần
-   review/cung cấp operational proof; không thêm force-complete hoặc boolean
-   thay proof để che lỗ hổng liveness.
+   isolate. Unknown COPY/DELETE tiếp tục giữ Maintenance/protection. Hưng/Hải
+   review phần tích hợp R1/native metadata/S3 theo
+   [R1 contract](../contracts/r1-and-cache.md). Nghiệm thu recovery/liveness cần
+   fault tests cho lost ACK/takeover, xác nhận chỉ release maintenance/protection
+   khi đã có terminal và isolation proof theo contract.
 2. C4 đã có demo backend S3 thật, pending/completed và checksum, kèm fixture thời
    gian dài. Demo qua endpoint Miles trên AWS chưa chạy; Lead xác nhận có cần
    bổ sung bằng chứng này trước nghiệm thu. Không đo billing hoặc retention
    thực 90 ngày và không coi Moto completion là bằng chứng live AWS.
-3. S3 RestoreObject/HEAD headers và cross-domain CopyObject HTTP consumer thuộc
-   W06-CHIEN-01/02; revival/copy/accounting handoff phối hợp W06-HAI-01. Thư viện
-   payload Copy không thay bằng metadata-copy exception và vẫn giữ +120s margin.
+3. Consumer S3 RestoreObject/HEAD và cross-domain CopyObject trong
+   `internal/api/s3` và `internal/object` cần Chiến review theo API và
+   [pack contract](../contracts/pack-and-pages.md). Revival/promotion và physical
+   accounting trong `internal/engine/write`, `internal/lifecycle` cần Hải review
+   theo [engine contract](../contracts/chunking-and-commit.md). Payload Copy vẫn
+   giữ margin +120s theo contract.
 4. API mới là implementation handoff cần consumer review; không tuyên bố Frozen,
    distributed correctness đầy đủ hoặc task Done.
