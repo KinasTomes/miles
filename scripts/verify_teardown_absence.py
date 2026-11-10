@@ -47,7 +47,6 @@ EXPECTED_ABSENCE_ERRORS = {
     "acm_certificate": ["ResourceNotFoundException"],
     "ssm_document": ["InvalidDocument"],
     "key_pair": ["InvalidKeyPair.NotFound"],
-    "cloudwatch_alarm": ["ResourceNotFound", "ValidationError"],
     "vpc_endpoint": ["InvalidVpcEndpointId.NotFound"],
     "nat_gateway": ["NatGatewayNotFound", "InvalidNatGatewayID.NotFound", "InvalidNatGatewayId.NotFound"],
     "elastic_ip": ["InvalidAllocationID.NotFound", "InvalidAllocationId.NotFound", "InvalidAddress.NotFound"],
@@ -1025,15 +1024,6 @@ class TeardownAbsenceVerifier:
             "--output", "json",
         ])
         if rc != 0:
-            combined_err = f"{stdout} {stderr}"
-            if any(s.lower() in combined_err.lower() for s in EXPECTED_ABSENCE_ERRORS["cloudwatch_alarm"]):
-                return {
-                    "resource": alarm_name,
-                    "type": "cloudwatch_alarm",
-                    "status": "ABSENT",
-                    "reason": "NOT_FOUND_MATCHED",
-                    "details": stderr.strip() or stdout.strip(),
-                }
             return {
                 "resource": alarm_name,
                 "type": "cloudwatch_alarm",
@@ -1044,8 +1034,12 @@ class TeardownAbsenceVerifier:
 
         try:
             data = json.loads(stdout)
+            if not isinstance(data, dict) or not any(k in data for k in ("MetricAlarms", "CompositeAlarms")):
+                raise ValueError("missing alarm lists")
             metric_alarms = data.get("MetricAlarms", [])
             composite_alarms = data.get("CompositeAlarms", [])
+            if not isinstance(metric_alarms, list) or not isinstance(composite_alarms, list):
+                raise ValueError("invalid alarm lists")
             matching = [
                 a for a in (metric_alarms + composite_alarms)
                 if a.get("AlarmName") == alarm_name
@@ -1365,7 +1359,7 @@ class TeardownAbsenceVerifier:
                 return {
                     "resource": nat_gw_id,
                     "type": "nat_gateway",
-                    "status": "PENDING_DELETION",
+                    "status": "STILL_PRESENT",
                     "reason": "NAT_GATEWAY_DELETING",
                 }
             return {

@@ -185,6 +185,9 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         v_empty = TeardownAbsenceVerifier(inventory={}, cli_runner=mock_empty_alarms_runner)
         r_empty = v_empty.check_cloudwatch_alarm_absent("miles-dev-cloud-recovery_cut_age")
         self.assertEqual(r_empty["status"], "ABSENT")
+
+        v_invalid = TeardownAbsenceVerifier(inventory={}, cli_runner=lambda cmd: (255, "", "ValidationError: Invalid alarm names"))
+        self.assertEqual(v_invalid.check_cloudwatch_alarm_absent("bad")["status"], "UNEXPECTED_ERROR")
         self.assertIn("EMPTY_OR_UNMATCHED_ALARMS_LIST", r_empty["reason"])
 
         def mock_present_alarms_runner(cmd):
@@ -929,13 +932,13 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(res_nat_del["status"], "ABSENT")
         self.assertEqual(res_nat_del["reason"], "NAT_GATEWAY_DELETED")
 
-        # 3. NAT Gateway state == 'deleting' -> PENDING_DELETION
+        # 3. NAT Gateway state == 'deleting' is not yet absent
         v_nat_deleting = TeardownAbsenceVerifier(
             inventory={},
             cli_runner=lambda cmd: (0, json.dumps({"NatGateways": [{"NatGatewayId": "nat-0123", "State": "deleting"}]}), ""),
         )
         res_nat_deleting = v_nat_deleting.check_nat_gateway_absent("nat-0123")
-        self.assertEqual(res_nat_deleting["status"], "PENDING_DELETION")
+        self.assertEqual(res_nat_deleting["status"], "STILL_PRESENT")
 
         # 4. NAT Gateway state == 'available' -> STILL_PRESENT leak!
         v_nat_avail = TeardownAbsenceVerifier(
@@ -1357,6 +1360,8 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(inv_complete["expected_missing"], [])
 
         def mock_clean_nat2_runner(cmd):
+            if "describe-alarms" in cmd:
+                return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
             if "describe-nat-gateways" in cmd:
                 return 0, json.dumps({"NatGateways": [{"NatGatewayId": "nat-01", "State": "deleted"}, {"NatGatewayId": "nat-02", "State": "deleted"}]}), ""
             if "describe-addresses" in cmd:
