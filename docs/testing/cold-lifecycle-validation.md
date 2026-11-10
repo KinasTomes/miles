@@ -2,7 +2,8 @@
 
 Baseline `ed3a405f681494c72e16291b3670103adf84542d`, branch
 `codex/W06-PHONG-01-tiering-restore`. Phạm vi lượt này là ba checklist
-implementation đầu của Miles; chưa cập nhật checklist/status và chưa nghiệm thu.
+implementation đầu của Miles. Ngày 2026-11-10 bổ sung demo restore GLACIER trên
+S3 thật cho C4; checklist/status và nghiệm thu trên Miles chờ Lead xác nhận.
 
 ## Mapping checklist
 
@@ -11,13 +12,52 @@ implementation đầu của Miles; chưa cập nhật checklist/status và chưa
 | C1 — IR/Flexible qua global policy, Cold bất biến, retention | `lifecycle.Worker` tái sử dụng `policy.EvaluateTiering`. Discovery phân trang tạo child job exact generation, pin policy revision; child reserve/revalidate maintenance trước COPY. `RetentionUntil` dùng conservative upper completion bound, max với retention cũ, reject overflow. Cold GC phải qua cùng mark/pins/R2 roots, min-retention, retirement buffer và verified cut trước version sweep; không compaction Cold. |
 | C2 — Restore/promote, auto-restore/expiry/reconcile | Route Admin exact-generation đã có từ W05. `QueueReadRestore` kiểm native reader lease/root/pin và pinned policy trong transaction trước enqueue stable job. `required_until` nội bộ cho phép gia hạn bản còn readable nhưng chưa đủ budget. Job không Done nếu expiry backend chưa đạt threshold. Promotion ghi Warm generation mới, verify bytes/sidecar rồi canonical CAS; giữ source. Unknown COPY/DELETE không tự retry hoặc suy terminal từ HEAD/timeout. |
 | C3 — PUT/part revival, GET/Copy margin và protection | GET IR/Restored nối evaluator hiện có, preflight cả requested set trước cache/header. Restored dùng expiry HEAD + fresh trusted UTC proof tại request deadline, recheck trước ordered emit. PUT/UploadPart vẫn revive GLACIER và mọi Restored từ client body, IR có thể reuse exact canonical binding. Metadata Copy cùng domain là ngoại lệ §5.3: chuyển references/pins, không đọc payload hay hứa Warm readability. Payload Copy vẫn dùng margin trong `CopyChunks`/shared evaluator; consumer cross-domain/API thuộc Hải/Chiến. |
-| C4 — Demo GLACIER restore bất đồng bộ thật và fixture thời gian dài | **CHƯA HOÀN THÀNH.** Fixture Virtual Clock và các ca Moto đã PASS. Lần thử S3 thật ngày 2026-11-07 bị SCP của Free Tier chặn ngay tại `PutObject` với `StorageClass=GLACIER`; chưa gửi `RestoreObject`, chưa quan sát pending/completed và chưa tải lại đối chiếu checksum trên AWS. |
+| C4 — Demo GLACIER restore bất đồng bộ thật và fixture thời gian dài | **ĐÃ CÓ EVIDENCE LIVE S3, CHỜ REVIEW.** Ngày 2026-11-10, profile AssumeRole có MFA chạy tại Sydney: upload GLACIER, GET trước/trong pending bị từ chối, HEAD chuyển từ pending sang completed có expiry, download 54 bytes với SHA-256 và nội dung khớp. Fixture Virtual Clock/Moto đã PASS. Demo live này dùng AWS CLI với object synthetic; chưa chạy endpoint Miles trên AWS. |
 
-C1–C3 có implementation và bằng chứng test local để reviewer đối chiếu. PR chưa
-đủ bằng chứng nghiệm thu toàn task vì C4 còn mở. Checklist và trạng thái trên
-Miles do reviewer/Lead xác nhận.
+C1–C3 có implementation và bằng chứng test local để reviewer đối chiếu. C4 đã có
+demo backend S3 thật và fixture thời gian dài. Lead/reviewer xác nhận phạm vi
+nghiệm thu, gồm việc có yêu cầu thêm demo qua endpoint Miles trên AWS hay không.
 
-## Demo GLACIER thật còn thiếu
+## Demo GLACIER thật ngày 2026-11-10
+
+Profile `phong-deploy` dùng `aws login` của chính operator. Profile `phong-miles`
+AssumeRole vào `miles-dev-deploy` bằng thiết bị MFA đã đăng ký. Kiểm tra quyền
+upload/download một file STANDARD trong prefix test của bucket do admin cấp:
+PASS, nội dung và SHA-256 khớp. MFA code và credential không nằm trong evidence.
+
+Sau preflight, upload một object synthetic GLACIER riêng ở `ap-southeast-2`,
+SSE-S3. Restore dùng `Expedited`, `Days=1`. Các mốc UTC dưới đây là thời điểm
+operator quan sát response; không phải timestamp linearization của backend.
+
+| Mốc UTC | Bằng chứng |
+|---|---|
+| 04:31:18 | HEAD có `StorageClass=GLACIER`, 54 bytes; chưa có restore header |
+| 04:31:21 | GET trước restore trả `InvalidObjectState` |
+| 04:31:24 | Restore request được AWS chấp nhận |
+| 04:31:27 | HEAD có `ongoing-request="true"` |
+| 04:31:30 | GET trong lúc pending tiếp tục trả `InvalidObjectState` |
+| 04:32:19 | HEAD vẫn pending |
+| 04:32:52 | HEAD có `ongoing-request="false"`, expiry `Thu, 12 Nov 2026 00:00:00 GMT` |
+| 04:32:55 | GET thành công, 54 bytes; nội dung và SHA-256 khớp bản gốc |
+
+SHA-256 fixture và bản tải lại đều là
+`7efe6fc643ee93ae0643c579db0b1c8136897a81117f79ba48666f0ae4d2fc17`.
+ETag và storage class GLACIER giữ nguyên qua các response. Upload dùng
+`If-None-Match: *`, download dùng `If-Match` theo ETag đã ghi nhận. Response
+không có VersionId; đây là binding theo unique key/ETag, không phải bằng chứng
+immutable object version hoặc production PackRef generation.
+
+Evidence đã loại identity/session/account/bucket/key khỏi phần public và giữ
+fingerprint target để đối chiếu với bản ghi riêng tư. Payload fixture chỉ có dữ
+liệu synthetic. [Kết quả và timeline](evidence/cold-glacier-live/result.json),
+[checksum manifest](evidence/cold-glacier-live/sha256sums.txt).
+
+Theo lựa chọn của Phong, giữ hai object synthetic để reviewer đối chiếu. Đây là
+demo backend S3 thật bằng AWS CLI. Live endpoint Miles, pack verifier trên AWS,
+expiry thực sau một ngày và retention thực 90 ngày chưa được chạy trong demo này.
+Các boundary margin/expiry/protection/retention tiếp tục có evidence local riêng.
+
+### Lần thử Free Tier trước đó
 
 Lần thử ngày 2026-11-07 ở selected Region `ap-southeast-2` đã xác minh đúng
 project đích, `Free Tier / Active`, tạo bucket test riêng và xác nhận Block Public
@@ -29,20 +69,9 @@ Quy tắc `DenyGlacierStorageClasses` trong SCP Free Tier được AWS công b�
 `s3:PutObject` với `GLACIER` và `DEEP_ARCHIVE`. Nguồn đối chiếu là
 [managed policies của AWS](https://docs.aws.amazon.com/accounts/latest/reference/scps-and-rcps-for-projects.html).
 
-Để hoàn tất C4, cần project cho phép `GLACIER` ở selected Region và lưu các mốc
-UTC cùng bằng chứng sau.
-
-1. Exact object/version ở `GLACIER`; GET trước restore trả `InvalidObjectState`.
-2. Restore được backend chấp nhận, sau đó HEAD có `ongoing-request="true"`;
-   GET trong giai đoạn này chưa đọc được payload.
-3. HEAD báo `ongoing-request="false"` kèm `expiry-date`; GET trả đúng dữ liệu
-   và checksum khớp với bản gốc.
-4. Khi demo qua Miles, lưu job ID, exact PackRef/generation, pinned policy
-   revision và GET trước/sau restore. Đối chiếu fixture thời gian dài cho margin,
-   expiry và resource cleanup.
-
 Việc có thêm credit không thay đổi SCP Free Tier. Lần thử bị chặn chỉ là bằng
-chứng blocker môi trường; không đáp ứng demo GLACIER restore thành công.
+chứng blocker của môi trường trước đó. Demo thành công ngày 2026-11-10 dùng
+project/bucket đã được admin cấp quyền riêng.
 
 ## Authority và ownership
 
@@ -175,9 +204,10 @@ GitHub CI PASS khi chưa push/tạo PR và kiểm tra check runs.
    isolate. Unknown COPY/DELETE tiếp tục giữ Maintenance/protection. Hưng/Hải cần
    review/cung cấp operational proof; không thêm force-complete hoặc boolean
    thay proof để che lỗ hổng liveness.
-2. Đây không phải demo GLACIER thật trên AWS và không đo latency/billing 90 ngày.
-   Moto completion không được quảng cáo là AWS restore bất đồng bộ thực tế.
-   Checklist thứ tư cần môi trường/demo/evidence riêng.
+2. C4 đã có demo backend S3 thật, pending/completed và checksum, kèm fixture thời
+   gian dài. Demo qua endpoint Miles trên AWS chưa chạy; Lead xác nhận có cần
+   bổ sung bằng chứng này trước nghiệm thu. Không đo billing hoặc retention
+   thực 90 ngày và không coi Moto completion là bằng chứng live AWS.
 3. S3 RestoreObject/HEAD headers và cross-domain CopyObject HTTP consumer thuộc
    W06-CHIEN-01/02; revival/copy/accounting handoff phối hợp W06-HAI-01. Thư viện
    payload Copy không thay bằng metadata-copy exception và vẫn giữ +120s margin.

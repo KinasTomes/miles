@@ -1,0 +1,146 @@
+{
+  "task": "W06-PHONG-01",
+  "date_utc": "2026-11-10",
+  "region": "ap-southeast-2",
+  "actor": "assumed-role/miles-dev-deploy",
+  "scope": "AWS S3 backend demo using a synthetic object",
+  "access_preflight": {
+    "assume_role": "PASS",
+    "upload_download": "PASS",
+    "content_matches": true,
+    "sha256": "6ba59d51dc2c69578f9929daa4b21f36d4a7677288ae55817a6d59bd43b5e1d4"
+  },
+  "target_binding": {
+    "fingerprint_algorithm": "SHA256(UTF8(bucket + LF + key))",
+    "fingerprint_sha256": "6b4f59ca60a03e4bd6a2d504c3fb1d71b000d0d2f1cc97878c72cc8bed9529c9",
+    "version_id": null,
+    "etag": "\"b7ea6405566f4edf07fab2a8d98e5add\"",
+    "upload_precondition": "If-None-Match: *",
+    "download_precondition": "If-Match: \"b7ea6405566f4edf07fab2a8d98e5add\""
+  },
+  "fixture": {
+    "bytes": 54,
+    "sha256": "7efe6fc643ee93ae0643c579db0b1c8136897a81117f79ba48666f0ae4d2fc17",
+    "server_side_encryption": "AES256",
+    "storage_class": "GLACIER"
+  },
+  "restore": {
+    "tier": "Expedited",
+    "days": 1,
+    "request_accepted_at_utc": "2026-11-10T04:31:24.8745255Z",
+    "completed_first_observed_at_utc": "2026-11-10T04:32:52.6208237Z",
+    "backend_restore_header": "ongoing-request=\"false\", expiry-date=\"Thu, 12 Nov 2026 00:00:00 GMT\"",
+    "live_s3_async_restore": "PASS",
+    "content_matches": true
+  },
+  "retained_for_review": true,
+  "production_miles_end_to_end": "NOT_RUN",
+  "production_pack_verification": "NOT_RUN",
+  "live_expiry_and_90_day_retention": "NOT_OBSERVED",
+  "events": [
+    {
+      "data": {
+        "ETag": "\"b7ea6405566f4edf07fab2a8d98e5add\"",
+        "ChecksumCRC64NVME": "Q8E3YnwN72Q=",
+        "ChecksumType": "FULL_OBJECT",
+        "ServerSideEncryption": "AES256"
+      },
+      "at_utc": "2026-11-10T04:31:15.9382143Z",
+      "stage": "put_glacier"
+    },
+    {
+      "data": {
+        "AcceptRanges": "bytes",
+        "LastModified": "2026-11-10T11:31:16+07:00",
+        "ContentLength": 54,
+        "ETag": "\"b7ea6405566f4edf07fab2a8d98e5add\"",
+        "ContentType": "binary/octet-stream",
+        "ServerSideEncryption": "AES256",
+        "Metadata": {},
+        "StorageClass": "GLACIER"
+      },
+      "at_utc": "2026-11-10T04:31:18.8312369Z",
+      "stage": "head_before_restore"
+    },
+    {
+      "data": {
+        "error": "InvalidObjectState"
+      },
+      "at_utc": "2026-11-10T04:31:21.8111278Z",
+      "stage": "get_before_restore_rejected"
+    },
+    {
+      "data": {
+        "tier": "Expedited",
+        "days": 1
+      },
+      "at_utc": "2026-11-10T04:31:24.8767204Z",
+      "stage": "restore_accepted"
+    },
+    {
+      "data": {
+        "AcceptRanges": "bytes",
+        "Restore": "ongoing-request=\"true\"",
+        "LastModified": "2026-11-10T11:31:16+07:00",
+        "ContentLength": 54,
+        "ETag": "\"b7ea6405566f4edf07fab2a8d98e5add\"",
+        "ContentType": "binary/octet-stream",
+        "ServerSideEncryption": "AES256",
+        "Metadata": {},
+        "StorageClass": "GLACIER"
+      },
+      "at_utc": "2026-11-10T04:31:27.7074943Z",
+      "stage": "head_after_restore_request"
+    },
+    {
+      "data": {
+        "error": "InvalidObjectState"
+      },
+      "at_utc": "2026-11-10T04:31:30.433346Z",
+      "stage": "get_while_pending_rejected"
+    },
+    {
+      "data": {
+        "AcceptRanges": "bytes",
+        "Restore": "ongoing-request=\"true\"",
+        "LastModified": "2026-11-10T11:31:16+07:00",
+        "ContentLength": 54,
+        "ETag": "\"b7ea6405566f4edf07fab2a8d98e5add\"",
+        "ContentType": "binary/octet-stream",
+        "ServerSideEncryption": "AES256",
+        "Metadata": {},
+        "StorageClass": "GLACIER"
+      },
+      "stage": "restore_head_poll",
+      "at_utc": "2026-11-10T04:32:19.6348081Z"
+    },
+    {
+      "data": {
+        "AcceptRanges": "bytes",
+        "Restore": "ongoing-request=\"false\", expiry-date=\"Thu, 12 Nov 2026 00:00:00 GMT\"",
+        "LastModified": "2026-11-10T11:31:16+07:00",
+        "ContentLength": 54,
+        "ETag": "\"b7ea6405566f4edf07fab2a8d98e5add\"",
+        "ContentType": "binary/octet-stream",
+        "ServerSideEncryption": "AES256",
+        "Metadata": {},
+        "StorageClass": "GLACIER"
+      },
+      "stage": "restore_head_poll",
+      "at_utc": "2026-11-10T04:32:52.6208237Z"
+    },
+    {
+      "data": {
+        "version_id": null,
+        "storage_class": "GLACIER",
+        "bytes": 54,
+        "sha256": "7efe6fc643ee93ae0643c579db0b1c8136897a81117f79ba48666f0ae4d2fc17",
+        "etag": "\"b7ea6405566f4edf07fab2a8d98e5add\"",
+        "content_matches": true,
+        "restore": "ongoing-request=\"false\", expiry-date=\"Thu, 12 Nov 2026 00:00:00 GMT\""
+      },
+      "stage": "restored_get_and_sha256_pass",
+      "at_utc": "2026-11-10T04:32:55.4850659Z"
+    }
+  ]
+}
