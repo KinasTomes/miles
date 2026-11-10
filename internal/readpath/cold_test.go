@@ -173,15 +173,15 @@ func TestColdCacheNeverBypassesExpiryAndAutoRestore(t *testing.T) {
 			p.Tiering.AutoRestore = enabled
 			f.reader.options.Global, _ = v.NewGlobalSnapshot(2, p)
 			calls := 0
-			f.reader.options.Restore = func(ctx context.Context, view *coordination.WarmView, head storage.ObjectHead, ref storage.PackRef, revision uint64, required time.Time) error {
+			f.reader.options.Restore = func(ctx context.Context, view *coordination.WarmView, head storage.ObjectHead, ref storage.PackRef, revision uint64, required time.Time, explicit *storage.RestoreRequest) (bool, error) {
 				calls++
-				if view.Check(ctx) != nil || ref != f.ref || revision != 2 || head.ManifestID == "" || !required.Equal(f.clock.Now().WallUTC.Add(3*time.Minute)) {
+				if view.Check(ctx) != nil || ref != f.ref || revision != 2 || head.ManifestID == "" || !required.Equal(f.clock.Now().WallUTC.Add(3*time.Minute)) || explicit != nil {
 					t.Fatal("unbound restore", head, ref, required)
 				}
 				if !errors.Is(f.reader.options.Gate.Retire(ref), storage.ErrConflict) {
 					t.Fatal("restore without pin")
 				}
-				return storage.ErrUnavailable // diagnostics cannot change archive error
+				return false, storage.ErrUnavailable // diagnostics cannot change archive error
 			}
 			f.request.Ready = func(WarmResult) error { t.Error("archive committed headers"); return nil }
 			_, got, err := f.read(t.Context(), f.request)

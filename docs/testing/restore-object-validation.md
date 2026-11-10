@@ -1,0 +1,79 @@
+# RestoreObject và GET/HEAD archive contracts
+
+Task **W06-CHIEN-01**, ngày 10/11/2026, từ `origin/main` `1dcc352`. Hard
+dependencies W05-HUNG-04, W05-PHONG-02 và W06-PHONG-01 đã Done trên backlog.
+Acceptance: restore endpoint cùng read behavior pass thật/dev fixture cả IR và
+Flexible; quyền read là điều kiện bắt buộc. Hợp đồng: [API §2.2.3, §4.2, §4.4](../dedup-storage-gateway-api.md#44-cold-và-restoreobject).
+
+## Mapping checklist
+
+| Checklist | Implementation/evidence |
+|---|---|
+| C1 — RestoreObject, restore headers/status, InvalidObjectState | `s3.Objects.RestoreObject` parse `RestoreRequest`, validate Days 1–30/Tier, map 202/409 `RestoreAlreadyInProgress`/200/400. `object.Service.RestoreObject` → `readpath.WarmReader.Restore` (cùng admission/view/pin như GET). HEAD trả `x-amz-restore` từ `WarmReader.ArchiveState`. GET archive chưa restore giữ 403 `InvalidObjectState` trước header. |
+| C2 — IR đọc ngay; GLACIER chưa restore 403 + auto-restore theo policy; không giữ request | IR: GET đọc ngay, RestoreObject 400 không gọi backend restore. GLACIER: GET trả `ErrCold` ngay sau pre-flight, auto-restore và RestoreObject dùng chung một job `pack_restore` mỗi generation; request không chờ restore. |
+| C3 — GET/Copy Restored deadline+120s, renewal, expired; không cần `aws --debug` | Restored chỉ đọc khi backend expiry ≥ hard deadline + 120 giây (W06-PHONG-01, giữ nguyên). Copy cùng domain chia pack với nguồn nên GET bản copy theo cùng biên. RestoreObject gia hạn bản Restored ngắn hơn Days và restore lại bản đã hết hạn. Header `x-amz-restore` là header S3 chuẩn, không cần debug. |
+
+## Hành vi
+
+- Quyền: Router kiểm read (`authorization.json` dòng RestoreObject); service kiểm lại
+  read/owner tại admission như GET. Writer-only bị `AccessDenied` trước service.
+- Pack GLACIER duy nhất của head được HEAD backend: `Restoring` → in-progress;
+  `Restored` với expiry ≥ upper UTC + Days → không làm gì; Cold, Restored ngắn hơn
+  hoặc đã hết hạn → `QueueReadRestore` với Days/Tier của request.
+- `required_until` của job = hard deadline + 120 giây như GET, nên job hoàn tất
+  khi bản restore phủ được GET tại thời điểm request.
+- Khác biệt S3 đã ghi ở API §4.4: Days > 30 bị từ chối; IR/Warm-only trả
+  `InvalidRequest` 400; gia hạn bất đồng bộ trả 202; SELECT/OutputLocation 501.
+
+## Regression tests
+
+- `readpath.TestRestoreClassifiesArchivePacksWithoutPayload`: IR, GLACIER Cold
+  (job mới/đã queue), backend restoring, Restored đủ Days, Restored ngắn hơn Days
+  (renewal), Restored hết hạn; hook nhận đúng view/pin/revision/`required`
+  (= deadline + 120 giây)/Days/Tier; không GET payload, admission sạch.
+- `readpath.TestRestoreRejectsBeforeSideEffects`: Days 0/31, thiếu UTC proof,
+  runtime không có restore port, credential không có quyền: không enqueue.
+- `readpath.TestArchiveStateReportsBackendRestore`: IR, chưa request, restoring,
+  restored (expiry), expired.
+- `object.TestRestoreHeaderAggregatesArchivePacks`: tổng hợp nhiều pack, không bịa
+  `ongoing-request="true"`, expiry nhỏ nhất.
+- `s3.TestRestoreObjectStatus`, `TestRestoreObjectValidatesBeforeService`,
+  `TestRestoreObjectDefaultsAndPermission`, `TestHeadObjectRestoreHeader`.
+- `dynamodb.TestLocalReadRestoreAtomicAdmissionAndDedup` (RestoreObject chia job
+  với auto-restore, `created`), `TestLocalExplicitRestoreUsesRequestParameters`.
+- `app.TestNativeColdCloudEdgeFlows` (DynamoDB Local + Moto, ba runtime
+  Cloud/Cloud/Edge, lifecycle worker thật): IR → RestoreObject 400, HEAD không
+  header, GET ngay; GLACIER → HEAD không header, RestoreObject 202, lần hai trên
+  bản copy cùng pack 409, GET 403 không chờ, job xong → HEAD
+  `ongoing-request="false"` cho cả nguồn và bản copy, GET cả hai, RestoreObject
+  Days=1 → 200, Days=5 → 202 renewal, expiry HEAD đổi, GET tiếp tục đọc được.
+- `cmd/miles.TestPresignedLocalProfiles`: AWS SDK Go v2 `RestoreObject` qua
+  SigV4/Router thật ở local Cloud/Edge: body SDK parse đúng, Warm → 400.
+
+Boundary equality/+1 ns/expired của GET Restored vẫn do
+`TestFlexibleRestoreTimelineWithVirtualClock` và `TestRestoredReadBackendExpiryDeadlineAndUTC`
+(W06-PHONG-01) kiểm; Copy payload margin do `write.TestCopyRestoredExpiry`.
+
+## Validation
+
+Ngày 2026-11-10, Go 1.27.2 linux/amd64 trong WSL Ubuntu, compose project riêng
+`miles-w06-chien-01` từ `deploy/local/compose.yaml` (DynamoDB Local/Moto pinned,
+loopback). Không dùng credential hoặc tài nguyên AWS.
+
+- `gofmt`, `go vet ./...`: PASS.
+- `go test -count=1 ./...` với `MILES_DDB_LOCAL_REQUIRED=1`,
+  `MILES_RECOVERY_S3_REQUIRED=1`: PASS.
+- `TestNativeColdCloudEdgeFlows`, `TestPresignedLocalProfiles`: PASS.
+- Smoke `miles` local mode + Moto + AWS CLI 2.39.3: `head-object` không có
+  `Restore`; `restore-object` Warm → `InvalidRequest`, `Days=31` →
+  `InvalidRequest`, key thiếu → `NoSuchKey`; `get-object` byte khớp.
+
+## Giới hạn
+
+- Chưa chạy RestoreObject qua endpoint Miles trên AWS thật; Moto completion là
+  emulator evidence. Expiry thực sau Days và billing restore không được đo.
+- HEAD đọc page/chunk/pack metadata và HEAD backend mỗi pack GLACIER của object
+  (không pin): thêm I/O cho mọi HEAD; chưa có benchmark overhead.
+- Local mode (Badger) không có lifecycle nên không có pack GLACIER; restore chỉ
+  hoạt động trong shared Cloud/Edge runtime.
+- Cross-domain CopyObject thuộc W06-CHIEN-02.

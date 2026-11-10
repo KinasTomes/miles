@@ -164,13 +164,13 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 			return nil, storage.ErrInvalid
 		}
 		return objectRuntime(object.Options{Metadata: m, Packs: coordination.ProtectPackStore(packs), Cache: resident, Registry: registry, Clock: clk, ReadUTC: utc, Uploads: m, Events: object.MetadataEvents{},
-			AutoRestore: func(ctx context.Context, view *coordination.WarmView, head storage.ObjectHead, ref storage.PackRef, revision uint64, required time.Time) error {
+			Restore: func(ctx context.Context, view *coordination.WarmView, head storage.ObjectHead, ref storage.PackRef, revision uint64, required time.Time, explicit *storage.RestoreRequest) (bool, error) {
 				f, err := view.SharedFence(ctx)
 				if err != nil {
-					return err
+					return false, err
 				}
-				_, err = m.QueueReadRestore(ctx, f, head, ref, revision, required)
-				return err
+				_, created, err := m.QueueReadRestore(ctx, f, head, ref, revision, required, explicit)
+				return created, err
 			},
 			AdmitWriter: func(ctx context.Context, r object.WriterRequest) (object.AdmittedWriter, error) {
 				mutation, w, e := registry.AdmitProducer(ctx, r.Object, r.OpID, r.Deadline)
