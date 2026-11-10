@@ -217,6 +217,77 @@ class RunnerDiagnosticsTests(unittest.TestCase):
         self.assertEqual(f0["http_status"], 500)
         self.assertNotIn("secret_token", f0)
 
+    def test_sanitize_benchmark_failure_fail_fast_and_indeterminate(self):
+        mock_result = {
+            "status": "failed",
+            "error": "operation_failed",
+            "fail_fast": True,
+            "stop_trigger": "clock_uncertainty_exceeded",
+            "needs_reconciliation": True,
+            "samples": [
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-FAIL-FAST-INDET",
+                    "http_status": 0,
+                    "error": "deadline_exceeded",
+                    "indeterminate": True,
+                    "reconciliation": "needs_reconciliation",
+                    "secret_token": "PRIVATE_VAL",
+                    "duration_ms": 500.0,
+                },
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-INFLIGHT-SUCCESS",
+                    "http_status": 200,
+                    "payload_bytes": 1024,
+                }
+            ]
+        }
+        sanitized = sanitize_benchmark_failure(mock_result)
+        self.assertEqual(sanitized["status"], "failed")
+        self.assertTrue(sanitized["fail_fast"])
+        self.assertEqual(sanitized["stop_trigger"], "clock_uncertainty_exceeded")
+        self.assertTrue(sanitized["needs_reconciliation"])
+        self.assertEqual(len(sanitized["failures"]), 1)
+        f0 = sanitized["failures"][0]
+        self.assertEqual(f0["request_id"], "REQ-FAIL-FAST-INDET")
+        self.assertTrue(f0.get("indeterminate"))
+        self.assertEqual(f0.get("reconciliation"), "needs_reconciliation")
+        self.assertNotIn("secret_token", f0)
+
+    def test_untrusted_reconciliation_string_does_not_leak_secrets(self):
+        """
+        Regression test for P1/P2: verifies that untrusted reconciliation string
+        containing signed tokens or query params is never echoed into sanitized evidence.
+        """
+        leaky_recon = "needs_reconciliation?token=SECRET_TEST_KEY_12345&X-Amz-Signature=TEST_SIGNATURE_9876"
+        client_res = {
+            "status": "failed",
+            "error": "interrupted",
+            "fail_fast": True,
+            "stop_trigger": "interrupted",
+            "needs_reconciliation": True,
+            "samples": [
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "request_id": "REQ-LEAKY-RECON",
+                    "http_status": 0,
+                    "error": "deadline_exceeded",
+                    "indeterminate": True,
+                    "reconciliation": leaky_recon,
+                }
+            ]
+        }
+        sanitized = sanitize_benchmark_failure(client_res)
+        dumped = json.dumps(sanitized)
+        self.assertNotIn("SECRET_TEST_KEY_12345", dumped)
+        self.assertNotIn("TEST_SIGNATURE_9876", dumped)
+        self.assertEqual(sanitized["failures"][0]["reconciliation"], "unknown_reconciliation_state")
+        self.assertEqual(sanitized["stop_trigger"], "interrupted")
+
     def test_parse_prometheus_metrics(self):
         raw = (
             "# HELP miles_ready Readiness gauge\n"

@@ -127,6 +127,8 @@ def classify_error_to_code(err_str, http_status=None):
         return "internal_error"
     if "canceled" in s or "cancelled" in s:
         return "context_canceled"
+    if "interrupt" in s:
+        return "interrupted"
     if http_status == 500:
         return "internal_error"
     if http_status == 503:
@@ -333,9 +335,22 @@ SAFE_ERROR_NAMES = {
     "ServiceUnavailable": "ServiceUnavailable",
     "RequestTimeout": "RequestTimeout",
     "SlowDown": "SlowDown",
+    "clock_uncertainty_exceeded": "clock_uncertainty_exceeded",
+    "sha256_mismatch": "sha256_mismatch",
+    "size_mismatch": "size_mismatch",
+    "interrupted": "interrupted",
+    "canceled": "canceled",
+    "deadline_exceeded": "deadline_exceeded",
+    "operation_failed": "operation_failed",
     "unexpected EOF in data stream": "unexpected EOF in data stream",
     "connection refused": "connection refused",
     "context deadline exceeded": "context deadline exceeded",
+}
+
+SAFE_RECONCILIATION_STATES = {
+    "needs_reconciliation": "needs_reconciliation",
+    "reconciled": "reconciled",
+    "not_needed": "not_needed",
 }
 
 
@@ -395,6 +410,10 @@ def sanitize_benchmark_failure(client_result):
                     record["error"] = SAFE_ERROR_NAMES[cleaned_err]
                 else:
                     record["error"] = ecode
+            if sample.get("indeterminate"):
+                record["indeterminate"] = True
+                raw_recon = str(sample.get("reconciliation", "")).strip()
+                record["reconciliation"] = SAFE_RECONCILIATION_STATES.get(raw_recon, "unknown_reconciliation_state")
             return record
         return None
 
@@ -418,12 +437,23 @@ def sanitize_benchmark_failure(client_result):
     top_err_code = classify_error_to_code(raw_top_err) if raw_top_err is not None else None
     top_err = top_err_code if raw_top_err is not None else None
 
-    return {
+    res = {
         "status": str(client_result.get("status", "unknown")),
         "error": top_err,
         "error_code": top_err_code,
         "failures": failures,
     }
+    if client_result.get("fail_fast"):
+        res["fail_fast"] = True
+    if client_result.get("stop_trigger"):
+        cleaned_trigger = str(client_result.get("stop_trigger")).strip()
+        if cleaned_trigger in SAFE_ERROR_NAMES:
+            res["stop_trigger"] = SAFE_ERROR_NAMES[cleaned_trigger]
+        else:
+            res["stop_trigger"] = classify_error_to_code(cleaned_trigger)
+    if client_result.get("needs_reconciliation"):
+        res["needs_reconciliation"] = True
+    return res
 
 
 CHRONY_PAYLOAD_BEGIN = "__CHRONY_PAYLOAD_BEGIN__"
