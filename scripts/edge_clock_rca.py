@@ -251,6 +251,34 @@ class EdgeClockRCAAnalyzer:
             chrony_cat = "Missing"
             chrony_details = "Chrony tracking telemetry missing or empty in after_metrics node snapshot."
 
+        # Ensure request mapping and exact joins are computed
+        if not self.mapped_requests:
+            self.map_requests()
+
+        matched_count = self.coverage_stats.get("matched_count", 0)
+        failure_count = len(self.failure_samples)
+        onset_req = next((r for r in self.mapped_requests if r["status"] == "FAIL" and r["correlation"] == "correlated_gateway_log"), None)
+        onset_ordinal = onset_req["ordinal"] if onset_req else None
+
+        if matched_count > 0 and onset_ordinal is not None:
+            onset_cat = "Correlated"
+            onset_details = (
+                f"Cross-layer join demonstrates {matched_count}/{failure_count} client failures matching "
+                f"gateway rejections. Transition onset occurred at client failure index #{onset_ordinal:02d} "
+                f"(stage='{onset_req.get('stage')}', failure_class='{onset_req.get('failure_class')}')."
+            )
+        elif failure_count > 0:
+            onset_cat = "Unverified"
+            onset_details = (
+                f"Join incomplete: 0/{failure_count} client failures matched gateway journal records. "
+                "Transition onset cannot be correlated."
+                if has_journals
+                else "Cannot correlate onset: gateway journal records are missing."
+            )
+        else:
+            onset_cat = "Missing" if not has_result else "Unverified"
+            onset_details = "No client failure samples present; onset correlation not applicable."
+
         items = [
             {
                 "artifact": "Client Benchmark Result (edge-c1-t1-result.json)",
@@ -278,13 +306,8 @@ class EdgeClockRCAAnalyzer:
             },
             {
                 "artifact": "Failure Transition Onset Correlation",
-                "category": "Correlated" if (has_result and has_journals) else "Missing",
-                "details": (
-                    f"Cross-layer join demonstrates {len(self.failure_samples)} client failures matching "
-                    f"gateway rejections. Transition onset occurred at client failure index #47."
-                    if (has_result and has_journals)
-                    else "Cannot correlate onset: client result or gateway journal is missing."
-                ),
+                "category": onset_cat,
+                "details": onset_details,
                 "provenance": "Exact request_id join between client error samples and gateway journald records",
             },
             {
@@ -347,6 +370,7 @@ class EdgeClockRCAAnalyzer:
         mapped: List[Dict[str, Any]] = []
         matched_count = 0
         unmatched_count = 0
+        ambiguous_count = 0
 
         for i, s in enumerate(self.put_samples, start=1):
             pseudo_id = f"REQ-EDGE-{i:03d}"
@@ -380,9 +404,17 @@ class EdgeClockRCAAnalyzer:
                 entry["http_status"] = s.get("http_status")  # e.g. 503
 
                 client_req_id = s.get("request_id")
-                gw_rec = gw_by_req_id.get(client_req_id) if client_req_id else None
-
-                if gw_rec:
+                if client_req_id and client_req_id in self.duplicate_gateway_ids:
+                    # Treat duplicate journal IDs as ambiguous rather than silently picking first event
+                    ambiguous_count += 1
+                    entry.update({
+                        "stage": None,
+                        "failure_class": None,
+                        "correlation": "ambiguous_duplicate_gateway_id",
+                        "timestamp": None,
+                    })
+                elif client_req_id and client_req_id in gw_by_req_id:
+                    gw_rec = gw_by_req_id[client_req_id]
                     matched_count += 1
                     entry.update({
                         "stage": gw_rec.get("stage"),
@@ -408,6 +440,7 @@ class EdgeClockRCAAnalyzer:
             "gateway_records_count": len(self.gateway_records),
             "matched_count": matched_count,
             "unmatched_count": unmatched_count,
+            "ambiguous_count": ambiguous_count,
             "duplicate_gateway_ids": list(self.duplicate_gateway_ids),
             "malformed_journal_count": self.malformed_journal_count,
         }
@@ -537,6 +570,49 @@ class EdgeClockRCAAnalyzer:
         drift_ppm = edge_clock.get("drift_ppm")
         offset_s = edge_clock.get("offset_seconds")
 
+        # Ensure request mapping and exact joins are computed
+        if not self.mapped_requests:
+            self.map_requests()
+
+        onset_req = next((r for r in self.mapped_requests if r["status"] == "FAIL" and r["correlation"] == "correlated_gateway_log"), None)
+        first_fail_req = next((r for r in self.mapped_requests if r["status"] == "FAIL"), None)
+        eval_req = onset_req or first_fail_req
+
+        matched_clock_rejections = [
+            r for r in self.mapped_requests
+            if r["status"] == "FAIL"
+            and r["correlation"] == "correlated_gateway_log"
+            and r.get("failure_class") == "clock_uncertainty_exceeded"
+        ]
+        clock_matched_count = len(matched_clock_rejections)
+        total_failures = len(self.failure_samples)
+
+        if eval_req:
+            cmd_dur_evidence = (
+                f"First failed request (PUT #{eval_req['ordinal']:02d}) had duration {eval_req['duration_ms']}ms "
+                f"(longer than the subsequent ~20ms admission rejections) and failed at stage '{eval_req.get('stage') or 'unmatched'}'. "
+                "If writer admission or keepalive probe stalled waiting for chronyc for 1000ms, it would return ErrClockUncertain."
+            )
+        else:
+            cmd_dur_evidence = "No failed requests recorded to evaluate chronyc command latency."
+
+        if clock_matched_count > 0:
+            err_clock_verdict = "CONFIRMED"
+            err_clock_evidence = (
+                f"{clock_matched_count}/{total_failures} gateway log correlations in edge-pilot journald "
+                f"with failure_class='clock_uncertainty_exceeded'."
+            )
+            err_clock_conf = "High (Direct native evidence)"
+        else:
+            err_clock_verdict = "UNVERIFIED"
+            err_clock_evidence = (
+                f"0/{total_failures} gateway log correlations with failure_class='clock_uncertainty_exceeded'. "
+                "Cannot confirm runtime fail-closed clock protection without verified matching gateway log evidence."
+                if total_failures > 0
+                else "No failure samples to verify."
+            )
+            err_clock_conf = "None (No matching clock_uncertainty_exceeded gateway logs)"
+
         taxonomy = [
             {
                 "failure_code": "sample_age_exceeded",
@@ -565,10 +641,7 @@ class EdgeClockRCAAnalyzer:
                     "on a 2-vCPU burstable instance, fork/exec or chronyc command execution can exceed 1000ms, "
                     "causing context timeout and immediate return of ErrClockUnavailable."
                 ),
-                "supporting_evidence": (
-                    "PUT #47 had duration 1,355ms (longer than the ~20ms admission checks) and failed at stage 'prepare'. "
-                    "If writer admission or keepalive probe stalled waiting for chronyc for 1000ms, it would return ErrClockUncertain."
-                ),
+                "supporting_evidence": cmd_dur_evidence,
                 "confidence": "Medium (Plausible, requires per-probe execution latency instrumentation)",
             },
             {
@@ -608,18 +681,13 @@ class EdgeClockRCAAnalyzer:
             {
                 "failure_code": "err_clock_unavailable",
                 "name": "Runtime Clock Source Fail-Closed Gate (storage.ErrClockUncertain)",
-                "verdict": "CONFIRMED" if len(self.failure_samples) > 0 and len(self.gateway_records) > 0 else "UNVERIFIED",
+                "verdict": err_clock_verdict,
                 "mechanism": (
                     "All gateway rejections were mapped to storage.ErrClockUncertain returned by utc.Bounds(ctx). "
                     "The runtime correctly preserved fail-closed semantics, preventing invalid leases or data corruption."
                 ),
-                "supporting_evidence": (
-                    f"{self.coverage_stats.get('matched_count', 0)}/{len(self.failure_samples)} gateway log correlations "
-                    f"in edge-pilot journald with failure_class='clock_uncertainty_exceeded'."
-                    if len(self.failure_samples) > 0
-                    else "No failure samples to verify."
-                ),
-                "confidence": "High (Direct native evidence)",
+                "supporting_evidence": err_clock_evidence,
+                "confidence": err_clock_conf,
             },
         ]
         self.taxonomy = taxonomy
@@ -699,6 +767,40 @@ class EdgeClockRCAAnalyzer:
         matched = self.coverage_stats.get("matched_count", 0)
         unmatched = self.coverage_stats.get("unmatched_count", 0)
 
+        onset_req = next((r for r in self.mapped_requests if r["status"] == "FAIL" and r["correlation"] == "correlated_gateway_log"), None)
+        onset_ordinal = onset_req["ordinal"] if onset_req else None
+        onset_stage = onset_req.get("stage", "unverified") if onset_req else "unverified"
+        matched_clock = [
+            r for r in self.mapped_requests
+            if r["status"] == "FAIL"
+            and r["correlation"] == "correlated_gateway_log"
+            and r.get("failure_class") == "clock_uncertainty_exceeded"
+        ]
+        clock_matched_count = len(matched_clock)
+
+        if failures > 0 and clock_matched_count > 0:
+            outcome_str = f"{successes}/{total_reqs} PUT PASS, {failures}/{total_reqs} PUT FAIL (Gateway correlated: {matched}/{failures})"
+        elif failures > 0:
+            outcome_str = f"{successes}/{total_reqs} PUT PASS, {failures}/{total_reqs} PUT FAIL (Gateway unmatched / unverified: {matched}/{failures})"
+        else:
+            outcome_str = f"{successes}/{total_reqs} PUT PASS"
+
+        if matched > 0 and clock_matched_count > 0 and onset_ordinal is not None:
+            finding_2_text = (
+                f"2. **The failure was triggered by runtime fail-closed clock protection ({clock_matched_count}/{failures} gateway correlations verified):**\n"
+                f"   {clock_matched_count}/{failures} matching rejected requests were confirmed in `edge-pilot` gateway logs with `failure_class='clock_uncertainty_exceeded'`.\n"
+                f"   The onset failure (PUT #{onset_ordinal:02d}) was admitted into `{onset_stage}` before clock uncertainty was detected, whereas subsequent failures were rejected at `writer_admission`.\n"
+                f"   Prometheus counter `miles_dependency_probe_failures_total` jumped from 8 to 16 (+8 failures), confirming internal clock bounds rejection."
+            )
+        elif failures > 0:
+            finding_2_text = (
+                f"2. **Clock rejection unverified ({matched}/{failures} gateway correlations matched, {clock_matched_count} clock_uncertainty_exceeded):**\n"
+                "   No matching gateway journal records with `failure_class='clock_uncertainty_exceeded'` were found for client failures.\n"
+                "   Clock uncertainty root cause cannot be confirmed from the provided artifacts."
+            )
+        else:
+            finding_2_text = "2. **No failure records:** No failed requests were observed in the provided benchmark result."
+
         # Timing values
         success_dur = timeline.get("success_window", {}).get("duration_latency_sum_seconds", 0.0)
         failed_lat_sum = timeline.get("failure_window", {}).get("client_failed_latencies_sum_seconds", 0.0)
@@ -713,7 +815,7 @@ class EdgeClockRCAAnalyzer:
             "",
             "- **Date / Baseline:** 2026-11-10 (Analysis of 2026-11-08 AWS Live Run `w05-hung03-live-20261108-0345`)",
             "- **Target Scope:** Edge C1 Trial 1 (Singapore `ap-southeast-1`, Instance: `t4g.small` ARM64 via Roles Anywhere)",
-            f"- **Outcome:** {successes}/{total_reqs} PUT PASS, {failures}/{total_reqs} PUT FAIL (Gateway correlated: {matched}/{failures})",
+            f"- **Outcome:** {outcome_str}",
             "- **Policy Enforced:** AWS State 0 (strictly offline analysis, zero live API calls, zero credentials, zero secret leakage)",
             "- **Reference Documentation:** [edge-acceptance-followup-plan.md](../planning/edge-acceptance-followup-plan.md), [live-acceptance-20261108-report.md](live-acceptance-20261108-report.md)",
             "",
@@ -731,10 +833,7 @@ class EdgeClockRCAAnalyzer:
             "   The previous diagnostic orchestrator captured a single timestamp `t0` prior to iterating across nodes over SSM/SSH.",
             "   Because probing `cloud-a`, `cloud-b`, and `edge-a` sequentially required ~65 seconds, subtracting the fresh host `ref_time` at the end",
             "   of the loop from the frozen initial `t0` mathematically yielded negative sample age values. In PR #73, this was resolved by per-probe host timestamps.",
-            f"2. **The failure was triggered by runtime fail-closed clock protection ({matched}/{failures} gateway correlations verified):**",
-            "   All matching rejected requests were confirmed in `edge-pilot` gateway logs with `failure_class='clock_uncertainty_exceeded'`.",
-            "   The onset failure was admitted into `prepare` before clock uncertainty was detected, whereas subsequent failures were rejected at `writer_admission`.",
-            "   Prometheus counter `miles_dependency_probe_failures_total` jumped from 8 to 16 (+8 failures), confirming internal clock bounds rejection.",
+            finding_2_text,
             "3. **The root cause cannot be conclusively isolated between two competing hypotheses without higher-resolution telemetry:**",
             "   - **Hypothesis A (NTP poll starvation):** Chrony poll interval was 16.2s with a 34.4s freshness deadline. Burstable CPU contention under",
             "     sustained 8-MiB chunk streaming may have caused `chronyd` to miss a poll cycle, crossing the 34.4s threshold.",
@@ -831,6 +930,35 @@ class EdgeClockRCAAnalyzer:
             f"> **Measurement boundary distinction:** The gateway rejected all matching requests within {gw_span_str} on the server.",
             f"> The client-side sum of sequential failed request latencies (including HTTP handshake, round-trip, and error processing) was {failed_lat_sum:.2f} seconds.",
             "",
+        ])
+
+        if failures > 0 and clock_matched_count > 0 and onset_ordinal is not None:
+            mermaid_failure_lines = [
+                "  Note over Client,Gateway: Error Onset (First 503)",
+                f"  Client->>Gateway: PUT #{onset_ordinal}",
+                "  Gateway->>Gateway: AdmitWriter PASS -> begins session.Prepare()",
+                "  Gateway->>Chrony: Bounds(ctx) probe in KeepAlive / Prepare",
+                "  Chrony-->>Gateway: ClockUncertain (age > 34.4s or chronyc timeout > 1.0s)",
+                f"  Gateway-->>Client: 503 ServiceUnavailable (stage={onset_stage})",
+                f"  Note over Client,Gateway: Rapid Rejections ({gw_span_str} server span)",
+                f"  Client->>Gateway: PUT #{onset_ordinal+1}..{total_reqs}" if failures > 1 else "  Note over Client: No subsequent failures",
+                "  Gateway->>Chrony: Bounds(ctx) at writer_admission" if failures > 1 else "  Note over Gateway: No further admissions",
+                "  Chrony-->>Gateway: ClockUncertain" if failures > 1 else "  Note over Gateway: OK",
+                "  Gateway-->>Client: 503 ServiceUnavailable (stage=writer_admission)" if failures > 1 else "  Note over Client: Done",
+            ]
+        elif failures > 0:
+            mermaid_failure_lines = [
+                "  Note over Client,Gateway: Error Onset (Uncorrelated)",
+                "  Client->>Gateway: PUT failure",
+                f"  Gateway-->>Client: Error ({matched}/{failures} matched in gateway logs)",
+                "  Note over Gateway,Chrony: Clock uncertainty unverified in gateway logs",
+            ]
+        else:
+            mermaid_failure_lines = [
+                "  Note over Client,Gateway: Workload completed with zero failures",
+            ]
+
+        lines.extend([
             "```mermaid",
             "sequenceDiagram",
             "  autonumber",
@@ -841,17 +969,7 @@ class EdgeClockRCAAnalyzer:
             f"  Client->>Gateway: PUT #1..{successes} (8 MiB chunks)" if successes > 0 else "  Note over Client,Gateway: No successful PUTs recorded",
             "  Gateway->>Gateway: Bounds(ctx) PASS, streams chunks to pack" if successes > 0 else "  Note over Gateway: Idle",
             f"  Gateway-->>Client: Success ({successes} operations committed)" if successes > 0 else "  Note over Client: Waiting",
-            "  Note over Client,Gateway: Error Onset (First 503)",
-            f"  Client->>Gateway: PUT #{successes+1}" if failures > 0 else "  Note over Client: No failures recorded",
-            "  Gateway->>Gateway: AdmitWriter PASS -> begins session.Prepare()" if failures > 0 else "  Note over Gateway: No failures",
-            "  Gateway->>Chrony: Bounds(ctx) probe in KeepAlive / Prepare" if failures > 0 else "  Note over Chrony: Idle",
-            "  Chrony-->>Gateway: ClockUncertain (age > 34.4s or chronyc timeout > 1.0s)" if failures > 0 else "  Note over Gateway: In sync",
-            "  Gateway-->>Client: 503 ServiceUnavailable (stage=prepare)" if failures > 0 else "  Note over Client: No errors",
-            f"  Note over Client,Gateway: Rapid Rejections ({gw_span_str} server span)",
-            f"  Client->>Gateway: PUT #{successes+2}..{total_reqs}" if failures > 1 else "  Note over Client: No subsequent failures",
-            "  Gateway->>Chrony: Bounds(ctx) at writer_admission" if failures > 1 else "  Note over Gateway: No further admissions",
-            "  Chrony-->>Gateway: ClockUncertain" if failures > 1 else "  Note over Gateway: OK",
-            "  Gateway-->>Client: 503 ServiceUnavailable (stage=writer_admission)" if failures > 1 else "  Note over Client: Done",
+        ] + mermaid_failure_lines + [
             "  Note over Client,Chrony: Post-workload Telemetry Collector (~65s loop)",
             "  Client->>Client: Frozen T0 recorded at completion",
             "  Client->>Chrony: SSM probe reaches edge-a ~65s later",
@@ -890,6 +1008,22 @@ class EdgeClockRCAAnalyzer:
 
         for t in tax:
             lines.append(f"| `{t['failure_code']}` | **{t['name']}** | `{t['verdict']}` | {t['supporting_evidence']} |")
+
+        if matched > 0 and onset_ordinal is not None:
+            onset_status = "**CONFIRMED**"
+            onset_res = f"Closed ({matched}/{failures} gateway correlations verified)"
+            onset_text = f"Failure onset occurred at PUT #{onset_ordinal:02d}"
+        else:
+            onset_status = "**UNVERIFIED**"
+            onset_res = f"Unverified (0/{failures} gateway correlations matched)"
+            onset_text = "Failure onset correlation"
+
+        if clock_matched_count > 0:
+            gw_status = "**CONFIRMED**"
+            gw_res = f"Preserved (Fail-closed R1 policy confirmed on {clock_matched_count}/{failures} requests)"
+        else:
+            gw_status = "**UNVERIFIED**"
+            gw_res = f"Unverified (0/{failures} clock_uncertainty_exceeded matches)"
 
         lines.extend([
             "",
@@ -937,8 +1071,8 @@ class EdgeClockRCAAnalyzer:
             "| Finding | Classification | Next Action |",
             "|---|---|---|",
             "| Negative sample age is a collector artifact | **CONFIRMED** | Closed (PR #73 merged with per-probe validation) |",
-            "| Gateway rejected requests fail-closed | **CONFIRMED** | Preserved (Fail-closed R1 policy remains unchanged) |",
-            f"| Failure onset occurred at PUT #{timeline.get('failure_window', {}).get('first_failure_put_ordinal', 'UNVERIFIED')} | **CONFIRMED** | Closed ({matched}/{failures} gateway correlations verified) |",
+            f"| Gateway rejected requests fail-closed | {gw_status} | {gw_res} |",
+            f"| {onset_text} | {onset_status} | {onset_res} |",
             "| CPU starvation delayed chronyd poll | **HYPOTHESIS** | Requires high-frequency host ring buffer on next live run |",
             "| Local chronyc command execution timed out | **HYPOTHESIS** | Requires host command duration telemetry on next live run |",
             "| Horizon uncertainty exceeded 2.0s | **UNVERIFIED** | Requires in-flight telemetry during failure window |",

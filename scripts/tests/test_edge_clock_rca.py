@@ -341,9 +341,92 @@ class EdgeClockRCATests(unittest.TestCase):
             ]
         }
         analyzer = EdgeClockRCAAnalyzer(result, failed_window)
-        analyzer.map_requests()
+        reqs = analyzer.map_requests()
         self.assertIn("REQ-DUP-1", analyzer.duplicate_gateway_ids)
         self.assertIn("REQ-DUP-1", analyzer.coverage_stats["duplicate_gateway_ids"])
+        # Ambiguous duplicate ID must NOT be treated as a clean match
+        self.assertEqual(reqs[0]["correlation"], "ambiguous_duplicate_gateway_id")
+        self.assertIsNone(reqs[0]["stage"])
+        self.assertIsNone(reqs[0]["failure_class"])
+        self.assertEqual(analyzer.coverage_stats["matched_count"], 0)
+        self.assertEqual(analyzer.coverage_stats["ambiguous_count"], 1)
+
+    def test_adversarial_mismatched_and_unrelated_gateway_evidence(self):
+        """
+        Adversarial test (per Extaseq review):
+        One client HTTP 503 carrying request_id='client-A' and one gateway record
+        carrying request_id='gateway-B' with an unrelated failure_class (e.g. 'disk_full').
+
+        Verifies that:
+        1. map_requests()[0]['correlation'] == 'unmatched' and matched_count == 0.
+        2. build_evidence_inventory() labels 'Failure Transition Onset Correlation'
+           as 'Unverified' (NOT 'Correlated'), stating '0/1 client failures matched'
+           (NOT '1 client failures matching' and NOT '#47').
+        3. classify_failure_taxonomy() labels err_clock_unavailable as 'UNVERIFIED'
+           (NOT 'CONFIRMED'), stating '0/1 gateway log correlations'.
+        4. generate_rca_report() consistently reports UNVERIFIED and does not claim
+           confirmed clock uncertainty or PUT #47.
+        """
+        result = {
+            "schema_version": 1,
+            "status": "failed",
+            "samples": [
+                {
+                    "phase": "put",
+                    "operation": "PutObject",
+                    "file": "test-file.bin",
+                    "latency_ns": 1500000000,
+                    "error": "ServiceUnavailable",
+                    "http_status": 503,
+                    "request_id": "client-A",
+                }
+            ],
+        }
+        failed_window = {
+            "node_journals": [
+                {
+                    "alias": "edge-a",
+                    "lines": [
+                        json.dumps({
+                            "time": "2026-11-08T04:26:01.000Z",
+                            "request_id": "gateway-B",
+                            "stage": "writer_admission",
+                            "failure_class": "disk_full",
+                        })
+                    ],
+                }
+            ]
+        }
+        analyzer = EdgeClockRCAAnalyzer(result, failed_window)
+
+        # 1. Join & Mapping check
+        reqs = analyzer.map_requests()
+        self.assertEqual(len(reqs), 1)
+        self.assertEqual(reqs[0]["correlation"], "unmatched")
+        self.assertIsNone(reqs[0]["stage"])
+        self.assertIsNone(reqs[0]["failure_class"])
+        self.assertEqual(analyzer.coverage_stats["matched_count"], 0)
+
+        # 2. Inventory check
+        inv = analyzer.build_evidence_inventory()
+        onset_item = next(item for item in inv if item["artifact"] == "Failure Transition Onset Correlation")
+        self.assertEqual(onset_item["category"], "Unverified")
+        self.assertIn("0/1 client failures matched", onset_item["details"])
+        self.assertNotIn("47", onset_item["details"])
+
+        # 3. Taxonomy check
+        tax = analyzer.classify_failure_taxonomy()
+        tax_by_code = {t["failure_code"]: t for t in tax}
+        err_clock = tax_by_code["err_clock_unavailable"]
+        self.assertEqual(err_clock["verdict"], "UNVERIFIED")
+        self.assertIn("0/1 gateway log correlations", err_clock["supporting_evidence"])
+
+        # 4. Report check
+        report = analyzer.generate_rca_report()
+        self.assertIn("Clock rejection unverified (0/1 gateway correlations matched", report)
+        self.assertIn("| Gateway rejected requests fail-closed | **UNVERIFIED** |", report)
+        self.assertIn("| Failure onset correlation | **UNVERIFIED** |", report)
+        self.assertNotIn("Transition onset occurred at client failure index #47", report)
 
     def test_missing_and_empty_evidence_behavior(self):
         """

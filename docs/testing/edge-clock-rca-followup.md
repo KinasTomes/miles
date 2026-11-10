@@ -21,8 +21,8 @@ This offline root-cause analysis (Workstream R) establishes three primary conclu
    Because probing `cloud-a`, `cloud-b`, and `edge-a` sequentially required ~65 seconds, subtracting the fresh host `ref_time` at the end
    of the loop from the frozen initial `t0` mathematically yielded negative sample age values. In PR #73, this was resolved by per-probe host timestamps.
 2. **The failure was triggered by runtime fail-closed clock protection (44/44 gateway correlations verified):**
-   All matching rejected requests were confirmed in `edge-pilot` gateway logs with `failure_class='clock_uncertainty_exceeded'`.
-   The onset failure was admitted into `prepare` before clock uncertainty was detected, whereas subsequent failures were rejected at `writer_admission`.
+   44/44 matching rejected requests were confirmed in `edge-pilot` gateway logs with `failure_class='clock_uncertainty_exceeded'`.
+   The onset failure (PUT #47) was admitted into `prepare` before clock uncertainty was detected, whereas subsequent failures were rejected at `writer_admission`.
    Prometheus counter `miles_dependency_probe_failures_total` jumped from 8 to 16 (+8 failures), confirming internal clock bounds rejection.
 3. **The root cause cannot be conclusively isolated between two competing hypotheses without higher-resolution telemetry:**
    - **Hypothesis A (NTP poll starvation):** Chrony poll interval was 16.2s with a 34.4s freshness deadline. Burstable CPU contention under
@@ -43,7 +43,7 @@ Every artifact from the 2026-11-08 session has been inventoried and classified i
 | Gateway Structured Journal (edge-pilot journald) | **Observed** | 44 gateway log entries captured (1 at stage 'prepare', 43 at stage 'writer_admission'). Failure class(es): clock_uncertainty_exceeded. Malformed lines: 0, Duplicate IDs: 0. | edge-pilot host systemd journald structured JSON logs via SSM/SSH capture |
 | Dependency Probe Metrics (miles_dependency_probe_failures_total) | **Observed** | Prometheus counter miles_dependency_probe_failures_total increased from 8 before workload to 16 after (delta: +8 failures). miles_ready remained 1. | edge-pilot /metrics Prometheus scrape |
 | Chrony Status Post-Workload (telemetry.after.nodes) | **Observed** | ref_time=2026-11-08T04:27:03.372766+00:00, stratum=4, leap=Normal, offset=1.12µs, drift=28.433 ppm, interval=16.2s, max_allowed_age=34.4s. Captured sample_age=-61.1493s. | edge-pilot chronyc tracking output via administrative SSM probe |
-| Failure Transition Onset Correlation | **Correlated** | Cross-layer join demonstrates 44 client failures matching gateway rejections. Transition onset occurred at client failure index #47. | Exact request_id join between client error samples and gateway journald records |
+| Failure Transition Onset Correlation | **Correlated** | Cross-layer join demonstrates 44/44 client failures matching gateway rejections. Transition onset occurred at client failure index #47 (stage='prepare', failure_class='clock_uncertainty_exceeded'). | Exact request_id join between client error samples and gateway journald records |
 | Negative Sample Age Artifact (-61.15s) | **Correlated** | Collector timestamp bug: collector recorded single now_unix at beginning of collection, then sequentially probed cloud-a, cloud-b, and edge-a (~65s total probe loop). Comparing initial now_unix against fresh edge ref_time produced negative age. Mathematical proof demonstrates this is an artifact of sequential SSM RTT, NOT clock travel. | Mathematical reconciliation of sequential node probes against frozen T0 |
 | CPU Burstable Credit / Scheduling Starvation | **Hypothesized** | Hypothesis: intensive streaming of consecutive 8-MiB chunks saturated the burstable baseline of t4g.small, delaying the chronyd NTP poll beyond the 34.4s max age threshold. Unproven: requires per-second CPU steal and chronyc log correlation. | Engineering hypothesis from live acceptance report |
 | Local chronyc Command Duration Spike (>1.0s) | **Hypothesized** | Hypothesis: Go runtime executes 'chronyc -c tracking' with 1.0s context timeout (chrony.go:49). High I/O or CPU contention may have caused chronyc execution to take > 1.0s, returning ErrClockUnavailable. | Runtime chrony.go:49 timeout analysis |
@@ -147,7 +147,7 @@ To prevent misattribution, the five distinct candidate mechanisms are analyzed:
 | Failure Class / Code | Description & Threshold | Epistemological Status | Supporting Evidence & Parameters |
 |---|---|---|---|
 | `sample_age_exceeded` | **NTP Sample Freshness Exceeded (age > 2*interval + 2)** | `HYPOTHESIS / CORRELATED` | Failure onset occurred at t=78.8s into the workload. Chrony poll interval was 16.2s. Prometheus probe failures increased by 8 during the test window. However, direct per-second chronyc logs from 04:25:30 to 04:26:00 were NOT captured; therefore this remains an unconfirmed hypothesis. |
-| `chrony_command_duration_exceeded_1s` | **Host chronyc Execution Timeout (> 1.0s)** | `HYPOTHESIS / PLAUSIBLE` | PUT #47 had duration 1,355ms (longer than the ~20ms admission checks) and failed at stage 'prepare'. If writer admission or keepalive probe stalled waiting for chronyc for 1000ms, it would return ErrClockUncertain. |
+| `chrony_command_duration_exceeded_1s` | **Host chronyc Execution Timeout (> 1.0s)** | `HYPOTHESIS / PLAUSIBLE` | First failed request (PUT #47) had duration 1374.27ms (longer than the subsequent ~20ms admission rejections) and failed at stage 'prepare'. If writer admission or keepalive probe stalled waiting for chronyc for 1000ms, it would return ErrClockUncertain. |
 | `horizon_uncertainty_exceeded_2s` | **Mathematical Horizon Uncertainty Exceeded (> 2.0s)** | `UNVERIFIED` | Post-workload snapshot shows low drift and offset, but absence of continuous during-workload telemetry prevents ruling this out conclusively. |
 | `ntp_unsync_leap_stratum` | **NTP Source Unsync / Leap State / Stratum Invalid** | `UNVERIFIED / UNLIKELY` | Post-workload telemetry confirms Stratum=4, Leap=Normal, Reference IP=169.254.169.123. Zero network drops to link-local reference reported. |
 | `err_clock_unavailable` | **Runtime Clock Source Fail-Closed Gate (storage.ErrClockUncertain)** | `CONFIRMED` | 44/44 gateway log correlations in edge-pilot journald with failure_class='clock_uncertainty_exceeded'. |
@@ -196,7 +196,7 @@ The offline simulation suite in `scripts/tests/test_edge_clock_rca.py` validates
 | Finding | Classification | Next Action |
 |---|---|---|
 | Negative sample age is a collector artifact | **CONFIRMED** | Closed (PR #73 merged with per-probe validation) |
-| Gateway rejected requests fail-closed | **CONFIRMED** | Preserved (Fail-closed R1 policy remains unchanged) |
+| Gateway rejected requests fail-closed | **CONFIRMED** | Preserved (Fail-closed R1 policy confirmed on 44/44 requests) |
 | Failure onset occurred at PUT #47 | **CONFIRMED** | Closed (44/44 gateway correlations verified) |
 | CPU starvation delayed chronyd poll | **HYPOTHESIS** | Requires high-frequency host ring buffer on next live run |
 | Local chronyc command execution timed out | **HYPOTHESIS** | Requires host command duration telemetry on next live run |
