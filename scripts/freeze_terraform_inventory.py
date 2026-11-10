@@ -26,6 +26,15 @@ STATE_TYPES = {
     "aws_ssm_document": "ssm_documents",
     "aws_ssm_parameter": "ssm_parameters",
     "aws_cloudwatch_metric_alarm": "cloudwatch_alarms",
+    "aws_cloudwatch_log_group": "cloudwatch_log_groups",
+    "aws_launch_template": "launch_templates",
+    "aws_kms_alias": "kms_aliases",
+    "aws_lb": "alb_names",
+    "aws_lb_target_group": "target_groups",
+    "aws_rolesanywhere_trust_anchor": "trust_anchors",
+    "aws_rolesanywhere_profile": "rolesanywhere_profiles",
+    "aws_kms_key": "kms_keys",
+    "aws_secretsmanager_secret": "secrets",
 }
 
 
@@ -40,6 +49,11 @@ def compare_inventory(state_resources, inventory):
             continue
         actual = inventory.get(inventory_type)
         expected = [actual] if isinstance(actual, str) else actual if isinstance(actual, list) else []
+        if kind == "aws_lb" and ":loadbalancer/" in identity:
+            parts = identity.split(":loadbalancer/", 1)[1].split("/")
+            identity = parts[1] if len(parts) == 3 else identity
+        if kind == "aws_kms_key":
+            expected = [value.rsplit("/", 1)[-1] for value in expected if isinstance(value, str)]
         if identity not in expected:
             errors.append(f"state_resource_missing:{resource['address']}:{identity}")
     return errors

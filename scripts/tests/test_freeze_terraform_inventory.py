@@ -31,9 +31,17 @@ class FreezeInventoryTests(unittest.TestCase):
             {"address": "module.security.aws_cloudwatch_log_group.runtime", "type": "aws_cloudwatch_log_group", "id": "/miles/logs"},
         ]
         errors = compare_inventory(resources, {"dynamodb_tables": ["table"]})
-        self.assertTrue(any("unsupported_state_resource:module.security.aws_cloudwatch_log_group.runtime" in error for error in errors))
+        self.assertTrue(any("state_resource_missing:module.security.aws_cloudwatch_log_group.runtime" in error for error in errors))
         self.assertEqual(compare_inventory(resources[:1], {"dynamodb_tables": ["table"]}), [])
         self.assertTrue(compare_inventory(resources[:1], {"dynamodb_tables": []}))
+
+    def test_state_arn_forms_match_native_inventory_identifiers(self):
+        resources = [
+            {"address": "aws_lb.test", "type": "aws_lb", "id": "arn:aws:elasticloadbalancing:r:a:loadbalancer/app/test/123"},
+            {"address": "aws_kms_key.test", "type": "aws_kms_key", "id": "key-id"},
+        ]
+        self.assertEqual(compare_inventory(resources, {"alb_names": ["test"], "kms_keys": ["arn:aws:kms:r:a:key/key-id"]}), [])
+        self.assertTrue(compare_inventory(resources, {"alb_names": ["other"], "kms_keys": ["arn:aws:kms:r:a:key/key-id"]}))
 
     def test_cli_creates_private_file_without_overwriting(self):
         with tempfile.TemporaryDirectory() as directory:

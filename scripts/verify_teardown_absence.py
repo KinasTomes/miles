@@ -106,6 +106,9 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     "ssm_documents",
     "key_pairs",
     "cloudwatch_alarms",
+    "cloudwatch_log_groups",
+    "launch_templates",
+    "kms_aliases",
     "kms_keys",
     "secrets",
 })
@@ -684,6 +687,9 @@ class TeardownAbsenceVerifier:
             "ssm_parameters": [],
             "key_pairs": [],
             "cloudwatch_alarms": [],
+            "cloudwatch_log_groups": [],
+            "launch_templates": [],
+            "kms_aliases": [],
             "kms_keys": [],
             "secrets": [],
             "expected_missing": [],
@@ -854,6 +860,9 @@ class TeardownAbsenceVerifier:
             _dedup_add("dynamodb_tables", _extract_id_list(_unwrap_val(data["dynamodb_tables"])))
         if data.get("cloudwatch_alarms"):
             _dedup_add("cloudwatch_alarms", _extract_id_list(_unwrap_val(data["cloudwatch_alarms"])))
+        for key in ("cloudwatch_log_groups", "launch_templates", "kms_aliases"):
+            if data.get(key):
+                _dedup_add(key, _extract_id_list(_unwrap_val(data[key])))
         if data.get("acm_certificates"):
             _dedup_add("acm_certificates", _extract_id_list(_unwrap_val(data["acm_certificates"])))
         if data.get("key_pairs"):
@@ -1065,6 +1074,22 @@ class TeardownAbsenceVerifier:
                 "status": "UNEXPECTED_ERROR",
                 "reason": f"json_decode_error: {e}",
             }
+
+    def check_list_absent(self, name: str, resource_type: str, args: List[str],
+                          list_key: str, identity_key: str) -> Dict[str, Any]:
+        rc, stdout, stderr = self._runner(args + ["--output", "json"])
+        if rc:
+            return {"resource": name, "type": resource_type, "status": "UNEXPECTED_ERROR", "reason": f"exit_code_{rc}", "details": stderr.strip()}
+        try:
+            items = json.loads(stdout)[list_key]
+            if not isinstance(items, list) or any(not isinstance(item, dict) or identity_key not in item for item in items):
+                raise ValueError("invalid response list")
+            present = any(item[identity_key] == name for item in items)
+        except (KeyError, TypeError, ValueError) as exc:
+            return {"resource": name, "type": resource_type, "status": "UNEXPECTED_ERROR", "reason": str(exc)}
+        return {"resource": name, "type": resource_type,
+                "status": "STILL_PRESENT" if present else "ABSENT",
+                "reason": "RESOURCE_EXISTS_LEAK" if present else "NOT_FOUND_IN_LIST"}
 
     def check_asg_absent(self, asg_name: str) -> Dict[str, Any]:
         """
@@ -1733,6 +1758,18 @@ class TeardownAbsenceVerifier:
         for eip in self.inventory.get("elastic_ips", []):
             results[f"eip_{eip}"] = self.check_elastic_ip_absent(eip)
             checked_resources.add(("elastic_ips", eip))
+
+        for name in self.inventory.get("cloudwatch_log_groups", []):
+            results[f"log_{name}"] = self.check_list_absent(name, "cloudwatch_log_group", ["logs", "describe-log-groups", "--log-group-name-prefix", name], "logGroups", "logGroupName")
+            checked_resources.add(("cloudwatch_log_groups", name))
+
+        for template in self.inventory.get("launch_templates", []):
+            results[f"launch_template_{template}"] = self.check_resource_absent(template, "launch_template", ["ec2", "describe-launch-templates", "--launch-template-ids", template], ["InvalidLaunchTemplateId.NotFound"])
+            checked_resources.add(("launch_templates", template))
+
+        for alias in self.inventory.get("kms_aliases", []):
+            results[f"kms_alias_{alias}"] = self.check_list_absent(alias, "kms_alias", ["kms", "list-aliases"], "Aliases", "AliasName")
+            checked_resources.add(("kms_aliases", alias))
 
         # Completeness guard: ensure every resource expected by manifest and inventory was checked
         expected_to_check: Set[Tuple[str, str]] = set()

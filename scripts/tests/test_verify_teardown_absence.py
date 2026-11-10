@@ -39,6 +39,23 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertFalse(result["all_absent"])
         self.assertEqual(result["status"], "FAIL")
 
+    def test_owned_log_group_launch_template_and_kms_alias_are_checked(self):
+        def runner(cmd):
+            if "describe-log-groups" in cmd:
+                return 0, json.dumps({"logGroups": [{"logGroupName": "/miles/runtime"}]}), ""
+            if "describe-launch-templates" in cmd:
+                return 255, "", "InvalidLaunchTemplateId.NotFound"
+            if "list-aliases" in cmd:
+                return 0, json.dumps({"Aliases": []}), ""
+            self.fail(f"unexpected command {cmd}")
+        verifier = TeardownAbsenceVerifier(inventory={"cloudwatch_log_groups": ["/miles/runtime"], "launch_templates": ["lt-1"], "kms_aliases": ["alias/miles"]}, cli_runner=runner)
+        summary = verifier.verify_all()
+        self.assertFalse(summary["all_absent"])
+        self.assertEqual(summary["still_present"], ["/miles/runtime"])
+        self.assertEqual(summary["absent_count"], 2)
+        malformed = TeardownAbsenceVerifier(inventory={}, cli_runner=lambda cmd: (0, "{}", ""))
+        self.assertEqual(malformed.check_list_absent("name", "log", ["logs"], "logGroups", "logGroupName")["status"], "UNEXPECTED_ERROR")
+
     def test_live_never_passes_without_state_reconciliation(self):
         inventory = {"account_id": "123456789012", "dynamodb_tables": ["table"]}
         runner = lambda cmd: (0, json.dumps({"Account": "123456789012"}), "")
