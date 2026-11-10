@@ -306,6 +306,18 @@ func runSharedRuntimeFixture(t *testing.T, gcFlows, live, faultFlows bool, coldC
 	}
 
 	cacheDoc, _ := json.Marshal(map[string]any{"cache": config.DefaultCachePolicy()})
+	// Fresh S3 buckets have a virtual default policy until an Admin edit.
+	fresh, e := nodes[2].ObjectsForRequest(ctx, bucket.Name)
+	if e != nil {
+		t.Fatal(e)
+	}
+	freshData := []byte("fresh bucket default policy")
+	if _, e = fresh.PutObject(ctx, object.PutRequest{Bucket: bucket, Key: "before-policy-edit", UserID: "owner", CredentialID: "RUNTIMEKEY00000000001", ContentLength: int64(len(freshData)), Body: bodyForNative(freshData)}); e != nil {
+		t.Fatal("fresh bucket PUT before Admin policy edit", e)
+	}
+	if _, e = m.GetBucketPolicy(ctx, bucket.Name, bucket.ID, 0); !errors.Is(e, storage.ErrNotFound) {
+		t.Fatal("PUT materialized the virtual default policy", e)
+	}
 	mutation, e = nodes[1].Admin.Admit(ctx, tokenID)
 	if e != nil {
 		t.Fatal(e)

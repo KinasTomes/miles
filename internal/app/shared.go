@@ -197,6 +197,9 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 			Chunking: engine.ChunkingParams{Min: int(p.Chunking.MinBytes), Avg: int(p.Chunking.AvgBytes), Max: int(p.Chunking.MaxBytes)}, Compression: engine.CompressionPolicy{Enabled: p.Compression.Enabled, Codec: p.Compression.Codec, Level: int(p.Compression.Level), MinSavingRatio: ratio},
 			BucketPolicy: func(id string) (config.BucketSnapshot, error) {
 				record, e := m.GetBucketPolicy(ctx, bucket, id, 0)
+				if errors.Is(e, storage.ErrNotFound) && !errors.Is(e, storage.ErrBucketNotFound) {
+					return v.NewBucketSnapshot(id, 1, config.DefaultCachePolicy())
+				}
 				if e != nil {
 					return config.BucketSnapshot{}, e
 				}
