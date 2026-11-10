@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts.freeze_terraform_inventory import compare_inventory, extract_resources
+from scripts.freeze_terraform_inventory import augment_inventory, compare_inventory, extract_resources
 from scripts.verify_teardown_absence import METADATA_INVENTORY_KEYS, TeardownAbsenceVerifier
 
 
@@ -24,7 +24,9 @@ def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region
         raise ValueError("inventory is invalid or incomplete")
     if inventory.get("account_id", account) != account or inventory.get("region", region) != region:
         raise ValueError("inventory account or region mismatch")
-    errors = compare_inventory(extract_resources(json.loads(state_bytes)), inventory)
+    state_resources = extract_resources(json.loads(state_bytes))
+    inventory = augment_inventory(state_resources, inventory)
+    errors = compare_inventory(state_resources, inventory)
     if errors:
         raise ValueError("state reconciliation failed: " + "; ".join(errors))
     resources = {key: value for key, value in inventory.items() if key not in METADATA_INVENTORY_KEYS and value}

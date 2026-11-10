@@ -32,9 +32,9 @@ import tempfile
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 try:
-    from scripts.freeze_terraform_inventory import compare_inventory, extract_resources
+    from scripts.freeze_terraform_inventory import augment_inventory, compare_inventory, extract_resources
 except ModuleNotFoundError:
-    from freeze_terraform_inventory import compare_inventory, extract_resources
+    from freeze_terraform_inventory import augment_inventory, compare_inventory, extract_resources
 
 
 def _iso_utc_now() -> str:
@@ -55,6 +55,8 @@ EXPECTED_ABSENCE_ERRORS = {
     "ssm_document": ["InvalidDocument"],
     "key_pair": ["InvalidKeyPair.NotFound"],
     "vpc_endpoint": ["InvalidVpcEndpointId.NotFound"],
+    "internet_gateway": ["InvalidInternetGatewayID.NotFound"],
+    "route_table": ["InvalidRouteTableID.NotFound"],
     "nat_gateway": ["NatGatewayNotFound", "InvalidNatGatewayID.NotFound", "InvalidNatGatewayId.NotFound"],
     "elastic_ip": ["InvalidAllocationID.NotFound", "InvalidAllocationId.NotFound", "InvalidAddress.NotFound"],
     "instance": ["InvalidInstanceID.NotFound"],
@@ -97,6 +99,8 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     "subnets",
     "security_groups",
     "vpc_endpoints",
+    "internet_gateways",
+    "route_tables",
     "nat_gateways",
     "elastic_ips",
     "alb_names",
@@ -655,7 +659,9 @@ class TeardownAbsenceVerifier:
         all owned resource identifiers dynamically, cross-checking with pre-teardown manifest.
         """
         data = json.loads(Path(outputs_json_path).read_text(encoding="utf-8"))
-        inv = cls.extract_inventory_from_outputs(data, manifest=manifest_path)
+        inv = cls.extract_inventory_from_outputs(data)
+        if state_json:
+            inv = augment_inventory(extract_resources(json.loads(state_json)), inv)
         return cls(
             inventory=inv,
             profile=profile,
@@ -686,6 +692,8 @@ class TeardownAbsenceVerifier:
             "subnets": [],
             "security_groups": [],
             "vpc_endpoints": [],
+            "internet_gateways": [],
+            "route_tables": [],
             "nat_gateways": [],
             "elastic_ips": [],
             "alb_names": [],
@@ -875,7 +883,7 @@ class TeardownAbsenceVerifier:
             _dedup_add("dynamodb_tables", _extract_id_list(_unwrap_val(data["dynamodb_tables"])))
         if data.get("cloudwatch_alarms"):
             _dedup_add("cloudwatch_alarms", _extract_id_list(_unwrap_val(data["cloudwatch_alarms"])))
-        for key in ("cloudwatch_log_groups", "launch_templates", "kms_aliases"):
+        for key in ("cloudwatch_log_groups", "launch_templates", "kms_aliases", "internet_gateways", "route_tables"):
             if data.get(key):
                 _dedup_add(key, _extract_id_list(_unwrap_val(data[key])))
         if data.get("acm_certificates"):
@@ -1647,6 +1655,14 @@ class TeardownAbsenceVerifier:
                 EXPECTED_ABSENCE_ERRORS["vpc_endpoint"],
             )
             checked_resources.add(("vpc_endpoints", vpce))
+
+        for gateway in self.inventory.get("internet_gateways", []):
+            results[f"igw_{gateway}"] = self.check_resource_absent(gateway, "internet_gateway", ["ec2", "describe-internet-gateways", "--internet-gateway-ids", gateway], EXPECTED_ABSENCE_ERRORS["internet_gateway"])
+            checked_resources.add(("internet_gateways", gateway))
+
+        for route_table in self.inventory.get("route_tables", []):
+            results[f"route_table_{route_table}"] = self.check_resource_absent(route_table, "route_table", ["ec2", "describe-route-tables", "--route-table-ids", route_table], EXPECTED_ABSENCE_ERRORS["route_table"])
+            checked_resources.add(("route_tables", route_table))
 
         # 7. ALB
         for alb in self.inventory.get("alb_names", []):

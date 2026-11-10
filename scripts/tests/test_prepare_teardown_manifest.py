@@ -25,8 +25,7 @@ class PrepareManifestTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.prepare(digest="0" * 64)
         incomplete = dict(self.inventory, dynamodb_tables=[])
-        with self.assertRaises(ValueError):
-            self.prepare(inventory=incomplete)
+        self.assertEqual(self.prepare(inventory=incomplete)["expected_resources"]["dynamodb_tables"], ["table"])
         with self.assertRaises(ValueError):
             self.prepare(inventory=dict(self.inventory, expected_missing=["incomplete"]))
 

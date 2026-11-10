@@ -5,7 +5,7 @@ import sys
 import tempfile
 import unittest
 
-from scripts.freeze_terraform_inventory import compare_inventory, extract_resources
+from scripts.freeze_terraform_inventory import augment_inventory, compare_inventory, extract_resources
 
 
 class FreezeInventoryTests(unittest.TestCase):
@@ -42,6 +42,18 @@ class FreezeInventoryTests(unittest.TestCase):
         ]
         self.assertEqual(compare_inventory(resources, {"alb_names": ["test"], "kms_keys": ["arn:aws:kms:r:a:key/key-id"]}), [])
         self.assertTrue(compare_inventory(resources, {"alb_names": ["other"], "kms_keys": ["arn:aws:kms:r:a:key/key-id"]}))
+
+    def test_state_resources_added_and_child_requires_owned_parent(self):
+        state = {"values": {"root_module": {"resources": [
+            {"mode": "managed", "address": "aws_route_table.main", "type": "aws_route_table", "values": {"id": "rtb-1"}},
+            {"mode": "managed", "address": "aws_route.default", "type": "aws_route", "values": {"id": "route-1", "route_table_id": "rtb-1"}},
+        ]}}}
+        resources = extract_resources(state)
+        inventory = augment_inventory(resources, {})
+        self.assertEqual(inventory["route_tables"], ["rtb-1"])
+        self.assertEqual(compare_inventory(resources, inventory), [])
+        with_parent_missing = [resource for resource in resources if resource["type"] != "aws_route_table"]
+        self.assertTrue(any("uncovered_parent" in error for error in compare_inventory(with_parent_missing, inventory)))
 
     def test_cli_creates_private_file_without_overwriting(self):
         with tempfile.TemporaryDirectory() as directory:
