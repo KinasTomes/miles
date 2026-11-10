@@ -31,20 +31,24 @@ The client benchmark executed 1 preflight `ListObjectsV2` request followed by 90
 4. **Totals:** $34 + 6 + 43 = 83$ successful PUTs; $7$ failed PUTs ($83 + 7 = 90$).
 
 ### Correlated Failure Window (Verified against `cloud-c1-t1-failed-window.json`)
-100% (7/7) of the failed requests match the exact gateway journal logs on `cloud-a` (`i-03bea44ea0f048125`):
+100% (7/7) of the failed requests match the exact gateway journal logs on `cloud-a`:
 
-| Trial PUT # | Timestamp (UTC) | Client Request ID | HTTP Status | Target Node | Stage | Failure Class |
-|---|---|---|---|---|---|---|
-| PUT #35 | 13:22:02.387Z | `6D3C1BC6DDAC8A78` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #37 | 13:22:05.182Z | `B48EC5D2B70EC26A` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #39 | 13:22:07.264Z | `224444512613BA71` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #41 | 13:22:08.708Z | `8112EEEAE1D562B1` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #43 | 13:22:11.182Z | `A18AFBF8A7E7D7B9` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #45 | 13:22:13.237Z | `4C909826697B375B` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
-| PUT #47 | 13:22:14.841Z | `A96DBCD93956F1CE` | 500 | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` |
+> [!NOTE]
+> **Sanitization & Correlation Identity:** In accordance with the offline security and evidence requirements, all public identifiers in this table have been replaced with stable pseudonymous join IDs (`REQ-C1-035`...`REQ-C1-047`), node alias (`cloud-a`), and synthetic object descriptors (`obj-backup30-part035`...`part047`). The complete 1-to-1 mapping to raw EC2 instance IDs, raw AWS request IDs, and dataset file keys is maintained exclusively inside private operator evidence (`~/.local/state/miles/dynamodb-pilot/recheck/live-run-20261106-1255/`) under restricted permissions (`0o600`) and is never committed to source control.
+
+| Phase | Ordinal | Synthetic File Descriptor / Payload Size | Latency | HTTP / SDK Code | Pseudonymous Join ID | Timestamp (UTC) | Target Node | Stage | Failure Class | Error Source | After-window Metrics |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `put` | PUT #35 | `obj-backup30-part035` (8,389,273 B) | 40.28 ms | 500 `InternalError` | `REQ-C1-035` | 13:22:02.387Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #37 | `obj-backup30-part037` (8,388,608 B) | 33.24 ms | 500 `InternalError` | `REQ-C1-037` | 13:22:05.182Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #39 | `obj-backup30-part039` (8,388,608 B) | 24.18 ms | 500 `InternalError` | `REQ-C1-039` | 13:22:07.264Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #41 | `obj-backup30-part041` (8,389,273 B) | 22.65 ms | 500 `InternalError` | `REQ-C1-041` | 13:22:08.708Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #43 | `obj-backup30-part043` (8,388,608 B) | 22.13 ms | 500 `InternalError` | `REQ-C1-043` | 13:22:11.182Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #45 | `obj-backup30-part045` (8,388,608 B) | 24.88 ms | 500 `InternalError` | `REQ-C1-045` | 13:22:13.237Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
+| `put` | PUT #47 | `obj-backup30-part047` (8,389,273 B) | 24.90 ms | 500 `InternalError` | `REQ-C1-047` | 13:22:14.841Z | `cloud-a` | `writer_admission` | `clock_uncertainty_exceeded` | `gateway` | *Uncollected in failed-window* |
 
 - **Upstream ALB 503:** 0 occurrences.
-- **Uncollected / Missing Journal Records:** 0 occurrences.
+- **Uncollected / Missing Journal Records:** 0 occurrences (all 7 requests matched gateway structured slog records).
+- **After-window Telemetry Note:** Telemetry snapshot was not captured in `cloud-c1-t1-failed-window.json` at failure instant (marked uncollected); steady-state snapshot captured later at 13:35:27Z showed normal clock synchronisation.
 - **Node Isolation:** Node `cloud-b` handled alternating PUTs #36, #38, #40, #42, #44, #46 without any error, isolating the issue strictly to `cloud-a` during this window.
 
 ---
@@ -97,15 +101,16 @@ Following the stop-the-line procedure, full teardown was executed:
 ## 5. Code & Pipeline Updates
 
 - **`scripts/runner_diagnostics.py`:**
-  - Updated `sanitize_benchmark_failure` to accept root-level `samples` list emitted by `warmbench` in addition to dictionary `phases`.
-  - Added `parse_prometheus_metrics` to safely parse Prometheus exposition metrics from `/metrics` endpoints.
-  - Added `build_failed_window_payload` to standardize diagnostic assembly with explicit before/after telemetry snapshots and node status.
-  - Fixed trailing whitespace at line 150 (`git diff --check` passes cleanly).
-- **`scripts/tests/test_runner_diagnostics.py`:**
-  - Added unit test `test_sanitize_benchmark_failure_toplevel_samples`.
-  - Added unit test `test_parse_prometheus_metrics`.
-  - Added unit test `test_build_failed_window_payload_with_telemetry`.
-  - All 45 python tests pass cleanly.
-- **`.gitignore`:** Added `__pycache__/` and `*.py[cod]` rules to keep the worktree clean of untracked Python bytecode.
-- **Local Gates:** `make check`, `make test-local`, and `go test -race` for all packages pass 100%.
-- **PR & Task Tracking:** PR #65 remains in **Draft**; Task **W05-HUNG-03** remains **Doing**.
+  - Implemented deterministic redaction (`redact_sensitive_strings`, `redact_sensitive_payload`) scrubbing signed URLs (`X-Amz-Signature`), credentials, authorization headers, AWS keys, secret tokens, and EC2 instance IDs.
+  - Added strict allowlisted error classification (`classify_error_to_code`, `ALLOWLISTED_ERROR_CODES`).
+  - Added native ALB evidence corroboration in `correlate_failures`: unmatched 500s are strictly classified as `origin_unverified` with `gateway_log_missing` rather than falsely attributing to upstream without ALB proof.
+  - Hardened `parse_chrony_tracking` against non-finite/NaN/Inf/negative values with fail-closed bounds checking.
+  - Added `collect_node_telemetry_safe` and `collect_node_journals_safe` for resilient cluster capture.
+- **`scripts/runner_orchestrator.py`:**
+  - Added secret-free runner orchestration adapter (`capture_and_assemble_failed_window`, `collect_cluster_telemetry`, `collect_cluster_journals`).
+  - Handles SSM `Standard_Stream not found` session errors via automatic `execute_with_runcommand_fallback`.
+  - Persists sanitized `{name}-failed-window.json` (and optional restricted private raw trace) strictly before teardown or exit.
+- **`scripts/tests/`:**
+  - Added adversarial tests in `test_runner_diagnostics.py` verifying zero secret leaks across serialized payloads and correct unmatched 500 attribution.
+  - Added `test_runner_orchestrator.py` verifying real runner orchestration, RunCommand fallback, partial node failure, and pre-teardown persistence.
+- **PR & Task Tracking:** PR #65 merged; Task **W05-HUNG-03** marked Done on Kanban (unblocking dependencies; follow-up live acceptance tracked in PR #71).

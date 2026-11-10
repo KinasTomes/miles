@@ -135,10 +135,16 @@ func responseDiagnostics(err error) (status int, requestID string) {
 	return status, requestID
 }
 
+// ErrInterrupted indicates the benchmark was interrupted by signal (e.g. SIGINT).
+var ErrInterrupted = errors.New("interrupted")
+
 // Do not persist SDK error strings: they can include URLs, request IDs or bodies.
 func errorCode(err error) string {
 	if err == nil {
 		return ""
+	}
+	if errors.Is(err, ErrInterrupted) {
+		return "interrupted"
 	}
 	if errors.Is(err, context.Canceled) {
 		return "canceled"
