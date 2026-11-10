@@ -82,4 +82,4 @@ Trong phiên bản ban đầu của PR #65:
 
 Tỷ lệ giảm **Scan calls** theo giới hạn lý thuyết không chứng minh cùng tỷ lệ giảm RCU hoặc chi phí. DynamoDB tính mức đọc theo kích thước dữ liệu được quét, loại nhất quán và cấu hình tính phí; cần lấy số đo thực tế để kết luận. Kết quả quá giới hạn phân trang hoặc thất bại của deep observer được đánh dấu không khả dụng, không xuất số liệu hoàn chỉnh giả.
 
-Việc merge phần implementation và unit/contract tests không thay thế cho Cloud/Edge/direct S3 AWS live acceptance, kiểm tra R1/R2, chi phí endpoint/PITR và dọn dẹp. Các checklist chưa hoàn tất vẫn thuộc `W05-HUNG-03` và được thực hiện trong follow-up riêng sau khi có phê duyệt AWS.
+Việc merge phần implementation và unit/contract tests không thay thế cho Cloud/Edge/direct S3 AWS live acceptance, kiểm tra R1/R2, chi phí endpoint/PITR và dọn dẹp. Các checklist chưa hoàn tất vẫn thuộc phần AWS live acceptance và được thực hiện trong follow-up riêng sau khi có phê duyệt AWS.

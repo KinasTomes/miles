@@ -1,14 +1,14 @@
-# W02-HUNG-02 — Pricing, dataset và baseline
+# Pricing, dataset và baseline
 
-Harness W03-HUNG-02: [runner, artifact và lệnh chạy](warm-harness.md),
+Harness Warm benchmark: [runner, artifact và lệnh chạy](warm-harness.md),
 [validation](warm-harness-validation.md),
 [số sơ bộ AWS thật và cleanup](warm-aws-results.md).
 
-Prototype W04-HUNG-03: [cost/simulator, native DynamoDB probe và integration smoke](cost-simulator.md).
+Prototype: [cost/simulator, native DynamoDB probe và integration smoke](cost-simulator.md).
 
-Phần W2 dưới đây chuẩn bị hợp đồng/đầu vào; số đo W3 nằm ở báo cáo riêng phía trên. Phụ thuộc W01-HUNG-02/W01-HUNG-03; không yêu cầu thêm host Edge hoặc triển khai Cloud để nghiệm thu phần W2.
+Phần W2 dưới đây chuẩn bị hợp đồng/đầu vào; số đo W3 nằm ở báo cáo riêng phía trên. Phụ thuộc use case/scope/DoD ([PR #3](https://github.com/KinasTomes/miles/pull/3)) và [kế hoạch môi trường AWS](../docs/planning/aws-environment-and-integration-plan.md); không yêu cầu thêm host Edge hoặc triển khai Cloud để nghiệm thu phần W2.
 
-| Checklist W02-HUNG-02 | Đầu ra |
+| Checklist | Đầu ra |
 |---|---|
 | Pricing có Region/ngày/nguồn và các nhóm storage/request/retrieval/restore/transfer/infra |[Pricing contract/schema/example](../configs/pricing/README.md), [Go parser/validator](../internal/pricing/catalog.go) và negative tests |
 | Ba nhóm dataset, generator/seed/checksum |[Dataset contract](datasets/README.md), [smoke manifest](datasets/smoke-manifest.json), `go run ./cmd/datasetgen` |
@@ -26,4 +26,4 @@ go test ./internal/pricing ./cmd/pricingcheck
 
 CI giữ required job `benchmark-contracts`, chuyển sang Go cho JSON Schema và negative tests, dùng sample public không cần AWS credential. Job Go `check` kiểm generator cùng các package hiện có. Trạng thái run và required checks được xác minh trực tiếp trên PR; kiểm tra local không được tính là CI pass. Không thay quy tắc review hoặc quyền admin bypass.
 
-Xem [validation và giới hạn](validation.md). Các source kiến trúc/API, Terraform W02-HUNG-01, backlog/report/apps giữ nguyên; không commit generated dataset binaries, private configuration hoặc quote chứa định danh account.
+Xem [validation và giới hạn](validation.md). Các source kiến trúc/API, [Terraform Cloud](../infra/terraform/cloud/README.md), backlog/report/apps giữ nguyên; không commit generated dataset binaries, private configuration hoặc quote chứa định danh account.

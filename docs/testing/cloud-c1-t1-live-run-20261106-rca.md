@@ -3,7 +3,7 @@
 > **Báo cáo kỹ thuật — Workstream D | Live Run 2026-11-06**
 > **Tài khoản AWS:** `123456789012` (Sanitized) | **Region:** `ap-southeast-1`
 > **Commit Gateway:** `4a0c1d9` (PR #65 Draft) | **Branch:** `feat/dynamodb-pilot-observability`
-> **Trạng thái:** Dọn dẹp hoàn tất 100% (`D4 Teardown: PASS`), PR vẫn Draft, Task `W05-HUNG-03` vẫn Doing.
+> **Trạng thái:** Dọn dẹp hoàn tất 100% (`D4 Teardown: PASS`), PR vẫn Draft, task AWS acceptance vẫn Doing.
 
 ---
 
@@ -123,5 +123,5 @@ Theo đúng quy chuẩn an toàn:
    - Tách logic trích xuất log và đối chiếu correlation thành module [`scripts/runner_diagnostics.py`](file:///home/ubuntu/miles-worktrees/dynamodb-pilot-observability/scripts/runner_diagnostics.py) có kiểm thử tự động, hỗ trợ phân loại rõ ràng giữa lỗi gateway, lỗi upstream ALB, và trạng thái thiếu bằng chứng thu thập (`uncollected_evidence`).
 4. **Kế hoạch PR #65:**
    - Tiếp tục giữ PR #65 ở trạng thái **Draft**.
-   - Tiếp tục giữ Task ID `W05-HUNG-03` ở trạng thái **Doing**.
+   - Tiếp tục giữ task AWS acceptance ở trạng thái **Doing**.
    - Mọi hoạt động triển khai lại trên AWS (P3) chỉ được thực hiện khi có phê duyệt ngân sách và thời hạn mới từ User/Lead.

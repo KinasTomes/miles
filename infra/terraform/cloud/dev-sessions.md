@@ -166,6 +166,6 @@ DeleteBucket/DeleteTable/DeleteVolume/ScheduleKeyDeletion. Không cấp Admin đ
 Các bước inventory, protection update, saved plans, nghiệm thu và phục hồi khi dở
 ở [runbook full teardown](full-teardown.md).
 
-Trước Done W03-HUNG-01 cần evidence AWS thật: dựng, quyền/kết nối, S3/DDB operations,
+Trước Done môi trường AWS dev cần evidence AWS thật: dựng, quyền/kết nối, S3/DDB operations,
 sentinel/hash qua pause/resume, inventory sau thu hồi và chi phí. Mock test có thể
 chứng minh graph giữ tài nguyên, không chứng minh dữ liệu/cloud/teardown thật đã đạt.

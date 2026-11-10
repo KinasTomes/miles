@@ -1,6 +1,6 @@
 # Thu hồi hoàn toàn AWS dev
 
-Quy trình này hoàn tất checklist teardown của W03-HUNG-01. Dùng sau khi chủ dữ liệu
+Quy trình này hoàn tất checklist teardown của môi trường AWS dev. Dùng sau khi chủ dữ liệu
 đã duyệt danh sách xóa và saved plans cụ thể. Quyết định giữ pause vẫn có hiệu lực
 cho đến lúc đó. Pause/resume dùng [dev sessions](dev-sessions.md).
 

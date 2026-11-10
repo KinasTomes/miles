@@ -1,6 +1,6 @@
 # Storage statistics and layout accounting
 
-W04-HAI-03. Statistics are admin-only observations, never quota or GC authority.
+Statistics are admin-only observations, never quota or GC authority.
 
 Logical bytes sum live committed heads in the current active bucket incarnation.
 Disabled users still own stored data. Unique bytes count each live (domain, hash)

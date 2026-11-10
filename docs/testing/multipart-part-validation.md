@@ -1,7 +1,7 @@
 # Multipart Create, UploadPart, ListParts và Abort validation
 
-Task **W04-CHIEN-02**, ngày 30/10/2026, từ `origin/main` `92deb23`. Hard dependencies
-W03-HUNG-05, W04-HAI-01 và W04-HAI-02 đã Done trên backlog. Acceptance: part API pass
+Ngày 30/10/2026, từ `origin/main` `92deb23`. Hard dependencies
+(SDK pin, DynamoDB metadata adapter, multipart metadata producers) đã Done trên backlog. Acceptance: part API pass
 với SDK đã pin; gửi đủ part không được coi là object completed. Hợp đồng:
 [API §2.2.3, §2.5–2.7, §4.3](../dedup-storage-gateway-api.md),
 [multipart metadata handoff](../contracts/multipart-metadata-handoff.md).
@@ -82,7 +82,7 @@ Client: AWS CLI 2.36.41 (bản pin) và boto3 1.43.122 không awscrt.
 ## Giới hạn và bàn giao
 
 - CompleteMultipartUpload (freeze, snapshot, prepare, commit, receipt, takeover) thuộc
-  W04-CHIEN-03; part head đã có ETag hex, checksum Base64 và size cho `Assemble`.
+  phần CompleteMultipartUpload; part head đã có ETag hex, checksum Base64 và size cho `Assemble`.
 - Local runtime chỉ admit ghi của user `dev`; quyền grantee/owner/admin được chứng minh
   qua Router trong test, không qua object service local.
 - Part head không lưu thời gian publish nên ListParts không trả `LastModified`.

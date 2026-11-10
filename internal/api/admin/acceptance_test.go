@@ -103,7 +103,7 @@ func (w *s3World) advance(d time.Duration) {
 	}
 }
 
-// TestAcceptance is checklist 4 of W04-CHIEN-01: Admin writes reach S3
+// TestAcceptance is checklist 4 of the Admin API: Admin writes reach S3
 // admission on the same store within the 5 s snapshot bound.
 func TestAcceptance(t *testing.T) {
 	w := newS3World(t)

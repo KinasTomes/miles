@@ -1,6 +1,6 @@
 # Coordination và recovery prototype — evidence W2
 
-Task: W02-PHONG-03. Owner: Phong. Baseline: `f6d9e21`.
+Owner: Phong. Baseline: `f6d9e21`.
 Trạng thái: **implementation/golden candidate để review, chưa Approved/Frozen**.
 
 Nguồn: [R1](../contracts/r1-and-cache.md) §3–8,
@@ -82,7 +82,7 @@ Takeover không cấp new authority khi Pending outcome chưa reconcile.
 - Hưng/Chiến/Hải review field schema, byte goldens và integration bindings trước
   format freeze. Bản candidate này không tuyên bố freeze đã đạt.
 - Fake clock là exact local time oracle; không chứng minh production UTC sample,
-  provenance, skew hoặc distributed lease. Consumer dùng evaluator W02-PHONG-01.
+  provenance, skew hoặc distributed lease. Consumer dùng evaluator coordination dùng chung.
 - S3 journal sink và seal publisher trong tests là executable reference model;
   chưa có production exporter, actual checkpoint installation hoặc cloud evidence.
 - Full inventory, causal dependencies giữa mọi entity, catalog/markers, tree

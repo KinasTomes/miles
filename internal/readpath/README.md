@@ -1,6 +1,6 @@
 # Read path — implementation, evidence và integration gates
 
-## W03-PHONG-01 — Warm reader một node
+## Warm reader một node
 
 `NewWarmReader` ghép Badger metadata, S3 PackStore, manifest planner, production
 pack verifier, LRU và admission/scheduler. `WarmMetrics` cung cấp integrity/abort
@@ -25,7 +25,7 @@ Evidence, checklist mapping và giới hạn deployment tại
 
 ## Hồ sơ W2 sau khi tích hợp Badger metadata
 
-W02-PHONG-02 đã được nghiệm thu phạm vi prototype fake metadata/S3. Protected reader và C3 production tiếp tục ở W3; không thêm dependency ngược để chặn nghiệm thu W2.
+Read path prototype W2 đã được nghiệm thu phạm vi prototype fake metadata/S3. Protected reader và C3 production tiếp tục ở W3; không thêm dependency ngược để chặn nghiệm thu W2.
 
 - Production primitives: `admission.go`, `readahead.go`, `fetch.go`, `verify.go`, `mapping.go`; Physical LRU nằm trong `internal/cache`, manifest/range planner trong `internal/engine`.
 - `MapCanonicalRange` kiểm ChunkKey/raw length, expected location revision, exact PackRef/generation và range trong pack size trước khi chuyển sang `pack.Entry`/`CacheKey`. Đây là kiểm tra snapshot metadata, không phải atomic pin, authority token hoặc CRC presence proof.
@@ -36,7 +36,7 @@ W02-PHONG-02 đã được nghiệm thu phạm vi prototype fake metadata/S3. Pr
 ### Các gate còn chặn orchestration
 
 1. **R1 / Phong và Hưng:** chưa có concrete Read View, atomic root bind, exact generation pins, revision validation cùng retirement và release/quiescence. `MetadataStore.GetChunks` không thay thế pin. Không xây authority boolean hoặc chuyển sang triển khai task coordinator trong task này.
-2. **Decoder / Hưng:** W03-HUNG-04 bàn giao `pack.EstimateDecodeMemory`, source-derived bounds, ownership và lifetime trong [decoder-memory.md](../../docs/contracts/decoder-memory.md). Scheduler harness dùng estimator thật và kiểm admission/cancellation. W03-PHONG-01 tích hợp vào production executor, cộng fetch/cache capacities và giữ reservation/pins tới quiescence; không dùng lại allowance 1 MiB của fixture cũ.
+2. **Decoder / Hưng:** Phần decoder memory bàn giao `pack.EstimateDecodeMemory`, source-derived bounds, ownership và lifetime trong [decoder-memory.md](../../docs/contracts/decoder-memory.md). Scheduler harness dùng estimator thật và kiểm admission/cancellation. Warm reader một node tích hợp vào production executor, cộng fetch/cache capacities và giữ reservation/pins tới quiescence; không dùng lại allowance 1 MiB của fixture cũ.
 3. **Orchestration consumer:** phải Authorize (bao gồm Read=true và bucket incarnation), acquire/bind/pin, preflight toàn requested Range bằng shared policy trước cache/I/O, rồi revalidate trước emit. Chưa có production entrypoint nối toàn chuỗi đó; evidence authorization trước cache của prototype không thay R1/pins production.
 4. **Bucket cache:** pinned bucket policy điều khiển read-ahead; resource quotas node/bucket/request đã có. `admit_on_write=false` không tắt read cache. Cache identity vẫn physical và có thể chia sẻ giữa bucket sau authorization; chưa thêm quota/default hoặc admission policy không có trong contract.
 

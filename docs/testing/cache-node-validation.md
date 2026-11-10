@@ -1,6 +1,6 @@
 # Cache node, policy và scope validation
 
-Task: W04-PHONG-01 — Cache hoàn chỉnh, policies và scope contract.
+Phạm vi: Cache hoàn chỉnh, policies và scope contract.
 Baseline: `origin/main` tại `6bdef45`.
 
 ## Checklist và boundary
@@ -11,8 +11,8 @@ Baseline: `origin/main` tại `6bdef45`.
 | Cluster purge fan-out hooks, metric methodology | `PurgeClient`, `FanoutPurge` với immutable target list do caller cung cấp và kết quả từng node; không tự discover node hoặc trả cluster aggregate |
 | Authorization/revoke, memory/disk eviction, Range amplification | Shared Cache contract cho hai tầng; disk LRU/corruption/ownership/concurrency; real Badger/S3-adapter read tests; object PUT→GET policy tests; publisher fault/dedup loser tests |
 
-Hard prerequisites W03-PHONG-01 và W04-HAI-01 đã Done khi đọc board;
-W04-HUNG-02 còn Todo là soft dependency. W04 chuẩn bị typed hooks; Jobs/Nodes,
+Hard prerequisites (decoder/read path consumer và DynamoDB metadata adapter) đã Done khi đọc board;
+Jobs/Nodes/metrics còn Todo là soft dependency. W04 chuẩn bị typed hooks; Jobs/Nodes,
 Admin routes `scope=node|cluster` và durable cluster purge job thuộc W05.
 Không tự thay status/checklist/sign-off trên board.
 

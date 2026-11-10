@@ -71,7 +71,7 @@ decisions or proof of actual authority.
 - Shared fake accepts incomplete JSON-object policy envelopes; LoadGlobal rejects
   those historical records via strict decoding. Malformed non-object JSON is
   tested directly at the existing decoder boundary, not injected via a new port.
-- W04-PHONG-02 bổ sung bucket policy persistence trên native Badger/DynamoDB
+- Bucket policy persistence bổ sung trên native Badger/DynamoDB
   transactions, tái sử dụng producer/payload/outbox. Không có store thứ hai.
   API extension và namespace cần consumer Hải/Chiến/Hưng review, chưa Frozen.
 - Pinned R remains stable after current advances. All three evaluation methods

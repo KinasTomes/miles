@@ -1,6 +1,6 @@
 # Decoder memory validation
 
-Producer task: W03-HUNG-04. Consumer: W03-PHONG-01.
+Producer: decoder memory bounds. Consumer: read path/cache integration.
 Contract and source proof: [decoder-memory.md](../contracts/decoder-memory.md).
 
 The committed pack tests cover metadata-only/zero-allocation estimates, bad
@@ -68,5 +68,5 @@ scheduler primitives. Cancellation **inside** DecodeAll is not made interruptibl
 or artificially hooked: its pinned implementation is synchronous, and consumer
 must join its worker through return/Close. Actual producer/consumer composition,
 complete fetch/cache-copy bounds, concurrency limits and protected R1/S3 tests
-remain acceptance of W03-PHONG-01 and its integration tasks. They are not silently
+remain acceptance of the consumer read path and its integration tasks. They are not silently
 claimed by this producer task or added as backward dependencies to W2.

@@ -192,7 +192,7 @@ func (m *Store) ListGrants(ctx context.Context, bucketID string, r s.IdentityLis
 
 // BootstrapAdmin commits marker, user, token and missing policy in one native
 // transaction. It emits no outbox event: there is no mutation context offline;
-// the R2 epoch-0 export (W04-PHONG-04) owns publishing this installation state.
+// the R2 epoch-0 export owns publishing this installation state.
 func (m *Store) BootstrapAdmin(ctx context.Context, b s.AdminBootstrap) error {
 	now := m.now()
 	if err := b.Validate(now); err != nil {

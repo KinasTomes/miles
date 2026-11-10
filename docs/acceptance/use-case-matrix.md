@@ -1,6 +1,6 @@
 # Ma trận use case và kế hoạch xác minh
 
-**Trạng thái: bản dự thảo để lead review, chưa phê duyệt.** Đầu ra của W01-HUNG-02 (A01), phụ thuộc W01-HUNG-01. Không tự đóng task, không xác nhận feature đã triển khai, CI đã chạy hay nghiệm thu đã đạt. Các tuần là mốc dự kiến, không phải kết quả.
+**Trạng thái: bản dự thảo để lead review, chưa phê duyệt.** Đầu ra tài liệu use case/scope/DoD (A01), phụ thuộc bàn giao nguồn v4/v2. Không tự đóng task, không xác nhận feature đã triển khai, CI đã chạy hay nghiệm thu đã đạt. Các tuần là mốc dự kiến, không phải kết quả.
 
 Nguồn hợp đồng: [kiến trúc v4](../dedup-storage-gateway-architecture.md) (KT) và [API v2](../dedup-storage-gateway-api.md) (API). Tài liệu này chỉ suy ra kế hoạch nghiệm thu; khi có khác biệt phải review nguồn, không tự thay hợp đồng. Backlog local được đọc để ánh xạ người/tuần, không phải dependency của tài liệu được commit.
 
@@ -23,13 +23,13 @@ Owner có read/write và quản grants. Grant read/write độc lập; system ad
 
 ## 2. Hợp đồng cần bàn giao W1
 
-UC-01 là đầu ra tài liệu W1. W01-HUNG-02 mô tả trước toàn bộ các use case còn lại; việc viết chúng không hoàn thành các task implementation. Các schema/fixture của Chiến, Hải và Phong là đầu ra phối hợp W1–2, chưa được xác nhận tồn tại bởi tài liệu này.
+UC-01 là đầu ra tài liệu W1. Bộ tài liệu này mô tả trước toàn bộ các use case còn lại; việc viết chúng không hoàn thành các task implementation. Các schema/fixture của Chiến, Hải và Phong là đầu ra phối hợp W1–2, chưa được xác nhận tồn tại bởi tài liệu này.
 
 ## 3. Ma trận use case
 
 | ID / use case | Actor | Tiền điều kiện | Kết quả mong đợi | Lỗi / ca âm quan trọng | Profile | Ưu tiên | Owner / phối hợp | Cách kiểm chứng / pha dự kiến | Nguồn |
 |---|---|---|---|---|---|---|---|---|---|
-| UC-01 — Chốt hợp đồng W1 | Cả nhóm; Hưng chủ trì | W01-HUNG-01 bàn giao; nguồn v4/v2 | Có ma trận, scope và DoD có ID, owner, tuần, nguồn; review được độc lập | Thiếu evidence/nguồn hoặc mâu thuẫn chưa ghi nhận: không chấp nhận; chưa đòi endpoint chạy | A/B (kế hoạch) | W1 bắt buộc, không là operation P0 | Hưng; cả nhóm | W1: review tài liệu, kiểm link và đối chiếu nguồn; W2 freeze serialization | [KT §15.2, 18, 19.2](../dedup-storage-gateway-architecture.md); [API §12](../dedup-storage-gateway-api.md) |
+| UC-01 — Chốt hợp đồng W1 | Cả nhóm; Hưng chủ trì | Bàn giao nguồn v4/v2 | Có ma trận, scope và DoD có ID, owner, tuần, nguồn; review được độc lập | Thiếu evidence/nguồn hoặc mâu thuẫn chưa ghi nhận: không chấp nhận; chưa đòi endpoint chạy | A/B (kế hoạch) | W1 bắt buộc, không là operation P0 | Hưng; cả nhóm | W1: review tài liệu, kiểm link và đối chiếu nguồn; W2 freeze serialization | [KT §15.2, 18, 19.2](../dedup-storage-gateway-architecture.md); [API §12](../dedup-storage-gateway-api.md) |
 | UC-02 — Cloud A | Client cùng Region; operator | EC2/ASG, ALB HTTPS hai AZ, metadata DDB | Client → ALB → cluster → S3/DDB qua Gateway Endpoints; EC2 IAM role; cùng binary/core contract | Sai Host/path làm SigV4 lỗi; không public 9000/metrics; endpoints S3/DDB không thay đường KMS/SSM | A | Bắt buộc hệ thống | Hưng; Chiến | W4 config; W5 AWS integration Host :443/Unicode/path, TLS/SG; W7 acceptance | [KT §11, 11.1](../dedup-storage-gateway-architecture.md); [API §1, 2.1, 11](../dedup-storage-gateway-api.md) |
 | UC-03 — Edge B | Client local; operator | VM/local 1–2 node, TLS trực tiếp/proxy, AWS reachable | Client → gateway/cache local → S3/DDB HTTPS Internet; Roles Anywhere/helper refresh hoặc IAM user least privilege; cùng binary Cloud | Không cần ALB/ASG; mất Internet không được xác nhận durability bằng cache; backend credentials không là DSG user key | B | Bắt buộc hệ thống | Hưng; Phong | W4 config; W5 chạy thật 1–2 node theo matrix; W7 đối chiếu Cloud; ghi VM/disk/network cost | [KT §11.1, 13.2](../dedup-storage-gateway-architecture.md); [API §1.1, 2.1](../dedup-storage-gateway-api.md) |
 | UC-04 — Tạo bucket/ownership | User active | Credential DSG hợp lệ; tên/Region hợp lệ | CreateBucket gán owner, bucket_id mới, domain từ owner; HeadBucket/ListBuckets theo quyền | Tên/Region sai bị từ chối; không nhận domain tùy ý; bucket người khác không bị chiếm | A/B; W3 dev | P0 | Chiến; Hải | W3 fixture owner/name/Region; W5–7 chạy hai profile | [API §2.2.1, 4.2](../dedup-storage-gateway-api.md); [KT §1.4–1.5](../dedup-storage-gateway-architecture.md) |

@@ -1,12 +1,12 @@
-# W05-HUNG-03 — Kế hoạch follow-up AWS live acceptance sau PR #65
+# Kế hoạch follow-up AWS live acceptance sau PR #65
 
 > Ngày lập: 2026-11-07 (Cập nhật: 2026-11-08) · Trạng thái: **Phase A, B, C, E HOÀN TẤT; Phase D MỘT PHẦN** (Cloud C1/C4 PASS; Edge C1 fail với 44/44 bằng chứng; Dọn dẹp Phase E sạch State 0)
 >
 > Worktree: `/home/ubuntu/miles-worktrees/w05-dynamodb-pilot-aws-acceptance`
 >
-> Branch: `feat/w05-hung-03-aws-acceptance` · Base: `origin/main` @ `6b3a65437f4bd0ba1bad723e7c04de0d75e8c05d` (đã gồm PR #65 và #70).
+> PR: #71 · Base: `origin/main` @ `6b3a65437f4bd0ba1bad723e7c04de0d75e8c05d` (đã gồm PR #65 và #70).
 >
-> PR nguồn: [#65](https://github.com/KinasTomes/miles/pull/65) **đã merge**; PR này/nhánh này chỉ dành cho follow-up. **Giữ task `W05-HUNG-03` = Done và checklist 3/3 trên Kanban** theo quyết định của owner; ghi riêng verdict AWS chưa nghiệm thu, không dùng Done làm bằng chứng live PASS.
+> PR nguồn: [#65](https://github.com/KinasTomes/miles/pull/65) **đã merge**; PR này/nhánh này chỉ dành cho follow-up. **Giữ task AWS acceptance = Done và checklist 3/3 trên Kanban** theo quyết định của owner; ghi riêng verdict AWS chưa nghiệm thu, không dùng Done làm bằng chứng live PASS.
 
 ## 0. Mục tiêu, phạm vi, nguyên tắc an toàn
 
@@ -32,7 +32,7 @@
 - Các lần chạy trước còn có Cloud C4 PUT 503 và Edge GET 503; không được xem lỗi đã hết chỉ vì #65/#70 unit tests xanh.
 - `internal/api/s3/diagnostics.go` và router ở `main` mới đã có logic ghi structured failure kể cả stream abort; **kiểm thử hiệu lực thực tế trước khi sửa**, tránh patch trùng.
 - Hạ tầng thử trước đã được teardown, workload Terraform state báo rỗng và có native absence proof **tại thời điểm cũ**. Vẫn có bootstrap/state giữ lại, KMS/Secrets pending deletion, DynamoDB SYSTEM backups theo retention; trạng thái hiện tại **phải xác minh lại bằng API chính chủ trước lần chạy mới**.
-- Giá trị `W05-HUNG-03=Done` trong Kanban là unblock dependency, **không phải release acceptance**.
+- Giá trị Done của task trong Kanban là unblock dependency, **không phải release acceptance**.
 
 ## 2. Lộ trình và gates
 
@@ -71,9 +71,9 @@
 - [x] Chốt telemetry: `monitored_profiles` chỉ gồm publisher thật; shallow `deep_observation=false` có **4 alarms/profile** (Cloud+Edge = 8), không emit zero cho deep-only metric; chỉ bật deep nếu cả Cloud/Edge publisher đã cấu hình tương ứng (**5/profile = 10**), scans bounded và chi phí được duyệt.
 - [x] Dry-run độc lập luồng teardown/cleanup, preservation of synthetic evidence và grant expiry; đảm bảo tài khoản không bị treo tài nguyên sau khi hết session.
 
-**Gate C:** approved run plan + saved plan hash + teardown proof plan + IAM/quota/budget. Thiếu bất kỳ mục nào thì duy trì **AWS State 0**. *(Hoàn tất trong run `w05-hung03-live-20261108-0345`).*
+**Gate C:** approved run plan + saved plan hash + teardown proof plan + IAM/quota/budget. Thiếu bất kỳ mục nào thì duy trì **AWS State 0**. *(Hoàn tất trong run live 2026-11-08 03:45).*
 
-### Phase D — Staged live acceptance (Đã thực hiện phiên 2026-11-08 — Scope ID: `w05-hung03-live-20261108-0345`)
+### Phase D — Staged live acceptance (Đã thực hiện phiên 2026-11-08 03:45)
 
 - [x] **D0 Fresh install:** triển khai từ release đã duyệt, xác thực 2 Cloud nodes ở hai AZ và Edge (nếu trong scope), SSM/ALB healthy, chrony bounds, R1 lease and export/cut readiness; capture native inventory và metrics `before` cho từng node. Test một lỗi diagnostics có kiểm soát trên fixture trước workload lớn (không inject vào shared production state).
 - [x] **D1 Cloud C1 first:** `backup30`, concurrency=1, **90/90 PUT + 90/90 HEAD + 360/360 GET hash PASS**, per-request IDs và per-node logs + after metrics đầy đủ. **PASS 100%, 0 HTTP 500, 0 HTTP 503**, Dedup 1.94x, Total reduction 2.58x.
@@ -88,7 +88,7 @@
 - [x] Trước cleanup: capture tất cả FAIL/PASS artifacts, run IDs, release SHA, SSM/ALB/CloudWatch snapshots, native DDB/PITR inventory, route bytes và billing observations có timestamp; redact.
 - [x] Pause/drain → verify jobs/recovery → fresh destroy plan với exact resource IDs → cleanup synthetic buckets (bao gồm versions/delete markers/multipart), tables/deletion protection, fleet/ALB/endpoints/alarms/EBS và IAM grants. Verify native resource absence **và** Terraform workload state rỗng (41/41 absence verified, 0 resources remaining); nêu rõ bootstrap/state được giữ, KMS/Secrets scheduled deletion và SYSTEM backups theo retention.
 - [x] Thu toàn thời gian hoạt động, quan sát EC2/EBS/public IPv4/ALB/endpoints/NAT/DDB/PITR/S3/KMS/Secrets/logs/metrics, phân biệt estimated vs observed vs billed; chi phí ước tính < $0.50 USD (soft cap $10.00).
-- [x] Tổng hợp PASS / FAIL / UNVERIFIED, nguyên nhân có chứng cứ và link sanitized evidence trong `docs/testing/dynamodb-pilot-validation.md`; cập nhật PR follow-up, bàn giao owner review. Để `W05-HUNG-03` Done, không sửa checklist hoặc mở chặn task W6.
+- [x] Tổng hợp PASS / FAIL / UNVERIFIED, nguyên nhân có chứng cứ và link sanitized evidence trong `docs/testing/dynamodb-pilot-validation.md`; cập nhật PR follow-up, bàn giao owner review. Để task Done, không sửa checklist hoặc mở chặn task W6.
 
 ## 3. Definition of Done của follow-up
 

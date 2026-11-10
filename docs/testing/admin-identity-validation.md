@@ -1,7 +1,7 @@
 # Admin identity, credential, token, grant và policy validation
 
-Task **W04-CHIEN-01**, ngày 30/10/2026, từ `origin/main` `893b9ff`. Hard dependencies
-W02-CHIEN-02, W03-HUNG-03, W04-HAI-01 và W04-PHONG-02 đã Done trên backlog.
+Ngày 30/10/2026, từ `origin/main` `893b9ff`. Các hard dependency (identity/auth nền,
+DynamoDB metadata adapter, policy) đã Done trên backlog.
 Acceptance: route Admin danh tính/quyền/policy P1 pass auth/CAS fixture; owner không
 tự nâng quyền hoặc đổi domain/tiering bucket. Hợp đồng: [API §2.2.3, §6, §7](../dedup-storage-gateway-api.md).
 
@@ -72,10 +72,10 @@ write-only được chứng minh ở `TestAcceptance` qua Router, không qua obj
 ## Giới hạn và bàn giao
 
 - Runtime Cloud/Edge (DynamoDB thật, Sealer KMS, cursor key dùng chung từ SSM/Secrets
-  Manager, listener Admin private) thuộc W05-HUNG-01; mode `runtime` từ chối
+  Manager, listener Admin private) thuộc phần compose runtime Cloud/Edge; mode `runtime` từ chối
   `admin_address`.
-- Bootstrap chưa ghi outbox epoch 0 (W04-PHONG-04); `--recover` báo lỗi tới khi có
+- Bootstrap chưa ghi outbox epoch 0 (phần exporter/epoch seal); `--recover` báo lỗi tới khi có
   recovery gate R2 §15.
-- `/objects/layout`, `/buckets/{b}/stats` thuộc W04-HAI-03 (fixture liệt kê pending);
+- `/objects/layout`, `/buckets/{b}/stats` thuộc phần Admin layout/stats (fixture liệt kê pending);
   jobs/nodes/packs/cache/cost/faults chưa có route.
 - DynamoDB list users/credentials/tokens quét cả bảng mỗi trang (không GSI).
