@@ -57,6 +57,7 @@
 - Manifest teardown và các file tổng hợp Gate D0/D3/D4 trong kế hoạch là đầu ra dự kiến; cần chuẩn bị và kiểm chứng cách tạo từ nguồn thực trước live run. Không suy ra có sẵn automation chỉ từ tên file.
 - Dataset benchmark sẽ tạo trên máy AWS dành riêng cho lượt thử theo yêu cầu vận hành; chưa tạo dataset trên Oracle. Chưa có plan AWS mới, dự toán, cửa sổ chạy hay bằng chứng live.
 - Đã merge `origin/main` `4b8edc4` vào branch chuẩn bị (`163f20b`); release cuối vẫn chưa pin và cần reviewer độc lập kiểm tra các sửa đổi telemetry/teardown. Trên source này `make check`, `make test-local`, Terraform mock tests (43/43), benchmark race tests và format đều PASS.
+- Review head `11739c7` phát hiện bốn P1. Không chạy live hoặc coi Gate E là bằng chứng sạch cho tới khi verifier đối chiếu inventory độc lập từ Terraform state, bao phủ hoặc xử lý rõ từng resource type, và có manifest generator được kiểm thử. Các output D3/D4 vẫn cần fixture và hướng dẫn chạy cụ thể; trạng thái hiện tại là NO-GO.
 
 ## 5. Hướng dẫn lưu evidence và liên kết
 
