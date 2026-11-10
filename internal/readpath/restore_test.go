@@ -67,6 +67,22 @@ func TestRestoreClassifiesArchivePacksWithoutPayload(t *testing.T) {
 	}
 }
 
+// headSpy counts backend HEADs and can rewrite what the backend reports.
+type headSpy struct {
+	storage.PackStore
+	heads  int
+	mutate func(*storage.PackInfo)
+}
+
+func (h *headSpy) HeadPack(ctx context.Context, ref storage.PackRef) (storage.PackInfo, error) {
+	h.heads++
+	info, err := h.PackStore.HeadPack(ctx, ref)
+	if err == nil && h.mutate != nil {
+		h.mutate(&info)
+	}
+	return info, err
+}
+
 func TestRestoreRejectsBeforeSideEffects(t *testing.T) {
 	f := coldFixture(t, storage.Glacier, "Cold", time.Time{})
 	calls := 0
@@ -74,9 +90,11 @@ func TestRestoreRejectsBeforeSideEffects(t *testing.T) {
 		calls++
 		return true, nil
 	}
-	for _, days := range []int{0, 31} {
-		if _, err := f.reader.Restore(t.Context(), f.request, storage.RestoreRequest{Days: days, Tier: "Standard"}); !errors.Is(err, storage.ErrInvalid) {
-			t.Fatal(days, err)
+	spy := &headSpy{PackStore: f.reader.options.Packs}
+	f.reader.options.Packs = spy
+	for _, bad := range []storage.RestoreRequest{{Days: 0, Tier: "Standard"}, {Days: 31, Tier: "Standard"}, {Days: 1}, {Days: 1, Tier: "InvalidTier"}, {Days: 1, Tier: "standard"}} {
+		if _, err := f.reader.Restore(t.Context(), f.request, bad); !errors.Is(err, storage.ErrInvalid) || spy.heads != 0 {
+			t.Fatal(bad, err, spy.heads)
 		}
 	}
 	// No trusted UTC means no restore threshold: nothing is queued.
@@ -99,6 +117,34 @@ func TestRestoreRejectsBeforeSideEffects(t *testing.T) {
 		t.Fatal("rejected request queued restore", calls)
 	}
 	drained(t, f.reader.options.Admission)
+}
+
+// A backend pack that no longer matches the pinned record queues nothing.
+func TestRestoreRejectsPhysicalMismatch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*storage.PackInfo)
+	}{
+		{"size +1", func(p *storage.PackInfo) { p.Size++ }},
+		{"other generation", func(p *storage.PackInfo) { p.Ref.Generation = "generation-other" }},
+		{"class changed", func(p *storage.PackInfo) { p.Class, p.State = storage.GlacierIR, "Cold" }},
+		{"state not archive", func(p *storage.PackInfo) { p.State = "Warm" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := coldFixture(t, storage.Glacier, "Cold", time.Time{})
+			calls := 0
+			f.reader.options.Restore = func(context.Context, *coordination.WarmView, storage.ObjectHead, storage.PackRef, uint64, time.Time, *storage.RestoreRequest) (bool, error) {
+				calls++
+				return true, nil
+			}
+			f.reader.options.Packs = &headSpy{PackStore: f.reader.options.Packs, mutate: tc.mutate}
+			out, err := f.reader.Restore(t.Context(), f.request, storage.RestoreRequest{Days: 1, Tier: "Standard"})
+			if !errors.Is(err, storage.ErrConflict) || calls != 0 || out.Initiated != 0 || f.backend.count() != 0 {
+				t.Fatal(out, err, calls)
+			}
+			drained(t, f.reader.options.Admission)
+		})
+	}
 }
 
 // HEAD's x-amz-restore input comes from backend HEADs of the archive packs.

@@ -27,7 +27,7 @@ func (p Params) Validate(kind jobs.Type) error {
 		return s.ErrInvalid
 	}
 	if kind == "pack_restore" {
-		if p.Days < 1 || p.Days > 30 || p.Tier != "Standard" && p.Tier != "Bulk" && p.Tier != "Expedited" {
+		if (s.RestoreRequest{Days: p.Days, Tier: p.Tier}).Validate() != nil {
 			return s.ErrInvalid
 		}
 		if !p.RequiredUntil.IsZero() && (p.RequiredUntil.Year() < 1 || p.RequiredUntil.Year() > 9999) {

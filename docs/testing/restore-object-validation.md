@@ -17,9 +17,14 @@ Flexible; quyền read là điều kiện bắt buộc. Hợp đồng: [API §2.
 
 - Quyền: Router kiểm read (`authorization.json` dòng RestoreObject); service kiểm lại
   read/owner tại admission như GET. Writer-only bị `AccessDenied` trước service.
-- Pack GLACIER duy nhất của head được HEAD backend: `Restoring` → in-progress;
-  `Restored` với expiry ≥ upper UTC + Days → không làm gì; Cold, Restored ngắn hơn
-  hoặc đã hết hạn → `QueueReadRestore` với Days/Tier của request.
+- Pack GLACIER duy nhất của head được HEAD backend trước khi enqueue bất kỳ job
+  nào: `Ref`, `Size`, `Class` phải khớp record đã pin và state (metadata lẫn
+  backend) thuộc Cold/Restoring/Restored, lệch → `ErrConflict`, không job nào.
+  Sau đó `Restoring` → in-progress; `Restored` với expiry ≥ upper UTC + Days →
+  không làm gì; Cold, Restored ngắn hơn hoặc đã hết hạn → `QueueReadRestore` với
+  Days/Tier của request.
+- Days/Tier dùng chung `storage.RestoreRequest.Validate` ở HTTP, readpath và
+  `lifecycle.Params`; readpath từ chối trước admission/HEAD/job hook.
 - `required_until` của job = hard deadline + 120 giây như GET, nên job hoàn tất
   khi bản restore phủ được GET tại thời điểm request.
 - Khác biệt S3 đã ghi ở API §4.4: Days > 30 bị từ chối; IR/Warm-only trả
@@ -31,8 +36,12 @@ Flexible; quyền read là điều kiện bắt buộc. Hợp đồng: [API §2.
   (job mới/đã queue), backend restoring, Restored đủ Days, Restored ngắn hơn Days
   (renewal), Restored hết hạn; hook nhận đúng view/pin/revision/`required`
   (= deadline + 120 giây)/Days/Tier; không GET payload, admission sạch.
-- `readpath.TestRestoreRejectsBeforeSideEffects`: Days 0/31, thiếu UTC proof,
-  runtime không có restore port, credential không có quyền: không enqueue.
+- `readpath.TestRestoreRejectsBeforeSideEffects`: Days 0/31, Tier rỗng/sai/sai
+  hoa thường (không HEAD backend), thiếu UTC proof, runtime không có restore
+  port, credential không có quyền: không enqueue.
+- `readpath.TestRestoreRejectsPhysicalMismatch`: backend size +1, generation
+  khác, class khác, state không phải archive → `ErrConflict`, không hook, không
+  GET payload (review PR #78, fail trước khi sửa trừ case class).
 - `readpath.TestArchiveStateReportsBackendRestore`: IR, chưa request, restoring,
   restored (expiry), expired.
 - `object.TestRestoreHeaderAggregatesArchivePacks`: tổng hợp nhiều pack, không bịa

@@ -280,7 +280,7 @@ type restoreCall struct {
 // readability.
 func (r *WarmReader) Restore(ctx context.Context, q WarmRequest, request storage.RestoreRequest) (RestoreResult, error) {
 	var out RestoreResult
-	if q.Range != nil || q.SelectRange != nil || q.Ready != nil || request.Days < 1 || int64(request.Days) > config.DSGPolicyLimits().MaxAutoRestoreDays {
+	if q.Range != nil || q.SelectRange != nil || q.Ready != nil || request.Validate() != nil {
 		return out, storage.ErrInvalid
 	}
 	q.restore = &restoreCall{request: request, result: &out}
@@ -494,16 +494,18 @@ func (e *warmExecutor) preflight(ctx context.Context, plan engine.ReadPlan, tick
 }
 
 // restore requests one restore per unique pinned GLACIER pack, in the order
-// of first use. A failure returns at once: restores already accepted stay
-// accepted and a retry finds them restoring (API v2 4.4).
+// of first use. Every backend pack is checked against its pinned record before
+// the first request, so a mismatch queues nothing. A later enqueue failure
+// returns at once: restores already accepted stay accepted and a retry finds
+// them restoring (API v2 4.4).
 func (e *warmExecutor) restore(ctx context.Context, plan engine.ReadPlan, c restoreCall) error {
 	o := e.reader.options
 	seen := map[storage.PackRef]bool{}
-	archive := []storage.PackRef{}
+	archive := []warmBinding{}
 	for _, b := range e.bindings {
 		if b.info.Class == storage.Glacier && !seen[b.key.Pack] {
 			seen[b.key.Pack] = true
-			archive = append(archive, b.key.Pack)
+			archive = append(archive, b)
 		}
 	}
 	c.result.Archive = len(archive)
@@ -523,23 +525,31 @@ func (e *warmExecutor) restore(ctx context.Context, plan engine.ReadPlan, c rest
 	}
 	// A temporary copy that already outlives the requested Days is left alone.
 	covered := proof.Upper.UTC().Add(time.Duration(c.request.Days) * 24 * time.Hour)
-	head := storage.ObjectHead{Object: plan.Object, Revision: plan.HeadRevision, ManifestID: plan.ManifestID}
-	for _, ref := range archive {
+	pending := []storage.PackRef{}
+	for _, b := range archive {
 		if err := e.checkView(ctx); err != nil {
 			return err
 		}
-		physical, err := o.Packs.HeadPack(ctx, ref)
+		physical, err := o.Packs.HeadPack(ctx, b.key.Pack)
 		if err != nil {
 			return err
 		}
-		switch {
-		case physical.Class != storage.Glacier:
+		// Same identity checks as GET's physical(), without requiring Restored.
+		if physical.Ref != b.key.Pack || physical.Size != b.info.Size || physical.Class != b.info.Class || !archiveState(b.info.State) || !archiveState(physical.State) {
 			return storage.ErrConflict
+		}
+		switch {
 		case physical.State == "Restoring":
 			c.result.InProgress++
-			continue
 		case physical.State == "Restored" && !physical.RestoredUntil.Before(covered):
-			continue
+		default:
+			pending = append(pending, b.key.Pack)
+		}
+	}
+	head := storage.ObjectHead{Object: plan.Object, Revision: plan.HeadRevision, ManifestID: plan.ManifestID}
+	for _, ref := range pending {
+		if err := e.checkView(ctx); err != nil {
+			return err
 		}
 		created, err := o.Restore(ctx, e.view, head, ref, o.Global.Revision(), required, &c.request)
 		if err != nil {
@@ -552,6 +562,10 @@ func (e *warmExecutor) restore(ctx context.Context, plan engine.ReadPlan, c rest
 		}
 	}
 	return nil
+}
+
+func archiveState(state string) bool {
+	return state == "Cold" || state == "Restoring" || state == "Restored"
 }
 func (e *warmExecutor) physical(ctx context.Context, b warmBinding) error {
 	physical, err := e.reader.options.Packs.HeadPack(ctx, b.key.Pack)

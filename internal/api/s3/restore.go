@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/object"
+	"github.com/KinasTomes/miles/internal/storage"
 )
 
 // ObjectRestorer is the RestoreObject port (API v2 4.4). The object service
@@ -54,19 +54,18 @@ func (o *Objects) RestoreObject(w http.ResponseWriter, r *Request) error {
 	if doc.Type != nil || doc.SelectParameters != nil || doc.OutputLocation != nil {
 		return &Error{Code: ErrNotImplemented, Message: "SELECT restore and OutputLocation are not implemented.", Bucket: r.Bucket, Key: r.Key}
 	}
-	maxDays := config.DSGPolicyLimits().MaxAutoRestoreDays
-	if doc.Days == nil || *doc.Days < 1 || int64(*doc.Days) > maxDays {
-		return &Error{Code: ErrInvalidRequest, Message: fmt.Sprintf("RestoreRequest Days must be an integer from 1 to %d.", maxDays), Bucket: r.Bucket, Key: r.Key}
+	request := storage.RestoreRequest{Tier: "Standard"}
+	if doc.Days != nil {
+		request.Days = *doc.Days
 	}
-	tier := "Standard"
 	if doc.GlacierJobParameters != nil {
-		tier = doc.GlacierJobParameters.Tier
+		request.Tier = doc.GlacierJobParameters.Tier
 	}
-	if tier != "Expedited" && tier != "Standard" && tier != "Bulk" {
-		return &Error{Code: ErrInvalidRequest, Message: "GlacierJobParameters Tier must be Expedited, Standard or Bulk.", Bucket: r.Bucket, Key: r.Key}
+	if doc.Days == nil || request.Validate() != nil {
+		return &Error{Code: ErrInvalidRequest, Message: fmt.Sprintf("RestoreRequest needs Days from 1 to %d and a GlacierJobParameters Tier of Expedited, Standard or Bulk.", storage.MaxRestoreDays), Bucket: r.Bucket, Key: r.Key}
 	}
 	out, err := restorer.RestoreObject(r.HTTP.Context(), object.RestoreRequest{
-		Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID, Days: *doc.Days, Tier: tier,
+		Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID, Days: request.Days, Tier: request.Tier,
 	})
 	switch {
 	case errors.Is(err, object.ErrNotArchived):
