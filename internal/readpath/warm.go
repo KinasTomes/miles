@@ -29,6 +29,12 @@ type WarmOptions struct {
 	Clock     clock.Clock
 	Global    config.GlobalSnapshot
 	Metrics   *WarmMetrics
+	// UTC is required for temporary archive copies; nil never upgrades wall time
+	// to UTC evidence. Restore enqueues work only after the entire requested set
+	// has been pinned and preflighted. It never makes this GET readable.
+	UTC          storage.R1TimeSource
+	Restore      func(context.Context, *coordination.WarmView, storage.ObjectHead, storage.PackRef, uint64, time.Time) error
+	RestoreError func(context.Context, error)
 	// Bound on simultaneously owned transport buffers per RangeGet, supplied by
 	// the runtime's transport audit. Excludes shared pools/RSS headroom. No inferred
 	// default; an unbounded/custom buffering transport must not be enabled.
@@ -218,6 +224,11 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 		if e := ex.checkView(ctx); e != nil {
 			return e
 		}
+		// A completed speculative result may have waited behind the emitter.
+		// Revalidate the temporary copy and lifecycle before releasing its bytes.
+		if e := ex.revalidate(ctx, ex.bindings[index]); e != nil {
+			return e
+		}
 		if e := emit(ctx, b); e != nil {
 			return e
 		}
@@ -278,8 +289,11 @@ func (e *warmExecutor) eligible(ctx context.Context, b warmBinding) error {
 	if err := e.view.Check(ctx); err != nil {
 		return err
 	}
-	// Warm-only MVP: never turn cached Cold/Archive bytes into readable content.
-	if b.info.State != "Warm" || (b.info.Class != storage.Standard && b.info.Class != storage.StandardIA) {
+	// This only admits metadata to physical preflight, never cache or emission.
+	if b.info.Class == storage.Glacier && (b.info.State == "Cold" || b.info.State == "Restoring" || b.info.State == "Restored") {
+		return nil
+	}
+	if !(b.info.State == "Warm" && (b.info.Class == storage.Standard || b.info.Class == storage.StandardIA) || b.info.State == "Cold" && b.info.Class == storage.GlacierIR) {
 		return storage.ErrCold
 	}
 	d, err := policy.EvaluateRead(policy.ReadInput{Policy: policy.PinnedPolicy{Snapshot: e.reader.options.Global, RequiredRevision: e.reader.options.Global.Revision()}, Request: policy.Request{Now: e.reader.options.Clock.Now().Instant, Deadline: e.request.Deadline, Cancelled: ctx.Err() != nil}, Pack: b.info, Facts: policy.ReadFacts{Logical: policy.Valid, Metadata: policy.Valid, Authority: policy.Valid, PinCoverage: policy.Valid, Physical: policy.Valid}})
@@ -309,6 +323,7 @@ func (e *warmExecutor) Estimate(i int, _ engine.PlannedChunk) (Cost, error) {
 func (e *warmExecutor) preflight(ctx context.Context, plan engine.ReadPlan, ticket *RequestTicket) error {
 	o := e.reader.options
 	seen := map[storage.PackRef]bool{}
+	archive := []storage.PackRef{}
 	for i, b := range e.bindings {
 		if seen[b.key.Pack] {
 			continue
@@ -327,9 +342,38 @@ func (e *warmExecutor) preflight(ctx context.Context, plan engine.ReadPlan, tick
 			err = e.physical(ctx, b)
 		}
 		reservation.Release()
+		if errors.Is(err, storage.ErrCold) {
+			archive = append(archive, b.key.Pack)
+			continue
+		}
 		if err != nil {
 			return err
 		}
+	}
+	if len(archive) > 0 {
+		if o.Global.Policy().Tiering.AutoRestore && o.Restore != nil {
+			r, proof, proofErr := coordination.RequestUTC(ctx, o.Clock, o.UTC, e.request.Deadline)
+			required, requiredErr := policy.RestoreRequiredUntil(r, proof)
+			if proofErr != nil || requiredErr != nil || required.IsZero() {
+				o.Metrics.restoreErrors.Add(1)
+				if o.RestoreError != nil {
+					o.RestoreError(ctx, errors.Join(storage.ErrFenced, proofErr, requiredErr))
+				}
+				return storage.ErrCold
+			}
+			for _, ref := range archive {
+				if err := e.checkView(ctx); err != nil {
+					return err
+				}
+				if err := o.Restore(ctx, e.view, storage.ObjectHead{Object: plan.Object, Revision: plan.HeadRevision, ManifestID: plan.ManifestID}, ref, o.Global.Revision(), required); err != nil {
+					o.Metrics.restoreErrors.Add(1)
+					if o.RestoreError != nil {
+						o.RestoreError(ctx, err)
+					}
+				}
+			}
+		}
+		return storage.ErrCold
 	}
 	return nil
 }
@@ -341,34 +385,67 @@ func (e *warmExecutor) physical(ctx context.Context, b warmBinding) error {
 	if physical.Size != b.info.Size || physical.Ref != b.key.Pack {
 		return storage.ErrConflict
 	}
-	if physical.State != "Warm" || physical.Class != b.info.Class {
+	if physical.Class != b.info.Class {
 		return storage.ErrCold
 	}
+	if b.info.Class != storage.Glacier {
+		if physical.State != b.info.State {
+			return storage.ErrCold
+		}
+		return e.eligible(ctx, b)
+	}
+	if physical.State != "Restored" {
+		return storage.ErrCold
+	}
+	r, proof, err := coordination.RequestUTC(ctx, e.reader.options.Clock, e.reader.options.UTC, e.request.Deadline)
+	if err != nil {
+		return err
+	}
+	physical.StateRevision = b.info.StateRevision
+	d, err := policy.EvaluateRead(policy.ReadInput{Policy: policy.PinnedPolicy{Snapshot: e.reader.options.Global, RequiredRevision: e.reader.options.Global.Revision()}, Request: r, UTC: proof, Pack: physical,
+		Facts: policy.ReadFacts{Logical: policy.Valid, Metadata: policy.Valid, Authority: policy.Valid, PinCoverage: policy.Valid, Physical: policy.Valid}, RestoreVerified: policy.Valid})
+	if err != nil {
+		return err
+	}
+	if d.Verdict != policy.Eligible {
+		if d.Reason == policy.RestoreRequired {
+			return storage.ErrCold
+		}
+		return fmt.Errorf("%w: %s", storage.ErrFenced, d.Reason)
+	}
 	return nil
+}
+func (e *warmExecutor) revalidate(ctx context.Context, b warmBinding) error {
+	o := e.reader.options
+	if err := e.checkView(ctx); err != nil {
+		return err
+	}
+	infos, err := o.Metadata.GetPacks(ctx, []storage.PackRef{b.key.Pack})
+	if err != nil {
+		return err
+	}
+	current, ok := infos[b.key.Pack]
+	if !ok {
+		return storage.ErrNotFound
+	}
+	if !sameWarmReadLifecycle(current, b.info) {
+		return storage.ErrConflict
+	}
+	if err = e.eligible(ctx, b); err != nil {
+		return err
+	}
+	if err = e.physical(ctx, b); err != nil {
+		return err
+	}
+	return e.checkView(ctx)
 }
 func (e *warmExecutor) Execute(ctx context.Context, i int, _ engine.PlannedChunk) ([]byte, error) {
 	b := e.bindings[i]
 	o := e.reader.options
-	if err := e.checkView(ctx); err != nil {
+	if err := e.revalidate(ctx, b); err != nil {
 		return nil, err
 	}
-	infos, err := o.Metadata.GetPacks(ctx, []storage.PackRef{b.key.Pack})
-	if err != nil {
-		return nil, err
-	}
-	current, ok := infos[b.key.Pack]
-	if !ok {
-		return nil, storage.ErrNotFound
-	}
-	if !sameWarmReadLifecycle(current, b.info) {
-		return nil, storage.ErrConflict
-	}
-	if err = e.eligible(ctx, b); err != nil {
-		return nil, err
-	}
-	if err = e.physical(ctx, b); err != nil {
-		return nil, err
-	}
+	var err error
 	if err = e.checkView(ctx); err != nil {
 		return nil, err
 	}

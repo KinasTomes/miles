@@ -1,11 +1,13 @@
 package app
 
 import (
+	"context"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/readpath"
 	"github.com/KinasTomes/miles/internal/storage"
+	"log/slog"
 	"time"
 )
 
@@ -36,6 +38,10 @@ func objectRuntime(o object.Options, metadata storage.MetadataStore, packs stora
 	}
 	reader, err := readpath.NewWarmReader(readpath.WarmOptions{
 		Metadata: metadata, Packs: packs, Cache: o.Cache, Admission: admission, Gate: gate, Clock: o.Clock, Global: global, Metrics: metrics,
+		UTC: o.ReadUTC, Restore: o.AutoRestore,
+		RestoreError: func(ctx context.Context, err error) {
+			slog.ErrorContext(ctx, "Không thể khởi tạo auto-restore", "error", err)
+		},
 		// net/http read/write, TLS record and SDK stream buffers; no custom buffering.
 		// Resident connection pools and runtime/RSS headroom are outside this budget.
 		TransportBytes: 128 << 10, MaxManifestPages: 1024, MaxManifestChunks: 65536,

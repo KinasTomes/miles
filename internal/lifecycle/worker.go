@@ -36,6 +36,7 @@ type Store interface {
 	SkipLifecycle(context.Context, jobs.Job) (Action, error)
 }
 type Worker struct {
+	Jobs           *jobs.Service
 	Marker         *Marker
 	Sweep          SweepStorage
 	VerifyCutAfter func(context.Context, time.Time) error
@@ -46,7 +47,13 @@ type Worker struct {
 }
 
 func (w *Worker) Executor(kind jobs.Type) jobs.Executor {
-	return jobs.Executor{ResumePending: true, YieldAfterCheckpoint: true, Validate: func(b json.RawMessage) error { _, e := Decode(b, kind); return e }, Step: w.Step}
+	return jobs.Executor{ResumePending: true, YieldAfterCheckpoint: true, Validate: func(b json.RawMessage) error {
+		if kind == "tiering" && scanTiering(b) {
+			return nil
+		}
+		_, e := Decode(b, kind)
+		return e
+	}, Step: w.Step}
 }
 func TieringCandidate(record s.PolicySnapshot, p s.PackInfo, live int64, b s.R1Bounds) (s.StorageClass, error) {
 	validator, e := config.NewPolicyValidator(config.DSGPolicyLimits())
@@ -85,6 +92,9 @@ func TieringCandidate(record s.PolicySnapshot, p s.PackInfo, live int64, b s.R1B
 func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSnapshot) (jobs.Step, error) {
 	if w == nil || w.Store == nil || w.Packs == nil || w.Catalog == nil || w.UTC == nil {
 		return jobs.Step{}, s.ErrInvalid
+	}
+	if j.Type == "tiering" && scanTiering(j.Params) {
+		return w.scheduleStep(ctx, j, snapshot)
 	}
 	p, e := Decode(j.Params, j.Type)
 	if e != nil {
@@ -275,7 +285,7 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 			if !ok {
 				return w.abortPrepared(ctx, j, s.ErrInvalid)
 			}
-			if a.Source.State == "Warm" {
+			if RetirableData(a.Source) {
 				for _, chunk := range dead {
 					if e = store.RetireCanonical(ctx, j, chunk); e != nil {
 						return jobs.Step{}, e
@@ -388,7 +398,7 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 		if e != nil {
 			return jobs.Step{}, e
 		}
-		ready := physical.Class == s.Glacier && bounds.Upper.Before(physical.RestoredUntil)
+		ready := physical.Class == s.Glacier && bounds.Upper.Before(physical.RestoredUntil) && !physical.RestoredUntil.Before(a.RequiredUntil)
 		if (a.State == "Unknown" || a.State == "Dispatched" && !freshSend) && !ready && physical.State != "Restoring" {
 			return jobs.Step{}, jobs.ErrReconciliation
 		}
