@@ -93,6 +93,25 @@ func nativeColdFlows(t *testing.T, ctx context.Context, nodes []Dependencies, m 
 		_, e = svc.GetObject(ctx, object.GetRequest{Bucket: bucket.Name, BucketID: bucket.ID, Key: key, CredentialID: cred, Emit: func(_ context.Context, b []byte) error { _, e := got.Write(b); return e }})
 		return got.Bytes(), e
 	}
+	head := func(key string) string {
+		t.Helper()
+		svc, e := nodes[2].ObjectsForRequest(ctx, bucket.Name)
+		if e != nil {
+			t.Fatal(e)
+		}
+		stat, e := svc.Stat(ctx, object.GetRequest{Bucket: bucket.Name, BucketID: bucket.ID, Key: key, CredentialID: cred})
+		if e != nil {
+			t.Fatal(e)
+		}
+		return stat.Info.Restore
+	}
+	restore := func(key string, days int) (object.RestoreResult, error) {
+		svc, e := nodes[1].ObjectsForRequest(ctx, bucket.Name)
+		if e != nil {
+			return object.RestoreResult{}, e
+		}
+		return svc.RestoreObject(ctx, object.RestoreRequest{Bucket: bucket.Name, BucketID: bucket.ID, Key: key, CredentialID: cred, Days: days, Tier: "Expedited"})
+	}
 	put("cold-original")
 	duplicate := func(key string) {
 		if !scenario.Part {
@@ -181,6 +200,9 @@ func nativeColdFlows(t *testing.T, ctx context.Context, nodes []Dependencies, m 
 		t.Fatal("same-domain Cold metadata copy", e)
 	}
 	if class == storage.GlacierIR {
+		if out, e := restore("cold-original", 1); !errors.Is(e, object.ErrNotArchived) || head("cold-original") != "" {
+			t.Fatal("IR restore", out, e)
+		}
 		for range 2 {
 			got, e := read("cold-original")
 			if e != nil || !bytes.Equal(got, data) {
@@ -197,26 +219,62 @@ func nativeColdFlows(t *testing.T, ctx context.Context, nodes []Dependencies, m 
 		}
 	} else {
 		if scenario.Restore {
+			restoreJob := func() string {
+				t.Helper()
+				page, e := m.ListJobs(ctx, jobs.PageRequest{Limit: 100, ActiveOnly: true})
+				if e != nil {
+					t.Fatal(e)
+				}
+				id := ""
+				for _, job := range page.Jobs {
+					if job.Type == "pack_restore" {
+						if id != "" {
+							t.Fatal("restore of one generation queued twice", page.Jobs)
+						}
+						id = job.ID
+					}
+				}
+				if id == "" {
+					t.Fatal("no restore job queued")
+				}
+				return id
+			}
+			if h := head("cold-original"); h != "" {
+				t.Fatal("x-amz-restore before any restore", h)
+			}
+			if out, e := restore("cold-original", 2); e != nil || out != (object.RestoreResult{Initiated: 1}) {
+				t.Fatal("RestoreObject did not start", out, e)
+			}
+			if out, e := restore("metadata-copy", 2); e != nil || out != (object.RestoreResult{InProgress: 1}) {
+				t.Fatal("second RestoreObject of the shared pack", out, e)
+			}
+			// GET is refused without waiting; its auto-restore shares the job.
 			got, e := read("cold-original")
 			if !errors.Is(e, storage.ErrCold) || len(got) != 0 {
 				t.Fatal("unrestored archive read", e)
 			}
-			jobsPage, e := m.ListJobs(ctx, jobs.PageRequest{Limit: 100, ActiveOnly: true})
-			if e != nil {
-				t.Fatal(e)
+			wait(restoreJob()) // Moto completion is emulator evidence, not a live AWS demo.
+			restored := head("cold-original")
+			if !strings.HasPrefix(restored, `ongoing-request="false", expiry-date="`) || head("metadata-copy") != restored {
+				t.Fatal("x-amz-restore after completion", restored)
 			}
-			id := ""
-			for _, job := range jobsPage.Jobs {
-				if job.Type == "pack_restore" {
-					id = job.ID
+			for _, key := range []string{"cold-original", "metadata-copy"} {
+				if got, e = read(key); e != nil || !bytes.Equal(got, data) {
+					t.Fatal("completed restore not readable", key, e)
 				}
 			}
-			if id == "" {
-				t.Fatal("GET did not enqueue auto restore")
+			if out, e := restore("cold-original", 1); e != nil || out != (object.RestoreResult{}) {
+				t.Fatal("copy already lasting Days was restored again", out, e)
 			}
-			wait(id) // Moto completion is emulator evidence, not a live AWS demo.
+			if out, e := restore("cold-original", 5); e != nil || out != (object.RestoreResult{Initiated: 1}) {
+				t.Fatal("renewal did not start", out, e)
+			}
+			wait(restoreJob())
+			if renewed := head("cold-original"); renewed == restored || !strings.HasPrefix(renewed, `ongoing-request="false", expiry-date="`) {
+				t.Fatal("renewal kept expiry", restored, renewed)
+			}
 			if got, e = read("cold-original"); e != nil || !bytes.Equal(got, data) {
-				t.Fatal("completed restore not readable", e)
+				t.Fatal("renewed restore not readable", e)
 			}
 		}
 		duplicate("revived")
