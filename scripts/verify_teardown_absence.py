@@ -1221,7 +1221,7 @@ class TeardownAbsenceVerifier:
                     "reason": "VOLUME_NOT_FOUND",
                 }
             state = vols[0].get("State")
-            if state in ("deleted", "deleting"):
+            if state == "deleted":
                 return {
                     "resource": volume_id,
                     "type": "volume",
@@ -1472,6 +1472,20 @@ class TeardownAbsenceVerifier:
                     "unexpected_errors": [],
                     "resources": {},
                 }
+
+            # Outputs and a caller-supplied manifest can omit the same resource.
+            # Until state-derived inventory is independently reconciled, no live
+            # verification can establish completeness.
+            return {
+                "timestamp_utc": _iso_utc_now(),
+                "mode": self.mode,
+                "status": "UNVERIFIED",
+                "all_absent": False,
+                "error": "TERRAFORM_STATE_RECONCILIATION_UNAVAILABLE",
+                "reason": "Native checks cannot prove completeness without independent pre-destroy Terraform state reconciliation.",
+                "total_checked": 0,
+                "resources": {},
+            }
 
         # Guard 0.8: Manifest schema validation or two-way reconciliation failure
         if self.manifest_errors:

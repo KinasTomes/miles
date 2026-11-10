@@ -33,6 +33,20 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
     def tearDown(self):
         self.tmpdir.cleanup()
 
+    def test_deleting_volume_is_not_absent(self):
+        runner = lambda cmd: (0, json.dumps({"Volumes": [{"VolumeId": "vol-1", "State": "deleting"}]}), "")
+        result = TeardownAbsenceVerifier(inventory={"volumes": ["vol-1"]}, cli_runner=runner).verify_all()
+        self.assertFalse(result["all_absent"])
+        self.assertEqual(result["status"], "FAIL")
+
+    def test_live_never_passes_without_state_reconciliation(self):
+        inventory = {"account_id": "123456789012", "dynamodb_tables": ["table"]}
+        runner = lambda cmd: (0, json.dumps({"Account": "123456789012"}), "")
+        verifier = TeardownAbsenceVerifier(inventory=inventory, mode="live", manifest={"run_id": "test"}, cli_runner=runner)
+        result = verifier.verify_all()
+        self.assertFalse(result["all_absent"])
+        self.assertEqual(result["error"], "TERRAFORM_STATE_RECONCILIATION_UNAVAILABLE")
+
     def test_extract_inventory_from_real_terraform_schema(self):
         """
         Verifies parsing matching real Terraform outputs (dev/outputs.tf).
