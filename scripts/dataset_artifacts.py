@@ -33,7 +33,8 @@ layout is metadata-only and full GET hashes are separate. No ratio implies cost
 saving, and absent restore/infrastructure billing is not a measured zero.
 
 Verify from the repository root:
-`python3 -B scripts/dataset_artifacts.py verify benchmarks/evidence/engine-metadata-pilot`
+`python3 -B scripts/dataset_artifacts.py verify <bundle-directory>`
+Replace `<bundle-directory>` with this bundle's actual directory.
 
 Reproduce using `benchmarks/engine-metadata-artifacts.md`. Actual timestamps,
 request IDs, bucket incarnations and pack generations vary between runs.

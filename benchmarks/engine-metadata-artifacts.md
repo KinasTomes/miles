@@ -10,6 +10,7 @@ by successful checksum verification.
 | Source | Scope | Permitted use |
 | --- | --- | --- |
 | `engine-metadata-pilot` bundle | Small native local engine/metadata smoke, DynamoDB Local + S3/Moto, object-service PUT/GET and authenticated Admin handlers | Identity, accounting, artifact pipeline and verified GET correctness |
+| `engine-metadata-integrated` bundle | Separate local rerun from clean source `2903379` after the shared runtime fixture refactor | Integration regression evidence with independent provenance; does not replace the original capture |
 | `warm-aws` bundle | Historical single-node Badger/Warm run, source `590b1c6`, backup30 | Reuse its original dataset checksums and historical conclusions with original scope |
 | Fresh live Cloud/Edge pilot | Requires its own retained inputs, source/policy/workload, permissions and run evidence | Future performance/cost conclusions only after actual execution |
 

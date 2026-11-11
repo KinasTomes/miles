@@ -128,3 +128,55 @@ Reproduce with [the artifact procedure](../../benchmarks/engine-metadata-artifac
 The small bundle and historical checksum audit are ready as report inputs. A
 fresh live performance/cost pilot still needs its own execution and evidence;
 none of its missing measurements are filled from this smoke or from a simulator.
+
+## Runtime fixture integration
+
+The runtime acceptance refactor merged through PR #76 changed the common fixture.
+The integration in PR #85 preserves that implementation: live opt-in and AWS
+account/region/assumed-role guards, endpoint/credential selection, independent
+transports and redirect protection, provisioning/versioning/cleanup, recovered
+admission cleanup, default-policy PUT regression and journal S3 fault injection.
+Existing entry points delegate with a nil scenario. Dataset capture delegates
+through a local-only wrapper using `gcFlows=true`; mixed live/fault/terminal/Cold
+scenarios are rejected before client creation. The callback runs after credential,
+bucket and policy setup and returns before the normal terminal/GC/Cold workloads.
+
+Keeping the versioned GC fixture is intentional. The ordinary non-GC fixture
+writes a fresh-bucket default-policy regression object before handoff; using it
+for dataset capture would contaminate the empty baseline.
+
+The [integrated capture](../../benchmarks/evidence/engine-metadata-integrated/README.md)
+is a separate run from clean committed source `2903379`, which includes main
+`a5255a6`. It passed with `-race` and required local DynamoDB/S3 endpoints,
+including fixture cleanup. Its [run record](../../benchmarks/evidence/engine-metadata-integrated/run.json)
+pins its own source and executable checksum. The original `94889a0` bundle and
+historical audit are unchanged; neither is relabeled as a new measurement.
+
+| Integrated phase | Logical | Unique raw | Unique stored | Retained listed physical |
+| --- | ---: | ---: | ---: | ---: |
+| Empty | 0 | 0 | 0 | 3,282 |
+| A | 589,914 | 458,782 | 262,453 | 268,899 |
+| A+B | 1,179,828 | 458,782 | 262,453 | 268,899 |
+| A+B+C | 1,769,742 | 917,564 | 524,906 | 534,656 |
+
+All four phases, 27 full GET hashes, 14 domain-scoped identities, quota, layouts
+and physical allocation pass the same semantic verifier. The empty phase has
+zero objects/chunks. Physical totals are four bytes above the original capture
+in each phase; the recorded measurements are retained without normalization.
+The logical/unique counts and compression ratios are unchanged. This comparison
+does not identify the cause of the four-byte difference or measure performance.
+No live AWS acceptance or deployment was executed for this integration.
+
+Integration validation passed: the normal native Cloud/Edge, Warm GC, Cold,
+terminal and journal S3 fault scenarios; full Go suite with required fixture
+endpoints; race tests for app/stats/cost/engine/benchmarkdata; vet/build; and all
+184 Python tests (13 artifact tests). The integrated bundle is verified by the
+Python suite as well as the standalone verifier. These are local results;
+GitHub CI status is recorded separately on the PR for its actual pushed HEAD.
+
+Verify both runs independently:
+
+```sh
+python3 -B scripts/dataset_artifacts.py verify benchmarks/evidence/engine-metadata-pilot
+python3 -B scripts/dataset_artifacts.py verify benchmarks/evidence/engine-metadata-integrated
+```

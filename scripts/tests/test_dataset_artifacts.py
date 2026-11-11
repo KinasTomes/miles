@@ -14,6 +14,13 @@ FIXTURE = ROOT / "benchmarks/evidence/engine-metadata-pilot"
 
 
 class ByteIntegrityTests(unittest.TestCase):
+    def test_integrated_bundle_preserves_source_and_accounting(self):
+        root = ROOT / "benchmarks/evidence/engine-metadata-integrated"
+        summary = artifacts.verify(root)
+        self.assertEqual(summary["source_commit"], "290337952751fb40134713deec635cdc87b3d4fe")
+        self.assertEqual((summary["verified_gets"], summary["identities"]), (27, 14))
+        self.assertEqual(summary["phases"][0]["bytes_logical"], 0)
+
     def test_crlf_is_not_silently_normalized(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
