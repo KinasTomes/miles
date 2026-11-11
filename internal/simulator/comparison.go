@@ -277,6 +277,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		PolicyWarmGlacierFlex:  new(big.Rat),
 	}
 	earlyDeletedPacks := make(map[string]bool)
+	unprovenRetentionPacks := make(map[string]bool)
 
 	// Replay events through timeline
 	for _, event := range trace.Events {
@@ -305,9 +306,19 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 					pack.State == "Deleted" || pack.State == "Retired"
 
 				if isDeleting {
+					// Only classes with minimum retention obligations (e.g. Glacier IR, Glacier Flexible)
+					// incur early deletion fees and require retention identity tracking.
+					rule, ok := catalog.RuleForClass(string(pack.Class))
+					if !ok || rule.MinimumDays <= 0 {
+						if pack.Ref.ID != "" {
+							packKey := fmt.Sprintf("%s:%s", pack.Ref.ID, pack.Ref.Generation)
+							delete(activeColdPacks, packKey)
+						}
+						continue
+					}
+
+					// For classes with minimum retention obligations:
 					// Pack identity is required for idempotent early deletion accounting.
-					// Packs lacking Ref.ID cannot prove whether multiple lifecycle observations
-					// (e.g. Deleting and Retiring) belong to the same pack or distinct packs.
 					if pack.Ref.ID == "" {
 						hasUnprovenColdPacks = true
 						continue
@@ -320,21 +331,20 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 					if earlyDeletedPacks[chargeKey] {
 						continue // Idempotent: already accounted for this pack ref and class
 					}
-					earlyDeletedPacks[chargeKey] = true
-
-					rule, ok := catalog.RuleForClass(string(pack.Class))
-					if !ok || rule.MinimumDays <= 0 {
-						continue
-					}
-
-					minRetention := time.Duration(rule.MinimumDays) * 24 * time.Hour
 
 					// Retention deadline timing must have verified provenance (MinRetentionUntil).
 					// Do not guess from LastAccess (a recent read does not reset retention start).
 					if pack.MinRetentionUntil.IsZero() {
-						hasUnprovenColdPacks = true
+						// Record as unproven pending subsequent lifecycle observations of this pack.
+						unprovenRetentionPacks[chargeKey] = true
 						continue
 					}
+
+					// Verified retention deadline is present: clear unproven status and mark charged.
+					delete(unprovenRetentionPacks, chargeKey)
+					earlyDeletedPacks[chargeKey] = true
+
+					minRetention := time.Duration(rule.MinimumDays) * 24 * time.Hour
 
 					var retained time.Duration
 					if pack.MinRetentionUntil.After(eventTime) {
@@ -378,6 +388,10 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 				}
 			}
 		}
+	}
+
+	if len(unprovenRetentionPacks) > 0 {
+		hasUnprovenColdPacks = true
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -862,35 +876,64 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		}
 		var coldBytesRetrieved uint64
 		var coldDeliveredBytes uint64
+		hasMixedReadEvent := false
 
 		for _, event := range trace.Events {
 			hasColdReadInEvent := false
+			hasWarmReadInEvent := false
+			var coldBytesInThisEvent uint64
+
 			for _, u := range event.Usage {
 				switch polName {
 				case PolicyWarmGlacierIR:
 					if u.RateID == "s3.retrieval_ir" {
-						if q, ok := new(big.Rat).SetString(u.Quantity); ok {
+						if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
 							gbFloat, _ := q.Float64()
-							coldBytesRetrieved += uint64(gbFloat * float64(trace.BytesPerGB))
+							b := uint64(gbFloat * float64(trace.BytesPerGB))
+							coldBytesRetrieved += b
+							coldBytesInThisEvent += b
 							hasColdReadInEvent = true
+						}
+					}
+					if (strings.HasPrefix(u.RateID, "s3.get_") && u.RateID != "s3.get_ir") ||
+						u.RateID == "s3.retrieval_ia" {
+						if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+							hasWarmReadInEvent = true
 						}
 					}
 				case PolicyWarmGlacierFlex:
 					if u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
-						if q, ok := new(big.Rat).SetString(u.Quantity); ok {
+						if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
 							gbFloat, _ := q.Float64()
-							coldBytesRetrieved += uint64(gbFloat * float64(trace.BytesPerGB))
+							b := uint64(gbFloat * float64(trace.BytesPerGB))
+							coldBytesRetrieved += b
+							coldBytesInThisEvent += b
 							hasColdReadInEvent = true
+						}
+					}
+					if strings.HasPrefix(u.RateID, "s3.get_") || strings.HasPrefix(u.RateID, "s3.retrieval_") {
+						if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+							hasWarmReadInEvent = true
 						}
 					}
 				}
 			}
+
 			if hasColdReadInEvent {
-				coldDeliveredBytes += event.Traffic[cost.GatewayClient]
+				clientBytes := event.Traffic[cost.GatewayClient]
+				// When warm reads and cold retrieval share the same event, client delivery
+				// traffic on gateway_to_client combines delivered bytes from both warm and cold operations.
+				// Since trace telemetry cannot isolate cold-delivered bytes within a mixed event,
+				// return nil instead of publishing an unfounded/diluted ratio.
+				if hasWarmReadInEvent || clientBytes > coldBytesInThisEvent {
+					hasMixedReadEvent = true
+				} else {
+					coldDeliveredBytes += clientBytes
+				}
 			}
 		}
 
-		if coldBytesRetrieved == 0 || coldDeliveredBytes == 0 {
+		if hasMixedReadEvent || coldBytesRetrieved == 0 || coldDeliveredBytes == 0 {
 			return nil
 		}
 		return cost.RestoreAmplification(coldBytesRetrieved, coldDeliveredBytes)
