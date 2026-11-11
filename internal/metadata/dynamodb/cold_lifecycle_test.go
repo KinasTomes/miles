@@ -405,7 +405,7 @@ func TestCrossDomainCopyColdSourceAutoRestoreDynamoDB(t *testing.T) {
 	srcHead := p.Heads[0]
 
 	// 2. Create destination bucket in other-domain with owner quota
-	b2 := s.Bucket{Name: "dst-bkt", ID: "bucket-dst", OwnerID: srcHead.Object.Bucket, Domain: "other-domain", Revision: 1, Active: true}
+	b2 := s.Bucket{Name: "dst-bkt", ID: "bucket-dst", OwnerID: "owner", Domain: "other-domain", Revision: 1, Active: true}
 	if e := m.update(ctx, func(tx *transaction) error {
 		if err := put(tx, key("buckets", b2.Name), b2); err != nil {
 			return err
