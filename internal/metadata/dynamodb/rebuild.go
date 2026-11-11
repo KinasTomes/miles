@@ -216,7 +216,7 @@ func (m *Store) stageRecoveryRecord(t *transaction, r s.IndexRecord) error {
 			return s.ErrInvalid
 		}
 		var a lifecycle.Action
-		if decodeRecoveryRecord(r.Body, &a) != nil || a.Fence != (s.WriterFence{}) {
+		if decodeRecoveryRecord(r.Body, &a) != nil || a.Fence != (s.WriterFence{}) || a.ValidateSchema() != nil {
 			return s.ErrInvalid
 		}
 		return r1Put(t, stringKey("SystemConfig", "config_id", "recovery/lifecycle/"+ids[0]), struct {

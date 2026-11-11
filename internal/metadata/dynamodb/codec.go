@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/KinasTomes/miles/internal/jobs"
+	"github.com/KinasTomes/miles/internal/lifecycle"
 	"reflect"
 	"strconv"
 	"strings"
@@ -220,6 +221,12 @@ func unmarshalNative(a types.AttributeValue, v reflect.Value) error {
 		}
 		for i := 0; i < v.NumField(); i++ {
 			name := fieldName(v.Type().Field(i).Name)
+			// StepID was absent from deployed v1 lifecycle rows. Missing values
+			// mean an unbound legacy action; validation keeps it readable while
+			// active operations fail closed.
+			if v.Type() == reflect.TypeOf(lifecycle.Action{}) && x.Value[name] == nil && name == fieldName("StepID") {
+				continue
+			}
 			// Older Nodes records have no drain proof. Missing proof remains
 			// false/empty; only the new controller can acknowledge completion.
 			if v.Type() == reflect.TypeOf(jobs.Node{}) && x.Value[name] == nil && (name == "drain_applied" || name == "drain_state" || name == "cache") {
