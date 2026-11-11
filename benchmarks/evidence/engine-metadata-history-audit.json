@@ -1,0 +1,13 @@
+{
+  "kind": "historical-single-node-badger-warm",
+  "source_commit": "590b1c6c604446b13d843a49fc211a43d95ab44d",
+  "manifest_sha256": "04014dd767e799d9f70081536d01c988fa6a02c0b7653c34db11a48c9abc1556",
+  "files": 90,
+  "bytes": 754994670,
+  "raw_runs": 12,
+  "verified_gets": 4320,
+  "current_release_measurement": false,
+  "audited_at": "2026-11-11T15:14:42.265983+00:00",
+  "audit_source_commit": "94889a041764d11a6211a176a47bdaef2a4ad1f9",
+  "checksum_index_sha256": "714fc6b3923881ece58100d57d9cd4a2544441eedb8089ff83a718aa64564eb1"
+}

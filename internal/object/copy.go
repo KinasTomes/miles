@@ -51,8 +51,9 @@ type CopyResult struct {
 }
 
 // CopyObject publishes a new destination head over a fresh manifest that
-// repeats the source refs (API v2 4.5, architecture 5.3). It never reads the
-// payload: ETag and checksum are the source's, kept opaque. The source head is
+// repeats source refs within a domain (API v2 4.5, architecture 5.3). Cross-domain
+// copy streams verified source data into destination-domain identities. ETag and
+// checksum behavior follows the selected copy path. The source head is
 // read once under a bound source read view that keeps retirement closed until
 // the destination writer holds its own generation pins, so a concurrent source
 // overwrite or retirement cannot mix versions or drop a referenced pack.
