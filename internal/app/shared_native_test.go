@@ -306,17 +306,19 @@ func runSharedRuntimeFixture(t *testing.T, gcFlows, live, faultFlows bool, coldC
 	}
 
 	cacheDoc, _ := json.Marshal(map[string]any{"cache": config.DefaultCachePolicy()})
-	// Fresh S3 buckets have a virtual default policy until an Admin edit.
-	fresh, e := nodes[2].ObjectsForRequest(ctx, bucket.Name)
-	if e != nil {
-		t.Fatal(e)
-	}
-	freshData := []byte("fresh bucket default policy")
-	if _, e = fresh.PutObject(ctx, object.PutRequest{Bucket: bucket, Key: "before-policy-edit", UserID: "owner", CredentialID: "RUNTIMEKEY00000000001", ContentLength: int64(len(freshData)), Body: bodyForNative(freshData)}); e != nil {
-		t.Fatal("fresh bucket PUT before Admin policy edit", e)
-	}
-	if _, e = m.GetBucketPolicy(ctx, bucket.Name, bucket.ID, 0); !errors.Is(e, storage.ErrNotFound) {
-		t.Fatal("PUT materialized the virtual default policy", e)
+	// Keep the extra PUT out of fixtures that measure Cold or GC accounting.
+	if !gcFlows && len(coldClass) == 0 {
+		fresh, err := nodes[2].ObjectsForRequest(ctx, bucket.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		freshData := []byte("fresh bucket default policy")
+		if _, err = fresh.PutObject(ctx, object.PutRequest{Bucket: bucket, Key: "before-policy-edit", UserID: "owner", CredentialID: "RUNTIMEKEY00000000001", ContentLength: int64(len(freshData)), Body: bodyForNative(freshData)}); err != nil {
+			t.Fatal("fresh bucket PUT before Admin policy edit", err)
+		}
+		if _, err = m.GetBucketPolicy(ctx, bucket.Name, bucket.ID, 0); !errors.Is(err, storage.ErrNotFound) {
+			t.Fatal("PUT materialized the virtual default policy", err)
+		}
 	}
 	mutation, e = nodes[1].Admin.Admit(ctx, tokenID)
 	if e != nil {
