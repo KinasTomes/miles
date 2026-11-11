@@ -37,7 +37,7 @@ func (a *terminalAPI) HeadObject(ctx context.Context, in *awss3.HeadObjectInput,
 
 func terminalAction(kind jobs.Type) lifecycle.Action {
 	id := strings.Repeat("a", 32)
-	return lifecycle.Action{Version: 1, ID: id, JobID: id, Kind: kind, State: "Unknown", Revision: 2,
+	return lifecycle.Action{Version: 1, ID: id, JobID: id, StepID: strings.Repeat("e", 32), Kind: kind, State: "Unknown", Revision: 2,
 		Fence:  s.WriterFence{LeaseID: id, ServiceIncarnation: strings.Repeat("b", 32), Epoch: 1},
 		Source: s.PackInfo{Version: 1, Ref: s.PackRef{ID: strings.Repeat("c", 32), Generation: strings.Repeat("d", 32)}, StateRevision: 3, Size: 64, Class: s.GlacierIR, State: "Cold"},
 	}
@@ -102,12 +102,15 @@ func TestLifecycleCopyCarriesDurableActionMarker(t *testing.T) {
 	store, _ := New(api, "physical", "")
 	ref := s.PackRef{ID: strings.Repeat("a", 32), Generation: strings.Repeat("b", 32)}
 	key, _, _ := keys(ref)
-	api.objects[key] = object{body: []byte("pack"), class: types.StorageClassStandard}
+	expires := time.Date(2026, 12, 1, 1, 2, 3, 0, time.UTC)
+	api.objects[key] = object{body: []byte("pack"), class: types.StorageClassStandard, metadata: map[string]string{"custom-integrity-id": "preserve-me", lifecycleActionMetadata: "old-action"},
+		contentType: "application/x-miles-pack", cacheControl: "private, max-age=60", contentDisposition: "attachment; filename=pack.miles", contentEncoding: "gzip", contentLanguage: "en", expires: &expires, websiteRedirectLocation: "/packs/original"}
 	ctx := s.WithLifecycleAction(t.Context(), strings.Repeat("c", 32))
 	if err := store.ChangeStorageClass(ctx, ref, s.GlacierIR); err != nil {
 		t.Fatal(err)
 	}
-	if got := api.objects[key].metadata[lifecycleActionMetadata]; got != strings.Repeat("c", 32) {
-		t.Fatal("copy omitted the durable action marker", got)
+	got := api.objects[key]
+	if got.metadata["custom-integrity-id"] != "preserve-me" || got.metadata[lifecycleActionMetadata] != strings.Repeat("c", 32) || got.contentType != "application/x-miles-pack" || got.cacheControl != "private, max-age=60" || got.contentDisposition != "attachment; filename=pack.miles" || got.contentEncoding != "gzip" || got.contentLanguage != "en" || got.expires == nil || !got.expires.Equal(expires) || got.websiteRedirectLocation != "/packs/original" {
+		t.Fatalf("copy did not preserve source metadata/headers and add the action marker: %+v", got)
 	}
 }

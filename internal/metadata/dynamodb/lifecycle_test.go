@@ -501,7 +501,26 @@ func TestLocalLifecycleTerminalGuardBindsOriginalFenceAndPendingStep(t *testing.
 		t.Fatal(err)
 	}
 	if err = observe(); !errors.Is(err, s.ErrFenced) {
-		t.Fatal("a different job step inherited the action proof", err)
+		t.Fatal("an empty job step inherited the action proof", err)
+	}
+	wrongStep := strings.Repeat("2", 32)
+	if err = m.update(t.Context(), func(tx *transaction) error {
+		job, e := get[jobs.Job](tx, key("jobs", j.ID))
+		if e != nil {
+			return e
+		}
+		job.PendingStep = wrongStep
+		job.Revision++
+		return put(tx, key("jobs", j.ID), job)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = observe(); !errors.Is(err, s.ErrFenced) {
+		t.Fatal("a different nonempty job step inherited the action proof", err)
+	}
+	j.PendingStep = wrongStep
+	if _, err = m.ResolveLifecycle(t.Context(), j); !errors.Is(err, s.ErrFenced) {
+		t.Fatal("ResolveLifecycle accepted terminal proof for a different step", err)
 	}
 }
 

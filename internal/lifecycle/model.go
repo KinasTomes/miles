@@ -84,6 +84,7 @@ type Action struct {
 	Version       uint32
 	ID            string
 	JobID         string
+	StepID        string
 	Kind          jobs.Type
 	State         string
 	Revision      uint64
@@ -109,7 +110,7 @@ func (a Action) Validate() error {
 		return s.ErrInvalid
 	}
 
-	if a.Version != 1 || !jobs.ValidID(a.JobID) || a.ID != a.JobID || a.Revision < 1 || a.Revision >= s.MaxPolicyRevision || a.Source.Ref.Validate() != nil || a.Fence.LeaseID != a.JobID || len(a.Chunks) > 16384 || a.PlanPages > 512 {
+	if a.Version != 1 || !jobs.ValidID(a.JobID) || !jobs.ValidID(a.StepID) || a.ID != a.JobID || a.Revision < 1 || a.Revision >= s.MaxPolicyRevision || a.Source.Ref.Validate() != nil || a.Fence.LeaseID != a.JobID || len(a.Chunks) > 16384 || a.PlanPages > 512 {
 		return s.ErrInvalid
 	}
 	switch a.State {

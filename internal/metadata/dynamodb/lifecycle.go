@@ -146,7 +146,7 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 		}
 		old, e := r1Read[lifecycle.Action](t, lifecycleKey(j.ID))
 		if e == nil {
-			if old.Kind != j.Type || old.Source.Ref != p.Ref() || old.Days != p.Days || old.Tier != p.Tier || !old.RequiredUntil.Equal(p.RequiredUntil) || lifecycle.Repack(old.Kind) && (old.PlanSHA256 != planHash || old.Digest != digest) {
+			if old.Kind != j.Type || old.StepID != j.PendingStep || old.Source.Ref != p.Ref() || old.Days != p.Days || old.Tier != p.Tier || !old.RequiredUntil.Equal(p.RequiredUntil) || lifecycle.Repack(old.Kind) && (old.PlanSHA256 != planHash || old.Digest != digest) {
 				return s.ErrConflict
 			}
 			if old.Fence != j.Worker {
@@ -183,7 +183,7 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 		if e != nil {
 			return e
 		}
-		a := lifecycle.Action{Version: 1, ID: j.ID, JobID: j.ID, Kind: j.Type, State: "Prepared", Revision: 1, Fence: j.Worker, Source: source, Days: p.Days, Tier: p.Tier, RequiredUntil: p.RequiredUntil, PlanPages: pageCount, PlanSHA256: planHash, Digest: digest}
+		a := lifecycle.Action{Version: 1, ID: j.ID, JobID: j.ID, StepID: j.PendingStep, Kind: j.Type, State: "Prepared", Revision: 1, Fence: j.Worker, Source: source, Days: p.Days, Tier: p.Tier, RequiredUntil: p.RequiredUntil, PlanPages: pageCount, PlanSHA256: planHash, Digest: digest}
 		a.Destination = lifecycle.Destination(j.Type, j.ID, source.Ref)
 		switch j.Type {
 		case "gc":
@@ -299,6 +299,9 @@ func (m *Store) dispatchLifecycle(ctx context.Context, j jobs.Job, target s.Stor
 			return e
 		}
 		if a.Fence != j.Worker {
+			return s.ErrFenced
+		}
+		if a.StepID != j.PendingStep {
 			return s.ErrFenced
 		}
 		if a.State != "Prepared" {
@@ -721,7 +724,7 @@ func VerifyLifecycleIsolation(a lifecycle.Action, observe Observe) error {
 	if err != nil {
 		return err
 	}
-	if job.ID != a.JobID || job.Type != a.Kind || job.Worker != a.Fence || job.PendingStep == "" || job.State != jobs.Running && job.State != jobs.Cancelling {
+	if job.ID != a.JobID || job.Type != a.Kind || job.Worker != a.Fence || job.PendingStep != a.StepID || job.State != jobs.Running && job.State != jobs.Cancelling {
 		return s.ErrFenced
 	}
 	if a.Kind == "pack_restore" {
@@ -749,6 +752,9 @@ func (m *Store) ResolveLifecycle(ctx context.Context, j jobs.Job) (out lifecycle
 			return e
 		}
 		if a.Fence != j.Worker {
+			return s.ErrFenced
+		}
+		if a.StepID != j.PendingStep {
 			return s.ErrFenced
 		}
 		if a.State == "Applied" {

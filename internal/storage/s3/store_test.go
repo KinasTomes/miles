@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/pack"
 	"github.com/KinasTomes/miles/internal/storage"
@@ -24,10 +25,13 @@ import (
 )
 
 type object struct {
-	body     []byte
-	class    types.StorageClass
-	restore  string
-	metadata map[string]string
+	body                                                                            []byte
+	class                                                                           types.StorageClass
+	restore                                                                         string
+	metadata                                                                        map[string]string
+	contentType, cacheControl, contentDisposition, contentEncoding, contentLanguage string
+	expires                                                                         *time.Time
+	websiteRedirectLocation                                                         string
 }
 
 type fakeAPI struct {
@@ -81,6 +85,25 @@ func (f *fakeAPI) HeadObject(ctx context.Context, in *awss3.HeadObjectInput, _ .
 		return nil, &smithy.GenericAPIError{Code: "NotFound"}
 	}
 	out := &awss3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(o.body))), StorageClass: o.class, Metadata: cloneMetadata(o.metadata)}
+	if o.contentType != "" {
+		out.ContentType = aws.String(o.contentType)
+	}
+	if o.cacheControl != "" {
+		out.CacheControl = aws.String(o.cacheControl)
+	}
+	if o.contentDisposition != "" {
+		out.ContentDisposition = aws.String(o.contentDisposition)
+	}
+	if o.contentEncoding != "" {
+		out.ContentEncoding = aws.String(o.contentEncoding)
+	}
+	if o.contentLanguage != "" {
+		out.ContentLanguage = aws.String(o.contentLanguage)
+	}
+	out.Expires = o.expires
+	if o.websiteRedirectLocation != "" {
+		out.WebsiteRedirectLocation = aws.String(o.websiteRedirectLocation)
+	}
 	if o.restore != "" {
 		out.Restore = aws.String(o.restore)
 	}
@@ -126,6 +149,13 @@ func (f *fakeAPI) CopyObject(ctx context.Context, in *awss3.CopyObjectInput, _ .
 	o.class = in.StorageClass
 	if in.MetadataDirective == types.MetadataDirectiveReplace {
 		o.metadata = cloneMetadata(in.Metadata)
+		o.contentType = aws.ToString(in.ContentType)
+		o.cacheControl = aws.ToString(in.CacheControl)
+		o.contentDisposition = aws.ToString(in.ContentDisposition)
+		o.contentEncoding = aws.ToString(in.ContentEncoding)
+		o.contentLanguage = aws.ToString(in.ContentLanguage)
+		o.expires = in.Expires
+		o.websiteRedirectLocation = aws.ToString(in.WebsiteRedirectLocation)
 	}
 	f.objects[*in.Key] = o
 	return &awss3.CopyObjectOutput{}, nil
