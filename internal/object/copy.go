@@ -241,9 +241,12 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 						if err := sourceView.Pin(ctx, []storage.PackRef{chunk.Location.Pack}); err != nil {
 							return nil, err
 						}
-						rev := s.o.Reader.PolicyRevision()
+						if err := sourceView.Resolved(ctx); err != nil {
+							return nil, err
+						}
+						rev := packInfo.StateRevision
 						if rev == 0 {
-							rev = packInfo.StateRevision
+							rev = s.o.Reader.PolicyRevision()
 						}
 						if rev == 0 {
 							rev = 1

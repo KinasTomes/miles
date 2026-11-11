@@ -471,13 +471,7 @@ func TestCrossDomainCopyColdSourceAutoRestoreDynamoDB(t *testing.T) {
 				_ = w.Release()
 				return object.AdmittedWriter{}, e
 			}
-			bounds, e := utc.Bounds(ctx)
-			if e != nil {
-				stop()
-				_ = w.Release()
-				return object.AdmittedWriter{}, e
-			}
-			protected := bounds.Upper.Add(15 * time.Minute)
+			protected := r.WallDeadline.Add(15 * time.Minute)
 			return object.AdmittedWriter{Producer: &mutation, Fence: mutation.Writer, ProtectedUntil: protected, Finish: func() { stop(); _ = w.Release() }}, nil
 		},
 		Chunking:    engine.ChunkingParams{Min: 16 << 10, Avg: 16 << 10, Max: 16 << 10},
