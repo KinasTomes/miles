@@ -33,6 +33,8 @@ Cloud-a cache purge timed out twice with `partial_cluster/node_timeout`. The tar
 
 The first real hourly epoch began closing at 03:21:51 UTC and reached Closed at 03:23:08 with 1,242 events. It remained unsealed at the 03:33 observation; 1,022 events had persisted export descriptors. The runtime correctly withheld recovery observations while the first closed epoch lacked a seal. Both recovery-age and telemetry-age alarms entered ALARM. Whether sealing can finish within the rotating worker's authority budget remains under investigation.
 
+At 04:35 UTC, all 1,242 events had export descriptors, but neither the first epoch nor the subsequent empty epoch was Sealed. The first epoch's owner had advanced to generation 15 of the periodic flush job. Export eventually completed; publication of a usable recovery cut did not. The eight-alarm acceptance remains incomplete. Do not describe this as a permanent export stall or claim data corruption from these observations.
+
 Controlled corrupt-pack reads returned HTTP 502 through both proxies, incremented the runtime integrity counter and triggered both integrity alarms. Removing the faults restored GET 200 with the expected SHA-256. This differs from the operator script's initial HTTP 500 assertion; that assertion was not used as evidence of runtime failure. A separate 180-second DDB-throttle fault was then applied to all three gateways. Alarm recovery, final validation of all eight histories, teardown and baseline-preservation audit remain pending.
 
 The latest state and step-by-step log are held in the private operator run directory `edge-acceptance-recheck/edge-retest-20261111T012450Z`.
