@@ -421,11 +421,25 @@ func TestLocalLifecycleTrustedReconcileAndImmutableRetry(t *testing.T) {
 		if out, e := w.Step(t.Context(), j, policy); e == nil || out.Settled {
 			t.Fatal(out, e)
 		}
+		// Unknown must go through the trusted terminal hook. A restore already
+		// accepted by S3 is terminal even while its asynchronous retrieval runs;
+		// the mutable HEAD result alone is not the proof.
+		m.authority.(*SharedAuthority).LifecycleTerminal = lifeTerminalGuard{}
+		a, e := m.GetLifecycle(t.Context(), j.ID)
+		if e != nil || a.State != "Unknown" {
+			t.Fatal(a, e)
+		}
+		proof := lifeTerminalProof{ID: a.ID, Fence: a.Fence, Target: a.Target, Terminal: true, Isolated: true, Applied: true}
+		if e = m.update(t.Context(), func(tx *transaction) error {
+			return r1Put(tx, stringKey("SystemConfig", "config_id", "fixture/lifecycle/terminal"), proof)
+		}); e != nil {
+			t.Fatal(e)
+		}
 		out, e := w.Step(t.Context(), j, policy)
 		if e != nil || !out.Settled || out.Done {
 			t.Fatal(out, e)
 		}
-		a, _ := m.GetLifecycle(t.Context(), j.ID)
+		a, _ = m.GetLifecycle(t.Context(), j.ID)
 		if e = physical.CompleteRestore(a.Source.Ref, utc.Now().Add(time.Hour)); e != nil {
 			t.Fatal(e)
 		}
