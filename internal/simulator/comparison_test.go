@@ -772,6 +772,93 @@ func TestComparePoliciesIncompleteTelemetrySuppressesCompleteTotalAndSavings(t *
 	if warmStd4.BreakEven != nil {
 		t.Fatalf("expected nil BreakEven for partial cloud infra trace, got %v", *warmStd4.BreakEven)
 	}
+
+	// 5. Finding 1 regression: trace with storage, PUT, and full cloud infra (EC2, EBS, ALB, DDB)
+	// but COMPLETELY lacking network metering (no Traffic map, no transfer.* usage).
+	// Must return nil CompleteTotalUSD, SavingsUSD, and BreakEven (fail-closed without network telemetry).
+	for i := range catalog.Rates {
+		switch catalog.Rates[i].ID {
+		case "ec2.compute":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.0416"}}
+		case "ebs.gp3":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.08"}}
+		}
+	}
+
+	trace5 := trace1
+	trace5.Name = "missing-network-telemetry-trace"
+	trace5.Omissions = []string{"Full observation run"}
+	trace5.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  2000 * 1024 * 1024,
+				Physical: 500 * 1024 * 1024,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: 500 * 1024 * 1024,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+				{RateID: "ec2.compute", Unit: "Hrs", Quantity: "10"},
+				{RateID: "ebs.gp3", Unit: "GB-Mo", Quantity: "10"},
+				{RateID: "alb.hour", Unit: "Hrs", Quantity: "10"},
+				{RateID: "alb.lcu", Unit: "LCU-Hrs", Quantity: "10"},
+				{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1"},
+				{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "10"},
+			},
+		},
+	}
+
+	res5, err := ComparePolicies(context.Background(), trace5, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	warmStd5 := res5.Policies[1]
+	if warmStd5.Report.CompleteTotalUSD != nil {
+		t.Fatalf("expected nil CompleteTotalUSD for trace missing network telemetry, got %v", *warmStd5.Report.CompleteTotalUSD)
+	}
+	if warmStd5.SavingsUSD != nil {
+		t.Fatalf("expected nil SavingsUSD for trace missing network telemetry, got %v", *warmStd5.SavingsUSD)
+	}
+	if warmStd5.BreakEven != nil {
+		t.Fatalf("expected nil BreakEven for trace missing network telemetry, got %v", *warmStd5.BreakEven)
+	}
+
+	// 6. Explicit zero traffic with complete coverage: same trace but with explicit traffic map of 0 bytes across routes.
+	// Since network was explicitly metered and observed to be 0, it is complete across all topology dimensions!
+	trace6 := trace5
+	trace6.Name = "explicit-zero-traffic-trace"
+	trace6.Events = []Event{
+		{
+			AtNS:         0,
+			Snapshot:     trace5.Events[0].Snapshot,
+			StorageBytes: trace5.Events[0].StorageBytes,
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: 0,
+				cost.ClientGateway: 0,
+				cost.GatewayS3:     0,
+			},
+			Usage: trace5.Events[0].Usage,
+		},
+	}
+
+	res6, err := ComparePolicies(context.Background(), trace6, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	warmStd6 := res6.Policies[1]
+	if warmStd6.Report.CompleteTotalUSD == nil {
+		t.Fatal("expected non-nil CompleteTotalUSD for explicit zero traffic with complete coverage")
+	}
+	if warmStd6.SavingsUSD == nil {
+		t.Fatal("expected non-nil SavingsUSD for explicit zero traffic with complete coverage")
+	}
+	if warmStd6.BreakEven == nil {
+		t.Fatal("expected non-nil BreakEven for explicit zero traffic with complete coverage")
+	}
 }
 
 func TestComparePoliciesRestoreCappedToRemainingTraceDuration(t *testing.T) {
@@ -911,5 +998,62 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 
 	if irPol.Breakdown.EarlyDeletionUSD != singleReport.Subtotal {
 		t.Fatalf("expected single early deletion charge (%s), got %s (did it charge duplicate lifecycle observations?)", singleReport.Subtotal, irPol.Breakdown.EarlyDeletionUSD)
+	}
+
+	// Finding 2 regression: Two distinct packs with identical size without pack Ref (ID == "")
+	// must NOT be collapsed together by size. Each pack deleted before minimum retention must be charged.
+	traceTwoPacks := baseTrace
+	traceTwoPacks.Name = "two-packs-without-ref"
+	traceTwoPacks.DurationNS = 30 * dayNS
+	traceTwoPacks.Start = startTime
+	traceTwoPacks.BytesPerGB = 1024 * 1024 * 1024
+
+	oneGiB := int64(1024 * 1024 * 1024)
+	traceTwoPacks.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  uint64(2 * oneGiB),
+				Physical: uint64(2 * oneGiB),
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: uint64(2 * oneGiB),
+			},
+		},
+		{
+			AtNS: 10 * dayNS, // Pack 1 deleted at day 10 (no Ref)
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					State:      "Deleting",
+					Size:       oneGiB,
+					Class:      storage.GlacierIR,
+					LastAccess: startTime,
+				},
+				LiveBytes: oneGiB,
+			},
+		},
+		{
+			AtNS: 10 * dayNS, // Pack 2 deleted at day 10 (no Ref) - same size, distinct pack
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					State:      "Deleting",
+					Size:       oneGiB,
+					Class:      storage.GlacierIR,
+					LastAccess: startTime,
+				},
+				LiveBytes: oneGiB,
+			},
+		},
+	}
+
+	resTwo, err := ComparePolicies(context.Background(), traceTwoPacks, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	irTwo := resTwo.Policies[2] // WarmGlacierIR
+	// Rate is $0.005/GB-Mo. 1 GiB for 80 unexpired days = 1/75 USD per pack.
+	// Two packs = 2/75 USD.
+	if irTwo.Breakdown.EarlyDeletionUSD != "2/75" {
+		t.Fatalf("expected early deletion fee '2/75' for two 1GiB packs without Ref, got %q (did it collapse packs by size?)", irTwo.Breakdown.EarlyDeletionUSD)
 	}
 }

@@ -254,12 +254,16 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 				isDeleting := pack.State == "Deleting" || pack.State == "Retiring" ||
 					pack.State == "Deleted" || pack.State == "Retired"
 				if isDeleting {
-					packKey := fmt.Sprintf("%s:%s", pack.Ref.ID, pack.Ref.Generation)
-					if pack.Ref.ID == "" && pack.Ref.Generation == "" {
-						packKey = fmt.Sprintf("pack-%d", pack.Size)
+					alreadyCharged := false
+					if pack.Ref.ID != "" {
+						packKey := fmt.Sprintf("%s:%s", pack.Ref.ID, pack.Ref.Generation)
+						if earlyDeletedPacks[packKey] {
+							alreadyCharged = true
+						} else {
+							earlyDeletedPacks[packKey] = true
+						}
 					}
-					if !earlyDeletedPacks[packKey] {
-						earlyDeletedPacks[packKey] = true
+					if !alreadyCharged {
 						if rule, ok := catalog.RuleForClass(string(pack.Class)); ok && rule.MinimumDays > 0 {
 							minRetention := time.Duration(rule.MinimumDays) * 24 * time.Hour
 							var retained time.Duration
@@ -470,12 +474,21 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 			return false
 		}
 
-		// Check if trace has traffic observations
-		hasClientTraffic := false
+		// Network coverage check:
+		// A trace must provide explicit evidence of network metering according to topology and scope:
+		// 1. Priced network transfer / egress lines in report (hasNetwork == true), OR
+		// 2. Explicit zero traffic metering where traffic map is provided across events and total traffic is 0.
+		// If neither traffic map nor network transfer usage is provided, network was not measured -> fail closed (return false).
+		// If traffic map has positive traffic but no priced network lines -> fail closed (return false).
+		hasTrafficMap := false
+		var totalTrafficBytes uint64
 		hasClientDownloads := false
 		for _, event := range trace.Events {
 			if len(event.Traffic) > 0 {
-				hasClientTraffic = true
+				hasTrafficMap = true
+				for _, b := range event.Traffic {
+					totalTrafficBytes += b
+				}
 			}
 			if event.Traffic[cost.GatewayClient] > 0 || event.Traffic[cost.S3Gateway] > 0 {
 				hasClientDownloads = true
@@ -485,8 +498,10 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		if hasClientDownloads && !hasGetReq {
 			return false
 		}
-		if hasClientTraffic && !hasNetwork {
-			return false
+		if !hasNetwork {
+			if !hasTrafficMap || totalTrafficBytes > 0 {
+				return false
+			}
 		}
 
 		// Topology & Infrastructure requirements for candidate DSG policies
