@@ -16,6 +16,7 @@ import (
 
 type fakeStats struct {
 	globalFunc func(context.Context) (stats.Summary, error)
+	bucketFunc func(context.Context, string) (stats.BucketSummary, error)
 }
 
 func (f *fakeStats) Global(ctx context.Context) (stats.Summary, error) {
@@ -34,8 +35,27 @@ func (f *fakeStats) Global(ctx context.Context) (stats.Summary, error) {
 	}, nil
 }
 
-func (f *fakeStats) Bucket(context.Context, string) (stats.BucketSummary, error) {
-	return stats.BucketSummary{}, nil
+func (f *fakeStats) Bucket(ctx context.Context, bucket string) (stats.BucketSummary, error) {
+	if f.bucketFunc != nil {
+		return f.bucketFunc(ctx, bucket)
+	}
+	if bucket == "valid-bucket" {
+		stored := int64(1073741824)
+		return stats.BucketSummary{
+			Bucket:   bucket,
+			BucketID: "bkt-1",
+			Summary: stats.Summary{
+				Metrics: stats.Metrics{
+					BytesLogical: 2147483648,
+					BytesStored:  &stored,
+				},
+				PhysicalClasses: map[string]int64{
+					string(storage.Standard): 1073741824,
+				},
+			},
+		}, nil
+	}
+	return stats.BucketSummary{}, storage.ErrBucketNotFound
 }
 
 func (f *fakeStats) Layout(context.Context, string, string) (stats.Layout, error) {
@@ -259,11 +279,132 @@ func TestCostReportFullContractResponse(t *testing.T) {
 		t.Fatal("omissions or limitations missing")
 	}
 
-	// Verify savings vs baseline computed
-	if r.Results.NetSavingUSDVsBaseline == nil || r.Results.SavingsPercentVsBaseline == nil {
-		t.Fatal("expected non-nil savings vs baseline")
+	// Verify savings vs baseline:
+	// Since CompleteTotalUSD == nil in partial prototype, net savings must be nil,
+	// while indicative storage difference is populated.
+	if r.Results.NetSavingUSDVsBaseline != nil || r.Results.SavingsPercentVsBaseline != nil {
+		t.Fatalf("expected nil net savings in partial prototype, got: USD=%v, Pct=%v", r.Results.NetSavingUSDVsBaseline, r.Results.SavingsPercentVsBaseline)
 	}
-	if *r.Results.SavingsPercentVsBaseline <= 0 {
-		t.Fatalf("expected positive savings percent, got %f", *r.Results.SavingsPercentVsBaseline)
+	if r.Results.IndicativeStorageDiffUSD == nil {
+		t.Fatal("expected non-nil indicative storage difference")
+	}
+	if *r.Results.IndicativeStorageDiffUSD != "1/40" {
+		t.Fatalf("expected indicative storage difference 1/40, got %s", *r.Results.IndicativeStorageDiffUSD)
+	}
+}
+
+func TestCostReportFiltersAndValidation(t *testing.T) {
+	// Finding 1, 2, 4 regressions:
+	// - scenario and profile enum validation (reject invalid with 400)
+	// - domain unsupported (reject with 400)
+	// - bucket filter (call Statistics.Bucket, 404 if not found, 200 with bucket methodology if found)
+	// - from/to timestamp validation (both required, valid RFC3339, to > from, reject with 400)
+	w, server := newCostTestWorld(t, &fakeStats{})
+
+	cases := []struct {
+		name       string
+		query      string
+		wantStatus int
+		wantSubstr string
+	}{
+		{
+			name:       "invalid scenario returns 400",
+			query:      "scenario=garbage",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "invalid scenario",
+		},
+		{
+			name:       "invalid profile returns 400",
+			query:      "profile=no-such-profile",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "invalid profile",
+		},
+		{
+			name:       "domain filter returns 400 unsupported",
+			query:      "domain=team-a",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "per-domain physical allocation is unavailable",
+		},
+		{
+			name:       "nonexistent bucket returns 404",
+			query:      "bucket=nonexistent-filter",
+			wantStatus: http.StatusNotFound,
+			wantSubstr: "bucket_not_found",
+		},
+		{
+			name:       "valid bucket returns 200 with bucket methodology",
+			query:      "bucket=valid-bucket",
+			wantStatus: http.StatusOK,
+			wantSubstr: "bucket_inventory_snapshot",
+		},
+		{
+			name:       "single 'from' parameter without 'to' returns 400",
+			query:      "from=2026-10-01T00:00:00Z",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "both 'from' and 'to' parameters are required",
+		},
+		{
+			name:       "single 'to' parameter without 'from' returns 400",
+			query:      "to=2026-10-31T00:00:00Z",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "both 'from' and 'to' parameters are required",
+		},
+		{
+			name:       "malformed 'to' timestamp returns 400",
+			query:      "from=2026-10-01T00:00:00Z&to=not-a-date",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "invalid 'to' timestamp",
+		},
+		{
+			name:       "malformed 'from' timestamp returns 400",
+			query:      "from=bad-date&to=2026-10-31T00:00:00Z",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "invalid 'from' timestamp",
+		},
+		{
+			name:       "'to' before 'from' returns 400",
+			query:      "from=2026-10-31T00:00:00Z&to=2026-10-01T00:00:00Z",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "must be after 'from' timestamp",
+		},
+		{
+			name:       "'to' equal to 'from' returns 400",
+			query:      "from=2026-10-01T00:00:00Z&to=2026-10-01T00:00:00Z",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "must be after 'from' timestamp",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			url := server.URL + "/admin/v1/cost/report"
+			if tc.query != "" {
+				url += "?" + tc.query
+			}
+			req, err := http.NewRequest(http.MethodGet, url, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+w.root)
+
+			resp, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("query %q: expected status %d, got %d", tc.query, tc.wantStatus, resp.StatusCode)
+			}
+
+			var bodyMap map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&bodyMap); err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := json.Marshal(bodyMap)
+			if !strings.Contains(string(raw), tc.wantSubstr) {
+				t.Fatalf("expected response to contain %q, got: %s", tc.wantSubstr, string(raw))
+			}
+		})
 	}
 }

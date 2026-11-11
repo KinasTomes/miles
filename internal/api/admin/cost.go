@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	pricingschema "github.com/KinasTomes/miles/configs/pricing"
 	"github.com/KinasTomes/miles/internal/cost"
 	"github.com/KinasTomes/miles/internal/pricing"
+	"github.com/KinasTomes/miles/internal/stats"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -79,6 +81,7 @@ type CostReportResults struct {
 	CompleteTotalUSD         *string  `json:"complete_total_usd"`
 	NetSavingUSDVsBaseline   *string  `json:"net_saving_usd_vs_baseline"`
 	SavingsPercentVsBaseline *float64 `json:"savings_percent_vs_baseline"`
+	IndicativeStorageDiffUSD *string  `json:"indicative_storage_difference_usd,omitempty"`
 	BreakEven                *string  `json:"break_even"`
 	RestoreAmplification     *float64 `json:"restore_amplification"`
 }
@@ -147,47 +150,87 @@ func (s *server) costReport(c *call) error {
 		asOf = catalog.AsOf
 	}
 
-	if s.Statistics == nil {
-		return &apiError{http.StatusServiceUnavailable, "unavailable", "statistics provider is unavailable"}
-	}
-	global, err := s.Statistics.Global(c.r.Context())
-	if err != nil {
-		return &apiError{http.StatusServiceUnavailable, "unavailable", "statistics backend is unavailable"}
-	}
-
 	scenario := q.Get("scenario")
 	if scenario == "" {
 		scenario = "A"
 	}
+	if scenario != "A" && scenario != "B" {
+		return invalid("invalid scenario %q; expected A or B", scenario)
+	}
+
 	profile := q.Get("profile")
 	if profile == "" {
 		profile = "cloud"
 	}
+	if profile != "cloud" && profile != "edge" {
+		return invalid("invalid profile %q; expected cloud or edge", profile)
+	}
+
+	domain := q.Get("domain")
+	if domain != "" {
+		return invalid("domain filter %q is not supported: per-domain physical allocation is unavailable", domain)
+	}
+
 	from := q.Get("from")
 	to := q.Get("to")
-	bucket := q.Get("bucket")
-	domain := q.Get("domain")
-
 	duration := 30 * 24 * time.Hour
 	month := 30 * 24 * time.Hour
 	bytesPerGB := uint64(1024 * 1024 * 1024)
 
-	if from != "" && to != "" {
-		tFrom, errFrom := time.Parse(time.RFC3339, from)
-		tTo, errTo := time.Parse(time.RFC3339, to)
-		if errFrom == nil && errTo == nil && tTo.After(tFrom) {
-			duration = tTo.Sub(tFrom)
+	if from != "" || to != "" {
+		if from == "" || to == "" {
+			return invalid("both 'from' and 'to' parameters are required when specifying a time range")
 		}
+		tFrom, errFrom := time.Parse(time.RFC3339, from)
+		if errFrom != nil {
+			return invalid("invalid 'from' timestamp %q; expected RFC3339", from)
+		}
+		tTo, errTo := time.Parse(time.RFC3339, to)
+		if errTo != nil {
+			return invalid("invalid 'to' timestamp %q; expected RFC3339", to)
+		}
+		if !tTo.After(tFrom) {
+			return invalid("'to' timestamp (%s) must be after 'from' timestamp (%s)", to, from)
+		}
+		duration = tTo.Sub(tFrom)
 	} else {
 		to = s.now().Format(time.RFC3339)
 		from = s.now().Add(-duration).Format(time.RFC3339)
 	}
 
+	if s.Statistics == nil {
+		return &apiError{http.StatusServiceUnavailable, "unavailable", "statistics provider is unavailable"}
+	}
+
+	bucket := q.Get("bucket")
+	var summary stats.Summary
+	methodology := "global_inventory_snapshot"
+	if bucket != "" {
+		bs, err := s.Statistics.Bucket(c.r.Context(), bucket)
+		if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrBucketNotFound) {
+			return errBucketNotFound
+		}
+		if err != nil {
+			return &apiError{http.StatusServiceUnavailable, "unavailable", "statistics backend is unavailable"}
+		}
+		summary = bs.Summary
+		methodology = "bucket_inventory_snapshot"
+	} else {
+		g, err := s.Statistics.Global(c.r.Context())
+		if err != nil {
+			return &apiError{http.StatusServiceUnavailable, "unavailable", "statistics backend is unavailable"}
+		}
+		summary = g
+	}
+	if summary.Methodology != "" {
+		methodology = summary.Methodology
+	}
+
 	// 1. DSG Storage Usage
 	dsgUsage := []cost.Usage{}
 	storageByClass := map[string]int64{}
-	if len(global.PhysicalClasses) > 0 {
-		for classStr, b := range global.PhysicalClasses {
+	if len(summary.PhysicalClasses) > 0 {
+		for classStr, b := range summary.PhysicalClasses {
 			storageByClass[classStr] = b
 			class := storage.StorageClass(classStr)
 			if b > 0 && class.Validate() == nil {
@@ -196,9 +239,9 @@ func (s *server) costReport(c *call) error {
 				}
 			}
 		}
-	} else if global.BytesStored != nil && *global.BytesStored > 0 {
-		storageByClass[string(storage.Standard)] = *global.BytesStored
-		if u, e := cost.StorageUsage(storage.Standard, uint64(*global.BytesStored), duration, bytesPerGB, month); e == nil {
+	} else if summary.BytesStored != nil && *summary.BytesStored > 0 {
+		storageByClass[string(storage.Standard)] = *summary.BytesStored
+		if u, e := cost.StorageUsage(storage.Standard, uint64(*summary.BytesStored), duration, bytesPerGB, month); e == nil {
 			dsgUsage = append(dsgUsage, u)
 		}
 	}
@@ -211,8 +254,8 @@ func (s *server) costReport(c *call) error {
 	// 2. Direct S3 Baseline
 	directUsage := []cost.Usage{}
 	logicalBytes := uint64(0)
-	if global.BytesLogical > 0 {
-		logicalBytes = uint64(global.BytesLogical)
+	if summary.BytesLogical > 0 {
+		logicalBytes = uint64(summary.BytesLogical)
 	}
 	if logicalBytes > 0 {
 		if u, e := cost.StorageUsage(storage.Standard, logicalBytes, duration, bytesPerGB, month); e == nil {
@@ -224,33 +267,35 @@ func (s *server) costReport(c *call) error {
 		return err
 	}
 
-	// 3. Savings Calculation (only when both sides have zero unpriced items and logicalBytes > 0)
+	// 3. Savings Calculation:
+	// Only conclude net savings if complete totals exist on both sides.
+	// In partial prototype models, net savings remain null, and indicative storage difference is reported.
 	var netSavingUSD *string
 	var savingsPercent *float64
+	var indicativeStorageDiffUSD *string
 	if len(directReport.Unpriced) == 0 && len(dsgReport.Unpriced) == 0 && logicalBytes > 0 {
 		dRat, okD := new(big.Rat).SetString(directReport.Subtotal)
 		dsgRat, okDSG := new(big.Rat).SetString(dsgReport.Subtotal)
-		if okD && okDSG && dRat.Sign() > 0 {
+		if okD && okDSG {
 			diff := new(big.Rat).Sub(dRat, dsgRat)
-			diffFloat, _ := diff.Float64()
-			dFloat, _ := dRat.Float64()
-			pct := (diffFloat / dFloat) * 100.0
 			s := diff.RatString()
-			netSavingUSD = &s
-			savingsPercent = &pct
+			indicativeStorageDiffUSD = &s
+
+			if directReport.CompleteTotalUSD != nil && dsgReport.CompleteTotalUSD != nil && dRat.Sign() > 0 {
+				diffFloat, _ := diff.Float64()
+				dFloat, _ := dRat.Float64()
+				pct := (diffFloat / dFloat) * 100.0
+				netSavingUSD = &s
+				savingsPercent = &pct
+			}
 		}
 	}
 
 	deadRetired := int64(0)
 	temporaryRestored := int64(0)
-	if global.PhysicalLifecycle != nil {
-		deadRetired = global.PhysicalLifecycle["Dead"] + global.PhysicalLifecycle["Retired"]
-		temporaryRestored = global.PhysicalLifecycle["Restored"]
-	}
-
-	methodology := global.Methodology
-	if methodology == "" {
-		methodology = "global_inventory_snapshot"
+	if summary.PhysicalLifecycle != nil {
+		deadRetired = summary.PhysicalLifecycle["Dead"] + summary.PhysicalLifecycle["Retired"]
+		temporaryRestored = summary.PhysicalLifecycle["Restored"]
 	}
 
 	response := CostReportResponse{
@@ -269,7 +314,7 @@ func (s *server) costReport(c *call) error {
 			Domain:                domain,
 			AllocationMethodology: methodology,
 			Assumptions: []string{
-				"Storage byte-time evaluated assuming piecewise constant inventory across interval.",
+				"Storage byte-time evaluated assuming piecewise constant inventory across interval; current gateway inventory snapshot held constant across the requested range without replaying historical mutations.",
 				"Baseline Direct S3 assumes 1:1 logical-to-physical ratio without dedup or compression.",
 			},
 		},
@@ -317,6 +362,7 @@ func (s *server) costReport(c *call) error {
 			CompleteTotalUSD:         dsgReport.CompleteTotalUSD,
 			NetSavingUSDVsBaseline:   netSavingUSD,
 			SavingsPercentVsBaseline: savingsPercent,
+			IndicativeStorageDiffUSD: indicativeStorageDiffUSD,
 			BreakEven:                nil,
 			RestoreAmplification:     nil,
 		},
@@ -324,10 +370,11 @@ func (s *server) costReport(c *call) error {
 			"Infrastructure compute/disk/ALB/DynamoDB/KMS costs omitted in live snapshot",
 			"Request, transition, retrieval, and network egress fees omitted unless explicitly metered",
 			"Cloud-client Internet baseline path must be declared separately; topology not inferred",
+			"Net savings vs baseline omitted: cost evaluation is partial prototype without complete matched totals (CompleteTotalUSD is null)",
 		},
 		Limitations: []string{
 			"Modelled comparative accounting prototype; does not reflect AWS invoice, Free Tier or account credits.",
-			"Live snapshot prices current inventory; historical time-warp requires simulated trace replay.",
+			"Live snapshot prices current inventory held piecewise constant across range; historical inventory mutations require simulated trace replay.",
 		},
 	}
 
