@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/cost"
@@ -31,15 +32,16 @@ func (p PolicyName) Valid() bool {
 }
 
 type PolicySummary struct {
-	Name           PolicyName  `json:"policy_name"`
-	Description    string      `json:"description"`
-	LogicalBytes   uint64      `json:"logical_bytes"`
-	PhysicalBytes  uint64      `json:"physical_bytes"`
-	TotalReduction *float64    `json:"total_reduction,omitempty"`
-	Report         cost.Report `json:"cost_report"`
-	TotalCostUSD   string      `json:"total_cost_usd"`
-	SavingsUSD     *string     `json:"savings_usd_vs_baseline,omitempty"`
-	SavingsPercent *float64    `json:"savings_percent_vs_baseline,omitempty"`
+	Name                     PolicyName  `json:"policy_name"`
+	Description              string      `json:"description"`
+	LogicalBytes             uint64      `json:"logical_bytes"`
+	PhysicalBytes            uint64      `json:"physical_bytes"`
+	TotalReduction           *float64    `json:"total_reduction,omitempty"`
+	Report                   cost.Report `json:"cost_report"`
+	TotalCostUSD             string      `json:"total_cost_usd"`
+	SavingsUSD               *string     `json:"savings_usd_vs_baseline"`
+	SavingsPercent           *float64    `json:"savings_percent_vs_baseline"`
+	IndicativeStorageDiffUSD *string     `json:"indicative_storage_difference_usd,omitempty"`
 }
 
 type ComparisonResult struct {
@@ -96,8 +98,6 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	currentStorageBytes := map[storage.StorageClass]uint64{}
 
 	hasObservedCold := false
-	coldTransitions := 0
-	previousColdBytes := uint64(0)
 	var previous int64
 
 	addStorageUsage := func(totals map[string]*big.Rat, class storage.StorageClass, bytes uint64, d time.Duration) error {
@@ -131,27 +131,37 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 			return err
 		}
 
-		// Calculate current physical split
-		totalPhysical := currentPhysical
-		standardBytes := currentPhysical
+		// Calculate current physical split across all valid classes
+		totalPhysical := uint64(0)
+		standardBytes := uint64(0)
 		coldBytes := uint64(0)
 
 		if len(currentStorageBytes) > 0 {
-			standardBytes = currentStorageBytes[storage.Standard]
-			coldBytes = currentStorageBytes[storage.Glacier] + currentStorageBytes[storage.GlacierIR]
-			totalPhysical = standardBytes + coldBytes
+			for class, b := range currentStorageBytes {
+				totalPhysical += b
+				switch class {
+				case storage.Standard, storage.StandardIA:
+					standardBytes += b
+				case storage.Glacier, storage.GlacierIR:
+					coldBytes += b
+				}
+			}
+		} else {
+			totalPhysical = currentPhysical
+			standardBytes = currentPhysical
+			coldBytes = 0
 		}
 
 		if coldBytes > 0 {
 			hasObservedCold = true
 		}
 
-		// 2. WarmStandardOnly: all physical bytes stay on Standard
+		// 2. WarmStandardOnly: all physical bytes (including IA and Cold) stay on Standard
 		if err := addStorageUsage(warmStdTotals, storage.Standard, totalPhysical, d); err != nil {
 			return err
 		}
 
-		// 3. WarmGlacierIR: standard on Standard, cold on Glacier IR
+		// 3. WarmGlacierIR: standard/IA on Standard, cold on Glacier IR
 		if err := addStorageUsage(glacierIRTotals, storage.Standard, standardBytes, d); err != nil {
 			return err
 		}
@@ -159,7 +169,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 			return err
 		}
 
-		// 4. WarmGlacierFlexible: standard on Standard, cold on Glacier
+		// 4. WarmGlacierFlexible: standard/IA on Standard, cold on Glacier
 		if err := addStorageUsage(glacierFlexTotals, storage.Standard, standardBytes, d); err != nil {
 			return err
 		}
@@ -186,11 +196,6 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		}
 		if event.StorageBytes != nil {
 			currentStorageBytes = event.StorageBytes
-			currentCold := currentStorageBytes[storage.Glacier] + currentStorageBytes[storage.GlacierIR]
-			if currentCold > previousColdBytes {
-				coldTransitions++
-			}
-			previousColdBytes = currentCold
 		}
 	}
 
@@ -246,19 +251,6 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		return u.RateID != "s3.transition_glacier" && u.RateID != "s3.restore_standard_requests" &&
 			u.RateID != "s3.restore_standard_gb"
 	})
-	// If cold transitions occurred without explicit transition usage, add observed count
-	if hasObservedCold && coldTransitions > 0 {
-		hasTransitionRate := false
-		for _, u := range glacierIRUsage {
-			if u.RateID == "s3.transition_ir" {
-				hasTransitionRate = true
-				break
-			}
-		}
-		if !hasTransitionRate {
-			glacierIRUsage = append(glacierIRUsage, cost.Usage{RateID: "s3.transition_ir", Unit: "Requests", Quantity: fmt.Sprintf("%d", coldTransitions)})
-		}
-	}
 	glacierIRReport, err := cost.Evaluate(catalog, glacierIRUsage)
 	if err != nil {
 		return ComparisonResult{}, fmt.Errorf("evaluating warm_glacier_ir: %w", err)
@@ -268,54 +260,90 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	glacierFlexUsage := buildUsage(glacierFlexTotals, func(u cost.Usage) bool {
 		return u.RateID != "s3.transition_ir" && u.RateID != "s3.retrieval_ir"
 	})
-	if hasObservedCold && coldTransitions > 0 {
-		hasTransitionRate := false
-		for _, u := range glacierFlexUsage {
-			if u.RateID == "s3.transition_glacier" {
-				hasTransitionRate = true
-				break
-			}
-		}
-		if !hasTransitionRate {
-			glacierFlexUsage = append(glacierFlexUsage, cost.Usage{RateID: "s3.transition_glacier", Unit: "Requests", Quantity: fmt.Sprintf("%d", coldTransitions)})
-		}
-	}
 	glacierFlexReport, err := cost.Evaluate(catalog, glacierFlexUsage)
 	if err != nil {
 		return ComparisonResult{}, fmt.Errorf("evaluating warm_glacier_flexible: %w", err)
 	}
 
 	// Helper to calculate savings vs baseline:
-	// Only calculate when both baseline and candidate policy have COMPLETE pricing (zero unpriced items).
+	// Only conclude true net savings if BOTH baseline and candidate policy have CompleteTotalUSD != nil.
+	// In partial models, net savings must remain null, but indicative storage difference can be reported.
+	hasIncompleteOmission := false
 	hasUnpricedOmission := false
-	calcSavings := func(polReport cost.Report) (*string, *float64) {
+	calcSavings := func(polReport cost.Report) (*string, *float64, *string) {
+		var indicativeDiff *string
+		// Calculate storage-only difference when directReport and candidate policy have storage lines and no unpriced storage
+		directStorageRat := new(big.Rat)
+		for _, l := range directReport.Lines {
+			if strings.HasPrefix(l.RateID, "s3.storage.") {
+				if r, ok := new(big.Rat).SetString(l.USD); ok {
+					directStorageRat.Add(directStorageRat, r)
+				}
+			}
+		}
+		polStorageRat := new(big.Rat)
+		for _, l := range polReport.Lines {
+			if strings.HasPrefix(l.RateID, "s3.storage.") {
+				if r, ok := new(big.Rat).SetString(l.USD); ok {
+					polStorageRat.Add(polStorageRat, r)
+				}
+			}
+		}
+
+		hasUnpricedStorage := false
+		for _, u := range directReport.Unpriced {
+			if strings.HasPrefix(u.RateID, "s3.storage.") {
+				hasUnpricedStorage = true
+				break
+			}
+		}
+		if !hasUnpricedStorage {
+			for _, u := range polReport.Unpriced {
+				if strings.HasPrefix(u.RateID, "s3.storage.") {
+					hasUnpricedStorage = true
+					break
+				}
+			}
+		}
+
+		if !hasUnpricedStorage && currentLogical > 0 && directStorageRat.Sign() > 0 {
+			diff := new(big.Rat).Sub(directStorageRat, polStorageRat)
+			s := diff.RatString()
+			indicativeDiff = &s
+		}
+
 		if len(directReport.Unpriced) > 0 || len(polReport.Unpriced) > 0 {
 			hasUnpricedOmission = true
-			return nil, nil
 		}
-		directRat, ok := new(big.Rat).SetString(directReport.Subtotal)
-		if !ok || directRat.Sign() == 0 {
-			return nil, nil
+		if directReport.CompleteTotalUSD == nil || polReport.CompleteTotalUSD == nil {
+			hasIncompleteOmission = true
 		}
-		r, ok := new(big.Rat).SetString(polReport.Subtotal)
-		if !ok {
-			return nil, nil
+
+		if directReport.CompleteTotalUSD == nil || polReport.CompleteTotalUSD == nil ||
+			len(directReport.Unpriced) > 0 || len(polReport.Unpriced) > 0 {
+			return nil, nil, indicativeDiff
 		}
-		savingsRat := new(big.Rat).Sub(directRat, r)
+
+		dRat, okD := new(big.Rat).SetString(*directReport.CompleteTotalUSD)
+		pRat, okP := new(big.Rat).SetString(*polReport.CompleteTotalUSD)
+		if !okD || !okP || dRat.Sign() == 0 {
+			return nil, nil, indicativeDiff
+		}
+		savingsRat := new(big.Rat).Sub(dRat, pRat)
 		diffFloat, _ := savingsRat.Float64()
-		directFloat, _ := directRat.Float64()
+		directFloat, _ := dRat.Float64()
 		if directFloat <= 0 {
 			s := savingsRat.RatString()
-			return &s, nil
+			return &s, nil, indicativeDiff
 		}
 		pct := (diffFloat / directFloat) * 100.0
 		s := savingsRat.RatString()
-		return &s, &pct
+		return &s, &pct, indicativeDiff
 	}
 
-	warmStdSavingsUSD, warmStdSavingsPct := calcSavings(warmStdReport)
-	glacierIRSavingsUSD, glacierIRSavingsPct := calcSavings(glacierIRReport)
-	glacierFlexSavingsUSD, glacierFlexSavingsPct := calcSavings(glacierFlexReport)
+	warmStdSavingsUSD, warmStdSavingsPct, warmStdStorageDiff := calcSavings(warmStdReport)
+	glacierIRSavingsUSD, glacierIRSavingsPct, glacierIRStorageDiff := calcSavings(glacierIRReport)
+	glacierFlexSavingsUSD, glacierFlexSavingsPct, glacierFlexStorageDiff := calcSavings(glacierFlexReport)
 
 	var reduction10 = 1.0
 	directSummary := PolicySummary{
@@ -329,39 +357,42 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	}
 
 	warmStdSummary := PolicySummary{
-		Name:           PolicyWarmStandardOnly,
-		Description:    "Miles Warm packs kept exclusively on S3 Standard with active deduplication and compression",
-		LogicalBytes:   currentLogical,
-		PhysicalBytes:  currentPhysical,
-		TotalReduction: baseResult.Ratios.TotalReduction,
-		Report:         warmStdReport,
-		TotalCostUSD:   warmStdReport.Subtotal,
-		SavingsUSD:     warmStdSavingsUSD,
-		SavingsPercent: warmStdSavingsPct,
+		Name:                     PolicyWarmStandardOnly,
+		Description:              "Miles Warm packs kept exclusively on S3 Standard with active deduplication and compression",
+		LogicalBytes:             currentLogical,
+		PhysicalBytes:            currentPhysical,
+		TotalReduction:           baseResult.Ratios.TotalReduction,
+		Report:                   warmStdReport,
+		TotalCostUSD:             warmStdReport.Subtotal,
+		SavingsUSD:               warmStdSavingsUSD,
+		SavingsPercent:           warmStdSavingsPct,
+		IndicativeStorageDiffUSD: warmStdStorageDiff,
 	}
 
 	glacierIRSummary := PolicySummary{
-		Name:           PolicyWarmGlacierIR,
-		Description:    "Miles Warm packs tiered to S3 Glacier Instant Retrieval for low-latency cold access",
-		LogicalBytes:   currentLogical,
-		PhysicalBytes:  currentPhysical,
-		TotalReduction: baseResult.Ratios.TotalReduction,
-		Report:         glacierIRReport,
-		TotalCostUSD:   glacierIRReport.Subtotal,
-		SavingsUSD:     glacierIRSavingsUSD,
-		SavingsPercent: glacierIRSavingsPct,
+		Name:                     PolicyWarmGlacierIR,
+		Description:              "Miles Warm packs tiered to S3 Glacier Instant Retrieval for low-latency cold access",
+		LogicalBytes:             currentLogical,
+		PhysicalBytes:            currentPhysical,
+		TotalReduction:           baseResult.Ratios.TotalReduction,
+		Report:                   glacierIRReport,
+		TotalCostUSD:             glacierIRReport.Subtotal,
+		SavingsUSD:               glacierIRSavingsUSD,
+		SavingsPercent:           glacierIRSavingsPct,
+		IndicativeStorageDiffUSD: glacierIRStorageDiff,
 	}
 
 	glacierFlexSummary := PolicySummary{
-		Name:           PolicyWarmGlacierFlex,
-		Description:    "Miles Warm packs tiered to S3 Glacier Flexible Archive with asynchronous restore",
-		LogicalBytes:   currentLogical,
-		PhysicalBytes:  currentPhysical,
-		TotalReduction: baseResult.Ratios.TotalReduction,
-		Report:         glacierFlexReport,
-		TotalCostUSD:   glacierFlexReport.Subtotal,
-		SavingsUSD:     glacierFlexSavingsUSD,
-		SavingsPercent: glacierFlexSavingsPct,
+		Name:                     PolicyWarmGlacierFlex,
+		Description:              "Miles Warm packs tiered to S3 Glacier Flexible Archive with asynchronous restore",
+		LogicalBytes:             currentLogical,
+		PhysicalBytes:            currentPhysical,
+		TotalReduction:           baseResult.Ratios.TotalReduction,
+		Report:                   glacierFlexReport,
+		TotalCostUSD:             glacierFlexReport.Subtotal,
+		SavingsUSD:               glacierFlexSavingsUSD,
+		SavingsPercent:           glacierFlexSavingsPct,
+		IndicativeStorageDiffUSD: glacierFlexStorageDiff,
 	}
 
 	omissions := append([]string{
@@ -378,6 +409,9 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	}
 	if hasUnpricedOmission {
 		omissions = append(omissions, "Net savings and savings percent vs baseline omitted: unpriced items present in baseline or candidate policy cost evaluation")
+	}
+	if hasIncompleteOmission {
+		omissions = append(omissions, "Net savings vs baseline omitted: cost evaluation is partial prototype without complete matched totals (CompleteTotalUSD is null)")
 	}
 
 	res := ComparisonResult{
