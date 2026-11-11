@@ -277,6 +277,7 @@ func runSharedRuntimeFixture(t *testing.T, gcFlows, live, faultFlows bool, coldC
 		return
 	}
 	if !gcFlows && len(coldClass) == 0 {
+		nativeRecoveredAdmissionCleanup(t, ctx, nodes[2])
 		nativeShutdownDuringPeerRecovery(t, ctx, nodes)
 		nativeProvisionedCheckpoint(t, ctx, nodes[0])
 	}

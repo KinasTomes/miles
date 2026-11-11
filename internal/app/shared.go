@@ -331,8 +331,9 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 			flushErr = fmt.Errorf("shutdown journal flush: %w", flushErr)
 		}
 		registry.Invalidate()
+		admissionErr := metadata.closeError(ctx)
 		clients.transport.CloseIdleConnections()
-		return errors.Join(e, flushErr, metadata.closeError(), resident.Close())
+		return errors.Join(e, flushErr, admissionErr, resident.Close())
 	}
 	return Dependencies{NodeID: c.RuntimeNodeID, Faults: faultReg, Statistics: measurements, Metadata: metadata, Packs: faultPacks, Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
 		Operations:       operational,

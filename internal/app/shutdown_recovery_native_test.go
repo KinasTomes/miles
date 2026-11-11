@@ -131,3 +131,96 @@ func nativeShutdownDuringPeerRecovery(t *testing.T, ctx context.Context, nodes [
 		t.Fatal("shutdown did not seal the closed epoch", state, err)
 	}
 }
+
+// A transient failed close must not poison shutdown after native recovery has
+// durably released that exact authority (or advanced it to a later generation).
+func nativeRecoveredAdmissionCleanup(t *testing.T, ctx context.Context, node Dependencies) {
+	t.Helper()
+	original := node.Journal.authority.(sharedJobAuthority).metadata
+	t.Run("recovered-cleanup-pending-work", func(t *testing.T) {
+		m := &sharedMetadata{Store: original.Store, utc: original.utc, owner: original.owner}
+		authority := sharedJobAuthority{m}
+		f, err := authority.Acquire(ctx, "recovered-cleanup-pending", "control")
+		if err != nil {
+			t.Fatal(err)
+		}
+		const action = "unknown-external-work"
+		if err := m.BeginR1Action(ctx, f, action); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			// The fixture has no external I/O; only its trusted coordinator settles it.
+			if err := m.SettleR1Action(context.Background(), f, action); err != nil {
+				t.Error(err)
+			}
+			if err := authority.Close(context.Background(), f); err != nil {
+				t.Error(err)
+			}
+		}()
+		if err := authority.Close(ctx, f); !errors.Is(err, storage.ErrR1Busy) {
+			t.Fatal("pending-work fixture did not retain authority", err)
+		}
+		if err := m.closeError(ctx); !errors.Is(err, storage.ErrR1Busy) {
+			t.Fatal("shutdown accepted unresolved work", err)
+		}
+		lease, err := m.GetR1Lease(ctx, f.LeaseID)
+		if err != nil || lease.State != "Closed" || len(lease.Pending) != 1 || lease.Pending[0] != action {
+			t.Fatal("shutdown discarded pending work", lease, err)
+		}
+	})
+	for _, state := range []string{"active", "released", "superseded"} {
+		name := "recovered-cleanup-" + state
+		superseded := state == "superseded"
+		t.Run(name, func(t *testing.T) {
+			m := &sharedMetadata{Store: original.Store, utc: original.utc, owner: original.owner}
+			authority := sharedJobAuthority{m}
+			f, err := authority.Acquire(ctx, name, "recovery")
+			if err != nil {
+				t.Fatal(err)
+			}
+			canceled, cancel := context.WithCancel(ctx)
+			cancel()
+			if err = authority.Close(canceled, f); err == nil {
+				t.Fatal("close fault was not exercised")
+			}
+			if err = m.closeError(canceled); err == nil {
+				t.Fatal("unconfirmed cleanup accepted")
+			}
+			if state != "active" {
+				if err = m.Store.CloseR1(ctx, f); err != nil {
+					t.Fatal(err)
+				}
+				if err = m.Store.ReleaseR1(ctx, f); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var next storage.WriterFence
+			if superseded {
+				next, err = authority.Acquire(ctx, name, "recovery")
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := authority.Close(context.Background(), next); err != nil {
+						t.Error(err)
+					}
+				}()
+			}
+			if err = m.closeError(ctx); err != nil {
+				t.Fatal("durably recovered authority still poisons shutdown", err)
+			}
+			if !superseded {
+				lease, err := m.GetR1Lease(ctx, f.LeaseID)
+				if err != nil || lease.State != "Released" {
+					t.Fatal("shutdown did not confirm release", lease, err)
+				}
+			}
+			if superseded {
+				lease, err := m.GetR1Lease(ctx, next.LeaseID)
+				if err != nil || lease.Fence != next || lease.State != "Active" {
+					t.Fatal("shutdown touched the successor", lease, err)
+				}
+			}
+		})
+	}
+}
