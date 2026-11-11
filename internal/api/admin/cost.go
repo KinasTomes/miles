@@ -346,6 +346,11 @@ func (s *server) costReport(c *call) error {
 		})
 	} else if summary.BytesStored != nil && totalAccountedPhysical > *summary.BytesStored {
 		hasUnpricedPhysicalInventory = true
+		dsgUsage = append(dsgUsage, cost.Usage{
+			RateID:   "s3.storage.inconsistent_inventory",
+			Unit:     "GB-Mo",
+			Quantity: "1",
+		})
 	}
 
 	dsgReport, err := cost.Evaluate(catalog, dsgUsage)
@@ -375,7 +380,7 @@ func (s *server) costReport(c *call) error {
 	var netSavingUSD *string
 	var savingsPercent *float64
 	var indicativeStorageDiffUSD *string
-	if len(directReport.Unpriced) == 0 && len(dsgReport.Unpriced) == 0 && logicalBytes > 0 {
+	if !hasUnpricedPhysicalInventory && len(directReport.Unpriced) == 0 && len(dsgReport.Unpriced) == 0 && logicalBytes > 0 {
 		dRat, okD := new(big.Rat).SetString(directReport.Subtotal)
 		dsgRat, okDSG := new(big.Rat).SetString(dsgReport.Subtotal)
 		if okD && okDSG {
@@ -420,7 +425,7 @@ func (s *server) costReport(c *call) error {
 		"Net savings vs baseline omitted: cost evaluation is partial prototype without complete matched totals (CompleteTotalUSD is null)",
 	}
 	if hasUnpricedPhysicalInventory {
-		omissions = append(omissions, "Indicative storage difference omitted: physical inventory is incomplete, unmeasured, or contains unknown storage classes")
+		omissions = append(omissions, "Indicative storage difference omitted: physical inventory is incomplete, inconsistent, unmeasured, or contains unknown storage classes")
 	}
 
 	response := CostReportResponse{

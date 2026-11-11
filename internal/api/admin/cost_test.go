@@ -1158,3 +1158,47 @@ func TestCostReportBucketInferenceStrictConditions(t *testing.T) {
 		}
 	})
 }
+
+func TestCostReportInconsistentInventoryOmitsIndicativeSavings(t *testing.T) {
+	// Round 6 regression test:
+	// When sum of bytes in PhysicalClasses exceeds BytesStored (e.g. 2GiB Standard vs 1GiB BytesStored),
+	// inventory is contradictory/inconsistent. The API must add an unpriced marker
+	// and suppress indicative_storage_difference_usd (must NOT return -1/40 USD).
+	stored1GiB := int64(1073741824)
+	stored2GiB := int64(2147483648)
+	statsProvider := &fakeStats{
+		globalFunc: func(context.Context) (stats.Summary, error) {
+			return stats.Summary{
+				SnapshotID:       "snap-inconsistent",
+				PhysicalComplete: true,
+				Metrics: stats.Metrics{
+					BytesLogical: 1073741824,  // 1GiB logical ($0.025 baseline)
+					BytesStored:  &stored1GiB, // 1GiB physical reported
+				},
+				PhysicalClasses: map[string]int64{
+					string(storage.Standard): stored2GiB, // 2GiB class reported (exceeds BytesStored!)
+				},
+			}, nil
+		},
+	}
+
+	w, server := newCostTestWorld(t, statsProvider)
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report", nil)
+	req.Header.Set("Authorization", "Bearer "+w.root)
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var r CostReportResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		t.Fatal(err)
+	}
+
+	if r.Results.IndicativeStorageDiffUSD != nil {
+		t.Fatalf("expected nil indicative_storage_difference_usd for contradictory inventory (expected nil, got %q)", *r.Results.IndicativeStorageDiffUSD)
+	}
+	if len(r.DSGStorage.CostReport.Unpriced) == 0 {
+		t.Fatalf("expected unpriced marker for inconsistent inventory")
+	}
+}
