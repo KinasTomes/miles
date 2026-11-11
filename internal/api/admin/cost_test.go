@@ -25,6 +25,7 @@ func (f *fakeStats) Global(ctx context.Context) (stats.Summary, error) {
 	}
 	stored := int64(1073741824)
 	return stats.Summary{
+		PhysicalComplete: true,
 		Metrics: stats.Metrics{
 			BytesLogical: 2147483648,
 			BytesStored:  &stored,
@@ -45,6 +46,7 @@ func (f *fakeStats) Bucket(ctx context.Context, bucket string) (stats.BucketSumm
 			Bucket:   bucket,
 			BucketID: "bkt-1",
 			Summary: stats.Summary{
+				PhysicalComplete: true,
 				Metrics: stats.Metrics{
 					BytesLogical: 2147483648,
 					BytesStored:  &stored,
@@ -109,13 +111,13 @@ func TestCostReportRegionAndAsOfValidation(t *testing.T) {
 			name:       "valid region and valid as_of returns 200",
 			query:      "region=ap-southeast-1&as_of=2026-10-19",
 			wantStatus: http.StatusOK,
-			wantSubstr: "partial_prototype_cost_report",
+			wantSubstr: "unscoped_partial_storage_snapshot",
 		},
 		{
 			name:       "default region and as_of returns 200",
 			query:      "",
 			wantStatus: http.StatusOK,
-			wantSubstr: "partial_prototype_cost_report",
+			wantSubstr: "unscoped_partial_storage_snapshot",
 		},
 	}
 
@@ -257,11 +259,17 @@ func TestCostReportFullContractResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if r.ReportType != "partial_prototype_cost_report" {
-		t.Fatalf("expected partial_prototype_cost_report, got %q", r.ReportType)
+	if r.ReportType != "unscoped_partial_storage_snapshot" {
+		t.Fatalf("expected unscoped_partial_storage_snapshot, got %q", r.ReportType)
 	}
 	if r.Inputs.Scenario != "B" || r.Inputs.Profile != "edge" {
 		t.Fatalf("inputs not preserved: scenario=%s, profile=%s", r.Inputs.Scenario, r.Inputs.Profile)
+	}
+	if r.Infrastructure.ALBLCU != "not_applicable (edge deployment has no ALB)" {
+		t.Fatalf("expected ALB not applicable for edge profile, got %q", r.Infrastructure.ALBLCU)
+	}
+	if r.Infrastructure.ComputeOrEdgeVM != "omitted (edge hardware)" {
+		t.Fatalf("expected edge hardware compute note, got %q", r.Infrastructure.ComputeOrEdgeVM)
 	}
 	if r.Inputs.Region != "ap-southeast-1" || r.Inputs.AsOf != "2026-10-19" {
 		t.Fatalf("pricing inputs not populated: region=%s, as_of=%s", r.Inputs.Region, r.Inputs.AsOf)
@@ -373,6 +381,18 @@ func TestCostReportFiltersAndValidation(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 			wantSubstr: "must be after 'from' timestamp",
 		},
+		{
+			name:       "incompatible scenario A with profile edge returns 400",
+			query:      "scenario=A&profile=edge",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "incompatible scenario/profile",
+		},
+		{
+			name:       "incompatible scenario B with profile cloud returns 400",
+			query:      "scenario=B&profile=cloud",
+			wantStatus: http.StatusBadRequest,
+			wantSubstr: "incompatible scenario/profile",
+		},
 	}
 
 	for _, tc := range cases {
@@ -406,5 +426,314 @@ func TestCostReportFiltersAndValidation(t *testing.T) {
 				t.Fatalf("expected response to contain %q, got: %s", tc.wantSubstr, string(raw))
 			}
 		})
+	}
+}
+
+func TestCostReportBucketApportionsFromGlobalGlacier(t *testing.T) {
+	// Finding 1 regression:
+	// Global has 1GiB Glacier ($0.0045/GB-Mo).
+	// stats.Bucket() has 1GiB BytesStored, but PhysicalClasses is nil.
+	// Cost report must NOT assume 1GiB Standard ($0.025).
+	// It should apportion from Global with evidence, yielding $0.0045 matching Global!
+	stored := int64(1073741824)
+	glacierStats := &fakeStats{
+		globalFunc: func(context.Context) (stats.Summary, error) {
+			return stats.Summary{
+				PhysicalComplete: true,
+				Metrics: stats.Metrics{
+					BytesLogical: 1073741824,
+					BytesStored:  &stored,
+				},
+				PhysicalClasses: map[string]int64{
+					string(storage.Glacier): 1073741824,
+				},
+			}, nil
+		},
+		bucketFunc: func(ctx context.Context, bucket string) (stats.BucketSummary, error) {
+			if bucket == "glacier-bkt" {
+				return stats.BucketSummary{
+					Bucket:   bucket,
+					BucketID: "bkt-g",
+					Summary: stats.Summary{
+						PhysicalComplete: true,
+						Metrics: stats.Metrics{
+							BytesLogical: 1073741824,
+							BytesStored:  &stored,
+						},
+						PhysicalClasses: nil, // missing per-class breakdown on bucket
+					},
+				}, nil
+			}
+			return stats.BucketSummary{}, storage.ErrBucketNotFound
+		},
+	}
+
+	w, server := newCostTestWorld(t, glacierStats)
+
+	// 1. Check Global report
+	reqGlobal, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report", nil)
+	reqGlobal.Header.Set("Authorization", "Bearer "+w.root)
+	respGlobal, err := server.Client().Do(reqGlobal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respGlobal.Body.Close()
+	var rGlobal CostReportResponse
+	if err := json.NewDecoder(respGlobal.Body).Decode(&rGlobal); err != nil {
+		t.Fatal(err)
+	}
+
+	// 2. Check Bucket report
+	reqBucket, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?bucket=glacier-bkt", nil)
+	reqBucket.Header.Set("Authorization", "Bearer "+w.root)
+	respBucket, err := server.Client().Do(reqBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respBucket.Body.Close()
+	var rBucket CostReportResponse
+	if err := json.NewDecoder(respBucket.Body).Decode(&rBucket); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bucket subtotal must match Global subtotal ($0.0045), NOT Standard ($0.025)!
+	if rBucket.Results.PricedSubtotalUSDExact != rGlobal.Results.PricedSubtotalUSDExact {
+		t.Fatalf("bucket report subtotal %q does not match global subtotal %q; expected Glacier price, got Standard",
+			rBucket.Results.PricedSubtotalUSDExact, rGlobal.Results.PricedSubtotalUSDExact)
+	}
+	if rBucket.DSGStorage.StorageByClass[string(storage.Glacier)] != 1073741824 {
+		t.Fatalf("expected 1GiB Glacier in bucket storage_by_class, got: %v", rBucket.DSGStorage.StorageByClass)
+	}
+}
+
+func TestCostReportIncompleteOrUnknownInventoryOmittedFromSavings(t *testing.T) {
+	// Finding 2 regression:
+	// When PhysicalComplete=false or BytesStored=nil or unknown storage class,
+	// API must NOT return subtotal $0 with fake positive indicative savings!
+
+	t.Run("PhysicalComplete=false omits savings", func(t *testing.T) {
+		stored := int64(1073741824)
+		incompleteStats := &fakeStats{
+			globalFunc: func(context.Context) (stats.Summary, error) {
+				return stats.Summary{
+					PhysicalComplete: false, // incomplete inventory!
+					Metrics: stats.Metrics{
+						BytesLogical: 2147483648,
+						BytesStored:  &stored,
+					},
+					PhysicalClasses: map[string]int64{
+						string(storage.Standard): 1073741824,
+					},
+				}, nil
+			},
+		}
+		w, server := newCostTestWorld(t, incompleteStats)
+		req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report", nil)
+		req.Header.Set("Authorization", "Bearer "+w.root)
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		var r CostReportResponse
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+			t.Fatal(err)
+		}
+		if r.Results.IndicativeStorageDiffUSD != nil {
+			t.Fatalf("expected nil indicative storage diff when PhysicalComplete=false, got %s", *r.Results.IndicativeStorageDiffUSD)
+		}
+		if len(r.DSGStorage.CostReport.Unpriced) == 0 {
+			t.Fatal("expected unpriced item for incomplete physical inventory")
+		}
+	})
+
+	t.Run("BytesStored=nil omits savings", func(t *testing.T) {
+		nilStoredStats := &fakeStats{
+			globalFunc: func(context.Context) (stats.Summary, error) {
+				return stats.Summary{
+					PhysicalComplete: true,
+					Metrics: stats.Metrics{
+						BytesLogical: 2147483648,
+						BytesStored:  nil, // unmeasured!
+					},
+				}, nil
+			},
+		}
+		w, server := newCostTestWorld(t, nilStoredStats)
+		req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report", nil)
+		req.Header.Set("Authorization", "Bearer "+w.root)
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		var r CostReportResponse
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+			t.Fatal(err)
+		}
+		if r.Results.IndicativeStorageDiffUSD != nil {
+			t.Fatalf("expected nil indicative storage diff when BytesStored=nil, got %s", *r.Results.IndicativeStorageDiffUSD)
+		}
+	})
+
+	t.Run("unknown class omits savings and preserves unpriced", func(t *testing.T) {
+		stored := int64(1073741824)
+		unknownClassStats := &fakeStats{
+			globalFunc: func(context.Context) (stats.Summary, error) {
+				return stats.Summary{
+					PhysicalComplete: true,
+					Metrics: stats.Metrics{
+						BytesLogical: 2147483648,
+						BytesStored:  &stored,
+					},
+					PhysicalClasses: map[string]int64{
+						"unknown_class": 1073741824, // unpriced class!
+					},
+				}, nil
+			},
+		}
+		w, server := newCostTestWorld(t, unknownClassStats)
+		req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report", nil)
+		req.Header.Set("Authorization", "Bearer "+w.root)
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		var r CostReportResponse
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+			t.Fatal(err)
+		}
+		if r.Results.IndicativeStorageDiffUSD != nil {
+			t.Fatalf("expected nil indicative storage diff when unknown class present, got %s", *r.Results.IndicativeStorageDiffUSD)
+		}
+		foundUnpriced := false
+		for _, u := range r.DSGStorage.CostReport.Unpriced {
+			if strings.Contains(u.RateID, "unknown_class") {
+				foundUnpriced = true
+				break
+			}
+		}
+		if !foundUnpriced {
+			t.Fatalf("expected unknown_class in unpriced items, got: %+v", r.DSGStorage.CostReport.Unpriced)
+		}
+	})
+}
+
+func TestCostReportRevivalObservationsReflected(t *testing.T) {
+	// Finding 3 regression:
+	// Revival counters from stats.Summary must be populated when available,
+	// and null when nil (not claiming 0).
+	t.Run("observed revival counters populated", func(t *testing.T) {
+		stored := int64(1073741824)
+		chunks := uint64(7)
+		bytes := uint64(524288)
+		revivalStats := &fakeStats{
+			globalFunc: func(context.Context) (stats.Summary, error) {
+				return stats.Summary{
+					PhysicalComplete: true,
+					Metrics: stats.Metrics{
+						BytesLogical: 2147483648,
+						BytesStored:  &stored,
+					},
+					PhysicalClasses: map[string]int64{
+						string(storage.Standard): 1073741824,
+					},
+					RevivedChunks: &chunks,
+					RevivedBytes:  &bytes,
+				}, nil
+			},
+		}
+		w, server := newCostTestWorld(t, revivalStats)
+		req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report", nil)
+		req.Header.Set("Authorization", "Bearer "+w.root)
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		var r CostReportResponse
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+			t.Fatal(err)
+		}
+		if r.RevivalCopy.RevivedChunks == nil || *r.RevivalCopy.RevivedChunks != 7 {
+			t.Fatalf("expected RevivedChunks 7, got %v", r.RevivalCopy.RevivedChunks)
+		}
+		if r.RevivalCopy.RevivedBytesStored == nil || *r.RevivalCopy.RevivedBytesStored != 524288 {
+			t.Fatalf("expected RevivedBytesStored 524288, got %v", r.RevivalCopy.RevivedBytesStored)
+		}
+	})
+
+	t.Run("nil revival counters serialized as null", func(t *testing.T) {
+		w, server := newCostTestWorld(t, &fakeStats{})
+		req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report", nil)
+		req.Header.Set("Authorization", "Bearer "+w.root)
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		var r CostReportResponse
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+			t.Fatal(err)
+		}
+		if r.RevivalCopy.RevivedChunks != nil || r.RevivalCopy.RevivedBytesStored != nil {
+			t.Fatalf("expected nil revival counters when not measured, got chunks=%v bytes=%v",
+				r.RevivalCopy.RevivedChunks, r.RevivalCopy.RevivedBytesStored)
+		}
+	})
+}
+
+func TestCostReportScenarioProfileDifferentiation(t *testing.T) {
+	// Finding 4 regression:
+	// Verify that scenario A (cloud) and scenario B (edge) produce distinct infrastructure
+	// entries and explicit unscoped partial storage snapshot mode.
+	w, server := newCostTestWorld(t, &fakeStats{})
+
+	// Scenario A: Cloud
+	reqA, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?scenario=A&profile=cloud", nil)
+	reqA.Header.Set("Authorization", "Bearer "+w.root)
+	respA, err := server.Client().Do(reqA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respA.Body.Close()
+	var rA CostReportResponse
+	if err := json.NewDecoder(respA.Body).Decode(&rA); err != nil {
+		t.Fatal(err)
+	}
+
+	// Scenario B: Edge
+	reqB, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?scenario=B&profile=edge", nil)
+	reqB.Header.Set("Authorization", "Bearer "+w.root)
+	respB, err := server.Client().Do(reqB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respB.Body.Close()
+	var rB CostReportResponse
+	if err := json.NewDecoder(respB.Body).Decode(&rB); err != nil {
+		t.Fatal(err)
+	}
+
+	if rA.Infrastructure.ALBLCU != "omitted (cloud alb)" {
+		t.Fatalf("expected cloud alb note, got %q", rA.Infrastructure.ALBLCU)
+	}
+	if rB.Infrastructure.ALBLCU != "not_applicable (edge deployment has no ALB)" {
+		t.Fatalf("expected edge not_applicable alb note, got %q", rB.Infrastructure.ALBLCU)
+	}
+	if rA.Infrastructure.ComputeOrEdgeVM != "omitted (cloud ec2)" {
+		t.Fatalf("expected cloud ec2 compute note, got %q", rA.Infrastructure.ComputeOrEdgeVM)
+	}
+	if rB.Infrastructure.ComputeOrEdgeVM != "omitted (edge hardware)" {
+		t.Fatalf("expected edge hardware compute note, got %q", rB.Infrastructure.ComputeOrEdgeVM)
+	}
+	if rA.ReportType != "unscoped_partial_storage_snapshot" || rB.ReportType != "unscoped_partial_storage_snapshot" {
+		t.Fatalf("expected unscoped_partial_storage_snapshot ReportType")
 	}
 }

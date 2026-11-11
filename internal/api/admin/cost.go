@@ -6,6 +6,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	pricingschema "github.com/KinasTomes/miles/configs/pricing"
@@ -69,11 +70,11 @@ type InfrastructureReport struct {
 }
 
 type RevivalCopyReport struct {
-	RevivedChunks              uint64 `json:"revived_chunks"`
-	RevivedBytesStored         uint64 `json:"revived_bytes_stored"`
-	CopySourceDownloadBytes    uint64 `json:"copy_source_download_bytes"`
-	CopyDestinationUploadBytes uint64 `json:"copy_destination_upload_bytes"`
-	Note                       string `json:"note"`
+	RevivedChunks              *uint64 `json:"revived_chunks"`
+	RevivedBytesStored         *uint64 `json:"revived_bytes_stored"`
+	CopySourceDownloadBytes    uint64  `json:"copy_source_download_bytes"`
+	CopyDestinationUploadBytes uint64  `json:"copy_destination_upload_bytes"`
+	Note                       string  `json:"note"`
 }
 
 type CostReportResults struct {
@@ -160,10 +161,21 @@ func (s *server) costReport(c *call) error {
 
 	profile := q.Get("profile")
 	if profile == "" {
-		profile = "cloud"
+		if scenario == "A" {
+			profile = "cloud"
+		} else {
+			profile = "edge"
+		}
 	}
 	if profile != "cloud" && profile != "edge" {
 		return invalid("invalid profile %q; expected cloud or edge", profile)
+	}
+
+	if scenario == "A" && profile != "cloud" {
+		return invalid("incompatible scenario/profile: scenario A requires profile cloud (got %q)", profile)
+	}
+	if scenario == "B" && profile != "edge" {
+		return invalid("incompatible scenario/profile: scenario B requires profile edge (got %q)", profile)
 	}
 
 	domain := q.Get("domain")
@@ -201,6 +213,10 @@ func (s *server) costReport(c *call) error {
 	if s.Statistics == nil {
 		return &apiError{http.StatusServiceUnavailable, "unavailable", "statistics provider is unavailable"}
 	}
+	global, err := s.Statistics.Global(c.r.Context())
+	if err != nil {
+		return &apiError{http.StatusServiceUnavailable, "unavailable", "statistics backend is unavailable"}
+	}
 
 	bucket := q.Get("bucket")
 	var summary stats.Summary
@@ -215,12 +231,23 @@ func (s *server) costReport(c *call) error {
 		}
 		summary = bs.Summary
 		methodology = "bucket_inventory_snapshot"
-	} else {
-		g, err := s.Statistics.Global(c.r.Context())
-		if err != nil {
-			return &apiError{http.StatusServiceUnavailable, "unavailable", "statistics backend is unavailable"}
+
+		// Finding 1: If bucket summary has no per-class breakdown (PhysicalClasses is empty)
+		// but global has physical classes and both have positive stored bytes, apportion
+		// per-class from global with evidence.
+		if len(summary.PhysicalClasses) == 0 && summary.BytesStored != nil && *summary.BytesStored > 0 {
+			if len(global.PhysicalClasses) > 0 && global.BytesStored != nil && *global.BytesStored > 0 {
+				summary.PhysicalClasses = make(map[string]int64, len(global.PhysicalClasses))
+				ratio := new(big.Rat).SetFrac64(*summary.BytesStored, *global.BytesStored)
+				for cStr, gBytes := range global.PhysicalClasses {
+					classRat := new(big.Rat).Mul(ratio, new(big.Rat).SetInt64(gBytes))
+					bBytes := new(big.Int).Div(classRat.Num(), classRat.Denom()).Int64()
+					summary.PhysicalClasses[cStr] = bBytes
+				}
+			}
 		}
-		summary = g
+	} else {
+		summary = global
 	}
 	if summary.Methodology != "" {
 		methodology = summary.Methodology
@@ -229,21 +256,69 @@ func (s *server) costReport(c *call) error {
 	// 1. DSG Storage Usage
 	dsgUsage := []cost.Usage{}
 	storageByClass := map[string]int64{}
+	hasUnpricedPhysicalInventory := false
+
+	// Finding 2: Incomplete or unmeasured physical inventory must not be priced as $0.
+	if !summary.PhysicalComplete {
+		hasUnpricedPhysicalInventory = true
+		dsgUsage = append(dsgUsage, cost.Usage{
+			RateID:   "s3.storage.incomplete_inventory",
+			Unit:     "GB-Mo",
+			Quantity: "1",
+		})
+	}
+
+	if summary.BytesStored == nil {
+		hasUnpricedPhysicalInventory = true
+		dsgUsage = append(dsgUsage, cost.Usage{
+			RateID:   "s3.storage.unmeasured_inventory",
+			Unit:     "GB-Mo",
+			Quantity: "1",
+		})
+	}
+
 	if len(summary.PhysicalClasses) > 0 {
 		for classStr, b := range summary.PhysicalClasses {
 			storageByClass[classStr] = b
+			if b <= 0 {
+				continue
+			}
 			class := storage.StorageClass(classStr)
-			if b > 0 && class.Validate() == nil {
+			if class.Validate() == nil {
 				if u, e := cost.StorageUsage(class, uint64(b), duration, bytesPerGB, month); e == nil {
 					dsgUsage = append(dsgUsage, u)
 				}
+			} else {
+				// Finding 2: Unknown physical storage class!
+				// Must NOT be ignored as $0, which creates fake storage savings.
+				hasUnpricedPhysicalInventory = true
+				qtyRat := new(big.Rat).SetFrac64(b, int64(bytesPerGB))
+				durRat := new(big.Rat).SetFrac64(int64(duration), int64(month))
+				gbMo := new(big.Rat).Mul(qtyRat, durRat)
+				rateID := "s3.storage.unknown"
+				if strings.TrimSpace(classStr) != "" {
+					rateID = fmt.Sprintf("s3.storage.%s", strings.ToLower(classStr))
+				}
+				dsgUsage = append(dsgUsage, cost.Usage{
+					RateID:   rateID,
+					Unit:     "GB-Mo",
+					Quantity: gbMo.RatString(),
+				})
 			}
 		}
 	} else if summary.BytesStored != nil && *summary.BytesStored > 0 {
-		storageByClass[string(storage.Standard)] = *summary.BytesStored
-		if u, e := cost.StorageUsage(storage.Standard, uint64(*summary.BytesStored), duration, bytesPerGB, month); e == nil {
-			dsgUsage = append(dsgUsage, u)
-		}
+		// Finding 1 & 2: Missing per-class breakdown for positive BytesStored.
+		// Must NOT be assumed as Standard; mark as unpriced unknown class.
+		hasUnpricedPhysicalInventory = true
+		storageByClass["UNKNOWN"] = *summary.BytesStored
+		qtyRat := new(big.Rat).SetFrac64(*summary.BytesStored, int64(bytesPerGB))
+		durRat := new(big.Rat).SetFrac64(int64(duration), int64(month))
+		gbMo := new(big.Rat).Mul(qtyRat, durRat)
+		dsgUsage = append(dsgUsage, cost.Usage{
+			RateID:   "s3.storage.unknown",
+			Unit:     "GB-Mo",
+			Quantity: gbMo.RatString(),
+		})
 	}
 
 	dsgReport, err := cost.Evaluate(catalog, dsgUsage)
@@ -298,8 +373,31 @@ func (s *server) costReport(c *call) error {
 		temporaryRestored = summary.PhysicalLifecycle["Restored"]
 	}
 
+	computeCost := "omitted"
+	albCost := "omitted"
+	scenarioAssumption := ""
+	if scenario == "A" {
+		computeCost = "omitted (cloud ec2)"
+		albCost = "omitted (cloud alb)"
+		scenarioAssumption = "Scenario A (Cloud DSG): evaluates S3 storage snapshot; cloud compute/ALB/NAT infrastructure omitted."
+	} else {
+		computeCost = "omitted (edge hardware)"
+		albCost = "not_applicable (edge deployment has no ALB)"
+		scenarioAssumption = "Scenario B (Edge DSG): evaluates S3 storage snapshot; edge compute/WAN egress omitted, ALB not applicable."
+	}
+
+	omissions := []string{
+		"Infrastructure compute/disk/ALB/DynamoDB/KMS costs omitted in live snapshot",
+		"Request, transition, retrieval, and network egress fees omitted unless explicitly metered",
+		"Cloud-client Internet baseline path must be declared separately; topology not inferred",
+		"Net savings vs baseline omitted: cost evaluation is partial prototype without complete matched totals (CompleteTotalUSD is null)",
+	}
+	if hasUnpricedPhysicalInventory {
+		omissions = append(omissions, "Indicative storage difference omitted: physical inventory is incomplete, unmeasured, or contains unknown storage classes")
+	}
+
 	response := CostReportResponse{
-		ReportType:    "partial_prototype_cost_report",
+		ReportType:    "unscoped_partial_storage_snapshot",
 		SchemaVersion: 1,
 		Inputs: CostReportInputs{
 			Region:                catalog.Region,
@@ -314,6 +412,9 @@ func (s *server) costReport(c *call) error {
 			Domain:                domain,
 			AllocationMethodology: methodology,
 			Assumptions: []string{
+				"This endpoint operates in unscoped_partial_storage_snapshot mode: prices current gateway physical inventory piecewise constant across the requested range.",
+				"Scenario and profile parameters indicate deployment context; live endpoint does not perform comparative multi-scenario network/compute cost simulation.",
+				scenarioAssumption,
 				"Storage byte-time evaluated assuming piecewise constant inventory across interval; current gateway inventory snapshot held constant across the requested range without replaying historical mutations.",
 				"Baseline Direct S3 assumes 1:1 logical-to-physical ratio without dedup or compression.",
 			},
@@ -343,16 +444,16 @@ func (s *server) costReport(c *call) error {
 			EarlyDeletionFees: "0",
 		},
 		Infrastructure: InfrastructureReport{
-			ComputeOrEdgeVM:       "omitted",
+			ComputeOrEdgeVM:       computeCost,
 			DiskEBS:               "omitted",
-			ALBLCU:                "omitted",
+			ALBLCU:                albCost,
 			DynamoDB:              "omitted",
 			KMSCloudWatch:         "omitted",
 			NATInterfaceEndpoints: "omitted",
 		},
 		RevivalCopy: RevivalCopyReport{
-			RevivedChunks:              0,
-			RevivedBytesStored:         0,
+			RevivedChunks:              summary.RevivedChunks,
+			RevivedBytesStored:         summary.RevivedBytes,
 			CopySourceDownloadBytes:    0,
 			CopyDestinationUploadBytes: 0,
 			Note:                       "Revival and copy breakdowns are accounted in totals; not double charged.",
@@ -366,13 +467,9 @@ func (s *server) costReport(c *call) error {
 			BreakEven:                nil,
 			RestoreAmplification:     nil,
 		},
-		Omissions: []string{
-			"Infrastructure compute/disk/ALB/DynamoDB/KMS costs omitted in live snapshot",
-			"Request, transition, retrieval, and network egress fees omitted unless explicitly metered",
-			"Cloud-client Internet baseline path must be declared separately; topology not inferred",
-			"Net savings vs baseline omitted: cost evaluation is partial prototype without complete matched totals (CompleteTotalUSD is null)",
-		},
+		Omissions: omissions,
 		Limitations: []string{
+			"Unscoped partial storage snapshot reflects live inventory only; comparative cross-scenario analysis requires simulated trace replay with explicit route models.",
 			"Modelled comparative accounting prototype; does not reflect AWS invoice, Free Tier or account credits.",
 			"Live snapshot prices current inventory held piecewise constant across range; historical inventory mutations require simulated trace replay.",
 		},
