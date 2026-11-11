@@ -1,9 +1,40 @@
 # Follow-up plan: clock freshness, journal shutdown and PUT conflicts
 
 Updated 11 November 2026. This is the follow-up handoff for
-[PR #76](https://github.com/KinasTomes/miles/pull/76). Keep further runtime fixes
-and paid acceptance in subsequent PRs so this diagnostic change can be reviewed
-and merged separately. This plan does not authorize another AWS run.
+[PR #76](https://github.com/KinasTomes/miles/pull/76), merged as
+`a5255a69d7762b2c104ecfbecf506df653b87f3f`. The follow-up branch is
+`fix/clock-journal-reliability`, initialized from that merged main. This plan
+does not authorize another AWS run.
+
+## Initialization status and execution checklist
+
+Status: **initialization only**. The follow-up currently changes documentation;
+runtime code, configuration and tests are unchanged. Implementation, local
+reproductions and AWS execution have not started on this branch. Keep its PR
+Draft until the implemented scope has evidence for review.
+
+Existing [live evidence](../testing/aws-clock-recovery-validation.md) and the
+[verified AWS runbook](../testing/edge-aws-runbook.md) are already on the base.
+Reuse them; historical passing trials do not validate a new release/profile.
+
+- [x] Create a dedicated branch from merged main and carry forward this plan,
+  evidence and runbook.
+- [ ] Preserve and classify request cancellation causes (implementation step 1).
+- [ ] Reproduce the shutdown scan/retry failure under bounded Outbox reads,
+  then fix progress without weakening fencing or closure (step 2).
+- [ ] Replay clock evidence and evaluate the existing Chrony candidate while
+  preserving clock guards and measurement filters (step 3).
+- [ ] Commit each implemented part separately and record its focused/race/native
+  local proof. Retain unresolved findings rather than marking them fixed.
+- [ ] Prepare a fresh concrete IAM/plan/cost/cleanup package for approval before
+  any paid AWS run; earlier grants and budget approvals are not reused.
+- [ ] After approval, validate the final release/profile, capture exact shutdown
+  proof, classify any PUT 409 and independently verify cleanup.
+
+Scope exclusions: no unrelated features, replacement time provider, blind
+mutation retries, wider IAM grants, capacity/timeout increases or changes to
+clock/lease safety contracts merely to obtain a passing result. Any material
+contract or paid-run scope change requires a separate decision.
 
 Goal: make journal shutdown complete under bounded backend capacity, retain the
 cause of canceled requests, validate clock freshness under consecutive rejected
