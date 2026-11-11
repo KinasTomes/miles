@@ -45,6 +45,7 @@ func TestOperationalCommandsUseBearerMethodAndWireSchema(t *testing.T) {
 		{[]string{"stats", "--bucket", "demo.bucket"}, "GET", "/admin/v1/buckets/demo.bucket/stats", nil},
 		{[]string{"cost", "report"}, "GET", "/admin/v1/cost/report", nil},
 		{[]string{"cost", "report", "--region", "ap-southeast-1", "--as-of", "2026-11-07"}, "GET", "/admin/v1/cost/report?as_of=2026-11-07&region=ap-southeast-1", nil},
+		{[]string{"cost", "report", "--scenario", "B", "--profile", "edge"}, "GET", "/admin/v1/cost/report?profile=edge&scenario=B", nil},
 		{[]string{"fault", "ls"}, "GET", "/admin/v1/faults", nil},
 		{[]string{"fault", "rm", "flt-123"}, "DELETE", "/admin/v1/faults/flt-123", nil},
 		{[]string{"fault", "add", "--type", "s3_5xx", "--scope", "node", "--node", "node-b", "--rate", "0.5", "--duration", "120"}, "POST", "/admin/v1/faults", map[string]any{"type": "s3_5xx", "scope": "node", "node_id": "node-b", "rate": 0.5, "duration_seconds": float64(120)}},

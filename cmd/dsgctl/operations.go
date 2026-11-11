@@ -40,6 +40,12 @@ func operationCommand(args []string) (command, error) {
 		f := newFlags("cost report")
 		region := f.String("region", "", "pricing region")
 		asOf := f.String("as-of", "", "date YYYY-MM-DD")
+		scenario := f.String("scenario", "", "scenario: A|B")
+		profile := f.String("profile", "", "profile: cloud|edge")
+		from := f.String("from", "", "from timestamp")
+		to := f.String("to", "", "to timestamp")
+		bucket := f.String("bucket", "", "filter bucket")
+		domain := f.String("domain", "", "filter domain")
 		set, ok := parse(f, args[2:])
 		if !ok {
 			return command{}, invalid
@@ -50,6 +56,24 @@ func operationCommand(args []string) (command, error) {
 		}
 		if set["as-of"] {
 			q.Set("as_of", *asOf)
+		}
+		if set["scenario"] {
+			q.Set("scenario", *scenario)
+		}
+		if set["profile"] {
+			q.Set("profile", *profile)
+		}
+		if set["from"] {
+			q.Set("from", *from)
+		}
+		if set["to"] {
+			q.Set("to", *to)
+		}
+		if set["bucket"] {
+			q.Set("bucket", *bucket)
+		}
+		if set["domain"] {
+			q.Set("domain", *domain)
 		}
 		path := "/admin/v1/cost/report"
 		if len(q) > 0 {
