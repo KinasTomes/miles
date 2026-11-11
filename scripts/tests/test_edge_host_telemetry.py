@@ -475,6 +475,7 @@ fi
                     "parsed_tracking": {
                         "status": "ok",
                         "sample_age_seconds": 1.5,
+                        "max_allowed_age_seconds": 34.0,
                         "last_offset_seconds": 0.00005,
                         "frequency_ppm": 0.1,
                         "uncertainty_exceeded": False,
@@ -568,6 +569,28 @@ fi
         stalled = HostTelemetryRecorder(output_file=stalled_file).summarize_window()
         self.assertEqual(stalled["status"], "UNVERIFIED")
         self.assertIn("chrony_sampling_gap", stalled["reason"])
+
+
+    def test_chrony_freshness_must_cover_the_window_tail(self):
+        base = datetime.datetime(2026, 11, 11, 7, 10, 4, tzinfo=datetime.timezone.utc)
+        end = base + datetime.timedelta(seconds=1.4)
+        for age, verified in [(1.5, True), (33.05, False)]:
+            with self.subTest(age=age):
+                path = self.tmppath / f"freshness-{age}.jsonl"
+                ring = BoundedRingBuffer(path)
+                ring.write_record({
+                    "sequence": 1, "timestamp_utc": base.isoformat(),
+                    "chrony": {"tracking": {"returncode": 0}, "parsed_tracking": {
+                        "status": "ok", "sample_age_seconds": age,
+                        "max_allowed_age_seconds": 34.2, "uncertainty_exceeded": False,
+                    }},
+                })
+                ring.write_record({"sequence": 2, "timestamp_utc": end.isoformat(), "chrony": None})
+                summary = HostTelemetryRecorder(path).summarize_window(
+                    since_utc=base.isoformat(), until_utc=end.isoformat())
+                self.assertEqual(summary["clock_evidence_verified"], verified)
+                if not verified:
+                    self.assertIn("chrony_sample_expires_within_window", summary["reason"])
 
 
 if __name__ == "__main__":

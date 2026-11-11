@@ -734,6 +734,24 @@ class HostTelemetryRecorder:
             if until_dt and (until_dt - chrony_times[-1]).total_seconds() > max_chrony_gap:
                 coverage_errors.append("unobserved_chrony_window_end")
 
+            # A healthy observation can expire before the next sample or the
+            # final response; sampling cadence alone cannot prove freshness.
+            for index, (record, observed) in enumerate(zip(chrony_records, chrony_times)):
+                pt = record["chrony"].get("parsed_tracking") or {}
+                age, limit = pt.get("sample_age_seconds"), pt.get("max_allowed_age_seconds")
+                if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                           for v in (age, limit)) or limit <= 0:
+                    coverage_errors.append("unverified_chrony_freshness_span")
+                    break
+                end = chrony_times[index + 1] if index + 1 < len(chrony_times) else (
+                    until_dt or _parse_iso_timestamp(records[-1].get("timestamp_utc")))
+                if end is None:
+                    coverage_errors.append("invalid_window_timestamp")
+                    break
+                if age + max(0.0, (end - observed).total_seconds()) > limit:
+                    coverage_errors.append("chrony_sample_expires_within_window")
+                    break
+
         # Epistemological window classification:
         # (a) unknown/unobserved interval before acquisition started
         # (b) expected cadence/startup grace (contiguous start at sequence 1, zero drops, within grace)
