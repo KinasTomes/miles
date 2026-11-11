@@ -4,6 +4,8 @@ Cập nhật sau lượt chạy ngày 11/11/2026. Mục tiêu là nghiệm thu l
 
 ## Phần còn lại sau lượt chạy mới nhất
 
+Phần chuẩn bị cho lượt chẩn đoán kế tiếp đã có: request ID nối S3 với lý do native DynamoDB cancellation; release kèm hai profile Chrony và collector `ntpdata`. [Plan clock/409 cụ thể](clock-conflict-aws-diagnostics.md) quy định baseline, điều kiện so sánh và tiêu chí đóng finding. Phần này mới kiểm thử offline; AWS đã được hoãn vì phiên root chưa sẵn sàng và cần dành đủ quota cho toàn bộ test/cleanup. Chưa tạo tài nguyên hay gắn grant mới.
+
 [Báo cáo hiện tại](../testing/edge-private-aws-recheck.md) ghi riêng lượt bắt đầu06:17UTC và lịch sử lượt02:03UTC. Lượt mới đã seal epoch934events và epoch rỗng kế tiếp; VerifyCut S3-only đạt. Outbox idle không còn đọc lịch sử. Hai alarm throttling đã hồi phục với telemetry fresh. Các bản sửa shutdown và cleanup admission có test native; Edge đã shutdown sạch cả trước và sau fault DynamoDB trên release cũ. Tám alarm đã đạt đầy đủ. Cleanup cuối lúc 09:34 UTC đạt PASS_WITH_PENDING: 86/88 định danh absent, chỉ hai KMS/secret mới chờ xóa 30 ngày đã được duyệt; baseline giữ nguyên. Các kết quả lịch sử bên dưới vẫn gắn với lượt chạy trước.
 
 **Blocker hiện tại là độ sẵn sàng của đồng hồ dưới tải.** C4 diagnostic và C1 trên release0ee6d2f đều gặp `clock_uncertainty_exceeded`. C1 mới đã đạt90PUT/90HEAD/160GET trước khi GET stream dừng; C4 cùng release chưa chạy vì C1 FAIL. Không nới ngưỡng clock để đạt bài thử. Một C1 khác đã PASS, không được dùng nó để xóa kết quả lỗi.

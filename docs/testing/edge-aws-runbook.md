@@ -26,6 +26,8 @@ Bắt đầu từ [plan tiếp tục nghiệm thu](../planning/edge-aws-acceptan
 
 ## Bổ sung từ lượt recovery/alarm/shutdown
 
+Lượt chẩn đoán clock/409 kế tiếp dùng [plan riêng](../planning/clock-conflict-aws-diagnostics.md). Baseline và profile so sánh nằm trong `deploy/chrony/`, được pin cùng release; installer giữ nguyên clock config của operator. Bật measurement logs trước tải và thu `ntpdata` từ recorder, không chỉ tracking. S3 request ID do server tạo được nối với AWS request ID và bảng/index/reason của transaction bị hủy; raw messages, keys, values và tokens không được ghi log. Các bổ sung này đã qua kiểm thử offline, chưa được xác nhận trong lượt AWS mới.
+
 - Grant assume-role phải trỏ đúng auditor của lượt hiện tại. Nếu sửa binding sau validation, lưu cả bản trước/sau và để rollback guard so với đúng document đã gắn; baseline vẫn giữ nguyên.
 - Ghi Terraform outputs vào file tạm rồi rename nguyên tử; consumer phải parse và kiểm đủ keys trước khi dùng. Lượt chạy đã gặp reader đọc file đang ghi, trước mọi thay đổi host.
 - Sau mỗi restart, chọn node hiện tại bằng Ready và không Draining; dùng incarnation mới cho cache jobs. Không lấy bản ghi Edge đầu tiên từ history. Purge phải hoàn tất trước fault đọc pack.
