@@ -1,6 +1,6 @@
 # AWS clock recovery and transaction diagnostics
 
-Run date: 11 November 2026 (UTC). Status: live acceptance **not achieved**; cleanup is in progress. No further workload will be dispatched.
+Run date: 11 November 2026 (UTC). Status: live acceptance **not achieved**; cleanup completed and independently audited. No further workload will be dispatched.
 Initial Cloud/Edge runtime: `ad317688bbf8363c619e8f4a68997cc5c306456a`.
 Edge-only CreateBucket fix: `783ace07a481ed1b1109ae4a8fbcdac0834ba6e2`.
 Repository head `7a454d6` packages a revised candidate which was **not installed**.
@@ -209,5 +209,7 @@ not reopen workload or extend the four-hour authorization.
 
 This is functional clock/conflict diagnosis on small instances. It does not
 replace sizing/performance acceptance or the already accepted unrelated
-recovery/GC/alarm suites. Keep the PR Draft while the original 409 diagnosis
-remains unresolved.
+recovery/GC/alarm suites. Unresolved clock, shutdown and PUT 409 findings are
+handed off to the [follow-up plan](../planning/clock-conflict-aws-diagnostics.md).
+Merging this diagnostic change does not mark those findings or final live
+acceptance complete.

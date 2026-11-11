@@ -1,8 +1,107 @@
-# AWS clock freshness and PUT conflict diagnostics
+# Follow-up plan: clock freshness, journal shutdown and PUT conflicts
 
-Goal: identify why Chrony stops accepting fresh measurements under load, verify a
-host correction with the existing clock bounds, and correlate any PUT 409 with
-its actual backend cause. A successful replay alone does not close either finding.
+Updated 11 November 2026. This is the follow-up handoff for
+[PR #76](https://github.com/KinasTomes/miles/pull/76). Keep further runtime fixes
+and paid acceptance in subsequent PRs so this diagnostic change can be reviewed
+and merged separately. This plan does not authorize another AWS run.
+
+Goal: make journal shutdown complete under bounded backend capacity, retain the
+cause of canceled requests, validate clock freshness under consecutive rejected
+measurements, and identify the historical PUT 409. A successful replay alone does
+not establish the cause or close a finding.
+
+## Merge boundary and current evidence
+
+The current change delivers runtime fixes already covered by focused tests,
+safe AWS diagnostics, packaged clock profiles, live evidence and a verified
+deployment/cleanup runbook. CreateBucket's busy-admission 500 mapping is fixed;
+busy admission still returns retryable 503 and preserves fencing.
+
+Merging this change must **not** be recorded as final clock/shutdown acceptance,
+production readiness, or resolution of PUT 409. The two-attempt profile failed
+under consecutive rejected samples. The four-attempt candidate has not run on
+AWS. The final Edge invocation failed its eight-minute journal flush and lacked
+`shutdown complete`. Earlier successful recovery/GC/alarm evidence remains bound
+to its reported source; it does not close these findings on a later release.
+
+The paid run is closed: 117 managed resources destroyed, all four VM/root disks
+absent, IAM restored and CLI sessions logged out. Independent audit accepted 88
+checks with exactly two approved key/secret pending deletions and no unapproved
+residuals. The conservative estimate was 4.74 USD before tax, not final billing.
+
+## Implementation order in subsequent PRs
+
+Use the smallest independently reviewable changes below. Complete the offline
+gates before preparing a new paid run; follow the detailed AWS sequence later
+in this document. No need to rebuild unrelated deployment or acceptance tooling.
+
+### 1. Retain the original request cancellation cause
+
+- Extend the existing lease `keepAlive` owner in `internal/coordination/lease.go`:
+  it currently discards `renew()` errors and calls plain `cancel()`. Trace its
+  callers through read/stream handling before changing cause propagation.
+- Preserve the first meaningful renewal failure through cancellation and safe
+  request diagnostics. Distinguish clock uncertainty, fencing, backend failure,
+  caller cancellation and an ordinary explicit stop. Keep the public S3 contract
+  and existing redaction rules; do not expose raw backend errors or entity data.
+- Prove with deterministic tests that each failure cancels the request and
+  retains its classified cause, normal stop releases the goroutine, and parent
+  cancellation remains distinguishable. Run affected coordination/read-path
+  race tests. This improves evidence; it does not itself fix clock freshness.
+
+### 2. Reproduce and correct shutdown progress under Outbox throttling
+
+- Reuse DynamoDB Local/S3 fixtures and the existing fault-injection layer. Seed
+  historical and current epochs, more than one logical/physical page, concurrent
+  exporters and a throttle on a later scan page. Quiesce request writers first.
+- Measure discovery scans, repeated reads, successful export/ack progress,
+  authority renewal/close and time spent sealing. Preserve the eight-minute
+  deadline and read-cap comparison at 128. Native AWS recorded 518 read-limit
+  throttle events during the failed flush; that establishes a capacity problem,
+  not that throttling alone explains the whole timeout.
+- `ListOutbox` currently scans the full table for each logical page, and a failed
+  page can cause a fresh outer flush to restart discovery. Select the smallest
+  bounded enumeration/retry correction at the owning storage/recovery layer
+  after reproducing this path. Preserve event ordering, exact closure, immutable
+  receipts, takeover/fencing and crash-safe progress. Do not infer absence from
+  a partial scan or declare success after silently skipping work.
+- PASS: transient throttles recover and drain the pending work within the
+  existing budget without repeated full rediscovery preventing progress;
+  independent S3 verification succeeds where the fixture closes/seals a cut.
+  Persistent failure must remain bounded, retain unresolved work and withhold
+  `shutdown complete`. Include lost-ACK and takeover regressions.
+- The retained snapshot has epoch 1 Closed and 177 events without recorded
+  export progress. Reconcile receipts/object versions; do not label those events
+  lost solely from missing metadata progress.
+
+### 3. Validate the clock correction and finish conflict diagnosis
+
+- Replay recorded tracking/measurement timelines offline, including consecutive
+  rejections and the strict observation-gap case. Real stale evidence occurred
+  at reference age 34.252 seconds against a 34.2-second bound; the overlapping
+  GET only logged `canceled`, so its exact cause remains unproven.
+- Verify the packaged `minpoll 2 maxpoll 4 burst` candidate allows up to four
+  attempts at poll 4; retain filters and runtime bounds. This is a candidate,
+  not a guarantee against an NTP outage. The physical source of delay variation
+  remains unknown; do not assert CPU-credit exhaustion or an AWS NTP defect.
+- After steps 1 and 2 pass, freeze a final release and obtain a fresh reviewed
+  IAM/plan/cost/cleanup approval. Run the baseline/comparison below and require
+  two complete C1 (concurrency 1) to C4 (concurrency 4) cycles on the final
+  source/profile, complete clock telemetry and exact-invocation clean shutdown.
+- Keep PUT 409 open until a request's backend cause and write outcome are
+  established. Correlate server request ID, stage, AWS request ID and cancellation
+  reason; expected internally retried CAS warnings are not proof of HTTP 409.
+  If it does not recur, report that result and the remaining uncertainty without
+  inventing a fix or adding blind mutation retries.
+
+### Follow-up completion evidence
+
+Record the reproducer, fix commit, focused/race test results and remaining limits
+for each work item. The final paid report must include release/profile hashes,
+two complete cycles, classified request failures, native clock evidence, journal
+shutdown proof, strict teardown audit and cost. Update the runbook only with
+steps actually verified. No runtime changes or paid actions are part of this
+documentation handoff.
 
 ## Status after the live comparison
 
@@ -135,5 +234,6 @@ never weaken the audit to obtain PASS. Logout and clear codes/operator processes
 
 Update the runbook immediately after a verified step. The final report must name
 source/profile/config hashes, baseline failure and correction evidence, C1/C4
-results, conflict findings, shutdown proof, final audit and cost estimate. Keep
-Draft if clock or conflict acceptance remains unresolved.
+results, conflict findings, shutdown proof, final audit and cost estimate. The
+follow-up acceptance PR must retain its failed/unverified verdict until its own
+criteria pass; merging the diagnostic PR does not change those verdicts.
