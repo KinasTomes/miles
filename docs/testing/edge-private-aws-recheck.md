@@ -38,3 +38,13 @@ At 04:35 UTC, all 1,242 events had export descriptors, but neither the first epo
 Controlled corrupt-pack reads returned HTTP 502 through both proxies, incremented the runtime integrity counter and triggered both integrity alarms. Removing the faults restored GET 200 with the expected SHA-256. This differs from the operator script's initial HTTP 500 assertion; that assertion was not used as evidence of runtime failure. A separate 180-second DDB-throttle fault was then applied to all three gateways. Alarm recovery, final validation of all eight histories, teardown and baseline-preservation audit remain pending.
 
 The latest state and step-by-step log are held in the private operator run directory `edge-acceptance-recheck/edge-retest-20261111T012450Z`.
+
+## Recovery correction tested live
+
+Release `063cd72` reuses an existing export receipt only after reading back and verifying its descriptor, pages, dependencies and exact native source event. A Closed epoch goes directly to sealing instead of first repeating a complete export scan. Sealing still verifies exact membership and independently reads the finished cut before fenced publication. No metadata format or public API changed.
+
+The new receipt-retry regression failed against the previous source and passed with the correction. Recovery/app/jobs race tests, `make check`, native DynamoDB Local/Moto recovery contracts and process smoke tests passed. A separate existing CAS test occasionally included a request identical to the default policy; its successful no-op made the test incorrectly count two winners. Commit `3193fac` makes all contenders change the policy; 30 repeated race runs and CI 5/5 passed.
+
+The old Edge invocation exited unsuccessfully before restart; the recorded restart command found MainPID 0 and sent no SIGKILL. Original Cloud instances were terminated using explicit disposable-workload ABANDON actions. These are not clean-shutdown acceptance evidence. The corrected Edge became ready at 04:45 UTC. Its takeover sealed epoch 0 by 04:49 and the empty epoch 1 by 04:51. Native state advanced NextToSeal to 2. GET returned 200 with the expected SHA-256 and a fresh Edge cache purge succeeded.
+
+The first replacement Cloud bootstrap failed because the operator uploaded the archive under a filename different from Terraform's release key. The pinned version therefore belonged to the wrong key. Failed console output and native instances/root volumes were preserved in the private ledger. The corrected upload uses the expected key with verified VersionId and length. Cloud revalidation and final cleanup remain in progress within the original budget and deadline.
