@@ -850,42 +850,57 @@ func TestLocalLifecycleProtectionAndOwnedMaintenance(t *testing.T) {
 }
 
 func TestLocalLifecycleTerminalOutcomeAllowsJobTakeover(t *testing.T) {
-	m, w, j, policy, utc, physical, _ := lifeFixture(t, "tiering", s.GlacierIR)
-	ctx := t.Context()
-	out, e := w.Step(ctx, j, policy)
-	if e != nil || !out.Done {
-		t.Fatal(out, e)
-	}
-	if e = m.LifecycleQuiescent(ctx, j.ID, j.Worker); e != nil {
-		t.Fatal(e)
-	}
-	// Crash after durable lifecycle outcome, before the Jobs checkpoint ACK.
-	lease, e := m.GetR1Lease(ctx, j.ID)
-	if e != nil {
-		t.Fatal(e)
-	}
-	if e = m.CloseR1(ctx, j.Worker); e != nil {
-		t.Fatal(e)
-	}
-	if e = m.ReleaseR1(ctx, j.Worker); e != nil {
-		t.Fatal(e)
-	}
-	next := j.Worker
-	next.Epoch++
-	if _, e = m.AcquireR1(ctx, s.R1Acquire{Fence: next, Owner: "takeover", Kind: "control", OpID: lease.OpID, Deadline: utc.Now().Add(5 * time.Minute)}); e != nil {
-		t.Fatal(e)
-	}
-	j, e = m.ChangeJob(ctx, jobs.Change{JobID: j.ID, ExpectedRevision: j.Revision, Kind: "claim", Fence: next, NodeID: j.WorkerNodeID, NodeIncarnation: j.WorkerNodeIncarnation})
-	if e != nil {
-		t.Fatal(e)
-	}
-	j, e = m.ChangeJob(ctx, jobs.Change{JobID: j.ID, ExpectedRevision: j.Revision, Kind: "begin_step", Fence: next, NodeID: j.WorkerNodeID, NodeIncarnation: j.WorkerNodeIncarnation, StepID: strings.Repeat("3", 32)})
-	if e != nil {
-		t.Fatal(e)
-	}
-	out, e = w.Step(ctx, j, policy)
-	if e != nil || !out.Settled || !out.Done || physical.calls != 1 {
-		t.Fatal("retained outcome redispatched", out, e, physical.calls)
+	for _, kind := range []jobs.Type{"tiering", "compaction"} {
+		t.Run(string(kind), func(t *testing.T) {
+			class := s.GlacierIR
+			if kind == "compaction" {
+				class = s.Standard
+			}
+			m, w, j, policy, utc, physical, _ := lifeFixture(t, kind, class)
+			if kind == "compaction" {
+				w.Marker = &lifecycle.Marker{Store: m, Pinned: m.ObservePackPins, MaxRecords: 1000, MaxReferences: 1000, RecoveryRoots: func(context.Context) ([]s.PackRef, error) { return nil, nil }}
+			}
+			ctx := t.Context()
+			out, e := w.Step(ctx, j, policy)
+			if e != nil || !out.Done {
+				t.Fatal(out, e)
+			}
+			if e = m.LifecycleQuiescent(ctx, j.ID, j.Worker); e != nil {
+				t.Fatal(e)
+			}
+			// Crash after durable lifecycle outcome, before the Jobs checkpoint ACK.
+			lease, e := m.GetR1Lease(ctx, j.ID)
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = m.CloseR1(ctx, j.Worker); e != nil {
+				t.Fatal(e)
+			}
+			if e = m.ReleaseR1(ctx, j.Worker); e != nil {
+				t.Fatal(e)
+			}
+			next := j.Worker
+			next.Epoch++
+			if _, e = m.AcquireR1(ctx, s.R1Acquire{Fence: next, Owner: "takeover", Kind: "control", OpID: lease.OpID, Deadline: utc.Now().Add(5 * time.Minute)}); e != nil {
+				t.Fatal(e)
+			}
+			j, e = m.ChangeJob(ctx, jobs.Change{JobID: j.ID, ExpectedRevision: j.Revision, Kind: "claim", Fence: next, NodeID: j.WorkerNodeID, NodeIncarnation: j.WorkerNodeIncarnation})
+			if e != nil {
+				t.Fatal(e)
+			}
+			j, e = m.ChangeJob(ctx, jobs.Change{JobID: j.ID, ExpectedRevision: j.Revision, Kind: "begin_step", Fence: next, NodeID: j.WorkerNodeID, NodeIncarnation: j.WorkerNodeIncarnation, StepID: strings.Repeat("3", 32)})
+			if e != nil {
+				t.Fatal(e)
+			}
+			out, e = w.Step(ctx, j, policy)
+			wantCalls := 1
+			if kind == "compaction" {
+				wantCalls = 0
+			}
+			if e != nil || !out.Settled || !out.Done || physical.calls != wantCalls {
+				t.Fatal("retained outcome redispatched", out, e, physical.calls)
+			}
+		})
 	}
 }
 

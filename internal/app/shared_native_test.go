@@ -80,18 +80,22 @@ func TestAWSDevWarmGCObjectFlows(t *testing.T) {
 	if os.Getenv("MILES_GC_DEV_ACCEPTANCE") != "1" {
 		t.Skip("AWS GC acceptance not enabled")
 	}
-	runSharedRuntimeFixture(t, true, true, false)
+	runSharedRuntimeFixture(t, true, true, false, "")
 }
 
 func TestNativeJournalS3Fault(t *testing.T) {
-	runSharedRuntimeFixture(t, false, false, true)
+	runSharedRuntimeFixture(t, false, false, true, "")
 }
 
 func runNativeSharedRuntime(t *testing.T, gcFlows bool, coldClass ...coldFlowScenario) {
-	runSharedRuntimeFixture(t, gcFlows, false, false, coldClass...)
+	runNativeRuntime(t, gcFlows, "", coldClass...)
 }
 
-func runSharedRuntimeFixture(t *testing.T, gcFlows, live, faultFlows bool, coldClass ...coldFlowScenario) {
+func runNativeRuntime(t *testing.T, gcFlows bool, terminal string, coldClass ...coldFlowScenario) {
+	runSharedRuntimeFixture(t, gcFlows, false, false, terminal, coldClass...)
+}
+
+func runSharedRuntimeFixture(t *testing.T, gcFlows, live, faultFlows bool, terminal string, coldClass ...coldFlowScenario) {
 	var dEndpoint, sEndpoint *string
 	region := "ap-southeast-1"
 	if !live {
@@ -243,7 +247,7 @@ func runSharedRuntimeFixture(t *testing.T, gcFlows, live, faultFlows bool, coldC
 		nodeTransport := transport.Clone()
 		nodeHTTP := &http.Client{Transport: nodeTransport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 		if gcFlows || len(coldClass) > 0 {
-			nodeHTTP.Transport = gcFlowTransport{nodeTransport}
+			nodeHTTP.Transport = terminalFaultTransport{gcFlowTransport{nodeTransport}}
 		}
 		nodeClients := runtimeClients{metadata: ddb.New(ddb.Options{Region: region, BaseEndpoint: dEndpoint, Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: region, BaseEndpoint: sEndpoint, UsePathStyle: !live, Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), transport: nodeTransport}
 		d, e := composeShared(ctx, c, nodeClients, testClock, utc, "cluster-v1", bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32))
@@ -329,6 +333,10 @@ func runSharedRuntimeFixture(t *testing.T, gcFlows, live, faultFlows bool, coldC
 	nodes[1].Admin.Finish(ctx, mutation)
 	if e != nil {
 		t.Fatal(e)
+	}
+	if terminal != "" {
+		nativeTerminalFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, terminal, tokenID+"."+tokenSecret)
+		return
 	}
 	if gcFlows {
 		nativeWarmGCFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, global)

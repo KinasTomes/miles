@@ -902,7 +902,15 @@ func (m *Store) LifecycleQuiescent(ctx context.Context, id string, f s.WriterFen
 		if e != nil {
 			return e
 		}
-		if a.Fence != f || a.State != "Done" && a.State != "Skipped" && a.State != "NotApplied" && (a.State != "Waiting" || a.StepID == "") {
+		job, e := get[jobs.Job](t, key("jobs", id))
+		if e != nil {
+			return e
+		}
+		// Cleanup precedes takeover. Do not release old authority on evidence
+		// that the subsequent claim must reject as belonging to another step.
+		bound := a.ID == id && a.JobID == id && a.Kind == job.Type && a.Fence == f && job.Worker == f && a.StepID != "" && (job.PendingStep == "" || a.StepID == job.PendingStep)
+		settled := a.State == "Done" || a.State == "Skipped" || a.State == "NotApplied" || a.Kind == "pack_restore" && a.State == "Waiting"
+		if !bound || !settled {
 			return jobs.ErrReconciliation
 		}
 		lease, e := r1Read[s.R1Lease](t, r1LeaseKey(id))

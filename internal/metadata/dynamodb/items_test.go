@@ -42,6 +42,10 @@ func TestLargestReferencePagesAndHeadIndexStayBounded(t *testing.T) {
 		if _, err := manifest.Decode(body, kind, owner, 0); err != nil {
 			t.Fatal(err)
 		}
+		p.Chunks = append(p.Chunks, storage.ChunkRef{Key: storage.ChunkKey{Domain: domain, Hash: strings.Repeat("a", 64)}, RawBytes: 1, LogicalOffset: int64(capacity)})
+		if _, _, err := ReferencePageItem(kind, p); err == nil {
+			t.Fatal("page beyond greedy serialized capacity accepted")
+		}
 	}
 	h := publishedHead()
 	h.PageCount, h.ChunkCount, h.Size = 1024, 1024, 1024
