@@ -532,6 +532,15 @@ func TestComparePoliciesRestoreAmplification(t *testing.T) {
 			StorageBytes: map[storage.StorageClass]uint64{
 				storage.GlacierIR: 1073741824,
 			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:   storage.PackRef{ID: "ir-pack-1", Generation: "g1"},
+					Size:  1073741824,
+					Class: storage.GlacierIR,
+				},
+				LiveBytes:  64 * 1024 * 1024, // 64 MiB verified cold delivery per operation
+				TotalBytes: 1073741824,
+			},
 			Traffic: map[cost.Route]uint64{
 				cost.GatewayClient: 64 * 1024 * 1024, // 64 MiB delivered to client
 			},
@@ -1458,6 +1467,15 @@ func TestComparePoliciesRestoreAmplificationPolicyIsolation(t *testing.T) {
 			Traffic: map[cost.Route]uint64{
 				cost.GatewayClient: 64 * 1024 * 1024,
 			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:   storage.PackRef{ID: "ir-pack-1", Generation: "g1"},
+					Size:  1073741824,
+					Class: storage.GlacierIR,
+				},
+				LiveBytes:  64 * 1024 * 1024,
+				TotalBytes: 1073741824,
+			},
 			Usage: []cost.Usage{
 				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
 			},
@@ -2081,5 +2099,90 @@ func TestComparePoliciesRestoreAmplificationMixedReadsInSameEventReturnsNil(t *t
 	irPol := res.Policies[2]
 	if irPol.RestoreAmplification != nil {
 		t.Fatalf("expected RestoreAmplification to be nil for mixed warm and cold reads in same event, got %v", *irPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationWarmCacheHitsWithoutPerOperationTelemetryReturnsNil(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "warm-cache-hits-amplification"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+
+	// Extaseq regression:
+	// - Cold retrieval: 1 GiB
+	// - Cold-delivered: 64 MiB
+	// - Warm cache-delivered: 128 MiB (no S3 GET usage)
+	// - Total gateway_to_client: 192 MiB
+	// When the trace only records aggregate traffic (192 MiB) without per-operation cold delivery telemetry,
+	// the simulator must return nil (null) because the denominator cannot be proven (do not assume clientBytes <= coldBytesRetrieved is all cold).
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: (64 + 128) * 1024 * 1024, // 192 MiB total
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2]
+	if irPol.RestoreAmplification != nil {
+		t.Fatalf("expected RestoreAmplification to be nil when per-operation cold delivery telemetry is missing, got %v (must not assume aggregate traffic 192 MiB is cold)", *irPol.RestoreAmplification)
+	}
+
+	// When per-operation cold delivery telemetry IS provided via Tiering.LiveBytes:
+	traceWithTelemetry := trace
+	traceWithTelemetry.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:   storage.PackRef{ID: "ir-pack-1", Generation: "g1"},
+					Size:  int64(oneGiB),
+					Class: storage.GlacierIR,
+				},
+				LiveBytes:  64 * 1024 * 1024,
+				TotalBytes: int64(oneGiB),
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: (64 + 128) * 1024 * 1024, // 192 MiB total
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	resWithTel, err := ComparePolicies(context.Background(), traceWithTelemetry, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies with telemetry failed: %v", err)
+	}
+	irWithTel := resWithTel.Policies[2]
+	if irWithTel.RestoreAmplification == nil || *irWithTel.RestoreAmplification != 16.0 {
+		t.Fatalf("expected RestoreAmplification to be 16.0 with verified per-operation cold delivery telemetry, got %v", irWithTel.RestoreAmplification)
 	}
 }

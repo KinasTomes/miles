@@ -876,12 +876,10 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		}
 		var coldBytesRetrieved uint64
 		var coldDeliveredBytes uint64
-		hasMixedReadEvent := false
+		hasUnprovenColdDelivery := false
 
 		for _, event := range trace.Events {
 			hasColdReadInEvent := false
-			hasWarmReadInEvent := false
-			var coldBytesInThisEvent uint64
 
 			for _, u := range event.Usage {
 				switch polName {
@@ -891,14 +889,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 							gbFloat, _ := q.Float64()
 							b := uint64(gbFloat * float64(trace.BytesPerGB))
 							coldBytesRetrieved += b
-							coldBytesInThisEvent += b
 							hasColdReadInEvent = true
-						}
-					}
-					if (strings.HasPrefix(u.RateID, "s3.get_") && u.RateID != "s3.get_ir") ||
-						u.RateID == "s3.retrieval_ia" {
-						if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
-							hasWarmReadInEvent = true
 						}
 					}
 				case PolicyWarmGlacierFlex:
@@ -907,33 +898,39 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 							gbFloat, _ := q.Float64()
 							b := uint64(gbFloat * float64(trace.BytesPerGB))
 							coldBytesRetrieved += b
-							coldBytesInThisEvent += b
 							hasColdReadInEvent = true
-						}
-					}
-					if strings.HasPrefix(u.RateID, "s3.get_") || strings.HasPrefix(u.RateID, "s3.retrieval_") {
-						if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
-							hasWarmReadInEvent = true
 						}
 					}
 				}
 			}
 
 			if hasColdReadInEvent {
-				clientBytes := event.Traffic[cost.GatewayClient]
-				// When warm reads and cold retrieval share the same event, client delivery
-				// traffic on gateway_to_client combines delivered bytes from both warm and cold operations.
-				// Since trace telemetry cannot isolate cold-delivered bytes within a mixed event,
-				// return nil instead of publishing an unfounded/diluted ratio.
-				if hasWarmReadInEvent || clientBytes > coldBytesInThisEvent {
-					hasMixedReadEvent = true
-				} else {
-					coldDeliveredBytes += clientBytes
+				matchedTiering := false
+				if event.Tiering != nil && event.Tiering.LiveBytes > 0 {
+					switch polName {
+					case PolicyWarmGlacierIR:
+						if event.Tiering.Pack.Class == "" || event.Tiering.Pack.Class == storage.GlacierIR {
+							coldDeliveredBytes += uint64(event.Tiering.LiveBytes)
+							matchedTiering = true
+						}
+					case PolicyWarmGlacierFlex:
+						if event.Tiering.Pack.Class == "" || event.Tiering.Pack.Class == storage.Glacier {
+							coldDeliveredBytes += uint64(event.Tiering.LiveBytes)
+							matchedTiering = true
+						}
+					}
+				}
+				if !matchedTiering {
+					// Trace only records total traffic on gateway_to_client without per-operation
+					// cold delivery telemetry. Since aggregate client traffic may include warm
+					// cache hits without S3 GET lines, aggregate traffic cannot prove the cold
+					// delivery denominator. Fail closed by returning nil for unproven denominator.
+					hasUnprovenColdDelivery = true
 				}
 			}
 		}
 
-		if hasMixedReadEvent || coldBytesRetrieved == 0 || coldDeliveredBytes == 0 {
+		if hasUnprovenColdDelivery || coldBytesRetrieved == 0 || coldDeliveredBytes == 0 {
 			return nil
 		}
 		return cost.RestoreAmplification(coldBytesRetrieved, coldDeliveredBytes)
