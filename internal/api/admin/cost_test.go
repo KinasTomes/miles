@@ -737,3 +737,244 @@ func TestCostReportScenarioProfileDifferentiation(t *testing.T) {
 		t.Fatalf("expected unscoped_partial_storage_snapshot ReportType")
 	}
 }
+
+func TestCostReportBucketWithMixedGlobalClassesDoesNotInferGlobalRatio(t *testing.T) {
+	// Finding 1 regression:
+	// Global has 1GiB Standard ($0.025/GB-Mo) and 1GiB Glacier ($0.0045/GB-Mo).
+	// A bucket has 1GiB stored, but PhysicalClasses is nil.
+	// The API must NOT infer a synthetic 50/50 ratio from global ($0.01475).
+	// Without bucket-level evidence, storage class must remain unmeasured/unknown and omitted from savings.
+	// When bucket provides explicit class evidence (e.g. Standard), it must price accurately ($0.025).
+	globalStored := int64(2147483648)
+	bucketStored := int64(1073741824)
+	statsProvider := &fakeStats{
+		globalFunc: func(context.Context) (stats.Summary, error) {
+			return stats.Summary{
+				PhysicalComplete: true,
+				Metrics: stats.Metrics{
+					BytesLogical: 2147483648,
+					BytesStored:  &globalStored,
+				},
+				PhysicalClasses: map[string]int64{
+					string(storage.Standard): 1073741824,
+					string(storage.Glacier):  1073741824,
+				},
+			}, nil
+		},
+		bucketFunc: func(ctx context.Context, bucket string) (stats.BucketSummary, error) {
+			switch bucket {
+			case "unspecified-bkt":
+				return stats.BucketSummary{
+					Bucket:   bucket,
+					BucketID: "bkt-unspecified",
+					Summary: stats.Summary{
+						PhysicalComplete: true,
+						Metrics: stats.Metrics{
+							BytesLogical: 1073741824,
+							BytesStored:  &bucketStored,
+						},
+						PhysicalClasses: nil, // unmeasured
+					},
+				}, nil
+			case "standard-bkt":
+				return stats.BucketSummary{
+					Bucket:   bucket,
+					BucketID: "bkt-standard",
+					Summary: stats.Summary{
+						PhysicalComplete: true,
+						Metrics: stats.Metrics{
+							BytesLogical: 1073741824,
+							BytesStored:  &bucketStored,
+						},
+						PhysicalClasses: map[string]int64{
+							string(storage.Standard): 1073741824,
+						},
+					},
+				}, nil
+			default:
+				return stats.BucketSummary{}, storage.ErrBucketNotFound
+			}
+		},
+	}
+
+	w, server := newCostTestWorld(t, statsProvider)
+
+	// 1. Unspecified bucket: must NOT calculate $0.01475 ("59/4000")
+	reqUnspec, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?bucket=unspecified-bkt", nil)
+	reqUnspec.Header.Set("Authorization", "Bearer "+w.root)
+	respUnspec, err := server.Client().Do(reqUnspec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respUnspec.Body.Close()
+	var rUnspec CostReportResponse
+	if err := json.NewDecoder(respUnspec.Body).Decode(&rUnspec); err != nil {
+		t.Fatal(err)
+	}
+
+	if rUnspec.Results.PricedSubtotalUSDExact == "59/4000" || rUnspec.Results.PricedSubtotalUSDExact == "118/8000" {
+		t.Fatalf("API incorrectly inferred global ratio yielding $0.01475: %s", rUnspec.Results.PricedSubtotalUSDExact)
+	}
+	if rUnspec.DSGStorage.StorageByClass["UNKNOWN"] != 1073741824 {
+		t.Fatalf("expected 1GiB UNKNOWN in storage_by_class, got: %v", rUnspec.DSGStorage.StorageByClass)
+	}
+	if rUnspec.Results.IndicativeStorageDiffUSD != nil {
+		t.Fatalf("expected nil indicative_storage_difference_usd when classes are unmeasured, got %v", *rUnspec.Results.IndicativeStorageDiffUSD)
+	}
+
+	// 2. Standard bucket with explicit evidence: must price at Standard $0.025 ("1/40")
+	reqStd, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?bucket=standard-bkt", nil)
+	reqStd.Header.Set("Authorization", "Bearer "+w.root)
+	respStd, err := server.Client().Do(reqStd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respStd.Body.Close()
+	var rStd CostReportResponse
+	if err := json.NewDecoder(respStd.Body).Decode(&rStd); err != nil {
+		t.Fatal(err)
+	}
+
+	if rStd.Results.PricedSubtotalUSDExact != "1/40" {
+		t.Fatalf("expected Standard subtotal 1/40 ($0.025), got: %s", rStd.Results.PricedSubtotalUSDExact)
+	}
+	if rStd.DSGStorage.StorageByClass[string(storage.Standard)] != 1073741824 {
+		t.Fatalf("expected 1GiB Standard in storage_by_class, got: %v", rStd.DSGStorage.StorageByClass)
+	}
+}
+
+func TestCostReportSmallBucketPreservesPhysicalBytesAndAvoidsZeroCostSavings(t *testing.T) {
+	// Finding 2 regression:
+	// A small bucket has 1 byte physical stored and 1GiB logical.
+	// Integer division / truncation must not drop 1 byte to 0 physical bytes,
+	// and must NOT emit positive savings against baseline with $0 DSG cost.
+	globalStored := int64(2147483648)
+	oneByte := int64(1)
+	statsProvider := &fakeStats{
+		globalFunc: func(context.Context) (stats.Summary, error) {
+			return stats.Summary{
+				PhysicalComplete: true,
+				Metrics: stats.Metrics{
+					BytesLogical: 2147483648,
+					BytesStored:  &globalStored,
+				},
+				PhysicalClasses: map[string]int64{
+					string(storage.Standard): 1073741824,
+					string(storage.Glacier):  1073741824,
+				},
+			}, nil
+		},
+		bucketFunc: func(ctx context.Context, bucket string) (stats.BucketSummary, error) {
+			switch bucket {
+			case "one-byte-unspec":
+				return stats.BucketSummary{
+					Bucket:   bucket,
+					BucketID: "bkt-1b-unspec",
+					Summary: stats.Summary{
+						PhysicalComplete: true,
+						Metrics: stats.Metrics{
+							BytesLogical: 1073741824, // 1GiB logical
+							BytesStored:  &oneByte,   // 1 byte physical
+						},
+						PhysicalClasses: nil,
+					},
+				}, nil
+			case "one-byte-zero-classes":
+				return stats.BucketSummary{
+					Bucket:   bucket,
+					BucketID: "bkt-1b-zeros",
+					Summary: stats.Summary{
+						PhysicalComplete: true,
+						Metrics: stats.Metrics{
+							BytesLogical: 1073741824,
+							BytesStored:  &oneByte,
+						},
+						PhysicalClasses: map[string]int64{
+							"STANDARD": 0,
+							"GLACIER":  0,
+						},
+					},
+				}, nil
+			case "one-byte-standard":
+				return stats.BucketSummary{
+					Bucket:   bucket,
+					BucketID: "bkt-1b-std",
+					Summary: stats.Summary{
+						PhysicalComplete: true,
+						Metrics: stats.Metrics{
+							BytesLogical: 1073741824,
+							BytesStored:  &oneByte,
+						},
+						PhysicalClasses: map[string]int64{
+							string(storage.Standard): 1,
+						},
+					},
+				}, nil
+			default:
+				return stats.BucketSummary{}, storage.ErrBucketNotFound
+			}
+		},
+	}
+
+	w, server := newCostTestWorld(t, statsProvider)
+
+	// 1. One-byte unspecified: 1 physical byte preserved as UNKNOWN, indicative storage diff is nil
+	reqUnspec, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?bucket=one-byte-unspec", nil)
+	reqUnspec.Header.Set("Authorization", "Bearer "+w.root)
+	respUnspec, err := server.Client().Do(reqUnspec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respUnspec.Body.Close()
+	var rUnspec CostReportResponse
+	if err := json.NewDecoder(respUnspec.Body).Decode(&rUnspec); err != nil {
+		t.Fatal(err)
+	}
+
+	if rUnspec.DSGStorage.StorageByClass["UNKNOWN"] != 1 {
+		t.Fatalf("expected exactly 1 byte preserved in storage_by_class UNKNOWN, got: %v", rUnspec.DSGStorage.StorageByClass)
+	}
+	if rUnspec.Results.IndicativeStorageDiffUSD != nil {
+		t.Fatalf("expected nil indicative_storage_difference_usd for 1-byte unknown inventory, got: %v", *rUnspec.Results.IndicativeStorageDiffUSD)
+	}
+
+	// 2. One-byte with zeros map: 1 physical byte preserved as UNKNOWN, indicative storage diff is nil
+	reqZeros, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?bucket=one-byte-zero-classes", nil)
+	reqZeros.Header.Set("Authorization", "Bearer "+w.root)
+	respZeros, err := server.Client().Do(reqZeros)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respZeros.Body.Close()
+	var rZeros CostReportResponse
+	if err := json.NewDecoder(respZeros.Body).Decode(&rZeros); err != nil {
+		t.Fatal(err)
+	}
+
+	if rZeros.DSGStorage.StorageByClass["UNKNOWN"] != 1 {
+		t.Fatalf("expected exactly 1 byte preserved in storage_by_class UNKNOWN, got: %v", rZeros.DSGStorage.StorageByClass)
+	}
+	if rZeros.Results.IndicativeStorageDiffUSD != nil {
+		t.Fatalf("expected nil indicative_storage_difference_usd for zeros map with positive BytesStored, got: %v", *rZeros.Results.IndicativeStorageDiffUSD)
+	}
+
+	// 3. One-byte with explicit Standard: priced with exact rational (1/42949672960)
+	reqStd, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?bucket=one-byte-standard", nil)
+	reqStd.Header.Set("Authorization", "Bearer "+w.root)
+	respStd, err := server.Client().Do(reqStd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respStd.Body.Close()
+	var rStd CostReportResponse
+	if err := json.NewDecoder(respStd.Body).Decode(&rStd); err != nil {
+		t.Fatal(err)
+	}
+
+	if rStd.DSGStorage.StorageByClass[string(storage.Standard)] != 1 {
+		t.Fatalf("expected 1 byte in storage_by_class STANDARD, got: %v", rStd.DSGStorage.StorageByClass)
+	}
+	if rStd.Results.PricedSubtotalUSDExact == "0" {
+		t.Fatalf("expected non-zero subtotal for 1 byte of Standard storage, got 0")
+	}
+}

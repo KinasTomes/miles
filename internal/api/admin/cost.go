@@ -232,17 +232,26 @@ func (s *server) costReport(c *call) error {
 		summary = bs.Summary
 		methodology = "bucket_inventory_snapshot"
 
-		// Finding 1: If bucket summary has no per-class breakdown (PhysicalClasses is empty)
-		// but global has physical classes and both have positive stored bytes, apportion
-		// per-class from global with evidence.
+		// Finding 1: If bucket summary has no per-class breakdown (PhysicalClasses is empty),
+		// we check if global inventory has positive stored bytes in EXACTLY ONE storage class.
+		// If global contains only one class (e.g. 100% Glacier), all gateway storage is that class with 100% certainty.
+		// If global contains multiple storage classes (e.g. Standard AND Glacier) or is empty,
+		// we do NOT infer a synthetic ratio from global totals; the class breakdown is left unknown/unpriced
+		// to avoid asserting false bucket costs.
 		if len(summary.PhysicalClasses) == 0 && summary.BytesStored != nil && *summary.BytesStored > 0 {
 			if len(global.PhysicalClasses) > 0 && global.BytesStored != nil && *global.BytesStored > 0 {
-				summary.PhysicalClasses = make(map[string]int64, len(global.PhysicalClasses))
-				ratio := new(big.Rat).SetFrac64(*summary.BytesStored, *global.BytesStored)
+				var singleClass string
+				singleClassCount := 0
 				for cStr, gBytes := range global.PhysicalClasses {
-					classRat := new(big.Rat).Mul(ratio, new(big.Rat).SetInt64(gBytes))
-					bBytes := new(big.Int).Div(classRat.Num(), classRat.Denom()).Int64()
-					summary.PhysicalClasses[cStr] = bBytes
+					if gBytes > 0 {
+						singleClass = cStr
+						singleClassCount++
+					}
+				}
+				if singleClassCount == 1 {
+					summary.PhysicalClasses = map[string]int64{
+						singleClass: *summary.BytesStored,
+					}
 				}
 			}
 		}
@@ -277,19 +286,21 @@ func (s *server) costReport(c *call) error {
 		})
 	}
 
+	var totalAccountedPhysical int64
 	if len(summary.PhysicalClasses) > 0 {
 		for classStr, b := range summary.PhysicalClasses {
-			storageByClass[classStr] = b
 			if b <= 0 {
 				continue
 			}
+			storageByClass[classStr] = b
+			totalAccountedPhysical += b
 			class := storage.StorageClass(classStr)
 			if class.Validate() == nil {
 				if u, e := cost.StorageUsage(class, uint64(b), duration, bytesPerGB, month); e == nil {
 					dsgUsage = append(dsgUsage, u)
 				}
 			} else {
-				// Finding 2: Unknown physical storage class!
+				// Unknown physical storage class!
 				// Must NOT be ignored as $0, which creates fake storage savings.
 				hasUnpricedPhysicalInventory = true
 				qtyRat := new(big.Rat).SetFrac64(b, int64(bytesPerGB))
@@ -306,12 +317,17 @@ func (s *server) costReport(c *call) error {
 				})
 			}
 		}
-	} else if summary.BytesStored != nil && *summary.BytesStored > 0 {
-		// Finding 1 & 2: Missing per-class breakdown for positive BytesStored.
-		// Must NOT be assumed as Standard; mark as unpriced unknown class.
+	}
+
+	// Finding 2: Preserve physical bytes and handle unallocated / unaccounted bytes.
+	// If the sum of physical bytes across classes is less than BytesStored
+	// (e.g. unmeasured class distribution, rounding, or empty classes map),
+	// the difference must NOT vanish into $0. It is recorded as UNKNOWN class and unpriced usage.
+	if summary.BytesStored != nil && *summary.BytesStored > totalAccountedPhysical {
+		unaccounted := *summary.BytesStored - totalAccountedPhysical
 		hasUnpricedPhysicalInventory = true
-		storageByClass["UNKNOWN"] = *summary.BytesStored
-		qtyRat := new(big.Rat).SetFrac64(*summary.BytesStored, int64(bytesPerGB))
+		storageByClass["UNKNOWN"] += unaccounted
+		qtyRat := new(big.Rat).SetFrac64(unaccounted, int64(bytesPerGB))
 		durRat := new(big.Rat).SetFrac64(int64(duration), int64(month))
 		gbMo := new(big.Rat).Mul(qtyRat, durRat)
 		dsgUsage = append(dsgUsage, cost.Usage{
@@ -319,6 +335,8 @@ func (s *server) costReport(c *call) error {
 			Unit:     "GB-Mo",
 			Quantity: gbMo.RatString(),
 		})
+	} else if summary.BytesStored != nil && totalAccountedPhysical > *summary.BytesStored {
+		hasUnpricedPhysicalInventory = true
 	}
 
 	dsgReport, err := cost.Evaluate(catalog, dsgUsage)
