@@ -22,7 +22,7 @@ curl http://127.0.0.1:9100/metrics
 
 `run-dev` chọn `configs/dev.json` một cách explicit. Shared MetadataStore/PackStore/Cache ports được nối với in-memory fixtures hiện có. Fixture probes kiểm metadata bucket, pack HEAD và cache sentinel; clock readiness là giả lập của dev, không phải UTC uncertainty proof. Metrics có label `mode="dev"`, startup log cũng ghi rõ volatile fixtures. Không cấu hình `s3_address` thì process chỉ mở health listener; `mode=dev` vẫn không có durable storage hoặc distributed R1/R2.
 
-Dev provisioning (W03-CHIEN-01) mint đúng một cặp SigV4 test credential mỗi lần khởi động process: access key 20 ký tự [A-Z0-9] và secret base64 của 30 byte CSPRNG (format API v2 3.5), gắn user `dev` — chủ của bucket probe — không có cờ system admin. Cặp này nằm trong `Dependencies.DevCredentials` để S3 listener dùng cho client tương ứng; nó không nằm trong repo, không được ghi log và runtime mode không mint. Credential backend AWS vẫn tách khỏi bảng này như mục 2.2 đã ghi.
+Dev provisioning mint đúng một cặp SigV4 test credential mỗi lần khởi động process: access key 20 ký tự [A-Z0-9] và secret base64 của 30 byte CSPRNG (format API v2 3.5), gắn user `dev` — chủ của bucket probe — không có cờ system admin. Cặp này nằm trong `Dependencies.DevCredentials` để S3 listener dùng cho client tương ứng; nó không nằm trong repo, không được ghi log và runtime mode không mint. Credential backend AWS vẫn tách khỏi bảng này như mục 2.2 đã ghi.
 
 `./bin/miles -version` và `-help` vẫn có. Không truyền config thì dùng runtime mode: process sống, `/healthz=200`, `/readyz=503` vì real storage/validated clock adapters chưa được wiring. `configs/cloud.example.json` minh họa cùng binary trong Cloud profile, không phải deployment đã hoàn tất. Không fallback sang fake ở runtime. Chế độ local dưới đây nối Badger/S3 thực tế ở một node, nhưng không cấp UTC uncertainty proof hoặc distributed authority cho runtime Cloud.
 
@@ -109,7 +109,7 @@ refresh kế tiếp. Local mode không gắn packs, cache statistics và jobs/no
 route đó trả 503 `unavailable`. Router404 không có Admin error envelope báo unsupported;
 JSON404 có `error.code` trả `adminclient.ErrNotFound`.
 Error vẫn bounded/redacted, exit nonzero, không giả success.
-W05-HUNG-01/02 nối runtime Cloud/Edge, shared jobs/nodes và executors thật.
+PR #55/#58 nối runtime Cloud/Edge, shared jobs/nodes và executors thật.
 
 ## Test không cần container
 

@@ -1,9 +1,9 @@
 # Jobs / Nodes operational contract
 
-W04-HUNG-02 implements shared operational records, worker state transitions,
+This work implements shared operational records, worker state transitions,
 node heartbeat/drain plumbing, metrics export and CLI transport. It does not run
 tiering/GC/scrub, perform R1/R2 side effects or expose a production Admin listener.
-W05-HUNG-01/02 composes those pieces with the real authorities and executors.
+Later Hưng work composes those pieces with the real authorities and executors.
 
 ## Ownership and persistence
 
@@ -136,9 +136,12 @@ are cached/process-local. This counter counts acknowledged record updates, not
 cluster job inventory or exact-once events. Labels are fixed enums; no job/node/
 object/user IDs. Scrapes perform no metadata or CloudWatch I/O.
 
-CloudWatch uses namespace `Miles/DSG`, profile=`cloud|edge`, one batch each60s,
-standard60s resolution and at most128 validated series. The current inventory
-is at most67 finite series, below the native1000-metric/1MiB limits.
+CloudWatch uses namespace `Miles/DSG`, profile=`cloud|edge` and
+installation=`ddb_table_prefix`, one batch each60s,
+standard60s resolution and at most128 validated series. The runtime pilot extends the finite inventory with DDB, route bytes, Warm
+integrity and cached recovery/upload observations, still below128 series.
+Existing consumers must add the exact `installation` dimension when querying new
+releases; historical profile-only series remain separate.
 The full-inventory export test must pass when adding names or enum values; it
 checks that every supported series fits one batch without drops. Counter deltas
 use Sum; gauges use Average/Maximum as observations, not a cluster total. Failed

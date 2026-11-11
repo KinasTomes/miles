@@ -28,7 +28,7 @@ func (m *Store) readItem(ctx context.Context, input *ddb.GetItemInput) (*ddb.Get
 		if err == nil || !retryableRead(err) || attempt+1 == m.maxAttempts {
 			return out, err
 		}
-		if err := retryPause(ctx, attempt); err != nil {
+		if err := m.retryPause(ctx, attempt); err != nil {
 			return nil, err
 		}
 	}
@@ -49,4 +49,14 @@ func retryPause(ctx context.Context, attempt int) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func (m *Store) retryPause(ctx context.Context, attempt int) error {
+	if err := retryPause(ctx, attempt); err != nil {
+		return err
+	}
+	if m.onRetry != nil {
+		m.onRetry()
+	}
+	return nil
 }

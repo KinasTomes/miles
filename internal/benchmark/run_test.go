@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -103,6 +105,7 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer f.mu.Unlock()
 		f.putCalls++
 		if f.failPut {
+			w.Header().Set("X-Amz-Request-Id", "FA11AB1E1234ABCD")
 			w.WriteHeader(503)
 			io.WriteString(w, "<Error><Code>SlowDown</Code><Message>private-secret http://private-host</Message></Error>")
 			return
@@ -242,8 +245,15 @@ func TestFailuresAreRecordedAndRetainOnlyRunObjects(t *testing.T) {
 			if e != nil || !strings.Contains(string(b), `"status": "failed"`) || strings.Contains(string(b), "private-secret") {
 				t.Fatal("failure evidence missing or SDK error leaked")
 			}
-			if tc.code == "SlowDown" && r.Phases[1].SuccessfulBytes != 0 {
-				t.Fatal("failed PUT bytes counted as throughput")
+			if tc.code == "SlowDown" {
+				if r.Phases[1].SuccessfulBytes != 0 {
+					t.Fatal("failed PUT bytes counted as throughput")
+				}
+				for _, sample := range r.Samples {
+					if sample.Error == "SlowDown" && (sample.HTTPStatus != 503 || sample.RequestID != "FA11AB1E1234ABCD") {
+						t.Fatalf("missing HTTP diagnostic: %+v", sample)
+					}
+				}
 			}
 		})
 	}
@@ -367,5 +377,992 @@ func TestRedirectCannotForwardCredentials(t *testing.T) {
 	r, err := Run(context.Background(), c, o)
 	if err == nil || r.Status != "failed" || forwarded {
 		t.Fatal("redirect was followed or run reported success")
+	}
+}
+
+func TestRetainObjectsForExternalStatistics(t *testing.T) {
+	c, o, f := setup(t)
+	o.RetainObjects = true
+	result, err := Run(t.Context(), c, o)
+	if err != nil || result.Cleanup != "retained_owned_prefix_for_observation" || f.deleteCalls != 0 || len(f.objects) != len(result.Dataset.Files)+1 {
+		t.Fatal("retained run deleted data or hid cleanup", err, result.Cleanup, f.deleteCalls)
+	}
+}
+
+func TestFailFastDisabledPreservesBaseline(t *testing.T) {
+	for _, conc := range []int{1, 3} {
+		t.Run(strconv.Itoa(conc), func(t *testing.T) {
+			c, o, f := setup(t)
+			o.Concurrency = conc
+			o.FailFast = false
+			f.failPut = true
+			r, err := Run(context.Background(), c, o)
+			if err == nil || r.Status != "failed" || f.putCalls != 9 {
+				t.Fatalf("expected all 9 PUT calls with FailFast=false: putCalls=%d err=%v", f.putCalls, err)
+			}
+			putPhase := r.Phases[1]
+			if putPhase.Name != "put" || putPhase.Samples != 9 || putPhase.Planned != 9 || putPhase.Dispatched != 9 || putPhase.Completed != 9 || putPhase.Skipped != 0 || putPhase.Failed != 9 {
+				t.Fatalf("unexpected phase stats: %+v", putPhase)
+			}
+			if r.StopTrigger != "" {
+				t.Fatalf("expected empty StopTrigger when FailFast=false, got %q", r.StopTrigger)
+			}
+		})
+	}
+}
+
+func TestFailFastSequentialFirstFailure(t *testing.T) {
+	c, o, f := setup(t)
+	o.Concurrency = 1
+	o.FailFast = true
+	f.failPut = true
+	r, err := Run(context.Background(), c, o)
+	if err == nil || r.Status != "failed" {
+		t.Fatalf("expected failure, got err=%v result=%+v", err, r)
+	}
+	if f.putCalls != 1 {
+		t.Fatalf("expected exactly 1 PUT call on FailFast with Concurrency=1, got %d", f.putCalls)
+	}
+	putPhase := r.Phases[1]
+	if putPhase.Name != "put" || putPhase.Samples != 1 || putPhase.Planned != 9 || putPhase.Dispatched != 1 || putPhase.Completed != 1 || putPhase.Skipped != 8 || putPhase.Failed != 1 {
+		t.Fatalf("unexpected phase stats: %+v", putPhase)
+	}
+	if putPhase.StopTrigger != "SlowDown" || r.StopTrigger != "SlowDown" {
+		t.Fatalf("unexpected StopTrigger: phase=%q result=%q", putPhase.StopTrigger, r.StopTrigger)
+	}
+	if len(r.Phases) != 2 {
+		t.Fatalf("expected only preflight-list and put phases, got %d phases", len(r.Phases))
+	}
+}
+
+func TestFailFastConcurrentInFlightDrain(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 4
+	o.FailFast = true
+
+	var mu sync.Mutex
+	putCount := 0
+	inFlight := 0
+	maxInFlight := 0
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			mu.Lock()
+			putCount++
+			callIndex := putCount
+			inFlight++
+			if inFlight > maxInFlight {
+				maxInFlight = inFlight
+			}
+			mu.Unlock()
+
+			defer func() {
+				mu.Lock()
+				inFlight--
+				mu.Unlock()
+			}()
+
+			// Call 2 fails with 503 clock_uncertainty_exceeded.
+			// Wait until all 4 concurrent workers have dispatched before call 2 fails,
+			// ensuring that calls 1, 3, 4 are truly in-flight when fail-fast triggers.
+			if callIndex == 2 {
+				for i := 0; i < 50; i++ {
+					mu.Lock()
+					cnt := putCount
+					mu.Unlock()
+					if cnt >= 4 {
+						break
+					}
+					time.Sleep(2 * time.Millisecond)
+				}
+				w.Header().Set("X-Amz-Request-Id", "FAILFAST12345678")
+				w.WriteHeader(503)
+				io.WriteString(w, "<Error><Code>clock_uncertainty_exceeded</Code><Message>clock drift</Message></Error>")
+				return
+			}
+
+			time.Sleep(30 * time.Millisecond)
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	r, err := Run(context.Background(), c, o)
+	if err == nil || r.Status != "failed" {
+		t.Fatalf("expected run failure, got err=%v", err)
+	}
+
+	mu.Lock()
+	totalPuts := putCount
+	mu.Unlock()
+
+	// With Concurrency=4 and failure on call 2, at most 4 jobs were dispatched.
+	// Jobs 5..9 should NEVER be dispatched!
+	if totalPuts != 4 {
+		t.Fatalf("expected exactly 4 dispatched PUTs, got %d", totalPuts)
+	}
+
+	putPhase := r.Phases[1]
+	if putPhase.Name != "put" {
+		t.Fatalf("expected put phase at index 1, got %s", putPhase.Name)
+	}
+	if putPhase.Planned != 9 || putPhase.Dispatched != 4 || putPhase.Completed != 4 || putPhase.Skipped != 5 || putPhase.Failed != 1 {
+		t.Fatalf("wrong accounting: planned=%d dispatched=%d completed=%d skipped=%d failed=%d",
+			putPhase.Planned, putPhase.Dispatched, putPhase.Completed, putPhase.Skipped, putPhase.Failed)
+	}
+	if putPhase.StopTrigger != "clock_uncertainty_exceeded" || r.StopTrigger != "clock_uncertainty_exceeded" {
+		t.Fatalf("wrong StopTrigger: phase=%q result=%q", putPhase.StopTrigger, r.StopTrigger)
+	}
+
+	// Verify in-flight requests that completed successfully had their bytes counted!
+	if putPhase.SuccessfulBytes <= 0 {
+		t.Fatalf("expected in-flight successful bytes > 0, got %d", putPhase.SuccessfulBytes)
+	}
+
+	// Verify artifact file permission is 0600
+	info, err := os.Stat(filepath.Join(o.Out, "result.json"))
+	if err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("wrong artifact permission: info=%v perm=%v", info, info.Mode().Perm())
+	}
+}
+
+func TestFailFastFailureOnLastJob(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 3
+	o.FailFast = true
+
+	var mu sync.Mutex
+	putCount := 0
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			mu.Lock()
+			putCount++
+			callIndex := putCount
+			mu.Unlock()
+
+			if callIndex == 9 {
+				w.Header().Set("X-Amz-Request-Id", "LASTJOBFAIL12345")
+				w.WriteHeader(503)
+				io.WriteString(w, "<Error><Code>SlowDown</Code><Message>last job failed</Message></Error>")
+				return
+			}
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	r, err := Run(context.Background(), c, o)
+	if err == nil || r.Status != "failed" {
+		t.Fatalf("expected failure on last job, got err=%v", err)
+	}
+
+	putPhase := r.Phases[1]
+	if putPhase.Planned != 9 || putPhase.Dispatched != 9 || putPhase.Completed != 9 || putPhase.Skipped != 0 || putPhase.Failed != 1 {
+		t.Fatalf("wrong accounting for failure on last job: %+v", putPhase)
+	}
+	if putPhase.StopTrigger != "SlowDown" || r.StopTrigger != "SlowDown" {
+		t.Fatalf("wrong stop trigger: phase=%q result=%q", putPhase.StopTrigger, r.StopTrigger)
+	}
+}
+
+func TestFailFastGetMismatchStopsFurtherReadPasses(t *testing.T) {
+	c, o, f := setup(t)
+	o.Concurrency = 2
+	o.FailFast = true
+	o.ReadRepeats = 3
+	f.corrupt = true // will corrupt GET payloads
+
+	r, err := Run(context.Background(), c, o)
+	if err == nil || r.Status != "failed" {
+		t.Fatalf("expected run failure due to corrupt GET, got err=%v", err)
+	}
+
+	// PUT succeeded
+	if r.Phases[1].Failed != 0 {
+		t.Fatalf("PUT should have succeeded, got failed=%d", r.Phases[1].Failed)
+	}
+
+	// verify-get failed with sha256_mismatch and triggered fail-fast
+	var verifyGetPhase *Phase
+	for i := range r.Phases {
+		if r.Phases[i].Name == "verify-get" {
+			verifyGetPhase = &r.Phases[i]
+			break
+		}
+	}
+	if verifyGetPhase == nil {
+		t.Fatal("missing verify-get phase")
+	}
+	if verifyGetPhase.StopTrigger != "sha256_mismatch" || r.StopTrigger != "sha256_mismatch" {
+		t.Fatalf("wrong StopTrigger: phase=%q result=%q", verifyGetPhase.StopTrigger, r.StopTrigger)
+	}
+
+	// Ensure no repeat-get phases were run!
+	for _, p := range r.Phases {
+		if strings.HasPrefix(p.Name, "repeat-get") {
+			t.Fatalf("repeat-get phase should not have run: %s", p.Name)
+		}
+	}
+}
+
+func TestFailFastIndeterminatePut(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 1
+	o.FailFast = true
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			// Hijack and abruptly close the TCP connection to simulate network drop / status 0
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				http.Error(w, "cannot hijack", 500)
+				return
+			}
+			conn, _, _ := hj.Hijack()
+			conn.Close()
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	r, err := Run(context.Background(), c, o)
+	if err == nil || r.Status != "failed" {
+		t.Fatalf("expected run failure, got err=%v", err)
+	}
+
+	if !r.NeedsReconciliation {
+		t.Fatal("expected result.NeedsReconciliation to be true")
+	}
+	if r.Cleanup != "objects_may_remain_indeterminate_outcome" {
+		t.Fatalf("expected Cleanup='objects_may_remain_indeterminate_outcome', got %q", r.Cleanup)
+	}
+
+	foundIndeterminate := false
+	for _, s := range r.Samples {
+		if s.Operation == "PutObject" && s.Indeterminate {
+			foundIndeterminate = true
+			if s.Reconciliation != "needs_reconciliation" {
+				t.Fatalf("expected sample.Reconciliation='needs_reconciliation', got %q", s.Reconciliation)
+			}
+			if s.HTTPStatus != 0 {
+				t.Fatalf("expected HTTPStatus=0 for abrupt drop, got %d", s.HTTPStatus)
+			}
+		}
+	}
+	if !foundIndeterminate {
+		t.Fatal("expected at least one PutObject sample marked indeterminate")
+	}
+}
+
+func TestFailFastHighConcurrencyRace(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 8
+	o.FailFast = true
+
+	var mu sync.Mutex
+	putCount := 0
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			mu.Lock()
+			putCount++
+			idx := putCount
+			mu.Unlock()
+
+			if idx == 3 {
+				w.WriteHeader(503)
+				io.WriteString(w, "<Error><Code>SlowDown</Code></Error>")
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	r, err := Run(context.Background(), c, o)
+	if err == nil || r.Status != "failed" {
+		t.Fatalf("expected run failure, got err=%v", err)
+	}
+
+	putPhase := r.Phases[1]
+	if putPhase.Dispatched+putPhase.Skipped != putPhase.Planned {
+		t.Fatalf("planned != dispatched + skipped: %+v", putPhase)
+	}
+	if putPhase.Completed != putPhase.Dispatched {
+		t.Fatalf("completed != dispatched: %+v", putPhase)
+	}
+}
+
+func TestFailFastSIGINTDoesNotAbortInFlightPUTUntilServerSettles(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 1
+	o.FailFast = true
+
+	started := make(chan struct{}, 1)
+	var serverFinished atomic.Bool
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			time.Sleep(60 * time.Millisecond)
+			serverFinished.Store(true)
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type runRes struct {
+		r   Result
+		err error
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		res, err := Run(ctx, c, o)
+		done <- runRes{res, err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("PUT never started")
+	}
+
+	// Cancel parent context while PUT is in-flight
+	cancel()
+
+	var result runRes
+	select {
+	case result = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run timed out after cancel")
+	}
+
+	// Crucial assertion: server handler finished BEFORE Run returned
+	if !serverFinished.Load() {
+		t.Fatal("Run returned before in-flight server PUT finished (graceful drain was bypassed)")
+	}
+
+	// Interrupted run must be recorded as failed, not passed
+	if result.r.Status != "failed" || !errors.Is(result.err, ErrInterrupted) {
+		t.Fatalf("expected Status='failed' and ErrInterrupted, got status=%q err=%v", result.r.Status, result.err)
+	}
+	if result.r.Error != "interrupted" || result.r.StopTrigger != "interrupted" {
+		t.Fatalf("wrong error/StopTrigger: error=%q stopTrigger=%q", result.r.Error, result.r.StopTrigger)
+	}
+
+	// The PUT settled with 200 OK, so no indeterminate outcome
+	if result.r.NeedsReconciliation {
+		t.Fatal("settled in-flight PUT should not demand reconciliation")
+	}
+	if result.r.Cleanup == "objects_may_remain_indeterminate_outcome" {
+		t.Fatalf("unexpected cleanup state: %q", result.r.Cleanup)
+	}
+
+	// Subsequent phases (head, verify-get, delete) must NOT have run
+	if len(result.r.Phases) != 2 {
+		t.Fatalf("expected exactly 2 phases (preflight-list and put), got %d phases", len(result.r.Phases))
+	}
+
+	putPhase := result.r.Phases[1]
+	if putPhase.Dispatched != 1 || putPhase.Completed != 1 || putPhase.Failed != 0 || putPhase.Skipped != 8 {
+		t.Fatalf("wrong accounting: %+v", putPhase)
+	}
+}
+
+func TestFailFastSIGINTEmergencyDrainTimeoutEscalation(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 1
+	o.FailFast = true
+	o.DrainTimeout = 50 * time.Millisecond
+
+	started := make(chan struct{}, 1)
+	var (
+		releaseServer     = make(chan struct{})
+		releaseServerOnce sync.Once
+	)
+	safeRelease := func() {
+		releaseServerOnce.Do(func() {
+			close(releaseServer)
+		})
+	}
+	defer safeRelease()
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			select {
+			case started <- struct{}{}:
+			default:
+			}
+			// Hang indefinitely until released or client disconnects
+			select {
+			case <-releaseServer:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type runRes struct {
+		r   Result
+		err error
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		res, err := Run(ctx, c, o)
+		done <- runRes{res, err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("PUT never started")
+	}
+
+	cancel()
+
+	var result runRes
+	select {
+	case result = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emergency drain timeout did not terminate in-flight request")
+	}
+	safeRelease()
+
+	if result.r.Status != "failed" || !errors.Is(result.err, ErrInterrupted) {
+		t.Fatalf("expected Status='failed' and ErrInterrupted, got status=%q err=%v", result.r.Status, result.err)
+	}
+	if !result.r.NeedsReconciliation {
+		t.Fatal("expected NeedsReconciliation=true after emergency drain abort")
+	}
+	if result.r.Cleanup != "objects_may_remain_indeterminate_outcome" {
+		t.Fatalf("expected Cleanup='objects_may_remain_indeterminate_outcome', got %q", result.r.Cleanup)
+	}
+
+	// Verify sample was recorded as indeterminate
+	foundIndeterminate := false
+	for _, sample := range result.r.Samples {
+		if sample.Operation == "PutObject" && sample.Indeterminate {
+			foundIndeterminate = true
+			if sample.Reconciliation != "needs_reconciliation" {
+				t.Fatalf("expected Reconciliation='needs_reconciliation', got %q", sample.Reconciliation)
+			}
+		}
+	}
+	if !foundIndeterminate {
+		t.Fatal("expected at least one PutObject sample marked indeterminate")
+	}
+}
+
+func TestFailFastSIGINTAllInFlightSucceedFailsBenchmark(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 4
+	o.FailFast = true
+
+	var putDispatched atomic.Int32
+	started := make(chan struct{}, 1)
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			d := putDispatched.Add(1)
+			if d == 1 {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+			}
+			time.Sleep(30 * time.Millisecond)
+			w.WriteHeader(200)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type runRes struct {
+		r   Result
+		err error
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		res, err := Run(ctx, c, o)
+		done <- runRes{res, err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("PUT never started")
+	}
+
+	cancel()
+
+	var result runRes
+	select {
+	case result = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run timed out after cancel")
+	}
+
+	// Crucial invariant: Even though 0 PUTs failed (all in-flight completed with 200 OK),
+	// the benchmark MUST still fail with "interrupted", never report "passed".
+	if result.r.Status != "failed" {
+		t.Fatalf("interrupted benchmark must have Status='failed', got %q", result.r.Status)
+	}
+	if !errors.Is(result.err, ErrInterrupted) {
+		t.Fatalf("expected ErrInterrupted, got %v", result.err)
+	}
+	if result.r.Error != "interrupted" || result.r.StopTrigger != "interrupted" {
+		t.Fatalf("expected Error and StopTrigger to be 'interrupted', got error=%q stopTrigger=%q", result.r.Error, result.r.StopTrigger)
+	}
+
+	putPhase := result.r.Phases[1]
+	if putPhase.Failed != 0 {
+		t.Fatalf("expected 0 failed samples in putPhase, got %d", putPhase.Failed)
+	}
+	if putPhase.Dispatched == 0 || putPhase.Completed != putPhase.Dispatched {
+		t.Fatalf("dispatched=%d completed=%d", putPhase.Dispatched, putPhase.Completed)
+	}
+	if putPhase.Skipped == 0 || putPhase.Dispatched+putPhase.Skipped != putPhase.Planned {
+		t.Fatalf("skipped=%d dispatched=%d planned=%d", putPhase.Skipped, putPhase.Dispatched, putPhase.Planned)
+	}
+
+	// Verify subsequent phases (head, verify-get, repeat-get, delete) did NOT run
+	for _, p := range result.r.Phases {
+		if p.Name != "preflight-list" && p.Name != "put" {
+			t.Fatalf("subsequent phase %q should not have executed", p.Name)
+		}
+	}
+}
+
+func TestFailFastAdversarialStopConcurrentWithJobReadiness(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 3
+	o.FailFast = true
+
+	var (
+		mu                sync.Mutex
+		arrivedCount      int
+		threeArrived      = make(chan struct{})
+		threeArrivedOnce  sync.Once
+		releaseInFlight   = make(chan struct{})
+		releaseOnce       sync.Once
+		postStopAttempted atomic.Bool
+		postStopCount     atomic.Int32
+	)
+	safeRelease := func() {
+		releaseOnce.Do(func() { close(releaseInFlight) })
+	}
+	defer safeRelease()
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			key := r.URL.Path
+
+			mu.Lock()
+			arrivedCount++
+			count := arrivedCount
+			if count == 3 {
+				threeArrivedOnce.Do(func() { close(threeArrived) })
+			}
+			mu.Unlock()
+
+			// Check which file this PUT is for based on manifest ordering
+			if strings.HasSuffix(key, "low-entropy-v00.bin") {
+				// Barrier: wait for all 3 concurrent PUTs to arrive at server
+				// before returning 503 to latch stop.
+				select {
+				case <-threeArrived:
+				case <-releaseInFlight:
+				case <-r.Context().Done():
+				}
+				w.WriteHeader(503)
+				io.WriteString(w, "<Error><Code>SlowDown</Code><Message>rate limited</Message></Error>")
+				return
+			}
+
+			if strings.HasSuffix(key, "compressed-identical-v00.gz") || strings.HasSuffix(key, "random-distinct-v00.bin") {
+				// Jobs 1 & 2: in-flight requests that hold until released
+				select {
+				case <-releaseInFlight:
+				case <-r.Context().Done():
+				}
+				w.WriteHeader(200)
+				return
+			}
+
+			// Any request for other files represents a post-stop leak!
+			postStopAttempted.Store(true)
+			postStopCount.Add(1)
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	type runRes struct {
+		r   Result
+		err error
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		res, err := Run(context.Background(), c, o)
+		done <- runRes{res, err}
+	}()
+
+	// Wait until all 3 initial PUTs have arrived at the server
+	select {
+	case <-threeArrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("initial 3 concurrent PUTs never arrived")
+	}
+
+	// At this point:
+	// - Job 0 returns 503 and latches stop in Worker 0.
+	// - Worker 0 finishes job 0 and becomes ready to claim the next job.
+	// - Workers 1 & 2 are still in-flight holding on the server.
+	// Give worker 0 ample time to attempt claiming a job if there were any race.
+	time.Sleep(30 * time.Millisecond)
+
+	if postStopAttempted.Load() {
+		t.Fatalf("concurrency race: %d post-stop operations started while in-flight drain was active", postStopCount.Load())
+	}
+
+	// Release in-flight operations 1 and 2 to drain
+	safeRelease()
+
+	var res runRes
+	select {
+	case res = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run timed out waiting for drain")
+	}
+
+	// Verify no post-stop operation ever started
+	if postStopAttempted.Load() {
+		t.Fatalf("concurrency race: %d post-stop operations started after stop latched", postStopCount.Load())
+	}
+
+	if res.r.Status != "failed" {
+		t.Fatalf("expected Status='failed', got %q", res.r.Status)
+	}
+	if res.r.StopTrigger != "SlowDown" {
+		t.Fatalf("expected StopTrigger='SlowDown', got %q", res.r.StopTrigger)
+	}
+
+	putPhase := res.r.Phases[1]
+	if putPhase.Name != "put" {
+		t.Fatalf("expected put phase, got %q", putPhase.Name)
+	}
+
+	// Verify exact accounting invariants required by Gate F:
+	// planned = dispatched + skipped
+	// completed = dispatched
+	if putPhase.Planned != 9 {
+		t.Fatalf("expected Planned=9, got %d", putPhase.Planned)
+	}
+	if putPhase.Dispatched != 3 {
+		t.Fatalf("expected Dispatched=3, got %d", putPhase.Dispatched)
+	}
+	if putPhase.Completed != 3 {
+		t.Fatalf("expected Completed=3, got %d", putPhase.Completed)
+	}
+	if putPhase.Skipped != 6 {
+		t.Fatalf("expected Skipped=6, got %d", putPhase.Skipped)
+	}
+	if putPhase.Failed != 1 {
+		t.Fatalf("expected Failed=1, got %d", putPhase.Failed)
+	}
+	if putPhase.Planned != putPhase.Dispatched+putPhase.Skipped {
+		t.Fatalf("broken invariant: planned (%d) != dispatched (%d) + skipped (%d)",
+			putPhase.Planned, putPhase.Dispatched, putPhase.Skipped)
+	}
+	if putPhase.Completed != putPhase.Dispatched {
+		t.Fatalf("broken invariant: completed (%d) != dispatched (%d)",
+			putPhase.Completed, putPhase.Dispatched)
+	}
+
+	// In-flight operations 1 & 2 completed successfully and their payload bytes were counted
+	if putPhase.SuccessfulBytes <= 0 {
+		t.Fatalf("expected SuccessfulBytes > 0 from in-flight drain, got %d", putPhase.SuccessfulBytes)
+	}
+}
+
+func TestFailFastSIGINTAfterFailureArmsDrainTimeout(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Concurrency = 2
+	o.FailFast = true
+	o.DrainTimeout = 50 * time.Millisecond
+
+	var (
+		job0Done        = make(chan struct{})
+		job1Started     = make(chan struct{})
+		releaseJob1     = make(chan struct{})
+		releaseJob1Once sync.Once
+	)
+	safeRelease := func() {
+		releaseJob1Once.Do(func() { close(releaseJob1) })
+	}
+	defer safeRelease()
+
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+			w.Header().Set("Content-Type", "application/xml")
+			io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+			return
+		}
+		if r.Method == "PUT" {
+			key := r.URL.Path
+
+			if strings.HasSuffix(key, "low-entropy-v00.bin") {
+				// Job 0: fail with 503 to latch stop first
+				defer func() {
+					select {
+					case <-job0Done:
+					default:
+						close(job0Done)
+					}
+				}()
+				w.Header().Set("Content-Type", "application/xml")
+				w.Header().Set("X-Amz-Request-Id", "SLOWDOWN12345678")
+				w.WriteHeader(503)
+				io.WriteString(w, "<Error><Code>SlowDown</Code><Message>rate limited</Message></Error>")
+				return
+			}
+
+			if strings.HasSuffix(key, "compressed-identical-v00.gz") {
+				// Job 1: signal started, then hold until released or client aborts
+				select {
+				case <-job1Started:
+				default:
+					close(job1Started)
+				}
+				select {
+				case <-releaseJob1:
+					w.WriteHeader(200)
+				case <-r.Context().Done():
+					// client canceled due to emergency drain timeout
+				}
+				return
+			}
+
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer s.Close()
+	c.Endpoint = s.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type runRes struct {
+		r   Result
+		err error
+	}
+	done := make(chan runRes, 1)
+	go func() {
+		res, err := Run(ctx, c, o)
+		done <- runRes{res, err}
+	}()
+
+	// Wait for job 0 to finish with 503 (latching stopReason="SlowDown", stopped=true)
+	select {
+	case <-job0Done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("job 0 never completed")
+	}
+
+	// Wait for job 1 to be active in-flight on the server
+	select {
+	case <-job1Started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("job 1 never started")
+	}
+
+	// At this point:
+	// - Job 0 failed with 503, so coord.stopped is ALREADY true and stopReason is "SlowDown".
+	// - Job 1 is currently in-flight, blocked on the server.
+	// Give worker 0 brief slack to process the 503 response and latch triggerStop("SlowDown").
+	time.Sleep(25 * time.Millisecond)
+
+	// Now simulate late operator SIGINT / cancellation while job 1 is in-flight:
+	cancel()
+
+	// Measure that Run returns within bounded emergency drain timeout (50ms + slack),
+	// NOT waiting for 30-minute requestTimeout.
+	var res runRes
+	select {
+	case res = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emergency drain timeout was not armed when SIGINT arrived after stop was already latched")
+	}
+	safeRelease()
+
+	// Invariant checks:
+	// 1. Status is failed, error is interrupted
+	if res.r.Status != "failed" {
+		t.Fatalf("expected Status='failed', got %q", res.r.Status)
+	}
+	if !errors.Is(res.err, ErrInterrupted) {
+		t.Fatalf("expected ErrInterrupted, got %v", res.err)
+	}
+	if res.r.Error != "interrupted" {
+		t.Fatalf("expected Error='interrupted', got %q", res.r.Error)
+	}
+
+	// 2. Initial stop trigger is preserved
+	if res.r.StopTrigger != "SlowDown" {
+		t.Fatalf("expected initial StopTrigger='SlowDown' preserved, got %q", res.r.StopTrigger)
+	}
+
+	// 3. Unresolved in-flight PUT was aborted by emergency drain timeout, so it is indeterminate
+	// and demands durable reconciliation
+	if !res.r.NeedsReconciliation {
+		t.Fatal("expected NeedsReconciliation=true for aborted in-flight PUT")
+	}
+	if res.r.Cleanup != "objects_may_remain_indeterminate_outcome" {
+		t.Fatalf("expected Cleanup='objects_may_remain_indeterminate_outcome', got %q", res.r.Cleanup)
+	}
+
+	// Verify sample 1 is marked indeterminate
+	foundIndeterminate := false
+	for _, s := range res.r.Samples {
+		if strings.HasSuffix(s.File, "compressed-identical-v00.gz") {
+			if !s.Indeterminate {
+				t.Fatalf("expected sample to be marked indeterminate: %+v", s)
+			}
+			if s.Reconciliation != "needs_reconciliation" {
+				t.Fatalf("expected Reconciliation='needs_reconciliation', got %q", s.Reconciliation)
+			}
+			foundIndeterminate = true
+		}
+	}
+	if !foundIndeterminate {
+		t.Fatal("expected indeterminate sample for held in-flight PUT")
+	}
+}
+
+func TestFailFastStopVsDispatchStress(t *testing.T) {
+	for iter := 0; iter < 50; iter++ {
+		c, o, _ := setup(t)
+		o.Concurrency = 4
+		o.FailFast = true
+
+		var (
+			mu        sync.Mutex
+			dispathed int
+			failedIdx = (iter % 3) + 1 // varies between call 1, 2, 3
+		)
+
+		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && r.URL.Query().Get("list-type") == "2" {
+				w.Header().Set("Content-Type", "application/xml")
+				io.WriteString(w, "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>")
+				return
+			}
+			if r.Method == "PUT" {
+				mu.Lock()
+				dispathed++
+				idx := dispathed
+				mu.Unlock()
+
+				if idx == failedIdx {
+					w.WriteHeader(503)
+					io.WriteString(w, "<Error><Code>SlowDown</Code></Error>")
+					return
+				}
+				time.Sleep(2 * time.Millisecond)
+				w.WriteHeader(200)
+				return
+			}
+			w.WriteHeader(200)
+		}))
+
+		c.Endpoint = s.URL
+		r, err := Run(context.Background(), c, o)
+		s.Close()
+
+		if err == nil || r.Status != "failed" {
+			t.Fatalf("iteration %d: expected failed status", iter)
+		}
+		putPhase := r.Phases[1]
+		if putPhase.Planned != 9 {
+			t.Fatalf("iteration %d: planned=%d", iter, putPhase.Planned)
+		}
+		if putPhase.Planned != putPhase.Dispatched+putPhase.Skipped {
+			t.Fatalf("iteration %d: planned (%d) != dispatched (%d) + skipped (%d)",
+				iter, putPhase.Planned, putPhase.Dispatched, putPhase.Skipped)
+		}
+		if putPhase.Completed != putPhase.Dispatched {
+			t.Fatalf("iteration %d: completed (%d) != dispatched (%d)",
+				iter, putPhase.Completed, putPhase.Dispatched)
+		}
 	}
 }

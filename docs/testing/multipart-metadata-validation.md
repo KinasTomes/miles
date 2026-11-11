@@ -1,7 +1,7 @@
 # Multipart metadata and producer validation
 
-W04-HAI-02 implementation starts from main `ca6d6ef` on
-`codex/w04-hai-02-multipart-producers`. No AWS provisioning is performed.
+Implementation starts from main `ca6d6ef` (PR #42).
+No AWS provisioning is performed.
 
 ## Checklist 1: persistent multipart primitives
 

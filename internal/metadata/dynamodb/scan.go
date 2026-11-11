@@ -178,7 +178,7 @@ func (t *transaction) batch(logical []string, consistent bool) error {
 			out, err := t.store.api.BatchGetItem(t.ctx, &ddb.BatchGetItemInput{RequestItems: pending})
 			if err != nil {
 				if retryableRead(err) && attempt+1 < t.store.maxAttempts {
-					if err := retryPause(t.ctx, attempt); err != nil {
+					if err := t.store.retryPause(t.ctx, attempt); err != nil {
 						return err
 					}
 					continue
@@ -218,7 +218,7 @@ func (t *transaction) batch(logical []string, consistent bool) error {
 			}
 			pending = out.UnprocessedKeys
 			if len(pending) > 0 {
-				if err := retryPause(t.ctx, attempt); err != nil {
+				if err := t.store.retryPause(t.ctx, attempt); err != nil {
 					return err
 				}
 			}

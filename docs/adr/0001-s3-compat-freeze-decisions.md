@@ -1,6 +1,6 @@
 # ADR-0001: Quyết định tương thích S3 trước freeze API
 
-Task: W02-CHIEN-03 · Ngày: 25/10/2026 · Trạng thái: đề xuất để review trước
+Ngày: 25/10/2026 · Trạng thái: đề xuất để review trước
 freeze (cuối W02); bản 2 sửa theo review PR #29 (key UTF-8, HEAD Range theo
 S3, range unit không phân biệt hoa/thường). Ma trận tương thích:
 [s3-compat-suite.md](../testing/s3-compat-suite.md), fixture
@@ -11,7 +11,7 @@ S3, range unit không phân biệt hoa/thường). Ma trận tương thích:
 API v2 §4.1/§4.2 định nghĩa GetObject/HeadObject ở mức "một khoảng
 bytes=a-b/a-/-n, invalid trả 416", "HEAD không body kể cả lỗi". Bộ fixture
 freeze cần chốt từng trường hợp biên mà document chưa ghi, để handler W03
-(W03-CHIEN-02) và integration tests không phải đoán. Các quyết định dưới đây
+(handler Range/HEAD) và integration tests không phải đoán. Các quyết định dưới đây
 được pin trong `compat.json` và kiểm bằng hàm tham chiếu `parseRange`,
 `headResponse` (`internal/api/s3/compat_test.go`).
 
@@ -66,8 +66,8 @@ freeze cần chốt từng trường hợp biên mà document chưa ghi, để h
 
 ## Tác động
 
-- W03-CHIEN-02 triển khai handler Range/HEAD theo các row `range`/`head`/
+- Phần hiện thực GetObject/HeadObject triển khai handler Range/HEAD theo các row `range`/`head`/
   `empty` của `compat.json`; test handler thay hàm tham chiếu.
-- API v2 §4.1/§4.2 có ghi chú "Hiện thực (W02-CHIEN-03)" trỏ về ADR này.
+- API v2 §4.1/§4.2 có ghi chú "Hiện thực fixture" trỏ về ADR này.
 - Đổi từ bản 1 (PR #29 review): bỏ "Range trên HEAD bị bỏ qua" và bỏ "key
   không bắt buộc UTF-8".

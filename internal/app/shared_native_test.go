@@ -71,7 +71,7 @@ func TestNativeWarmGCObjectFlows(t *testing.T) {
 	runNativeSharedRuntime(t, true)
 }
 
-func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
+func runNativeSharedRuntime(t *testing.T, gcFlows bool, coldClass ...coldFlowScenario) {
 	dEndpoint, sEndpoint := nativeEndpoint(t, "MILES_DDB_LOCAL_ENDPOINT"), nativeEndpoint(t, "MILES_RECOVERY_S3_ENDPOINT")
 	timeout := 90 * time.Second
 	if gcFlows {
@@ -138,7 +138,7 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 	t.Cleanup(func() { cleanupNativePackBucket(t, clients.packs, c.PackBucket, gcFlows) })
 	testClock := &gcFlowClock{Clock: clock.NewReal()}
 	var utc storage.R1TimeSource = nativeUTC{}
-	if gcFlows {
+	if gcFlows || len(coldClass) > 0 {
 		utc = testClock
 	}
 	m, e := sharedStore(c, clients, utc)
@@ -173,7 +173,7 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 		// node's CloseIdleConnections interfere with another node's cleanup.
 		nodeTransport := transport.Clone()
 		nodeHTTP := &http.Client{Transport: nodeTransport}
-		if gcFlows {
+		if gcFlows || len(coldClass) > 0 {
 			nodeHTTP.Transport = gcFlowTransport{nodeTransport}
 		}
 		nodeClients := runtimeClients{metadata: ddb.New(ddb.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(dEndpoint), Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(sEndpoint), UsePathStyle: true, Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), transport: nodeTransport}
@@ -188,7 +188,7 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 			}
 		})
 	}
-	if !gcFlows {
+	if !gcFlows && len(coldClass) == 0 {
 		nativeShutdownDuringPeerRecovery(t, ctx, nodes)
 		nativeProvisionedCheckpoint(t, ctx, nodes[0])
 	}
@@ -229,6 +229,11 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 	}
 	if gcFlows {
 		nativeWarmGCFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, global)
+		assertNativeRuntimeMetrics(t, ctx, nodes)
+		return
+	}
+	if len(coldClass) > 0 {
+		nativeColdFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, coldClass[0], tokenID+"."+tokenSecret)
 		return
 	}
 	key := "Unicode/tiếng Việt//plus+percent%2F"
@@ -339,6 +344,41 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 		t.Fatal("cache purge changed durable object or prevented refill", e)
 	}
 
+	assertNativeRuntimeMetrics(t, ctx, nodes)
+}
+
+func assertNativeRuntimeMetrics(t *testing.T, ctx context.Context, nodes []Dependencies) {
+	t.Helper()
+	reads, uploaded, downloaded := 0.0, 0.0, 0.0
+	for i, d := range nodes {
+		if e := d.Operations.Collect(ctx); e != nil {
+			t.Fatal("runtime observer", i, e)
+		}
+		values := map[string]float64{}
+		for _, sample := range d.Operations.Runtime.Snapshot(time.Now()) {
+			values[sample.Name] = sample.Value
+		}
+		reads += values["miles_warm_read_requests_total"]
+		uploaded += values["miles_gateway_s3_request_body_bytes_total"]
+		downloaded += values["miles_gateway_s3_response_body_bytes_total"]
+		if d.Statistics == nil || d.Admin.Statistics == nil {
+			t.Fatal("statistics not wired")
+		}
+		if e := d.Statistics.Refresh(ctx); e != nil {
+			t.Fatal("native runtime statistics", e)
+		}
+		if summary, e := d.Statistics.Global(ctx); e != nil || !summary.PhysicalComplete {
+			t.Fatal("incomplete native statistics", e)
+		}
+		for _, name := range []string{"miles_ddb_calls_total", "miles_ddb_transactions_total", "miles_ddb_lease_write_attempts_total"} {
+			if values[name] <= 0 {
+				t.Fatal("runtime metric missing", i, name, values[name])
+			}
+		}
+	}
+	if reads <= 0 || uploaded <= 0 || downloaded <= 0 {
+		t.Fatal("shared Warm counters missing")
+	}
 }
 
 func cleanupNativePackBucket(t *testing.T, client *s3.Client, bucket string, versioned bool) {

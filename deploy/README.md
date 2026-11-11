@@ -1,11 +1,11 @@
 # Cloud / Edge deployment
 
-W04-HUNG-01 chuẩn bị cấu hình triển khai dùng **cùng release Miles/dsgctl** cho
+Thư mục này chuẩn bị cấu hình triển khai dùng **cùng release Miles/dsgctl** cho
 Cloud và Edge. Không fork engine, không chứa credential, không apply AWS.
 
 **Chưa chạy production:** `mode=runtime` hiện chỉ có health/metrics và trả
 `/readyz=503`; chưa compose backend và các listener S3/Admin. Giữ nguyên guard này.
-W05-HUNG-01 phải nối runtime thật trước khi bật ASG; nếu bật ngay, ELB health sẽ
+Phần wiring runtime Cloud/Edge phải nối runtime thật trước khi bật ASG; nếu bật ngay, ELB health sẽ
 thất bại và ASG sẽ liên tục thay node. Xem [handoff](../docs/testing/cloud-edge-deployment-validation.md).
 
 ## Release chung

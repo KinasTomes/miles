@@ -22,6 +22,7 @@ type Health struct {
 	draining         func() bool
 	now              func() time.Time
 	operations       *Operations
+	runtime          *Runtime
 	active           func() int64
 	operationalReady func() bool
 }
@@ -103,3 +104,6 @@ func status(w http.ResponseWriter, code int, body string) {
 	w.WriteHeader(code)
 	_, _ = w.Write([]byte(body))
 }
+
+// AttachRuntime is startup wiring; shared runtime snapshots are process-local.
+func (h *Health) AttachRuntime(m *Runtime) { h.mu.Lock(); defer h.mu.Unlock(); h.runtime = m }

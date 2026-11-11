@@ -1,4 +1,4 @@
-# W03-HAI-01 write preparation validation
+# Engine write preparation validation
 
 The `internal/engine/write` package composes the Sprint 2 chunker, compressor,
 pack format, physical PackStore, canonical metadata and streaming manifest
@@ -60,9 +60,9 @@ lookup-only fallback. The tests supply a guard in an isolated one-node fixture;
 it is not proof of distributed R1 admission, GC safety or tiering concurrency.
 The existing writer fence fixture is not a production R1 coordinator.
 
-The S3 router and runtime are not wired to this writer in W03-HAI-01. Logical
+The S3 router and runtime are not wired to this writer in this change. Logical
 payload validation, quota reservation, ETag/checksum, final head transaction
-and API error mapping belong to the adjacent API/HAI-02 integration work.
+and API error mapping belong to the adjacent API/object write integration work.
 Current chunk insert/location CAS ports also do not emit the full R2 child
 mutation event/outcome records described in the recovery contract. That
 extension is required before claiming distributed recovery or multi-node

@@ -1,6 +1,6 @@
 # Storage statistics and layout accounting
 
-W04-HAI-03. Statistics are admin-only observations, never quota or GC authority.
+Statistics are admin-only observations, never quota or GC authority.
 
 Logical bytes sum live committed heads in the current active bucket incarnation.
 Disabled users still own stored data. Unique bytes count each live (domain, hash)
@@ -12,9 +12,14 @@ do not contribute logical bytes. Denominator zero produces JSON null.
 including current/noncurrent versions, sidecars, journals, checkpoints and orphan
 candidates. It excludes billed temporary restored copies, exposed separately as
 unknown until a verified billing/expiry source is available. Local caches and
-DynamoDB are infrastructure. Revival counters are null without a measured interval
-source, never fabricated zeros. Incomplete physical coverage makes bytes_stored
-and total_reduction null; listed breakdown remains explicitly partial.
+DynamoDB are infrastructure. Revival/orphan counters come from the serving
+process's write path (measured interval starting at `write_counters_since`,
+global report only) and are null without that source, never fabricated zeros.
+A revived identity keeps its (domain, hash), so unique bytes and dedup_ratio do
+not change; the new Warm blob raises bytes_stored and the superseded archive
+stays listed as `cold_dead` until retention/GC eligibility. Incomplete physical
+coverage makes bytes_stored, listed_pack_overhead_bytes and total_reduction
+null; listed breakdown remains explicitly partial.
 
 Allocation version is returned with every report. Each live canonical payload
 is divided equally among DISTINCT bucket incarnations referencing its identity.

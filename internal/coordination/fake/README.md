@@ -1,4 +1,4 @@
-# Coordination prototype — W02-PHONG-03
+# Coordination prototype
 
 Owner: Phong. Trạng thái **PROPOSAL / chưa commit, chưa freeze**.
 Task Miles đã đọc: C1 fake coordination/read pins/fence/producer admission;

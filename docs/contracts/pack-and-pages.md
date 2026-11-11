@@ -1,6 +1,6 @@
-# Định dạng pack, sidecar và pages v1 — W01-CHIEN-04
+# Định dạng pack, sidecar và pages v1
 
-Trạng thái: thiết kế v1 đã có production codec pack/footer/sidecar trong `internal/pack` (W02-HAI-02); format pages vẫn được kiểm bằng reference tests và thuộc W02-HAI-03/W04. Freeze chính thức của nhóm cần review độc lập theo [freeze record](pack-format-freeze.md). Task Miles `W01-CHIEN-04` (nguồn `W01-HAI-02`, A02/A09/A11), phụ thuộc `W01-HUNG-04` (Done). Nguồn: [kiến trúc §4, §5, §9.0, §10](../dedup-storage-gateway-architecture.md), [API §4.3.1](../dedup-storage-gateway-api.md), [shared storage](shared-storage.md).
+Trạng thái: thiết kế v1 đã có production codec pack/footer/sidecar trong `internal/pack` ([freeze record](pack-format-freeze.md)); format pages vẫn được kiểm bằng reference tests và thuộc adapter Badger/W04. Freeze chính thức của nhóm cần review độc lập theo [freeze record](pack-format-freeze.md). Phụ thuộc [shared storage](shared-storage.md) (Done). Nguồn: [kiến trúc §4, §5, §9.0, §10](../dedup-storage-gateway-architecture.md), [API §4.3.1](../dedup-storage-gateway-api.md), [shared storage](shared-storage.md).
 
 | Checklist W1 | Mục | Fixture |
 |---|---|---|
@@ -100,7 +100,7 @@ Identity vật lý của pack ở mọi nơi là cặp **(pack_id, generation)**
 - `size = index_offset + index_len + 24`. Entry 0 bắt đầu ở `H`; entry i+1 bắt đầu ngay sau entry i; blob cuối kết thúc ở `index_offset`. Không gap, không overlap, không byte thừa sau entry cuối.
 - (domain, hash) duy nhất trong pack. Cùng hash ở hai domain là hai entry và hai blob (fixture `mixed-domain`).
 - raw: `stored_len = raw_len`, stored là raw. zstd: stored là đúng một frame RFC 8878, không dictionary, không byte sau frame, giải nén ra đúng `raw_len` byte; content checksum và single-segment tùy thư viện. Chọn raw/zstd theo policy ([chunking/commit §4](chunking-and-commit.md#4-nén)); codec khác bị từ chối.
-- Không ghi pack rỗng. Writer đóng pack ở target bytes (32–64 MiB, W02-HAI-02) hoặc ở 16384 entries — chặn sidecar khổng lồ khi chunk nén rất tốt; index tối đa 1933490 byte (khoảng 1,85 MiB) với domain và ID 64 ký tự.
+- Không ghi pack rỗng. Writer đóng pack ở target bytes (32–64 MiB, pack writer production) hoặc ở 16384 entries — chặn sidecar khổng lồ khi chunk nén rất tốt; index tối đa 1933490 byte (khoảng 1,85 MiB) với domain và ID 64 ký tự.
 
 ### 2.4 Đọc và kiểm tra
 
@@ -113,7 +113,7 @@ Identity vật lý của pack ở mọi nơi là cặp **(pack_id, generation)**
 
 - Thứ tự: PUT pack, PUT sidecar, rồi mới insert/CAS `Chunks` (KT §5.1). Retry cùng generation phải gửi cùng bytes (`PackStore` trả conflict nếu khác). `PackInfo.Size` = size object.
 - Entry ánh xạ thẳng sang `storage.Chunk`: `Key{domain, hex(hash)}`, `RawBytes = raw_len`, `Location{Pack: PackRef{pack_id, generation}, Range{offset, stored_len}, Codec, CRC32C: crc32c}`. CRC-32C thuộc stored bytes của location hiện hành, không suy từ raw hash; insert/CAS location phải lưu CRC cùng pack/range/codec và revision. Test kiểm mọi entry golden qua `storage.Chunk.Validate`.
-- Sidecar đủ để dựng inventory (domain, hash) → các bản sao vật lý mà không restore pack Cold. Sidecar **không** có: canonical winner, `location_revision`, refcount, namespace/manifest (journal/checkpoint R2, W01-PHONG-03), state/class/restore (HEAD S3). Rebuild không chọn bản sao chỉ vì sidecar có hash (KT §9.1).
+- Sidecar đủ để dựng inventory (domain, hash) → các bản sao vật lý mà không restore pack Cold. Sidecar **không** có: canonical winner, `location_revision`, refcount, namespace/manifest (journal/checkpoint [R2](r2-recovery.md)), state/class/restore (HEAD S3). Rebuild không chọn bản sao chỉ vì sidecar có hash (KT §9.1).
 - Quét orphan: list `packs/` cho PackRef từ key; Range `[0, H)` kiểm header khi cần.
 
 ## 3. Pages
@@ -139,7 +139,7 @@ Body tối đa **393216 byte (384 KiB)**; overhead envelope là `54 + len(owner)
 
 Item DynamoDB chỉ gồm partition key (`manifest_id`, `part_manifest_id` hoặc `completion_id`, kiểu S), `page_no` (N) và `body` (B); không thêm attribute khác. Kích thước theo quy tắc DynamoDB (tên + giá trị, số 1 byte cho hai chữ số cộng 1) tối đa `16 + 64 + 7 + 3 + 4 + 393216 = 393310` byte, dưới 400 KB dù tính 400000 hay 409600 byte; test kiểm mọi page golden < 400000. Badger dùng key (bảng, owner, page_no) và value là body.
 
-Page bất biến. Owner ID ngẫu nhiên chỉ thuộc một writer và chia greedy (§3.3) nên retry/takeover ghi lại đúng cùng bytes; BatchWriteItem (≤25 page/16 MB, retry hết UnprocessedItems, KT §10.2) hoặc Put có điều kiện đều giữ bất biến này, adapter chọn ở W02-HAI-03/W04-HAI-01. Không có transaction trên pages; mọi page phải bền và đủ trước commit.
+Page bất biến. Owner ID ngẫu nhiên chỉ thuộc một writer và chia greedy (§3.3) nên retry/takeover ghi lại đúng cùng bytes; BatchWriteItem (≤25 page/16 MB, retry hết UnprocessedItems, KT §10.2) hoặc Put có điều kiện đều giữ bất biến này, adapter chọn ở [Badger](dev-metadata.md)/[DynamoDB](dynamodb-adapter.md). Không có transaction trên pages; mọi page phải bền và đủ trước commit.
 
 ### 3.3 Ref payload — kind 1 và 2
 
@@ -154,7 +154,7 @@ Page bất biến. Owner ID ngẫu nhiên chỉ thuộc một writer và chia gr
 
 ### 3.4 Object manifest (`ManifestPages`)
 
-Head `Objects` có các field dưới đây (`storage.ObjectHead`, W02-HAI-03).
+Head `Objects` có các field dưới đây (`storage.ObjectHead`, adapter Badger).
 Quy tắc derive/validate tại backend dev được mô tả trong [dev metadata](dev-metadata.md):
 
 | Field | Giá trị |
@@ -168,7 +168,7 @@ Quy tắc derive/validate tại backend dev được mô tả trong [dev metadat
 - Object rỗng: `size = 0`, `page_count = 0`, `chunk_count = 0`, `page_index` rỗng, không ghi page; manifest_id vẫn duy nhất.
 - Đọc toàn object: page i đọc từ key (manifest_id, i); domain = domain của head (bucket); `first_offset = page_index[i]` = tổng raw các page trước; cuối cùng tổng raw = size và tổng ref = chunk_count. Kết quả ánh xạ `storage.ManifestPage{ManifestID, Domain, Number, Chunks[{Key, RawBytes, LogicalOffset}]}`; test kiểm qua `ManifestPage.Validate`.
 - Range `[a, b]`: tìm nhị phân page cuối có `page_index ≤ a`, đọc tiếp đến khi phủ b; không đọc cả manifest. Một page đầy đọc consistent tốn tối đa 96 RCU; object dưới khoảng 10 GiB với chunk 1 MiB chỉ có một page.
-- **Giới hạn 1024 pages**: với chunking mặc định (min 256 KiB, object ≤ 100 GiB, ≤ 10000 part mỗi part thêm tối đa một chunk ngắn) có tối đa 419600 ref = 39 pages (fixture `most refs at default chunking`). Validator chunking (W01-CHIEN-05, W02-PHONG-01) phải giữ `chunking.min_bytes ≥ 16 KiB` để không vượt 1024 pages; writer vẫn từ chối manifest vượt giới hạn trước commit.
+- **Giới hạn 1024 pages**: với chunking mặc định (min 256 KiB, object ≤ 100 GiB, ≤ 10000 part mỗi part thêm tối đa một chunk ngắn) có tối đa 419600 ref = 39 pages (fixture `most refs at default chunking`). Validator chunking ([chunking/commit](chunking-and-commit.md), validator config/policy) phải giữ `chunking.min_bytes ≥ 16 KiB` để không vượt 1024 pages; writer vẫn từ chối manifest vượt giới hạn trước commit.
 
 ### 3.5 Upload part (`UploadPartPages`) và prepared manifest
 
@@ -232,12 +232,12 @@ make check
 
 | Task | Việc |
 |---|---|
-| W02-HAI-02 | Codec production cho pack/footer/sidecar, key S3 §2.1, đóng pack 32–64 MiB/16384 entries; chạy `pack.json` rồi xóa reference trong `format_test.go`; review và freeze format cuối tuần 2 |
-| W02-HAI-01 | Zstd theo quy tắc frame §2.3; decoder đầy đủ phải giải các frame fixture |
-| W02-HAI-03, W04-HAI-01 | Thêm field head/Uploads §3.4–3.6 vào model, item layout và cách ghi page §3.2 cho Badger/DynamoDB; chạy `pages.json` rồi xóa reference trong `pages_test.go` |
-| W02-CHIEN-02, W04 multipart | Ghi input/snapshot stream và prepared manifest theo §3.5–3.6 |
-| W02-PHONG-02 | Read path: CRC-32C → giải nén → SHA-256, Range qua `page_index` |
-| W01-PHONG-03 | Sidecar chỉ cho inventory vật lý (§2.5); journal có thể nhúng nguyên body page |
-| W01-CHIEN-05 | Đã chốt ở [chunking/commit](chunking-and-commit.md): sàn `chunking.min_bytes` 16 KiB (§2.1), codec raw/zstd (§4), danh sách action transaction (§6.3) |
+| Pack writer/codec | Codec production cho pack/footer/sidecar, key S3 §2.1, đóng pack 32–64 MiB/16384 entries; chạy `pack.json` rồi xóa reference trong `format_test.go`; review và freeze format cuối tuần 2 |
+| Chunker/zstd | Zstd theo quy tắc frame §2.3; decoder đầy đủ phải giải các frame fixture |
+| Adapter [Badger](dev-metadata.md), [DynamoDB](dynamodb-adapter.md) | Thêm field head/Uploads §3.4–3.6 vào model, item layout và cách ghi page §3.2 cho Badger/DynamoDB; chạy `pages.json` rồi xóa reference trong `pages_test.go` |
+| Multipart (`internal/multipart`), W04 multipart | Ghi input/snapshot stream và prepared manifest theo §3.5–3.6 |
+| Read path | Read path: CRC-32C → giải nén → SHA-256, Range qua `page_index` |
+| [R2](r2-recovery.md) | Sidecar chỉ cho inventory vật lý (§2.5); journal có thể nhúng nguyên body page |
+| [Chunking/commit](chunking-and-commit.md) | Đã chốt ở [chunking/commit](chunking-and-commit.md): sàn `chunking.min_bytes` 16 KiB (§2.1), codec raw/zstd (§4), danh sách action transaction (§6.3) |
 
 Sau freeze, format chỉ đổi bằng version mới, migration và review; fixture v1 giữ nguyên để reader còn đọc dữ liệu cũ.

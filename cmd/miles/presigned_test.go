@@ -96,7 +96,7 @@ func TestPresignedLocalProfiles(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer d.Close()
-			server := httptest.NewServer(s3Handler(c.Region, d, new(app.Admission)))
+			server := httptest.NewServer(s3Handler(c.Region, c.RuntimeNodeID, d, new(app.Admission)))
 			defer server.Close()
 			credential := d.DevCredentials[0]
 			client := sdk.New(sdk.Options{Region: c.Region, BaseEndpoint: aws.String(server.URL), UsePathStyle: true,
@@ -143,8 +143,15 @@ func TestPresignedLocalProfiles(t *testing.T) {
 				t.Fatal("presigned GET bytes differ")
 			}
 			head, err := client.HeadObject(ctx, &sdk.HeadObjectInput{Bucket: &bucket, Key: &key})
-			if err != nil || aws.ToInt64(head.ContentLength) != int64(len(payload)) || head.Metadata["with_underscore"] != "kept" {
-				t.Fatal("HEAD metadata/length", err)
+			if err != nil || aws.ToInt64(head.ContentLength) != int64(len(payload)) || head.Metadata["with_underscore"] != "kept" || head.Restore != nil {
+				t.Fatal("HEAD metadata/length/restore", err)
+			}
+			// The SDK's RestoreRequest document parses; a Warm object has nothing to restore.
+			_, err = client.RestoreObject(ctx, &sdk.RestoreObjectInput{Bucket: &bucket, Key: &key, RestoreRequest: &types.RestoreRequest{
+				Days: aws.Int32(1), GlacierJobParameters: &types.GlacierJobParameters{Tier: types.TierExpedited}}})
+			var restoreError smithy.APIError
+			if !errors.As(err, &restoreError) || restoreError.ErrorCode() != "InvalidRequest" || !strings.Contains(restoreError.ErrorMessage(), "no GLACIER data") {
+				t.Fatal("Warm RestoreObject", err)
 			}
 			rangeResult, err := client.GetObject(ctx, &sdk.GetObjectInput{Bucket: &bucket, Key: &key, Range: aws.String("bytes=2-8")})
 			if err != nil {

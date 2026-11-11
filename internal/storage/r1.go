@@ -94,7 +94,7 @@ type R1Store interface {
 	CheckR1(context.Context, WriterFence) (R1Lease, error)
 	RenewR1(context.Context, WriterFence) (R1Lease, error)
 	CloseR1(context.Context, WriterFence) error
-	// ReconcileR1 derives terminal commit proof for closed authority. It cannot
+	// ReconcileR1 derives terminal metadata proof for closed authority. It cannot
 	// erase unknown physical I/O or release the caller's retained roots/pins.
 	ReconcileR1(context.Context, WriterFence) error
 	ReleaseR1(context.Context, WriterFence) error

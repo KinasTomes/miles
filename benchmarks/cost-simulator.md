@@ -1,6 +1,6 @@
 # Cost / simulator prototype
 
-W04-HUNG-03 supplies an offline accounting replay, shared metric definitions,
+The prototype supplies an offline accounting replay, shared metric definitions,
 native DynamoDB adapter timing and integration proofs. It reuses `internal/clock`,
 `config`, `policy` and `pricing`; there is no second tiering engine or AWS deployment.
 
@@ -90,7 +90,7 @@ baseline. Revival counters add no separate fee: supplied PUT/storage/network
 usage already accounts for those bytes. Zero-denominator ratios are null;
 dedup=logical/unique_raw, compression=unique_raw/unique_stored and total reduction=
 logical/physical. The ratios need not multiply. Filtered bucket physical allocation,
-retention charges and four-policy comparisons remain W06-HUNG-01.
+retention charges and four-policy comparisons remain later simulator work.
 
 ## Integration and measured evidence
 
@@ -123,12 +123,12 @@ The required CI job `benchmark-contracts` runs this path without AWS credentials
   The harness accepts declared DynamoDB backends; the smoke composes the isolated
   single-process test endpoint and provisions only local emulators/test tables.
 
-W04-HUNG-03 does not depend on W5. Its preliminary Warm HTTP/DynamoDB measurement
-uses the local fixture above; W05-HUNG-01 consumes W4 outputs for multi-node Cloud
+This prototype does not depend on W5. Its preliminary Warm HTTP/DynamoDB measurement
+uses the local fixture above; the shared Cloud/Edge runtime wiring consumes W4 outputs for multi-node Cloud
 and physical Edge deployment. Production distributed authority/deployment proof
 does not gate the W4 prototype. Full Admin/multipart HTTP still waits on
-W04-CHIEN-01/02 (Todo in the live backlog on2026-10-30), rather than being claimed
-by these port tests. W06-HUNG-01 adds
+the Admin API and multipart HTTP handlers (Todo in the live backlog on2026-10-30), rather than being claimed
+by these port tests. The four-policy simulator (PR #69) adds
 the four policy comparison models, more traces and complete matched cost coverage.
 No live AWS apply/publish, final performance target, user billing or resource
 permission changes are part of this task.

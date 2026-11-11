@@ -32,7 +32,7 @@ func (w *Worker) sweepPlan(ctx context.Context, a Action) ([]s.SweepVersion, []s
 		return nil, nil, s.ErrR1Busy
 	}
 	canonical := mark.CanonicalFor(a.Source.Ref)
-	if a.Source.State == "Warm" {
+	if RetirableData(a.Source) {
 		for _, chunk := range canonical {
 			if mark.Referenced[chunk.Key] {
 				return nil, nil, s.ErrR1Busy

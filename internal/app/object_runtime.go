@@ -1,12 +1,13 @@
 package app
 
 import (
+	"context"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/readpath"
 	"github.com/KinasTomes/miles/internal/storage"
-	packs3 "github.com/KinasTomes/miles/internal/storage/s3"
+	"log/slog"
 	"time"
 )
 
@@ -20,7 +21,7 @@ func objectReadAdmission() (*readpath.Admission, error) {
 	return readpath.NewAdmission(readpath.Limits{Node: readpath.ScopeLimits{ActiveRequests: 64, Budget: node}, Bucket: readpath.ScopeLimits{ActiveRequests: 64, Budget: node}})
 }
 
-func objectRuntime(o object.Options, metadata storage.MetadataStore, packs *packs3.Store, gate *coordination.WarmGate, global config.GlobalSnapshot, admission *readpath.Admission) (*object.Service, error) {
+func objectRuntime(o object.Options, metadata storage.MetadataStore, packs storage.PackStore, gate *coordination.WarmGate, global config.GlobalSnapshot, admission *readpath.Admission, metrics *readpath.WarmMetrics) (*object.Service, error) {
 	request := readpath.Budget{
 		Capacity: readpath.Cost{ChunkSlots: 8, StoredBytes: 32 << 20, IOSlots: 8, IOBytes: 32 << 20, RawBytes: 32 << 20, WorkspaceBytes: 128 << 20, CopyBytes: 128 << 20},
 		Prefetch: readpath.Cost{ChunkSlots: 4, StoredBytes: 16 << 20, IOSlots: 4, IOBytes: 16 << 20, RawBytes: 16 << 20, WorkspaceBytes: 64 << 20, CopyBytes: 64 << 20},
@@ -32,8 +33,15 @@ func objectRuntime(o object.Options, metadata storage.MetadataStore, packs *pack
 			return nil, err
 		}
 	}
+	if metrics == nil {
+		metrics = new(readpath.WarmMetrics)
+	}
 	reader, err := readpath.NewWarmReader(readpath.WarmOptions{
-		Metadata: metadata, Packs: packs, Cache: o.Cache, Admission: admission, Gate: gate, Clock: o.Clock, Global: global, Metrics: &readpath.WarmMetrics{},
+		Metadata: metadata, Packs: packs, Cache: o.Cache, Admission: admission, Gate: gate, Clock: o.Clock, Global: global, Metrics: metrics,
+		UTC: o.ReadUTC, Restore: o.Restore,
+		RestoreError: func(ctx context.Context, err error) {
+			slog.ErrorContext(ctx, "Không thể khởi tạo auto-restore", "error", err)
+		},
 		// net/http read/write, TLS record and SDK stream buffers; no custom buffering.
 		// Resident connection pools and runtime/RSS headroom are outside this budget.
 		TransportBytes: 128 << 10, MaxManifestPages: 1024, MaxManifestChunks: 65536,

@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"errors"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -24,18 +25,19 @@ type CloudWatchAPI interface {
 // invented cluster sum). Unknown ACKs can duplicate a later delta: best-effort
 // telemetry, not exact job accounting or a billing ledger.
 type CloudWatch struct {
-	api      CloudWatchAPI
-	profile  string
-	mu       sync.Mutex
-	acked    map[string]float64
-	failures atomic.Uint64
+	api          CloudWatchAPI
+	profile      string
+	installation string
+	mu           sync.Mutex
+	acked        map[string]float64
+	failures     atomic.Uint64
 }
 
-func NewCloudWatch(api CloudWatchAPI, profile string) (*CloudWatch, error) {
-	if api == nil || (profile != "cloud" && profile != "edge") {
+func NewCloudWatch(api CloudWatchAPI, profile, installation string) (*CloudWatch, error) {
+	if api == nil || (profile != "cloud" && profile != "edge") || !regexp.MustCompile(`^[A-Za-z0-9_.-]{1,200}$`).MatchString(installation) {
 		return nil, errors.New("invalid CloudWatch exporter")
 	}
-	return &CloudWatch{api: api, profile: profile, acked: map[string]float64{}}, nil
+	return &CloudWatch{api: api, profile: profile, installation: installation, acked: map[string]float64{}}, nil
 }
 func (c *CloudWatch) Failures() uint64 { return c.failures.Load() }
 func (c *CloudWatch) Flush(ctx context.Context, at time.Time, samples []Metric) error {
@@ -68,7 +70,7 @@ func (c *CloudWatch) Flush(ctx context.Context, at time.Time, samples []Metric) 
 				continue
 			}
 		}
-		dims := []types.Dimension{{Name: aws.String("profile"), Value: aws.String(c.profile)}}
+		dims := []types.Dimension{{Name: aws.String("profile"), Value: aws.String(c.profile)}, {Name: aws.String("installation"), Value: aws.String(c.installation)}}
 		keys := make([]string, 0, len(sample.Labels))
 		for k := range sample.Labels {
 			keys = append(keys, k)
@@ -78,7 +80,10 @@ func (c *CloudWatch) Flush(ctx context.Context, at time.Time, samples []Metric) 
 			dims = append(dims, types.Dimension{Name: aws.String(k), Value: aws.String(sample.Labels[k])})
 		}
 		unit := types.StandardUnitCount
-		if strings.HasSuffix(sample.Name, "_seconds") {
+		if strings.HasSuffix(sample.Name, "_bytes_total") {
+			unit = types.StandardUnitBytes
+		}
+		if strings.HasSuffix(sample.Name, "_seconds") || strings.HasSuffix(sample.Name, "_seconds_total") {
 			unit = types.StandardUnitSeconds
 		}
 		input.MetricData = append(input.MetricData, types.MetricDatum{MetricName: aws.String(sample.Name), Value: aws.Float64(value), Unit: unit, Dimensions: dims, Timestamp: aws.Time(at.UTC()), StorageResolution: aws.Int32(60)})

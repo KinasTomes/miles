@@ -1,8 +1,8 @@
 # Shared R1 gate, lease và pins trên DynamoDB
 
-Task: W04-PHONG-03. Baseline `origin/main` tại `92deb23`.
-Board lúc kiểm tra: Doing/Ready, checklist0/3; W03-PHONG-02,
-W04-HAI-01 và W04-HAI-02 đều Hard Done.
+Baseline `origin/main` tại `92deb23`.
+Board lúc kiểm tra: Doing/Ready, checklist0/3; R1 integration skeleton,
+DynamoDB metadata và producer outbox đều Hard Done.
 
 ## Mapping ba checklist
 

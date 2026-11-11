@@ -110,11 +110,38 @@ func TestPhysicalLifecycleIncludesColdDeadAndProtectedRetired(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := report.Global
-	if g.BytesLogical != 300 || *g.BytesStored != 167 || *g.KnownProtectedBytes != 30 || g.PhysicalClasses[string(s.Glacier)] != 20 ||
-		!reflect.DeepEqual(g.PhysicalLifecycle, map[string]int64{"head_live": 90, "no_live_head": 20, "noncurrent": 15, "retired": 30, "orphan": 5, "other": 7}) {
+	if g.BytesLogical != 300 || *g.BytesStored != 167 || *g.KnownProtectedBytes != 30 || g.PhysicalClasses[string(s.Glacier)] != 20 || *g.PackOverhead != 20 ||
+		!reflect.DeepEqual(g.PhysicalLifecycle, map[string]int64{"head_live": 90, "cold_dead": 20, "noncurrent": 15, "retired": 30, "orphan": 5, "other": 7}) {
 		t.Fatal(g)
 	}
-	if b := report.Buckets["a"]; b.KnownProtectedBytes != nil || b.PhysicalLifecycle != nil || b.BytesLogical != 200 {
+	if b := report.Buckets["a"]; b.KnownProtectedBytes != nil || b.PhysicalLifecycle != nil || b.PackOverhead != nil || b.BytesLogical != 200 {
 		t.Fatal(b)
+	}
+}
+
+// Revival relocates an identity to a new Warm pack. Physical bytes grow and the
+// superseded archive stays listed as cold_dead; identity-based dedup is unchanged.
+func TestRevivalKeepsDedupRatioAndListsColdDead(t *testing.T) {
+	in := accountingInput()
+	before, err := Calculate(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := s.ChunkKey{Domain: "default", Hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	old, warm := s.PackRef{ID: "aa", Generation: "g"}, s.PackRef{ID: "ee", Generation: "g"}
+	in.Packs[old] = s.PackInfo{Ref: old, Size: 80, State: "Cold", Class: s.Glacier}
+	in.Packs[warm] = s.PackInfo{Ref: warm, Size: 70, State: "Warm", Class: s.Standard}
+	c := in.Chunks[k]
+	c.Location.Pack, c.LocationRevision = warm, 2
+	in.Chunks[k] = c
+	in.Physical.Objects = append(in.Physical.Objects, s.PhysicalObject{Key: "packs/ee/ee/g", Size: 70, Current: true, Category: "pack", Pack: warm})
+	after, err := Calculate(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, a := before.Global, after.Global
+	if *b.DedupRatio != 3 || *a.DedupRatio != *b.DedupRatio || a.BytesUniqueRaw != b.BytesUniqueRaw || *a.BytesStored != *b.BytesStored+70 ||
+		*a.TotalReduction >= *b.TotalReduction || *a.PackOverhead != 10 || a.PhysicalLifecycle["cold_dead"] != 90 || a.PhysicalLifecycle["head_live"] != 70 {
+		t.Fatal(b, a)
 	}
 }

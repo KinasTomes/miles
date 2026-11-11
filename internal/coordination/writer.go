@@ -475,7 +475,7 @@ func (w *Writer) Release() error {
 	if s.inflight != 0 || s.work != 0 {
 		return ErrWorkPending
 	}
-	if len(s.unknown) != 0 && (r.gate.shared == nil || !s.shared || len(s.unknown) != 1 || !s.unknown["commit/"+s.operationID]) {
+	if len(s.unknown) != 0 && (r.gate.shared == nil || !s.shared) {
 		return ErrReconcilePending
 	}
 	if r.gate.shared != nil && s.shared {

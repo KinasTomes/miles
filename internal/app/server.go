@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/faults"
 	"github.com/KinasTomes/miles/internal/observability"
 	"io"
 	"log/slog"
@@ -50,12 +51,31 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 		d.Operations.Cluster.Gate = admission
 	}
 	logger := slog.New(slog.NewJSONHandler(output, nil))
-	h := observability.NewHealth(d.Probe, admission.Draining, c.Mode != "runtime")
+	slog.SetDefault(logger)
+	probe := d.Probe
+	if d.Faults != nil {
+		nodeID := c.RuntimeNodeID
+		if nodeID == "" {
+			nodeID = "local"
+		}
+		probe = func(pctx context.Context) error {
+			if d.Faults.ShouldInject(time.Now(), faults.FaultKillNode, nodeID) {
+				admission.Drain()
+				return errors.New("fault injected: kill_node")
+			}
+			if d.Probe != nil {
+				return d.Probe(pctx)
+			}
+			return nil
+		}
+	}
+	h := observability.NewHealth(probe, admission.Draining, c.Mode != "runtime")
 	var operationalReady func() bool
 	var operationMetrics *observability.Operations
 	if d.Operations != nil {
 		operationalReady = d.Operations.Registry.Healthy
 		operationMetrics = d.Operations.Metrics
+		h.AttachRuntime(d.Operations.Runtime)
 	}
 	h.AttachOperations(operationMetrics, func() int64 { n, _ := admission.Status(); return n }, operationalReady)
 	health := &http.Server{Handler: h.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 150 * time.Second, MaxHeaderBytes: 16 << 10}
@@ -77,7 +97,11 @@ func serve(ctx context.Context, ln net.Listener, c config.Startup, d Dependencie
 			return closeDependencies(d, err)
 		}
 		defer listener.Close()
-		servers = append(servers, &http.Server{Handler: l.handler(admission), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 150 * time.Second, MaxHeaderBytes: 16 << 10})
+		handler := l.handler(admission)
+		if l.name == "s3" && d.Operations != nil && d.Operations.Runtime != nil {
+			handler = d.Operations.Runtime.Handler(handler)
+		}
+		servers = append(servers, &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 150 * time.Second, MaxHeaderBytes: 16 << 10})
 		listeners = append(listeners, listener)
 		names = append(names, l.name)
 	}

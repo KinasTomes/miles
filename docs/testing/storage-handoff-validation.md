@@ -1,6 +1,6 @@
 # Storage handoff acceptance
 
-Task W03-HAI-03. Baseline main: `87d0769`. This document separates offline
+Baseline main: `87d0769`. This document separates offline
 acceptance from an actual AWS execution; a skipped test is not live evidence.
 
 ## Approved design decisions
@@ -48,7 +48,7 @@ run recorded below.
 
 ## Opt-in S3 dev
 
-The environment in W03-HUNG-01 was torn down; see
+The AWS dev environment was torn down; see
 [AWS readiness](aws-dev-readiness.md). Provision/resume a reviewed disposable dev
 environment separately. This test never provisions infrastructure or changes IAM.
 
@@ -84,7 +84,7 @@ exactly three new versions (21 bytes) per run,
 STANDARD and SSE-KMS with the expected CMK. Bucket ownership is
 BucketOwnerEnforced, public access blocked, Versioning and Bucket Key enabled.
 See [integrated run and audited cleanup](evidence/s3-warm-final-20261027/acceptance-record.md)
-and [initial run](evidence/w03-hai-03-s3-live-20261027/acceptance-record.md).
+and [initial run](evidence/storage-handoff-s3-live-20261027/acceptance-record.md).
 This run used manually provisioned personal resources, not the shared Terraform
 environment. All six exact test versions from both runs were removed after
 preserving evidence; post-cleanup audit confirms zero versions/markers/multipart

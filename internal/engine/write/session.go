@@ -149,7 +149,7 @@ func (s *WriteSession) prepare(kind byte, pipeline Pipeline, body io.Reader, man
 		return PreparedObject{}, nil, err
 	}
 	pipeline.Lookup = s.metadata
-	packs := &packRecorder{Publisher: &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil, WriteCache: pipeline.WriteCache, AdmitOnWrite: pipeline.AdmitOnWrite}, packs: map[storage.PackRef]struct{}{}}
+	packs := &packRecorder{Publisher: &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil, WriteCache: pipeline.WriteCache, AdmitOnWrite: pipeline.AdmitOnWrite, Counters: pipeline.Counters}, packs: map[storage.PackRef]struct{}{}}
 	pipeline.Publisher = packs
 	p, err := prepare(s.ctx, kind, pipeline, pages, s.writer.Fence(), body, s.auth.Bucket.Domain, manifestID)
 	if err != nil {
@@ -184,7 +184,7 @@ func (s *WriteSession) PrepareCopy(source storage.ObjectHead, manifestID string)
 		return PreparedObject{}, err
 	}
 	publisher := &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil}
-	p, err := CopyManifest(s.ctx, publisher, s.metadata, s.metadata, s.writer.Fence(), source, manifestID)
+	p, err := CopyManifest(s.ctx, referenceCopyPublisher{StorePublisher: publisher, metadata: s.metadata}, s.metadata, s.metadata, s.writer.Fence(), source, manifestID)
 	if err != nil {
 		s.failed = true
 		return PreparedObject{}, err
@@ -193,6 +193,24 @@ func (s *WriteSession) PrepareCopy(source storage.ObjectHead, manifestID string)
 	owned.PageIndex = append([]uint64(nil), p.PageIndex...)
 	s.prepared = &owned
 	return p, nil
+}
+
+// Same-domain metadata copy is the explicit Architecture §5.3 exception: Cold
+// references may be copied without restoring or claiming Warm readability.
+type referenceCopyPublisher struct {
+	*StorePublisher
+	metadata *CoordinatedMetadata
+}
+
+func (p referenceCopyPublisher) Reuse(ctx context.Context, row storage.Chunk) (bool, error) {
+	infos, err := p.metadata.GetPacks(ctx, []storage.PackRef{row.Location.Pack})
+	if err != nil {
+		return false, err
+	}
+	if info, ok := infos[row.Location.Pack]; ok && info.Class == storage.Glacier {
+		return p.metadata.pinArchiveReference(ctx, row)
+	}
+	return p.StorePublisher.Reuse(ctx, row)
 }
 
 // PrepareCompletion is Prepare for CompleteMultipartUpload: the backend's

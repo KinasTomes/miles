@@ -32,6 +32,16 @@ type ReuseGuard interface {
 	Pin(context.Context, storage.Chunk) (bool, error)
 }
 
+type canonicalOutcome byte
+
+const (
+	outcomeNone canonicalOutcome = iota
+	outcomeInsert
+	outcomeRevive
+	outcomeOrphan
+	outcomeUnchanged
+)
+
 // StorePublisher is the durable pack/canonical adapter for Pipeline. The
 // caller supplies an already admitted writer fence and a protection deadline.
 type StorePublisher struct {
@@ -42,6 +52,20 @@ type StorePublisher struct {
 	Guard          ReuseGuard
 	Writer         storage.WriterFence
 	ProtectedUntil time.Time
+	Counters       *Counters
+	Observer       func(revivedChunks, revivedBytes, orphanedChunks, orphanedBytes uint64)
+}
+
+func (p *StorePublisher) recordPhysical(revivedChunks, revivedBytes, orphanedChunks, orphanedBytes uint64) {
+	if p == nil {
+		return
+	}
+	if p.Counters != nil {
+		p.Counters.RecordPhysical(revivedChunks, revivedBytes, orphanedChunks, orphanedBytes)
+	}
+	if p.Observer != nil {
+		p.Observer(revivedChunks, revivedBytes, orphanedChunks, orphanedBytes)
+	}
 }
 
 var _ Publisher = (*StorePublisher)(nil)
@@ -151,7 +175,13 @@ func (p *StorePublisher) publish(ctx context.Context, ref storage.PackRef, data,
 	for _, entry := range entries {
 		row := storage.Chunk{Version: storage.ModelVersion, Key: entry.Key, RawBytes: int64(entry.RawLength), Location: entry.Location(ref), LocationRevision: 1}
 		old, found := prior[entry.Key]
-		resolved, err := p.canonicalize(ctx, row, old, found, restoreRequiredUntil)
+		resolved, outcome, err := p.canonicalize(ctx, row, old, found, restoreRequiredUntil)
+		switch outcome {
+		case outcomeRevive:
+			p.recordPhysical(1, uint64(entry.StoredLen), 0, 0)
+		case outcomeOrphan:
+			p.recordPhysical(0, 0, 1, uint64(entry.StoredLen))
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -166,66 +196,66 @@ func (p *StorePublisher) publish(ctx context.Context, ref storage.PackRef, data,
 	return out, nil
 }
 
-func (p *StorePublisher) canonicalize(ctx context.Context, desired, old storage.Chunk, found bool, restoreRequiredUntil time.Time) (storage.Chunk, error) {
-	for attempt := 0; attempt < 8; attempt++ {
+func (p *StorePublisher) canonicalize(ctx context.Context, desired, old storage.Chunk, found bool, restoreRequiredUntil time.Time) (storage.Chunk, canonicalOutcome, error) {
+	for range 8 {
 		if err := ctx.Err(); err != nil {
-			return storage.Chunk{}, err
+			return storage.Chunk{}, outcomeNone, err
 		}
 		if !found {
 			winner, inserted, err := p.Metadata.PutChunkIfAbsent(ctx, desired, p.Writer)
 			if err == nil {
 				if inserted {
-					return winner, nil
+					return winner, outcomeInsert, nil
 				}
 				old, found = winner, true
 			} else if !errors.Is(err, storage.ErrUnavailable) {
-				return storage.Chunk{}, err
+				return storage.Chunk{}, outcomeNone, err
 			} else {
 				// A lost ACK cannot prove absence. Read authoritative state;
 				// if it is still unavailable, keep the pack as an orphan.
 				old, found, err = p.readCanonical(ctx, desired.Key)
 				if err != nil || !found {
-					return storage.Chunk{}, storage.ErrUnavailable
+					return storage.Chunk{}, outcomeNone, storage.ErrUnavailable
 				}
 				if old.Location != desired.Location {
-					return storage.Chunk{}, storage.ErrUnavailable
+					return storage.Chunk{}, outcomeNone, storage.ErrUnavailable
 				}
-				return old, nil
+				return old, outcomeInsert, nil
 			}
 		}
 		if old.Key != desired.Key || old.RawBytes != desired.RawBytes || old.Validate() != nil {
-			return storage.Chunk{}, storage.ErrInvalid
+			return storage.Chunk{}, outcomeNone, storage.ErrInvalid
 		}
 		if old.Location == desired.Location {
-			return old, nil
+			return old, outcomeUnchanged, nil
 		}
 		accepted, err := p.reuse(ctx, old, restoreRequiredUntil)
 		if err != nil {
-			return storage.Chunk{}, err
+			return storage.Chunk{}, outcomeNone, err
 		}
 		if accepted {
-			return old, nil
+			return old, outcomeOrphan, nil
 		}
 		winner, err := p.Metadata.CompareAndSwapChunkLocation(ctx, desired.Key, old.LocationRevision, desired.Location, p.Writer)
 		if err == nil {
-			return winner, nil
+			return winner, outcomeRevive, nil
 		}
 		if !errors.Is(err, storage.ErrConflict) && !errors.Is(err, storage.ErrNotFound) && !errors.Is(err, storage.ErrUnavailable) {
-			return storage.Chunk{}, err
+			return storage.Chunk{}, outcomeNone, err
 		}
 		unknown := errors.Is(err, storage.ErrUnavailable)
 		old, found, err = p.readCanonical(ctx, desired.Key)
 		if err != nil {
-			return storage.Chunk{}, err
+			return storage.Chunk{}, outcomeNone, err
 		}
 		if unknown {
 			if !found || old.Location != desired.Location {
-				return storage.Chunk{}, storage.ErrUnavailable
+				return storage.Chunk{}, outcomeNone, storage.ErrUnavailable
 			}
-			return old, nil
+			return old, outcomeRevive, nil
 		}
 	}
-	return storage.Chunk{}, fmt.Errorf("%w: canonical contention budget exhausted", storage.ErrUnavailable)
+	return storage.Chunk{}, outcomeNone, fmt.Errorf("%w: canonical contention budget exhausted", storage.ErrUnavailable)
 }
 
 func (p *StorePublisher) readCanonical(ctx context.Context, key storage.ChunkKey) (storage.Chunk, bool, error) {
