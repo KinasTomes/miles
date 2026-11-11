@@ -217,3 +217,52 @@ func TestLocalLifecycleCleanupKeepsMismatchedStepAuthority(t *testing.T) {
 		})
 	}
 }
+
+func TestLocalLifecycleTakeoverBindsActionObservationToClaimCAS(t *testing.T) {
+	m, w, j, policy, utc, _, _ := lifeFixture(t, "tiering", s.GlacierIR)
+	ctx := t.Context()
+	if out, err := w.Step(ctx, j, policy); err != nil || !out.Done {
+		t.Fatal(out, err)
+	}
+	lease, err := m.GetR1Lease(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = m.CloseR1(ctx, j.Worker); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.ReleaseR1(ctx, j.Worker); err != nil {
+		t.Fatal(err)
+	}
+	next := j.Worker
+	next.Epoch++
+	if _, err = m.AcquireR1(ctx, s.R1Acquire{Fence: next, Owner: "takeover", Kind: "control", OpID: lease.OpID, Deadline: utc.Now().Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	peer, err := New(Options{API: m.api, Tables: m.tables, Authority: m.authority, Now: utc.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seam := &lifeLateCASAPI{API: m.api, table: m.tables["Jobs"], before: func() {
+		// Adversarially change an otherwise valid original-step observation
+		// immediately before the claim transaction reaches native DynamoDB.
+		if err := peer.update(ctx, func(tx *transaction) error {
+			a, err := r1Read[lifecycle.Action](tx, lifecycleKey(j.ID))
+			if err != nil {
+				return err
+			}
+			a.StepID = strings.Repeat("9", 32)
+			return r1Put(tx, lifecycleKey(j.ID), a)
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}}
+	m.api = seam
+	if _, err = m.ChangeJob(ctx, jobs.Change{JobID: j.ID, ExpectedRevision: j.Revision, Kind: "claim", Fence: next, NodeID: j.WorkerNodeID, NodeIncarnation: j.WorkerNodeIncarnation}); !errors.Is(err, jobs.ErrReconciliation) || !seam.fired {
+		t.Fatal("stale action observation cleared pending step", err, seam.fired)
+	}
+	stored, err := m.GetJob(ctx, j.ID)
+	if err != nil || !reflect.DeepEqual(stored, j) {
+		t.Fatal("rejected proof race changed job", stored, err)
+	}
+}
