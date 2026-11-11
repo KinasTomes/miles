@@ -1,7 +1,7 @@
 # Pack lifecycle validation
 
-W05-PHONG-02, baseline `765593e`. Backlog checked 2026-11-03: Doing/Ready;
-W04-PHONG-02, W04-PHONG-03, W05-HUNG-01 and W05-HUNG-02 are Hard Done.
+Pack lifecycle, baseline `765593e`. Backlog checked 2026-11-03: Doing/Ready;
+policy eligibility, shared R1 and Hưng's deployment prerequisites are Hard Done.
 
 ## Checklist implementation
 
@@ -89,7 +89,7 @@ skip internal coordination-only revisions and are not assumed contiguous.
 The final promotion action also retains destination PackInfo/protection. Existing
 PackProtection remains its independent monotonic revision domain.
 
-W05-PHONG-03 MUST include these projection namespaces/retention facts in rebuild,
+Recovery rebuild MUST include these projection namespaces/retention facts in rebuild,
 retain required action/outcome artifacts, and reconcile ambiguous physical work
 before readiness. Immutable staged plan pages are coordination data, not new
 recovery artifacts: active unknown control leases prevent sealing through an

@@ -1,4 +1,4 @@
-# Multipart metadata and producer handoff (W04-HAI-02)
+# Multipart metadata and producer handoff
 
 This is the implemented adapter contract for multipart/API and lease/recovery
 consumers. It does not implement multipart HTTP routes, a distributed epoch

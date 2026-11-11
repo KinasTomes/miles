@@ -1,6 +1,6 @@
-# Chunking, dedup, nén và commit — W01-CHIEN-05
+# Chunking, dedup, nén và commit
 
-Trạng thái: đề xuất để review; Phong review độc lập test vectors và thứ tự durability/commit, người thực hiện (Chiến) không tự review. Task Miles `W01-CHIEN-05` (nguồn `W01-HAI-03`, A08/A14), phụ thuộc `W01-HUNG-04` (Done) và `W01-CHIEN-04` (PR #13 đã merge). Chưa có chunker, codec hay adapter production: fixture trong `tests/fixtures/engine/` được kiểm bằng hàm tham chiếu viết trong test từ tài liệu này. Nguồn: [kiến trúc §1.5, §3, §5, §8–10, §19.1](../dedup-storage-gateway-architecture.md), [API §2.2.3, §2.6, §4.3](../dedup-storage-gateway-api.md), [shared storage](shared-storage.md), [pack/pages](pack-and-pages.md), [clock/policy](clock-and-policy.md).
+Trạng thái: đề xuất để review; Phong review độc lập test vectors và thứ tự durability/commit, người thực hiện (Chiến) không tự review. Phụ thuộc [shared storage](shared-storage.md) (Done) và [pack/pages](pack-and-pages.md) (PR #13 đã merge). Chưa có chunker, codec hay adapter production: fixture trong `tests/fixtures/engine/` được kiểm bằng hàm tham chiếu viết trong test từ tài liệu này. Nguồn: [kiến trúc §1.5, §3, §5, §8–10, §19.1](../dedup-storage-gateway-architecture.md), [API §2.2.3, §2.6, §4.3](../dedup-storage-gateway-api.md), [shared storage](shared-storage.md), [pack/pages](pack-and-pages.md), [clock/policy](clock-and-policy.md).
 
 | Checklist W1 | Mục | Fixture |
 |---|---|---|
@@ -10,7 +10,7 @@ Trạng thái: đề xuất để review; Phong review độc lập test vectors
 
 ## 1. Phạm vi
 
-Write path: body logical → FastCDC → SHA-256 → lookup `(domain, hash)` → nén chunk cần ghi → pack/sidecar → `Chunks` → manifest pages → transaction R2. Tài liệu chốt thuật toán và tham số chunking, identity, quy tắc chọn codec, quyết định reuse/ghi/revive, thứ tự bền vững và danh sách action transaction. Không chốt: byte layout pack/pages (pack-and-pages), cơ chế pin/gate/lease (R1, W01-PHONG-02), encoding event/journal (W01-PHONG-03), merge/validator policy (W02-PHONG-01).
+Write path: body logical → FastCDC → SHA-256 → lookup `(domain, hash)` → nén chunk cần ghi → pack/sidecar → `Chunks` → manifest pages → transaction R2. Tài liệu chốt thuật toán và tham số chunking, identity, quy tắc chọn codec, quyết định reuse/ghi/revive, thứ tự bền vững và danh sách action transaction. Không chốt: byte layout pack/pages (pack-and-pages), cơ chế pin/gate/lease ([R1](r1-and-cache.md)), encoding event/journal ([R2](r2-recovery.md)), merge/validator policy (validator config/policy).
 
 ## 2. FastCDC v1
 
@@ -73,7 +73,7 @@ So sánh bằng số học thập phân chính xác (`min_saving_ratio` chuẩn 
 
 ### 4.2 Encoder, level và frame
 
-- Encoder: `github.com/klauspost/compress/zstd` (Go thuần, không cgo, build chéo binary Edge); W02-HAI-01 pin version khi thêm dependency. Mỗi chunk là một lần `EncodeAll`, đúng một frame RFC 8878, không dictionary, không byte sau frame (pack-and-pages §2.3).
+- Encoder: `github.com/klauspost/compress/zstd` (Go thuần, không cgo, build chéo binary Edge); phần hiện thực chunker/zstd pin version khi thêm dependency. Mỗi chunk là một lần `EncodeAll`, đúng một frame RFC 8878, không dictionary, không byte sau frame (pack-and-pages §2.3).
 - Validator `compression`: `codec = zstd` (raw là fallback lưu trữ, không là codec policy; tắt nén dùng `enabled = false`), `level ∈ {1, 3, 7, 11}`, `0 ≤ min_saving_ratio < 1`. Bốn level ứng với bốn encoder khác nhau của `EncoderLevelFromZstd` (fastest, default, better, best); level khác dùng chung encoder nên bị từ chối thay vì nhận im lặng. Tỉ lệ nén không tương đương libzstd cùng số level. Fixture: `compression.json` → `policy`.
 - Byte frame không xác định qua version/thư viện, nên không là identity. Retry PUT pack cùng generation gửi lại đúng bytes đã buffer, không nén lại (`PackStore` trả conflict nếu bytes khác).
 - Trước khi đưa blob zstd vào pack, writer giải nén lại và so SHA-256 với hash: lỗi encoder bị chặn khi body client còn trong tay, không phát hiện muộn lúc GET. Reader giới hạn output theo `raw_len`, từ chối frame khai báo content/window lớn hơn 16 MiB.
@@ -83,7 +83,7 @@ So sánh bằng số học thập phân chính xác (`min_saving_ratio` chuẩn 
 
 ### 5.1 Lookup
 
-Mỗi request giữ map `(domain, hash) → quyết định`; hash lặp trong request dùng lại quyết định đầu (một blob, đếm `x-dsg-chunks-dup` theo API §5). Baseline: `GetChunks(keys, consistent=true)` theo lô (BatchGetItem ≤ 100 key, retry hết `UnprocessedKeys`). Tối ưu W02-HAI-01 được phép nếu giữ §5.4:
+Mỗi request giữ map `(domain, hash) → quyết định`; hash lặp trong request dùng lại quyết định đầu (một blob, đếm `x-dsg-chunks-dup` theo API §5). Baseline: `GetChunks(keys, consistent=true)` theo lô (BatchGetItem ≤ 100 key, retry hết `UnprocessedKeys`). Tối ưu Bloom/LRU trong phần hiện thực chunker được phép nếu giữ §5.4:
 
 - LRU node-local giữ row `Chunks`: chỉ là ứng viên; reuse vẫn cần pin đúng location hiện hành (§5.4).
 - Bloom node-local theo `domain#hash`: âm tính chỉ được bỏ qua lookup khi Bloom phủ đủ store (profile một node Badger: dựng từ scan `Chunks` lúc khởi động và mọi insert trong process). Cluster: Bloom thiếu chunk node khác ghi, bỏ lookup sẽ ghi blob trùng rồi thua insert; vẫn đúng nhưng tốn PUT/bytes, chỉ bật khi đo có lợi.
@@ -122,7 +122,7 @@ Mỗi intended insert/location CAS mutation có op_id riêng, bind durable với
 
 Vòng lặp kết thúc trước hard deadline; mỗi conflict nghĩa là writer khác đã tiến triển. Location chỉ chuyển sang generation Warm mới (revive, compaction, promote); tiering không chuyển pack đang được pin/protect (R1), nên một location đã pin vẫn đọc được trong cửa sổ protection dù sau đó bị CAS đi.
 
-**Bất biến trước commit (I1):** mỗi `ChunkKey` distinct trong manifest có canonical location đọc được ngay, hoặc do chính writer insert/CAS thắng trên pack ở bước 5.3, hoặc đã được R1 pin đúng `(pack_id, generation)` ở `location_revision` vừa đọc consistent. `PinLocations` (W01-PHONG-02) phải tự kiểm `location_revision` trong cùng thao tác hoặc caller đọc consistent lại sau pin; khác revision thì phân loại lại.
+**Bất biến trước commit (I1):** mỗi `ChunkKey` distinct trong manifest có canonical location đọc được ngay, hoặc do chính writer insert/CAS thắng trên pack ở bước 5.3, hoặc đã được R1 pin đúng `(pack_id, generation)` ở `location_revision` vừa đọc consistent. `PinLocations` ([R1](r1-and-cache.md)) phải tự kiểm `location_revision` trong cùng thao tác hoặc caller đọc consistent lại sau pin; khác revision thì phân loại lại.
 
 ### 5.5 Orphan và visibility
 
@@ -263,13 +263,13 @@ make check
 
 | Task | Việc |
 |---|---|
-| W02-HAI-01 | Chunker/hasher §2–3, zstd §4 (thêm dependency klauspost, pin version), Bloom/LRU §5.1; chạy `chunking.json`/`compression.json` rồi xóa reference tương ứng trong `contract_test.go` |
-| W02-PHONG-01 | Validator `chunking`/`compression` theo §2.1/§4.2 và các ca `policy` |
-| W02-HAI-02 | Pack writer §5.3; thêm port đăng ký `Packs` Uploading → Warm (hiện `MetadataStore` chỉ có `GetPacks`) |
-| W02-HAI-03, W04-HAI-01 | Badger/DynamoDB: transaction §6.3, insert/CAS kèm Outbox, `ALL_OLD` cho winner, token §6.1, reconcile và cleanup §6.4; chạy `transactions`, `scenarios`, `tokens` |
-| W03-HAI-01 | Write path §5–6.2, I1, bảng crash |
-| W01-PHONG-02 | `PinLocations` kiểm `location_revision`; item `Leases` trong điều kiện commit/insert/CAS |
-| W01-PHONG-03, W04-HAI-02 | Event identity đã chốt [R2 §5](r2-recovery.md#5-event-identity-và-idempotency); W2+ triển khai parent/mutation/outcome binding và update fixtures; entity `Chunks` (`OutboxEvent.Validate` hiện chỉ nhận `Objects`/`SystemConfig`); payload event `Objects` mang manifest mới và manifest bị thay; `refcount_next = 0` khi tạo event, Delete Outbox có điều kiện `refcount_next = số lô` (§6.6); op_id upload sinh lúc Create, mở lại Active giữ ledger (§6.1, §6.4) |
-| W05-HAI-01 | Refcount worker §6.6, chạy `refcount`; đối soát `live_bytes`/refcount, dọn orphan §5.5 |
+| Chunker/hasher và zstd | Chunker/hasher §2–3, zstd §4 (thêm dependency klauspost, pin version), Bloom/LRU §5.1; chạy `chunking.json`/`compression.json` rồi xóa reference tương ứng trong `contract_test.go` |
+| Validator config/policy | Validator `chunking`/`compression` theo §2.1/§4.2 và các ca `policy` |
+| Pack writer/codec | Pack writer §5.3; thêm port đăng ký `Packs` Uploading → Warm (hiện `MetadataStore` chỉ có `GetPacks`) |
+| Adapter Badger ([dev metadata](dev-metadata.md)), [DynamoDB](dynamodb-adapter.md) | Badger/DynamoDB: transaction §6.3, insert/CAS kèm Outbox, `ALL_OLD` cho winner, token §6.1, reconcile và cleanup §6.4; chạy `transactions`, `scenarios`, `tokens` |
+| Write path engine | Write path §5–6.2, I1, bảng crash |
+| [R1](r1-and-cache.md) | `PinLocations` kiểm `location_revision`; item `Leases` trong điều kiện commit/insert/CAS |
+| [R2](r2-recovery.md), [producer outbox multipart](multipart-metadata-handoff.md) | Event identity đã chốt [R2 §5](r2-recovery.md#5-event-identity-và-idempotency); W2+ triển khai parent/mutation/outcome binding và update fixtures; entity `Chunks` (`OutboxEvent.Validate` hiện chỉ nhận `Objects`/`SystemConfig`); payload event `Objects` mang manifest mới và manifest bị thay; `refcount_next = 0` khi tạo event, Delete Outbox có điều kiện `refcount_next = số lô` (§6.6); op_id upload sinh lúc Create, mở lại Active giữ ledger (§6.1, §6.4) |
+| Refcount worker | Refcount worker §6.6, chạy `refcount`; đối soát `live_bytes`/refcount, dọn orphan §5.5 |
 
 Đổi thuật toán, gear, mask hoặc giới hạn tham số sau freeze chỉ làm giảm dedup với dữ liệu cũ, không làm hỏng dữ liệu; vẫn cần version mới (`fastcdc-v2`) và review vì fixture v1 phải giữ nguyên.

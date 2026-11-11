@@ -1,7 +1,7 @@
 # S3 compatibility suite trước freeze
 
-Producer task: W02-CHIEN-03. Consumers: W03-CHIEN-02 (PUT/GET/HEAD/Range),
-W03/W04 handler và adapter/integration tests, W04-CHIEN-01 (Admin/dsgctl).
+Producer: S3 compatibility suite. Consumers: handler PUT/GET/HEAD/Range,
+W03/W04 handler và adapter/integration tests, Admin/dsgctl.
 Contract và source proof: [dedup-storage-gateway-api.md](../dedup-storage-gateway-api.md)
 mục 2.2.2, 2.4, 2.7, 4.1, 4.2 và 11; quyết định chi tiết chưa ghi trong API
 nằm ở [ADR-0001](../adr/0001-s3-compat-freeze-decisions.md).
@@ -25,11 +25,11 @@ pin), nên fixture – code – document không thể lệch nhau trước freez
 
 ## Bàn giao cho adapter/integration tests
 
-- **W03-CHIEN-02 (PUT/GET/HEAD/Range):** thay `parseRange` và
+- **Handler PUT/GET/HEAD/Range:** thay `parseRange` và
   `headChecksumHeaders` trong `internal/api/s3/compat_test.go` bằng chính
   handler; các row `range`/`head`/`empty` (GET) phải pass nguyên vẹn —
   cùng cách `authorization.json` và `quota.json` đã thay hàm tham chiếu ở
-  `contract_test.go` sau W02-CHIEN-02. Handler Range phải trả đúng
+  `contract_test.go` sau khi có service authorization/quota. Handler Range phải trả đúng
   206/200/416 và `Content-Range` như row pin.
 - **Handler XML (DeleteObjects, CreateBucket):** thêm target struct theo op
   và dùng lại nhóm `xml`; parser `DecodeXML` đã là của chung.
@@ -71,7 +71,7 @@ Quy ước ghi lỗi thật: một crasher tìm được qua fuzz được minim
 trong `note`, rồi mới sửa code. Không có crasher thì ghi số executions vào
 bằng chứng PR như dưới.
 
-## Kết quả 25/10/2026 (W02-CHIEN-03)
+## Kết quả 25/10/2026
 
 Local Windows, Go 1.27.2, seed corpus pass trong `make check`. Fuzz từng
 target: `FuzzResolve` 1.115.398 execs/30 s, `FuzzSigV4` 1.527.259 execs/30 s,

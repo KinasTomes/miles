@@ -38,9 +38,9 @@ type ObjectLister interface {
 	ListObjects(ctx context.Context, r storage.ListObjectsRequest) (object.ListPage, error)
 }
 
-// Objects serves the object operations of API v2 4.2, 4.5 and 4.6: PutObject,
-// CopyObject, GetObject, HeadObject, DeleteObject, DeleteObjects and
-// ListObjectsV2.
+// Objects serves the object operations of API v2 4.2, 4.4, 4.5 and 4.6:
+// PutObject, CopyObject, GetObject, HeadObject, RestoreObject, DeleteObject,
+// DeleteObjects and ListObjectsV2.
 type Objects struct {
 	Writer       ObjectWriter
 	Reader       ObjectReader
@@ -60,7 +60,7 @@ func NewObjectHandlers(writer ObjectWriter, reader ObjectReader, lister ObjectLi
 	o := &Objects{Writer: writer, Reader: reader, Lister: lister, listTokenKey: bytes.Clone(tokenKey)}
 	return map[Operation]Handler{
 		PutObject: o.PutObject, CopyObject: o.CopyObject, GetObject: o.GetObject, HeadObject: o.HeadObject,
-		DeleteObject: o.DeleteObject, DeleteObjects: o.DeleteObjects, ListObjectsV2: o.ListObjectsV2,
+		RestoreObject: o.RestoreObject, DeleteObject: o.DeleteObject, DeleteObjects: o.DeleteObjects, ListObjectsV2: o.ListObjectsV2,
 	}
 }
 
@@ -248,6 +248,9 @@ func (o *Objects) HeadObject(w http.ResponseWriter, r *Request) error {
 	h.Set("Accept-Ranges", "bytes")
 	h.Set("Content-Length", strconv.FormatInt(length, 10))
 	writeObjectMetadata(h, stat.Info.Metadata)
+	if stat.Info.Restore != "" {
+		h.Set("X-Amz-Restore", stat.Info.Restore)
+	}
 	if !hasRange {
 		writeResponseChecksum(h, r.HTTP.Header.Get("X-Amz-Checksum-Mode"), stat.Info.Checksum)
 	}

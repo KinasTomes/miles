@@ -1,11 +1,10 @@
-# W03-PHONG-01 — Warm GET/Range reader
+# Warm GET/Range reader
 
 Trạng thái: implementation và evidence để review; chưa sign-off Miles, chưa
 freeze API. Baseline cuối `9a800ed` (main đã merge PR #31 và PR #28 của Hải).
 PR #28 được fast-forward trong lúc triển khai, không sửa shared contract để né
 validation mới; tombstone fixture tuân thủ yêu cầu không mang ETag/metadata.
-Task chính thức:
-[W03-PHONG-01](https://miles.extase.dev/tasks/W03-PHONG-01).
+Phạm vi: Warm GET/Range reader.
 
 ## Phạm vi bàn giao
 
@@ -117,7 +116,7 @@ Local pins chỉ bảo vệ đối với actors tuân theo boundary này. Manife
 immutable và chưa có manifest reclamation port. Không được bật multi-node GC,
 tiering hoặc destructive maintenance dựa vào local gate. Durable R1 lease/fence,
 service incarnation/recovery và maintenance coordination tiếp tục ở
-W03-PHONG-02; không dùng W2 fake coordinator làm production authority.
+[R1 integration](r1-integration-validation.md); không dùng W2 fake coordinator làm production authority.
 
 Không khởi tạo gate mới khi worker của gate cũ còn sống. Shutdown cần cancel,
 join toàn bộ reads trước khi đóng store hoặc thay runtime. Cancellation không
@@ -125,7 +124,7 @@ join toàn bộ reads trước khi đóng store hoặc thay runtime. Cancellatio
 
 ## Bàn giao API và observability
 
-- API consumer W03-CHIEN-02 gọi `Read`, nhận metadata qua `Ready`, normalize
+- API consumer (handler PUT/GET/HEAD/Range) gọi `Read`, nhận metadata qua `Ready`, normalize
   Range và xử lý headers theo API contract. `Ready` không phải lệnh commit HTTP
   headers; admission/fetch vẫn có thể fail sau đó.
 - Emitter chỉ mượn verified slice đến khi trả về. Consumer muốn giữ bytes phải

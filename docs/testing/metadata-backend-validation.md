@@ -1,6 +1,6 @@
 # Development metadata validation
 
-Task: W02-HAI-03. Backend: `internal/metadata/badger`, schema 1, Badger v4.9.6.
+Backend: `internal/metadata/badger`, schema 1, Badger v4.9.6.
 
 ## Checklist evidence
 

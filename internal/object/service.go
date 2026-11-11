@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"time"
 
@@ -80,6 +81,8 @@ type Info struct {
 	LastModified time.Time
 	Metadata     map[string]string
 	Checksum     storage.Checksum
+	// Restore is the x-amz-restore value of HEAD (API v2 4.4); GET leaves it empty.
+	Restore string
 }
 
 type GetResult struct {
@@ -122,7 +125,7 @@ type Metadata interface {
 }
 
 // CommitEvent is the input the outbox producer turns into the authoritative
-// event. MetadataEvents uses the W04-HAI-02 producer; only isolated service tests
+// event. MetadataEvents uses the strict outbox producer; only isolated service tests
 // may substitute an envelope fixture.
 // Head contains the complete prepared descriptor with Revision still zero;
 // Revision is the resulting revision assigned by the publication transaction.
@@ -163,7 +166,7 @@ type Options struct {
 	Registry       *coordination.WriterRegistry
 	Clock          clock.Clock
 	ReadUTC        storage.R1TimeSource
-	AutoRestore    func(context.Context, *coordination.WarmView, storage.ObjectHead, storage.PackRef, uint64, time.Time) error
+	Restore        func(ctx context.Context, view *coordination.WarmView, head storage.ObjectHead, ref storage.PackRef, revision uint64, required time.Time, explicit *storage.RestoreRequest) (bool, error)
 	AdmitWriter    func(context.Context, WriterRequest) (AdmittedWriter, error)
 	Chunking       engine.ChunkingParams
 	Compression    engine.CompressionPolicy
@@ -175,6 +178,8 @@ type Options struct {
 	RequestTimeout time.Duration
 	// Uploads serves the multipart operations; nil leaves them unavailable.
 	Uploads Uploads
+	// WriteCounters optionally accumulates PUT/UploadPart revival and orphans.
+	WriteCounters *write.Counters
 }
 
 type Service struct{ o Options }
@@ -275,7 +280,7 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (out PutResult, e
 		return PutResult{}, storage.ErrInvalid
 	}
 	stage = "prepare"
-	prepared, err := session.Prepare(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression, WriteCache: s.o.Cache, AdmitOnWrite: cachePolicy.Cache().AdmitOnWrite}, r.Body, manifestID)
+	prepared, err := session.Prepare(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression, WriteCache: s.o.Cache, AdmitOnWrite: cachePolicy.Cache().AdmitOnWrite, Counters: s.o.WriteCounters}, r.Body, manifestID)
 	if err != nil {
 		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, fmt.Errorf("prepare: %w", err)
@@ -555,16 +560,64 @@ func (s *Service) GetObject(ctx context.Context, r GetRequest) (GetResult, error
 		},
 	}, r.Emit)
 	if err != nil {
-		err = fmt.Errorf("read: %w", err)
-		switch {
-		case errors.Is(err, readpath.ErrExhausted):
-			return result, storage.ErrUnavailable
-		case errors.Is(err, readpath.ErrAdmissionInvalid):
-			return result, storage.ErrInvalid
-		}
-		return result, err
+		return result, readError(err)
 	}
 	return result, nil
+}
+
+func readError(err error) error {
+	err = fmt.Errorf("read: %w", err)
+	switch {
+	case errors.Is(err, readpath.ErrExhausted):
+		return storage.ErrUnavailable
+	case errors.Is(err, readpath.ErrAdmissionInvalid):
+		return storage.ErrInvalid
+	}
+	return err
+}
+
+// ErrNotArchived is RestoreObject on an object whose data is all Warm or
+// GLACIER_IR: there is nothing to restore (API v2 4.4, 400 InvalidRequest).
+var ErrNotArchived = fmt.Errorf("%w: the object has no archived data to restore", storage.ErrInvalid)
+
+// RestoreRequest is one RestoreObject on a bucket the router authorized for read.
+type RestoreRequest struct {
+	Bucket, BucketID, Key, CredentialID string
+	Days                                int
+	Tier                                string
+}
+
+// RestoreResult counts the archive packs this request started restoring and
+// those already restoring; neither means the object is readable yet.
+type RestoreResult struct {
+	Initiated, InProgress int
+}
+
+// RestoreObject requests restore of the object's archive packs without waiting
+// for the archive. The read view and pins are the same as GET's.
+func (s *Service) RestoreObject(ctx context.Context, r RestoreRequest) (RestoreResult, error) {
+	if ctx == nil || r.Bucket == "" || r.Key == "" || r.CredentialID == "" {
+		return RestoreResult{}, storage.ErrInvalid
+	}
+	deadline, _, err := s.deadline(ctx)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("restore deadline: %w", err)
+	}
+	policy, err := s.o.BucketPolicy(r.BucketID)
+	if err != nil {
+		return RestoreResult{}, fmt.Errorf("restore policy: %w", err)
+	}
+	out, err := s.o.Reader.Restore(ctx, readpath.WarmRequest{
+		CredentialID: r.CredentialID, Bucket: r.Bucket, Key: r.Key,
+		Deadline: deadline, BucketPolicy: policy, Budget: s.o.Budget, MaxOutstanding: s.o.MaxOutstanding,
+	}, storage.RestoreRequest{Days: r.Days, Tier: r.Tier})
+	if err != nil {
+		return RestoreResult{}, readError(err)
+	}
+	if out.Archive == 0 {
+		return RestoreResult{}, ErrNotArchived
+	}
+	return RestoreResult{Initiated: out.Initiated, InProgress: out.InProgress}, nil
 }
 
 // Stat reports the committed head for HEAD without reading pack payload.
@@ -596,7 +649,25 @@ func (s *Service) Stat(ctx context.Context, r GetRequest) (GetResult, error) {
 		}
 		result.Range = *r.Range
 	}
+	archive, err := s.o.Reader.ArchiveState(ctx, head)
+	if err != nil {
+		return GetResult{}, readError(err)
+	}
+	result.Info.Restore = restoreHeader(archive)
 	return result, nil
+}
+
+// restoreHeader aggregates x-amz-restore over the head's archive packs (API v2
+// 4.4): ongoing while any restore runs, the earliest expiry once every one is
+// restored, and nothing otherwise, never an invented in-progress state.
+func restoreHeader(a readpath.ArchiveState) string {
+	switch {
+	case a.Restoring > 0:
+		return `ongoing-request="true"`
+	case a.Archive > 0 && a.Restored == a.Archive:
+		return `ongoing-request="false", expiry-date="` + a.Expiry.UTC().Format(http.TimeFormat) + `"`
+	}
+	return ""
 }
 
 func info(h storage.ObjectHead) Info {

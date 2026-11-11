@@ -1,4 +1,4 @@
-# Pricing contract v1 — W02-HUNG-02
+# Pricing contract v1
 
 Nguồn thiết kế: [KT v4 §13.1–13.4](../../docs/dedup-storage-gateway-architecture.md), [API v2 §6.3 cost/report](../../docs/dedup-storage-gateway-api.md). Đây là **schema và quote mẫu**, chưa là cost engine, hóa đơn hay phép đo tiết kiệm.
 
@@ -24,7 +24,7 @@ Nguồn thiết kế: [KT v4 §13.1–13.4](../../docs/dedup-storage-gateway-arc
 
 Byte quantities phải ghi rõ bytes→AWS billable GB conversion theo service, không coi MB/MiB là một. Storage GB-Mo là byte-time với quy ước tháng/proration của dịch vụ; không dùng730giờ như mặc định chung cho mọi phép tính storage. Request group chung phải có mapping operation thực ở consumer, không đoán khi schema chỉ quote một operation. Tiers áp trên phạm vi billing của service/account/Region, không reset free allowance/tier cho từng object/trial.
 
-Giá sample có **50rate IDs:30verified/20unpriced**. Đã lấy S3 Singapore hết pagination (178products), DynamoDB26products và tái dùng public NAT/VPC/ALB quotes cùng ngày từW02-HUNG-01. 29quote giữ nguyên tiers AWS; riêng `ddb.storage` chuẩn hóa gross như dưới đây, không khẳng định gross tiers giống nguyên bản API. Sample chỉ chọn Standard table class, các class/operations thể hiện trong dimensions; không dùng DynamoDB IA/Vector/replicated pricing thay Standard WRU/RRU.
+Giá sample có **50rate IDs:30verified/20unpriced**. Đã lấy S3 Singapore hết pagination (178products), DynamoDB26products và tái dùng public NAT/VPC/ALB quotes cùng ngày từ [Terraform Cloud inventory](../../infra/terraform/cloud/inventory-and-costs.md). 29quote giữ nguyên tiers AWS; riêng `ddb.storage` chuẩn hóa gross như dưới đây, không khẳng định gross tiers giống nguyên bản API. Sample chỉ chọn Standard table class, các class/operations thể hiện trong dimensions; không dùng DynamoDB IA/Vector/replicated pricing thay Standard WRU/RRU.
 
 Giá EC2 chưa chọn instance, local VM, egress route và một số API/monitoring/key rates còn unpriced có chủ đích. **W2 hoàn thành schema không nghĩa sample sẵn sàng tính total.** W4–6 chọn workload/runtime, điền quote còn thiếu và require đầy đủ rate IDs trước công bố chi phí. Giữ `basis` gross; nếu sau này tính hóa đơn net thì thêm lớp credits/free allowance có evidence riêng, không sửa gross rate thành0.
 
@@ -51,7 +51,7 @@ Cost/simulator consumers dùng chung `pricing.Parse(data, requiredRates...)` t�
 
 Cost/simulator consumers dùng cùng contract này. Mỗi workload liệt kê required IDs và từ chối tính **complete total** khi thiếu giá/đơn vị/route, không silently skip; partial subtotal chỉ được báo với danh sách unpriced đi kèm. Parse decimal bằng exact decimal/rational.
 
-Prototype W04-HUNG-03 dùng `internal/cost` và `cmd/costsim` để tính subtotal của usage được cung cấp: cộng theo rate trước khi tách tiers, kiểm unit, giữ provenance và danh sách unpriced; không trừ lại Free Tier. Kết quả exact là string decimal/rational; `complete_total_usd=null` vì chưa chứng minh đủ coverage. [Trace contract, lệnh chạy và giới hạn](../../benchmarks/cost-simulator.md).
+Prototype cost/simulator dùng `internal/cost` và `cmd/costsim` để tính subtotal của usage được cung cấp: cộng theo rate trước khi tách tiers, kiểm unit, giữ provenance và danh sách unpriced; không trừ lại Free Tier. Kết quả exact là string decimal/rational; `complete_total_usd=null` vì chưa chứng minh đủ coverage. [Trace contract, lệnh chạy và giới hạn](../../benchmarks/cost-simulator.md).
 
 Reproduce quotes (read-only; đọc ngày thực trước refresh):
 

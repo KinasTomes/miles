@@ -146,9 +146,40 @@ project/bucket đã được admin cấp quyền riêng.
 - Existing lifecycle tests vẫn kiểm lost ACK, one-shot send, exact terminal and
   isolation proof, state/fence closure, canceled restore và promotion retries.
 
+## Revival accounting, promotion race và physical stats
+
+- Write pipeline đếm theo từng pack đã publish: blob của request thắng location
+  CAS thay một location đã có (archive, Restored hoặc state không đọc được) là
+  **revived** (distinct domain/hash, stored bytes của blob mới); blob thua race
+  canonical là **orphaned** và nằm lại trong pack được bảo vệ của writer.
+  `write.Counters` cộng dồn trong process; PUT/UploadPart dùng chung nguồn này.
+- Admin stats global trả `revived_chunks_total`, `revived_bytes_stored_total`,
+  `orphaned_chunks_total`, `orphaned_bytes_stored_total` kèm
+  `write_counters_since`; bucket stats giữ null. Mỗi node Cloud chỉ đếm write
+  của chính nó. Prometheus/CloudWatch có `miles_revived_*` và `miles_orphaned_*`.
+- Lifecycle listed bytes tách `cold_dead` (Cold/Restoring/Restored không còn live
+  head, ví dụ archive bị revival/promotion thay thế) khỏi `no_live_head` (Warm).
+  `listed_pack_overhead_bytes` là phần pack `head_live` không thuộc live
+  canonical range. Revival giữ identity nên dedup_ratio không đổi.
+- Promotion thua CAS sau khi đọc row (ví dụ PUT revive thắng trước) không còn
+  đưa job vào unknown: đọc lại, giữ winner, destination chỉ là garbage được
+  protection; row không đổi mà CAS vẫn conflict thì vẫn lỗi.
+- Tests: `write.TestWritePipelineRevivesArchiveAndEveryRestoredFromBody` (thêm
+  counters), `write.TestWritePipelineCountsRaceLoserAsOrphan`,
+  `stats.TestRevivalKeepsDedupRatioAndListsColdDead`,
+  `dynamodb.TestLocalPromotionLosingRaceKeepsRevivedWinner` (fail trước bản sửa)
+  và `app.TestNativeColdCloudEdgeFlows` kiểm thêm archive cũ giữ class/retention,
+  stats ghi đúng 1 revival, bytes khớp location mới, `cold_dead` ≥ size pack cũ.
+- Validation ngày 2026-11-10 (Go 1.27.2, Ubuntu WSL, DynamoDB Local 3.3.0 và
+  Moto 5.1.15 pinned, loopback): `go test -count=1 ./...` với
+  `MILES_DDB_LOCAL_REQUIRED=1`, `MILES_RECOVERY_S3_REQUIRED=1`: PASS; build,
+  `go vet` và gofmt: PASS. Không dùng tài nguyên AWS.
+- Chưa làm: debug header `x-dsg-chunks-revived`, counter bền vững/tổng hợp
+  nhiều node, revalidate location canonical lúc Complete, demo trên AWS thật.
+
 ## Validation và giới hạn
 
-Các native test sử dụng compose project riêng `miles-w06-phong-contract`, pinned
+Các native test sử dụng compose project riêng, pinned
 DynamoDB Local/Moto từ `deploy/local/compose.yaml`, Go 1.27.2 Linux, source mount
 read-only và endpoints loopback explicit. Không dùng credential hoặc tài nguyên
 AWS. Test forwarding chỉ ở container để nối hai disposable services.

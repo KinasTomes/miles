@@ -38,7 +38,7 @@ func objectRuntime(o object.Options, metadata storage.MetadataStore, packs stora
 	}
 	reader, err := readpath.NewWarmReader(readpath.WarmOptions{
 		Metadata: metadata, Packs: packs, Cache: o.Cache, Admission: admission, Gate: gate, Clock: o.Clock, Global: global, Metrics: metrics,
-		UTC: o.ReadUTC, Restore: o.AutoRestore,
+		UTC: o.ReadUTC, Restore: o.Restore,
 		RestoreError: func(ctx context.Context, err error) {
 			slog.ErrorContext(ctx, "Không thể khởi tạo auto-restore", "error", err)
 		},

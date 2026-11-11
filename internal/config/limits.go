@@ -9,7 +9,7 @@ import "github.com/KinasTomes/miles/internal/storage"
 func DSGPolicyLimits() PolicyLimits {
 	return PolicyLimits{
 		MaxJSONBytes: 8192, MaxDecimalDigits: 128, MaxDecimalExponent: 256,
-		MaxColdAfterDays: 1000, MaxAutoRestoreDays: 30, MaxReadaheadChunks: 64,
+		MaxColdAfterDays: 1000, MaxAutoRestoreDays: storage.MaxRestoreDays, MaxReadaheadChunks: 64,
 		RestoreTiers: []RestoreTierRule{
 			{Class: storage.GlacierIR, Tier: "Standard"},
 			{Class: storage.Glacier, Tier: "Expedited"},

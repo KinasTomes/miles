@@ -1,6 +1,6 @@
 # Đề xuất contract Clock và policy toàn hệ thống
 
-**Task:** [W01-PHONG-01 — Contract Clock và policy toàn hệ thống](https://miles.extase.dev/tasks/W01-PHONG-01).
+**Task:** Contract Clock và policy toàn hệ thống.
 **Owner:** Đinh Tuấn Phong. **Ngày đối chiếu:** 20/10/2026, UTC+7.
 **Trạng thái:** Quyết định thiết kế W1 đã chốt theo yêu cầu người dùng; phần deferred chưa đủ điều kiện freeze implementation/consumer. Không xác nhận task Done.
 **Baseline sửa đổi:** `0046f6d7ea859b099dbd07b7a49575efe01eb478`. Nguồn task được đọc ngày 20/10/2026; không coi snapshot Miles đó là trạng thái live mới.
@@ -60,7 +60,7 @@ Instant.Sub(Instant) -> time.Duration | incompatible_domain | overflow
 Instant.Compare(Instant) -> order | incompatible_domain
 ```
 
-`Instant` opaque; Add/Sub/compare chỉ trong cùng Clock domain. Không serialize, chuyển node, dùng lại sau restart hoặc lấy wall subtraction làm elapsed deadline. `time.Duration` phải kiểm overflow cả parse, convert, cộng/trừ/nhân và horizon arithmetic. Không mở thêm production timer/ticker/scheduler interface trong W1. Concrete Go types, scheduler implementation và guard value thuộc W02-PHONG-01/03.
+`Instant` opaque; Add/Sub/compare chỉ trong cùng Clock domain. Không serialize, chuyển node, dùng lại sau restart hoặc lấy wall subtraction làm elapsed deadline. `time.Duration` phải kiểm overflow cả parse, convert, cộng/trừ/nhân và horizon arithmetic. Không mở thêm production timer/ticker/scheduler interface trong W1. Concrete Go types, scheduler implementation và guard value thuộc phần hiện thực clock/config và coordination harness của Phong.
 
 | Giá trị | Miền/lifetime | Contract |
 |---|---|---|
@@ -88,7 +88,7 @@ Zero-time event loop có guard hữu hạn và lỗi chẩn đoán; không tự 
 
 Mọi shared-time decision dùng khoảng UTC có kiểm chứng `[L,U]` bao được thời gian thực, gồm clock error, sample age, precision và drift trong horizon cần bảo vệ. Đây là invariant DSG, không phải proof chrony/runtime đã cung cấp được bound. Không coi node skew 2s là toàn bộ uncertainty hoặc cộng 2s một lần đủ cho hai nodes.
 
-**Quyết định Lead Hưng — W02-PHONG-01, Review Fix 2:** sample age dùng monotonic cùng Clock domain, bắt buộc `<5s`; bằng 5s là stale. Node skew có dấu phải trong `[-2s,+2s]`, equality chỉ vượt skew gate, không tự tạo proof và không dùng cửa sổ SigV4 ±15 phút. Reject future sample, domain/restart mismatch, unknown/unverified provenance, unsynced status, bounds thiếu/âm, UTC interval invalid, horizon thiếu và arithmetic overflow. Không tự gán drift=0 hoặc một ppm mặc định.
+**Quyết định Lead Hưng — hiện thực clock/config, Review Fix 2:** sample age dùng monotonic cùng Clock domain, bắt buộc `<5s`; bằng 5s là stale. Node skew có dấu phải trong `[-2s,+2s]`, equality chỉ vượt skew gate, không tự tạo proof và không dùng cửa sổ SigV4 ±15 phút. Reject future sample, domain/restart mismatch, unknown/unverified provenance, unsynced status, bounds thiếu/âm, UTC interval invalid, horizon thiếu và arithmetic overflow. Không tự gán drift=0 hoặc một ppm mặc định.
 
 Boundary dùng chung `internal/policy.ValidateUTCSample` nhận source identity/provenance/restart đã được adapter xác minh, sample Observation Instant (mang opaque Clock domain), UTC interval tại Observation, precision, measurement error, signed node skew, drift PPB và monotonic ValidThrough. Bound zero chỉ hợp lệ khi được đánh dấu Known explicit. Production adapter phải chứng minh source trust, signed skew/bounds thực tế và continuity/sync; field Verified/Trusted không phải chứng cứ mật mã hoặc phép xác minh OS/chrony.
 
@@ -100,8 +100,8 @@ Proof có binding nội bộ vào đúng Request.Now và interval/horizon đã v
 - Chỉ bắt đầu xét reclaim khi `L >= E + grace`; equality chỉ đủ time eligibility. Vẫn CAS state/fence và kiểm roots/pins/in-flight outcome. Grace5s không kéo dài quyền worker.
 - Unsynced source, bound unknown/stale/hết horizon hoặc vi phạm source bound: fail readiness và từ chối admission/action cần proof. Không xóa/nhả roots/gates đang bảo vệ unknown outcome.
 - Publish/renew/reclaim gắn đúng owner/revision/fence/incarnation. Timestamp client nhét vào condition không phải server-time check lúc commit. TTL là cleanup bất đồng bộ, không timer lease ([DynamoDB TTL](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/TTL.html)).
-- **Đồng bộ quyết định Hưng W01-PHONG-02 Q6 — chờ xác minh tích hợp:** `U<E` cấp quyền dispatch side effect mới với lease/fence/incarnation hợp lệ, không yêu cầu transaction commit trước E. Mọi authoritative metadata publication kiểm shared fence closure và incarnation trong cùng transaction với mutation: LP trước closure giữ committed outcome kể cả sau E; LP sau closure fail fence condition. Takeover atomically close old authority, stabilize membership và reconcile mọi in-flight/unknown outcomes trước cấp new publication authority. Không dùng timeout/expiry làm no-commit; `L>=E+grace` vẫn chỉ reclaim eligibility, không extension.
-- W01-PHONG-02 (Phong) sở hữu acquire/renew/takeover, cách hình thành E và local lease-use budget; proof target là không có hai publication authorities có thể publish chồng nhau, tách dispatch permission, closure ordering, reclaim eligibility và operation outcome. W02-PHONG-03 và W04-PHONG-03 hiện thực/fault-test. W1 Clock chỉ chốt invariants/equality, không nhận đã có proof protocol.
+- **Đồng bộ quyết định Hưng [R1](r1-and-cache.md) Q6 — chờ xác minh tích hợp:** `U<E` cấp quyền dispatch side effect mới với lease/fence/incarnation hợp lệ, không yêu cầu transaction commit trước E. Mọi authoritative metadata publication kiểm shared fence closure và incarnation trong cùng transaction với mutation: LP trước closure giữ committed outcome kể cả sau E; LP sau closure fail fence condition. Takeover atomically close old authority, stabilize membership và reconcile mọi in-flight/unknown outcomes trước cấp new publication authority. Không dùng timeout/expiry làm no-commit; `L>=E+grace` vẫn chỉ reclaim eligibility, không extension.
+- [R1](r1-and-cache.md) (Phong) sở hữu acquire/renew/takeover, cách hình thành E và local lease-use budget; proof target là không có hai publication authorities có thể publish chồng nhau, tách dispatch permission, closure ordering, reclaim eligibility và operation outcome. Coordination/recovery harness và R1 admission trên DynamoDB dùng chung hiện thực/fault-test. W1 Clock chỉ chốt invariants/equality, không nhận đã có proof protocol.
 - S3 action unknown giữ durable Deleting/Transitioning theo KT §8.2; timestamp/fence metadata không hủy được request S3 đã gửi.
 
 ### 3.5 Protection và Restored admission
@@ -120,7 +120,7 @@ Arithmetic kiểm overflow. Expired/cancelled request không được admit ch�
 
 Restore equality hợp lệ; missing/stale/insufficient bound thì defer/revalidate, không suy allow từ `wall0+budget`. Re-evaluate trước action; mất proof thì dừng side effect mới và giữ protection/outcome cần reconcile. Expiry là backend observation được kiểm chứng, không `requested_at + Days`; [S3 restore status](https://docs.aws.amazon.com/AmazonS3/latest/userguide/restoring-objects.html#restore-status) cung cấp expiry bản restore. PUT/UploadPart vẫn revive mọi Restored từ client body.
 
-Wire UTC RFC3339Nano với ε=1ns trong fake vectors không hứa real timer chính xác 1ns. Nếu backend/encoding tick thô hơn: protection round lên, expiry dùng làm quyền đọc round xuống; uncertainty/drift/sample age phải nằm trong bound. W02-PHONG-01 sở hữu time-source adapter/bound validation, W02-PHONG-03 harness; chưa có proof thì không bật destructive path phụ thuộc bound.
+Wire UTC RFC3339Nano với ε=1ns trong fake vectors không hứa real timer chính xác 1ns. Nếu backend/encoding tick thô hơn: protection round lên, expiry dùng làm quyền đọc round xuống; uncertainty/drift/sample age phải nằm trong bound. Phần hiện thực clock/config sở hữu time-source adapter/bound validation, coordination harness sở hữu harness; chưa có proof thì không bật destructive path phụ thuộc bound.
 
 ## 4. Schema và scope policy — accepted in W1 (OQ-02/05/06)
 
@@ -136,7 +136,7 @@ RecoveryControl: history_id, recovery_epoch, service_incarnation + own concurren
 BucketCachePolicy: bucket_id + independent cache revision + cache fields
 ```
 
-Heartbeat/counters/recovery epoch không tăng policy revision. Key encoding bàn giao W01-HAI-01 với consumer/model reviewer Hải; history encoding phải hỗ trợ roots/R2. Revision là integer `1..9007199254740991` (2^53−1), bootstrap1; không wrap. Global policy và bucket cache revision độc lập. Schema version, nếu cần trong format handoff, không thay revision.
+Heartbeat/counters/recovery epoch không tăng policy revision. Key encoding bàn giao [shared storage model](shared-storage.md) với consumer/model reviewer Hải; history encoding phải hỗ trợ roots/R2. Revision là integer `1..9007199254740991` (2^53−1), bootstrap1; không wrap. Global policy và bucket cache revision độc lập. Schema version, nếu cần trong format handoff, không thay revision.
 
 ### 4.2 Global fields, defaults và validation
 
@@ -154,17 +154,17 @@ Giữ defaults KT §19.1/API §13.3; API §6.3 cung cấp wire field names. Khô
 | tiering.auto_restore_tier | enum | Standard | Phân biệt hoa/thường: GLACIER nhận Expedited/Standard/Bulk; GLACIER_IR chỉ Standard để tương thích schema/default; xem caps bên dưới |
 | compression.enabled | boolean | true | Không đổi codec chunk cũ |
 | compression.codec | enum | zstd | Không tự mở codec mới; raw là stored fallback |
-| compression.level | integer | 3 | Library-supported range theo W01-HAI-03; validator không nhận tùy ý khi chưa pin |
+| compression.level | integer | 3 | Library-supported range theo [chunking/commit](chunking-and-commit.md); validator không nhận tùy ý khi chưa pin |
 | compression.min_saving_ratio | number | 0.1 | Finite [0,1); exact decimal arithmetic |
-| chunking.min_bytes | integer bytes | 262144 | >0, min<=avg<=max; thêm FastCDC/library constraints W01-HAI-03 |
+| chunking.min_bytes | integer bytes | 262144 | >0, min<=avg<=max; thêm FastCDC/library constraints theo [chunking/commit](chunking-and-commit.md) |
 | chunking.avg_bytes | integer bytes | 1048576 | Như trên; không bịa constraint từ benchmark |
 | chunking.max_bytes | integer bytes | 4194304 | Như trên; bounded memory budget trước validator freeze |
 
 Policy age: 1 ngày =24h UTC, không calendar/DST; đủ age khi age>=configured duration (cần conservative time proof nếu shared timestamps). Tách Days của restore request với expiry thực tế backend. Saving: `stored <= raw*(1-saving)`; live ratio: `live/total >= threshold`, total=0/unknown không chia và không tự eligible.
 
-Normalize JSON decimal một lần lúc load snapshot thành số học chính xác; so nhân chéo có overflow checking, không epsilon float. JSON vẫn number như nguồn. Không gọi ns epsilon cho ratio; ratio vectors dùng rational ticks riêng. Integer/duration overflow, unknown/null/duplicate fields, wrong types/scope, unsupported enums reject trước mutation. Supported zstd/FastCDC thuộc W01-HAI-03 và implementation tương ứng (consumer hiện hành Chiến; Hải giữ model review).
+Normalize JSON decimal một lần lúc load snapshot thành số học chính xác; so nhân chéo có overflow checking, không epsilon float. JSON vẫn number như nguồn. Không gọi ns epsilon cho ratio; ratio vectors dùng rational ticks riêng. Integer/duration overflow, unknown/null/duplicate fields, wrong types/scope, unsupported enums reject trước mutation. Supported zstd/FastCDC thuộc [chunking/commit](chunking-and-commit.md) và implementation tương ứng (consumer hiện hành Chiến; Hải giữ model review).
 
-**Quyết định Lead Hưng — W02-PHONG-01, Review Fix 1:** caps sau đã chốt, không còn chờ chọn giá trị. Đây là giới hạn tài nguyên/sản phẩm **DSG**, không phải AWS service limits:
+**Quyết định Lead Hưng — hiện thực clock/config, Review Fix 1:** caps sau đã chốt, không còn chờ chọn giá trị. Đây là giới hạn tài nguyên/sản phẩm **DSG**, không phải AWS service limits:
 
 | Giới hạn | Giá trị |
 |---|---|
@@ -236,7 +236,7 @@ Auth trước resource/revision disclosure. Strict parse duplicate/unknown/null/
 
 ## 6. Revision/CAS, update semantics và retry — accepted in W1
 
-Nguồn API §6.1/6.3, KT §9.0. Các clarification dưới đây là W1 decision của DSG; SYNC-API đã xong ở API §6.5 (W02-CHIEN-02): wire/error, If-Match, `revision_exhausted` 409 và expected_bucket_id tại API §6.5.1–6.5.2.
+Nguồn API §6.1/6.3, KT §9.0. Các clarification dưới đây là W1 decision của DSG; SYNC-API đã xong ở API §6.5 (hợp đồng wire Admin): wire/error, If-Match, `revision_exhausted` 409 và expected_bucket_id tại API §6.5.1–6.5.2.
 
 1. Giữ PUT hiện có; update các field được gửi, kể cả nested; omitted giữ nguyên. Merge current rồi validate toàn candidate. Không dùng Go zero-value reset defaults. Không thêm PATCH.
 2. Auth trước khi tiết lộ resource/revision: bearer invalid401, role thiếu403. Unknown/duplicate/null/wrong-type/scope400. Bucket missing404, tên tồn tại nhưng expected_bucket_id sai409 incarnation conflict; identity condition vẫn bắt buộc cho update/no-op.
@@ -352,14 +352,14 @@ Thay timing cần rollout được review compatibility/drain; không rút ngắ
 
 | ID | Accepted in W1 | Deferred: task / owner | Điều kiện freeze phần deferred |
 |---|---|---|---|
-| OQ-01 | Reading/opaque Instant, Duration, ctx Sleep, equality, scheduler order/cancel/guard hữu hạn; internal/clock | W02-PHONG-01/03 — Phong; Hưng simulator consumer | Concrete Go types/cancellation/scheduler/guard pinned; deterministic/overflow/cancel vectors và adapter behavior verified |
-| OQ-02 | Logical record/revision separation; positive JSON-safe revision/bootstrap1/no-op; UTC RFC3339Nano/ns/conservative rounding | W01-HAI-01 — shared model Hải với consumer hiện hành; W02-PHONG-01/03 — Phong adapter; W01-PHONG-03 — R2 history/roots | Key/encoding/atomic transaction model reviewed; no heartbeat/epoch policy conflict; model handoff và SYNC-KT hoàn tất trước storage consumer freeze |
-| OQ-03 | Expired at E; U<E cho dispatch mới; L>=E+grace chỉ reclaim; publication theo atomic closure/incarnation, không strict commit-before-E; unknown proof fail closed | W01-PHONG-02 — Phong protocol; W02-PHONG-03/W04-PHONG-03 — Phong code/faults, metadata consumer review Hải/Chiến | Dispatch/local-budget và closure→stable membership→reconcile proof không overlap publication authorities; uncertainty horizon validated; late settlement/closure/suspend tests trước destructive enablement |
-| OQ-04 | D_hi/current interval, durable max protection, restored lower bound, revalidation/rounding. Review Fix 2 chốt age<5s, skew<=2s, explicit precision/error/drift/horizon và Request.Now binding tại §3.4 | W02-PHONG-01/03 — Phong time-source/bound/tests; W01-PHONG-02 — R1 proof; W01-PHONG-03 — roots | Injected sample validation đã có đường dùng chung; production adapter vẫn phải chứng minh provenance/sync/actual bounds bao UTC/drift horizon và consumer revalidation; không bật destructive path khi chưa đủ proof |
-| OQ-05 | Ratio ranges/exact arithmetic; positive ordered chunks; day24h UTC; zero age/read-ahead; defaults không đổi. Review Fix 1: caps DSG JSON/normalized decimal/days/read-ahead và P1 restore class/tier đã chốt tại §4.2 | W01-HAI-03 — supported library contract (Chiến chunking/compression consumer hiện hành, Hải model review); W02-PHONG-01 — Phong validator/tests | Không còn pending numeric caps/allowlist nêu tại §4.2; vẫn cần library/consumer compatibility, backend acceptance và production resource/distributed evidence trước freeze |
-| OQ-06 | Nested supplied-field PUT, null/duplicate400, token/identity errors, no-op/CAS/retry rules | W02-CHIEN-02 — Chiến Admin wire/error clarification (SYNC-API xong ở API §6.5); W02-PHONG-01 — Phong config merge; W01-HAI-01/model và W04-HAI-01/metadata consumer review | SYNC-API xong (API §6.5, exhaustion 409 `revision_exhausted`); canonical equality, retry/current/history/outbox transaction contract và vectors thống nhất trước API consumer freeze |
-| OQ-07 | Startup limits snapshot, no hot timing endpoint, pinned active budgets, compatibility/drain rollout | W02-PHONG-01 — Phong startup validation; W02-HUNG-03/W04-HUNG-01 — Hưng config/ops rollout consumers | Version/compatibility/drain protocol reviewed; evidence policy/limits revisions và existing leases/cuts an toàn; chưa chứng minh thì dừng rollout |
-| OQ-08 | Package boundaries, one evaluator, node snapshot cache, history/jobs/cut retention | W02-PHONG-01/03 — Phong config/history contract; W04-HUNG-02 — Hưng jobs; W01-PHONG-03/W05-PHONG-03 — Phong roots/cleanup | History encoding/atomicity, job-resume exact revision, refresh applied-revision evidence, bounded-item storage và roots cleanup verified; SYNC-KT trước consumer freeze |
+| OQ-01 | Reading/opaque Instant, Duration, ctx Sleep, equality, scheduler order/cancel/guard hữu hạn; internal/clock | Hiện thực clock/config và coordination harness — Phong; Hưng simulator consumer | Concrete Go types/cancellation/scheduler/guard pinned; deterministic/overflow/cancel vectors và adapter behavior verified |
+| OQ-02 | Logical record/revision separation; positive JSON-safe revision/bootstrap1/no-op; UTC RFC3339Nano/ns/conservative rounding | [Shared storage model](shared-storage.md) — Hải với consumer hiện hành; hiện thực clock/config và harness — Phong adapter; [R2](r2-recovery.md) — history/roots | Key/encoding/atomic transaction model reviewed; no heartbeat/epoch policy conflict; model handoff và SYNC-KT hoàn tất trước storage consumer freeze |
+| OQ-03 | Expired at E; U<E cho dispatch mới; L>=E+grace chỉ reclaim; publication theo atomic closure/incarnation, không strict commit-before-E; unknown proof fail closed | [R1](r1-and-cache.md) — Phong protocol; coordination harness/R1 admission DynamoDB — Phong code/faults, metadata consumer review Hải/Chiến | Dispatch/local-budget và closure→stable membership→reconcile proof không overlap publication authorities; uncertainty horizon validated; late settlement/closure/suspend tests trước destructive enablement |
+| OQ-04 | D_hi/current interval, durable max protection, restored lower bound, revalidation/rounding. Review Fix 2 chốt age<5s, skew<=2s, explicit precision/error/drift/horizon và Request.Now binding tại §3.4 | Hiện thực clock/config và harness — Phong time-source/bound/tests; [R1](r1-and-cache.md) — R1 proof; [R2](r2-recovery.md) — roots | Injected sample validation đã có đường dùng chung; production adapter vẫn phải chứng minh provenance/sync/actual bounds bao UTC/drift horizon và consumer revalidation; không bật destructive path khi chưa đủ proof |
+| OQ-05 | Ratio ranges/exact arithmetic; positive ordered chunks; day24h UTC; zero age/read-ahead; defaults không đổi. Review Fix 1: caps DSG JSON/normalized decimal/days/read-ahead và P1 restore class/tier đã chốt tại §4.2 | [Chunking/commit](chunking-and-commit.md) — supported library contract (Chiến chunking/compression consumer hiện hành, Hải model review); hiện thực clock/config — Phong validator/tests | Không còn pending numeric caps/allowlist nêu tại §4.2; vẫn cần library/consumer compatibility, backend acceptance và production resource/distributed evidence trước freeze |
+| OQ-06 | Nested supplied-field PUT, null/duplicate400, token/identity errors, no-op/CAS/retry rules | Hợp đồng wire Admin — Chiến Admin wire/error clarification (SYNC-API xong ở API §6.5); hiện thực clock/config — Phong config merge; [shared storage model](shared-storage.md) và [DynamoDB adapter](dynamodb-adapter.md)/metadata consumer review | SYNC-API xong (API §6.5, exhaustion 409 `revision_exhausted`); canonical equality, retry/current/history/outbox transaction contract và vectors thống nhất trước API consumer freeze |
+| OQ-07 | Startup limits snapshot, no hot timing endpoint, pinned active budgets, compatibility/drain rollout | Hiện thực clock/config — Phong startup validation; Hưng config/ops rollout consumers (config, Cloud ASG/ALB và Edge deployment) | Version/compatibility/drain protocol reviewed; evidence policy/limits revisions và existing leases/cuts an toàn; chưa chứng minh thì dừng rollout |
+| OQ-08 | Package boundaries, one evaluator, node snapshot cache, history/jobs/cut retention | Hiện thực clock/config và harness — Phong config/history contract; [jobs và nodes](jobs-and-nodes.md) — Hưng jobs; [R2](r2-recovery.md) và roots cleanup — Phong roots/cleanup | History encoding/atomicity, job-resume exact revision, refresh applied-revision evidence, bounded-item storage và roots cleanup verified; SYNC-KT trước consumer freeze |
 
 Task IDs là đường bàn giao cho phần việc tương ứng; không cập nhật assignee/status trên Miles và không khẳng định backlog đã được sửa. Handoff theo chỉ đạo hiện tại: **Phong** Clock/policy/R1/R2, **Chiến** Admin wire và chunking/compression hiện được phân công, **Hưng** jobs/simulator/ops; **Hải** giữ shared-model/metadata consumers cần review. Nếu task title baseline mang tên Hải, xác nhận consumer/owner hiện hành khi handoff, không coi tên cũ là quyết định phân công mới.
 
@@ -369,9 +369,9 @@ Chọn đường dependency thay vì sửa Architecture/API trong lượt này. 
 
 | Gate | Nguồn cần đồng bộ | Nội dung bắt buộc / owner |
 |---|---|---|
-| SYNC-API | API §6.1/6.3, §10 và policy fixtures liên quan | **Xong ở API §6.5 (W02-CHIEN-02)**, Chiến phối hợp Phong: nested omitted merge, no-op, strong If-Match/token precedence, duplicate/null/type/scope,404/409 incarnation, JSON-safe revision/exhaustion và lost-response reconciliation. Nếu nguồn đồng bộ chọn expected khác phải sửa vectors/decision tương ứng trước freeze; không giữ hai expected |
+| SYNC-API | API §6.1/6.3, §10 và policy fixtures liên quan | **Xong ở API §6.5 (hợp đồng wire Admin)**, Chiến phối hợp Phong: nested omitted merge, no-op, strong If-Match/token precedence, duplicate/null/type/scope,404/409 incarnation, JSON-safe revision/exhaustion và lost-response reconciliation. Nếu nguồn đồng bộ chọn expected khác phải sửa vectors/decision tương ứng trước freeze; không giữ hai expected |
 | SYNC-KT | KT §10.1/18/19.2 và §13.3 khi cần | Phong/Hưng cùng model consumer Hải/Chiến: records/revision domains, immutable history/current/outbox, Clock/precision/equality/uncertainty contract, package/snapshot/cache/rollout semantics; giữ §19.1 defaults và protocol R1/R2 |
-| SYNC-R1/R2 | W01-PHONG-02/03, KT §8–9/shared model handoff | Phong với metadata/jobs consumers: formal lease/non-overlap proof và history/cut roots, time-source assumptions; không coi Clock decision là proof runtime |
+| SYNC-R1/R2 | [R1](r1-and-cache.md)/[R2](r2-recovery.md), KT §8–9/shared model handoff | Phong với metadata/jobs consumers: formal lease/non-overlap proof và history/cut roots, time-source assumptions; không coi Clock decision là proof runtime |
 
 Không có runtime/AWS benchmark, policy-store service mới hoặc hoàn chỉnh protocol R1 được yêu cầu để viết W1 decision này. Proof/implementation/tests là gate của đúng downstream scope, không tự đánh W1 Done hay claim pass.
 

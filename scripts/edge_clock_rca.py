@@ -813,7 +813,7 @@ class EdgeClockRCAAnalyzer:
         lines = [
             "# Edge Clock Stability & Uncertainty Exceeded RCA Follow-Up",
             "",
-            "- **Date / Baseline:** 2026-11-10 (Analysis of 2026-11-08 AWS Live Run `w05-hung03-live-20261108-0345`)",
+            "- **Date / Baseline:** 2026-11-10 (Analysis of the 2026-11-08 03:45 AWS live run)",
             "- **Target Scope:** Edge C1 Trial 1 (Singapore `ap-southeast-1`, Instance: `t4g.small` ARM64 via Roles Anywhere)",
             f"- **Outcome:** {outcome_str}",
             "- **Policy Enforced:** AWS State 0 (strictly offline analysis, zero live API calls, zero credentials, zero secret leakage)",

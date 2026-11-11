@@ -1,6 +1,6 @@
 # Phạm vi, ưu tiên và truy vết milestone
 
-**Trạng thái: bản dự thảo để lead review, chưa phê duyệt.** Đầu ra của W01-HUNG-02 (A01), phụ thuộc W01-HUNG-01. Không tự đóng task, không xác nhận feature đã triển khai, CI đã chạy hay nghiệm thu đã đạt. Các tuần là mốc dự kiến, không phải kết quả.
+**Trạng thái: bản dự thảo để lead review, chưa phê duyệt.** Đầu ra tài liệu use case/scope/DoD (A01), phụ thuộc bàn giao nguồn v4/v2. Không tự đóng task, không xác nhận feature đã triển khai, CI đã chạy hay nghiệm thu đã đạt. Các tuần là mốc dự kiến, không phải kết quả.
 
 Nguồn hợp đồng: [kiến trúc v4](../dedup-storage-gateway-architecture.md) (KT) và [API v2](../dedup-storage-gateway-api.md) (API). Tài liệu này chỉ suy ra kế hoạch nghiệm thu; khi có khác biệt phải review nguồn, không tự thay hợp đồng. Backlog local được đọc để ánh xạ người/tuần, không phải dependency của tài liệu được commit.
 
@@ -64,14 +64,14 @@ Chủ trì được ghi trước; người phối hợp chịu phần module c�
 
 | Mốc | Đầu ra triển khai / xác minh dự kiến | Owner và task bàn giao | Dependency / gate |
 |---|---|---|---|
-| W1 | Use case/scope/DoD; contract operation/error/auth/checksum; model/format; R1/R2/policy draft | Hưng W01-HUNG-02/A01; Chiến W01-CHIEN-01..03; Hải W01-HAI-01..03; Phong W01-PHONG-01..03 | W01-HUNG-01; sources v4/v2. Review tài liệu L1, không đòi production AWS |
-| W2 | Pin client fixtures; parser/transport nền; freeze pack/manifest/event/completion/checkpoint serialization; Clock/policy/interfaces; Terraform/health/pricing nền | Chiến W02-CHIEN-01..03; Hải W02-HAI-01..03; Phong W02-PHONG-01..03; Hưng W02-HUNG-01..03 | Contract W1; fixtures/golden/property/fuzz phù hợp; freeze có review, không suy endpoint hoàn tất |
-| W3 | Warm MVP1node:8P0+owner/domain/checksum/dedup/nén/pack/Badger/S3/cache; harness và số sơ bộ | Chiến W03-CHIEN-01..03; Hải W03-HAI-01..03; Phong W03-PHONG-01..03; Hưng W03-HUNG-01..03 | W2 formats/adapters; round-trip, lỗi upload giữ head cũ; số Badger không đại diện DDB đủ |
-| W4 | Multipart/receipt, DynamoDB atomic commit/outbox, Admin auth/grants/quota/policy/stats/layout; Copy/Delete nền; R1/exporter/CloudEdge packaging | Chiến W04-CHIEN-01..04; Hải W04-HAI-01..03; Phong W04-PHONG-01..04; Hưng W04-HUNG-01..03 | W3 MVP + frozen input/event schema; L2 data/auth/MP/transaction checks |
-| W5 | Cloud/Edge thật, R1+GC/compaction, seal/checkpoint/rebuild/24h roots; jobs/nodes/drain/cache scope; presigned và GetObject If-Match P1 (handler + Range/412) compatibility; pilot DDB | Hưng W05-HUNG-01..03; Hải W05-HAI-01..03; Phong W05-PHONG-01..03; Chiến W05-CHIEN-01..03 | W4 transaction/R1/format; real DDB/ALB/Edge evidence, R1/R2 gates; If-Match mapping đã gắn W05-CHIEN-01 trong backlog local |
-| W6 | IR/Flexible restore/promote/revival/cross-domainCopy; manual scrub on-demand P1, cost/simulator/faults; chốt threshold sau pilot đầy đủ | Phong W06-PHONG-01..03; Hải W06-HAI-01..03; Chiến W06-CHIEN-01..03; Hưng W06-HUNG-01..03 | W5 profile/coordination/recovery; Cold thật + Clock biên; phân biệt mô phỏng và đo |
-| W7 | Feature/API freeze, full P0/P1 compatibility, integrity/auth/quota/R1/R2/Cold fault acceptance, benchmark/cost chính thức | Hưng W07-HUNG-01..03 chủ trì đo; Chiến W07-CHIEN-01..03 API; Hải W07-HAI-01..03 data; Phong W07-PHONG-01..03 recovery | W6 đầy đủ và ngưỡng đã review; L3 gates/evidence, blocker không bị đổi thành P2 |
-| W8 | Tài liệu/slide/demo, diễn tập cả hai profile, cleanup/teardown và buffer sửa regression | Hưng điều phối; cả nhóm W08-*-01..03 | W7 evidence + unresolved issues; rerun check liên quan sau sửa; không tự tuyên bố release |
+| W1 | Use case/scope/DoD; contract operation/error/auth/checksum; model/format; R1/R2/policy draft | Hưng (A01); Chiến; Hải; Phong | Bàn giao sources v4/v2. Review tài liệu L1, không đòi production AWS |
+| W2 | Pin client fixtures; parser/transport nền; freeze pack/manifest/event/completion/checkpoint serialization; Clock/policy/interfaces; Terraform/health/pricing nền | Chiến; Hải; Phong; Hưng | Contract W1; fixtures/golden/property/fuzz phù hợp; freeze có review, không suy endpoint hoàn tất |
+| W3 | Warm MVP1node:8P0+owner/domain/checksum/dedup/nén/pack/Badger/S3/cache; harness và số sơ bộ | Chiến; Hải; Phong; Hưng | W2 formats/adapters; round-trip, lỗi upload giữ head cũ; số Badger không đại diện DDB đủ |
+| W4 | Multipart/receipt, DynamoDB atomic commit/outbox, Admin auth/grants/quota/policy/stats/layout; Copy/Delete nền; R1/exporter/CloudEdge packaging | Chiến; Hải; Phong; Hưng | W3 MVP + frozen input/event schema; L2 data/auth/MP/transaction checks |
+| W5 | Cloud/Edge thật, R1+GC/compaction, seal/checkpoint/rebuild/24h roots; jobs/nodes/drain/cache scope; presigned và GetObject If-Match P1 (handler + Range/412) compatibility; pilot DDB | Hưng; Hải; Phong; Chiến | W4 transaction/R1/format; real DDB/ALB/Edge evidence, R1/R2 gates; If-Match mapping đã gắn vào phần việc W5 của Chiến trong backlog local |
+| W6 | IR/Flexible restore/promote/revival/cross-domainCopy; manual scrub on-demand P1, cost/simulator/faults; chốt threshold sau pilot đầy đủ | Phong; Hải; Chiến; Hưng | W5 profile/coordination/recovery; Cold thật + Clock biên; phân biệt mô phỏng và đo |
+| W7 | Feature/API freeze, full P0/P1 compatibility, integrity/auth/quota/R1/R2/Cold fault acceptance, benchmark/cost chính thức | Hưng chủ trì đo; Chiến API; Hải data; Phong recovery | W6 đầy đủ và ngưỡng đã review; L3 gates/evidence, blocker không bị đổi thành P2 |
+| W8 | Tài liệu/slide/demo, diễn tập cả hai profile, cleanup/teardown và buffer sửa regression | Hưng điều phối; cả nhóm | W7 evidence + unresolved issues; rerun check liên quan sau sửa; không tự tuyên bố release |
 
 Nguồn milestone: KT §15.2/16/18, API §12; phân công cụ thể từ backlog README và bốn file member (local-only). Các ID task trong bảng là tham chiếu văn bản, không link đến tài nguyên local-only khi tài liệu được chia sẻ.
 
@@ -79,7 +79,7 @@ Nguồn milestone: KT §15.2/16/18, API §12; phân công cụ thể từ backlo
 
 | ID | Quan sát nguồn | Ảnh hưởng / hướng làm rõ đề nghị | Trạng thái |
 |---|---|---|---|
-| CL-01 | API §4.1/4.2 có GetObject + If-Match P1; backlog từng ghi 19 dòng S3 P0/P1 | Đã đồng bộ "backlog/api-coverage.md", "backlog/README.md" và W05-CHIEN-01: 8 P0 + 12 P1 = 20 S3, 28 Admin, 3 health. Chiến thực hiện handler If-Match/Range/412 và test W5, không thay P2 khác | Đã chỉnh mapping local; chưa có evidence implementation W5 |
+| CL-01 | API §4.1/4.2 có GetObject + If-Match P1; backlog từng ghi 19 dòng S3 P0/P1 | Đã đồng bộ "backlog/api-coverage.md", "backlog/README.md" và mục GetObject If-Match P1 trong backlog: 8 P0 + 12 P1 = 20 S3, 28 Admin, 3 health. Chiến thực hiện handler If-Match/Range/412 và test W5, không thay P2 khác | Đã chỉnh mapping local; chưa có evidence implementation W5 |
 | CL-02 | Câu benchmark KT §13.4 dễ bị hiểu là server-side copy mọi file lớn; API §4.1/4.5/11 loại GetObjectTagging/UploadPartCopy khỏi P1 | Đã giới hạn câu KT §13.4: cp/sync upload (multipart)/download (Range+If-Match) file lớn trong P0/P1; copy giữa key chỉ CopyObject đơn ≤5 GiB; dưới threshold là điều kiện riêng của lệnh high-level; không nâng UploadPartCopy P2 | Đã làm rõ nguồn; chờ review PR |
 | CL-03 | API §6.2 có job type scrub P1; KT §15.1 cho full automated scrubber là tùy chọn | Bổ sung contract manual scrub on-demand P1 ở KT §11.2/API §6.2: kiểm checksum/SHA thật trên mẫu hoặc tập hữu hạn readable, đếm candidate/checked/corrupt/skipped, không silent pass/no-op, không auto restore/repair. Hưng (jobs W5, manual scrub W6), Hải/Phong phối hợp; periodic/full-store scrub tùy chọn | Đã làm rõ hợp đồng; nghiệm thu scrub W6 vẫn Not verified |
 

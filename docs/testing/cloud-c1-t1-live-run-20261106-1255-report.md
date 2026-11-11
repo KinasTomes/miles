@@ -1,9 +1,9 @@
 # Cloud C1 Trial 1 Live Run Report (2026-11-06 12:55 UTC Rerun)
 
-- **Date / Window:** 2026-11-06 12:55 UTC to 15:25 UTC (Scope ID: `w05-hung03-live-20261106-1255`)
+- **Date / Window:** 2026-11-06 12:55 UTC to 15:25 UTC
 - **AWS Region / Account:** `ap-southeast-1` / `123456789012` (Sanitized)
 - **Soft Budget:** $10 (actual billing pending lag; 0 compute/workload resources retained)
-- **Status:** **STOP-THE-LINE TRIGGERED; TEARDOWN COMPLETED (STATE 0 VERIFIED). PR #65 REMAINS DRAFT; TASK W05-HUNG-03 REMAINS DOING.**
+- **Status:** **STOP-THE-LINE TRIGGERED; TEARDOWN COMPLETED (STATE 0 VERIFIED). PR #65 REMAINS DRAFT; AWS ACCEPTANCE TASK REMAINS DOING.**
 
 ---
 
@@ -113,4 +113,4 @@ Following the stop-the-line procedure, full teardown was executed:
 - **`scripts/tests/`:**
   - Added adversarial tests in `test_runner_diagnostics.py` verifying zero secret leaks across serialized payloads and correct unmatched 500 attribution.
   - Added `test_runner_orchestrator.py` verifying real runner orchestration, RunCommand fallback, partial node failure, and pre-teardown persistence.
-- **PR & Task Tracking:** PR #65 merged; Task **W05-HUNG-03** marked Done on Kanban (unblocking dependencies; follow-up live acceptance tracked in PR #71).
+- **PR & Task Tracking:** PR #65 merged; AWS acceptance task marked Done on Kanban (unblocking dependencies; follow-up live acceptance tracked in PR #71).

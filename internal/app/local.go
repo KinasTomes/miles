@@ -17,6 +17,7 @@ import (
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/coordination"
+	"github.com/KinasTomes/miles/internal/engine/write"
 	"github.com/KinasTomes/miles/internal/faults"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/secretfile"
@@ -120,7 +121,8 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 		}
 		resident, closeCache = node, node.Close
 	}
-	objects, metadata, stopObjects, err := localObjects(m, packs, faultPacks, resident, cachePolicy)
+	counters := write.NewCounters(time.Now())
+	objects, metadata, stopObjects, err := localObjects(m, packs, faultPacks, resident, cachePolicy, counters)
 	if err != nil {
 		_ = closeCache()
 		transport.CloseIdleConnections()
@@ -149,7 +151,7 @@ func bootstrapLocal(c config.Startup) (d Dependencies, err error) {
 	}
 	adminOptions.Faults = faultReg
 	adminOptions.NodeID = nodeID
-	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: client, Bucket: c.PackBucket}, Now: time.Now, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second})
+	measurements, err := stats.New(stats.Options{Store: m, Inventory: packs3.VersionInventory{Client: client, Bucket: c.PackBucket}, Now: time.Now, MaxRecords: 10000, MaxReferences: 100000, MaxPhysicalObjects: 10000, Timeout: 20 * time.Second, MaxAge: 2 * time.Minute, Interval: 30 * time.Second, WriteCounters: counters})
 	if err != nil {
 		stopObjects()
 		_ = closeCache()

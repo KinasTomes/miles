@@ -3,9 +3,8 @@ package engine
 // Reference model of docs/contracts/chunking-and-commit.md §6.1, §6.4 and §6.6:
 // commit transaction conditions and effects, outcome reconciliation by op_id,
 // cleanup per operation, ClientRequestToken encoding and refcount batches.
-// The DynamoDB/Badger adapters and the refcount worker (W04-HAI-01,
-// W02-HAI-03, W05-HAI-01) must reproduce commit.json scenarios, tokens and
-// refcount; their tests then replace this model.
+// The DynamoDB/Badger adapters and the refcount worker must reproduce
+// commit.json scenarios, tokens and refcount; their tests then replace this model.
 
 import (
 	"cmp"

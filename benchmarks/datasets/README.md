@@ -1,4 +1,4 @@
-# Dataset v1 — W02-HUNG-02
+# Dataset v1
 
 Dữ liệu synthetic phục vụ [baseline specification](../baseline.md); không dùng dữ liệu cá nhân/production và không chứng minh dedup/throughput đã đạt target.
 

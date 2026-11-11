@@ -14,6 +14,7 @@ import (
 	"github.com/KinasTomes/miles/internal/pack"
 	"github.com/KinasTomes/miles/internal/policy"
 	"github.com/KinasTomes/miles/internal/storage"
+	"github.com/KinasTomes/miles/internal/storage/fake"
 )
 
 type observedReuse struct{ calls int }
@@ -65,7 +66,8 @@ func TestWritePipelineRevivesArchiveAndEveryRestoredFromBody(t *testing.T) {
 				pub.Packs = noSource
 				body := bytes.Repeat([]byte("hello"), 4000)
 				var refs []storage.ChunkRef
-				result, err := (Pipeline{Lookup: metadata, Publisher: pub, Chunking: engine.ChunkingParams{Min: 262144, Avg: 1048576, Max: 4194304}, Compression: engine.CompressionPolicy{Enabled: false, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)}}).Run(ctx, bytes.NewReader(body), key.Domain, func(r storage.ChunkRef) error { refs = append(refs, r); return nil })
+				counters := NewCounters(time.Unix(0, 0))
+				result, err := (Pipeline{Lookup: metadata, Publisher: pub, Counters: counters, Chunking: engine.ChunkingParams{Min: 262144, Avg: 1048576, Max: 4194304}, Compression: engine.CompressionPolicy{Enabled: false, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)}}).Run(ctx, bytes.NewReader(body), key.Domain, func(r storage.ChunkRef) error { refs = append(refs, r); return nil })
 				if err != nil || result.PackCount != 1 || len(refs) != 1 || refs[0].Key != key {
 					t.Fatal("body not revived", result, refs, err)
 				}
@@ -73,6 +75,10 @@ func TestWritePipelineRevivesArchiveAndEveryRestoredFromBody(t *testing.T) {
 				after := current[key]
 				if after.Key != before.Key || after.Location.Pack == old || after.LocationRevision != before.LocationRevision+1 {
 					t.Fatal("identity/location", before, after)
+				}
+				want := CounterSnapshot{Since: time.Unix(0, 0).UTC(), RevivedChunks: 1, RevivedBytes: uint64(after.Location.Range.Length)}
+				if result.RevivedChunks != 1 || result.RevivedBytes != want.RevivedBytes || result.OrphanedChunks != 0 || counters.Snapshot() != want {
+					t.Fatal("revival accounting", result, counters.Snapshot())
 				}
 				infos, _ = metadata.GetPacks(ctx, []storage.PackRef{after.Location.Pack, old})
 				fresh := infos[after.Location.Pack]
@@ -88,6 +94,163 @@ func TestWritePipelineRevivesArchiveAndEveryRestoredFromBody(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A canonical race loser leaves its blob as protected pack garbage: it is an
+// orphan, never a revival, and the request still resolves to the winner.
+func TestWritePipelineCountsRaceLoserAsOrphan(t *testing.T) {
+	ctx := context.Background()
+	pub, metadata, _ := publisherFixture(t, true)
+	_, data, _, entries := onePack(t)
+	winnerRef, err := pack.NewRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata.SetPack(storage.PackInfo{Version: 1, Ref: winnerRef, State: "Warm", Class: storage.Standard, StateRevision: 1, Size: int64(len(data)), ProtectedUntil: pub.ProtectedUntil})
+	winner := storage.Chunk{Version: 1, Key: entries[0].Key, RawBytes: int64(entries[0].RawLength), LocationRevision: 1,
+		Location: storage.ChunkLocation{Pack: winnerRef, Range: storage.ByteRange{Length: int64(entries[0].StoredLen)}, Codec: "raw", CRC32C: entries[0].CRC32C}}
+	race := &insertRace{Metadata: metadata, winner: winner, writer: pub.Writer}
+	pub.Metadata = race
+	pub.Guard = testGuard{store: race, allow: true}
+	counters := NewCounters(time.Time{})
+	result, err := (Pipeline{Lookup: metadata, Publisher: pub, Counters: counters, Chunking: engine.ChunkingParams{Min: 262144, Avg: 1048576, Max: 4194304}, Compression: engine.CompressionPolicy{Enabled: false, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)}}).Run(ctx, bytes.NewReader(bytes.Repeat([]byte("hello"), 4000)), "default", func(storage.ChunkRef) error { return nil })
+	want := CounterSnapshot{OrphanedChunks: 1, OrphanedBytes: uint64(entries[0].StoredLen)}
+	if err != nil || result.OrphanedChunks != 1 || result.OrphanedBytes != want.OrphanedBytes || result.RevivedChunks != 0 || counters.Snapshot() != want {
+		t.Fatal(result, counters.Snapshot(), err)
+	}
+}
+
+type gcTombstoneStore struct {
+	*fake.Metadata
+	revision uint64
+}
+
+func (m *gcTombstoneStore) PutChunkIfAbsent(ctx context.Context, row storage.Chunk, writer storage.WriterFence) (storage.Chunk, bool, error) {
+	winner, inserted, err := m.Metadata.PutChunkIfAbsent(ctx, row, writer)
+	if err == nil && inserted {
+		winner.LocationRevision = m.revision
+	}
+	return winner, inserted, err
+}
+
+// Reinsert after GC retirement returns LocationRevision > 1 on a fresh insert;
+// it must not be counted as a revival.
+func TestReinsertAfterGCDoesNotCountAsRevival(t *testing.T) {
+	ctx := context.Background()
+	pub, metadata, _ := publisherFixture(t, true)
+	store := &gcTombstoneStore{Metadata: metadata, revision: 5}
+	pub.Metadata = store
+	pub.Guard = testGuard{store: store, allow: true}
+	counters := NewCounters(time.Unix(0, 0))
+	body := bytes.Repeat([]byte("hello"), 4000)
+	key, _ := engine.HashChunk("default", body)
+	pipeline := Pipeline{Lookup: store, Publisher: pub, Counters: counters,
+		Chunking:    engine.ChunkingParams{Min: 262144, Avg: 1048576, Max: 4194304},
+		Compression: engine.CompressionPolicy{Enabled: false, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)}}
+	result, err := pipeline.Run(ctx, bytes.NewReader(body), key.Domain, func(storage.ChunkRef) error { return nil })
+	if err != nil || result.PackCount != 1 {
+		t.Fatal(result, err)
+	}
+	if result.RevivedChunks != 0 || result.RevivedBytes != 0 {
+		t.Fatalf("expected 0 revived chunks on insert after GC, got chunks=%d bytes=%d", result.RevivedChunks, result.RevivedBytes)
+	}
+	snap := counters.Snapshot()
+	if snap.RevivedChunks != 0 || snap.RevivedBytes != 0 {
+		t.Fatalf("expected 0 revived chunks in counters on insert after GC, got %+v", snap)
+	}
+}
+
+func twoPack(t *testing.T) (storage.PackRef, []byte, []byte, []pack.Entry) {
+	t.Helper()
+	raw1 := bytes.Repeat([]byte("hello"), 4000)
+	raw2 := bytes.Repeat([]byte("world"), 4000)
+	key1, err := engine.HashChunk("default", raw1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key2, err := engine.HashChunk("default", raw2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := pack.NewRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := pack.NewBuilder(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Add(pack.Blob{Key: key1, Codec: "raw", RawLength: uint32(len(raw1)), Stored: raw1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Add(pack.Blob{Key: key2, Codec: "raw", RawLength: uint32(len(raw2)), Stored: raw2}); err != nil {
+		t.Fatal(err)
+	}
+	data, sidecar, entries, err := b.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ref, data, sidecar, entries
+}
+
+type failSecondCAS struct {
+	*fake.Metadata
+	failKey storage.ChunkKey
+	fail    bool
+}
+
+func (m *failSecondCAS) CompareAndSwapChunkLocation(ctx context.Context, key storage.ChunkKey, rev uint64, loc storage.ChunkLocation, w storage.WriterFence) (storage.Chunk, error) {
+	if m.fail && key == m.failKey {
+		return storage.Chunk{}, storage.ErrUnavailable
+	}
+	return m.Metadata.CompareAndSwapChunkLocation(ctx, key, rev, loc, w)
+}
+
+// When StorePublisher fails after canonicalizing entry 1, entry 1's revival is
+// already confirmed in metadata and must be recorded in Counters; a subsequent
+// retry must not double-count entry 1.
+func TestPartialPublishFailureRecordsConfirmedPhysicalAndAvoidsDoubleCountOnRetry(t *testing.T) {
+	ctx := context.Background()
+	pub, metadata, _ := publisherFixture(t, true)
+	ref1, data1, sidecar1, entries1 := twoPack(t)
+	rows, err := pub.Publish(ctx, ref1, data1, sidecar1, entries1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, _ := metadata.GetPacks(ctx, []storage.PackRef{ref1})
+	p := info[ref1]
+	p.State = "Cold"
+	p.Class = storage.Glacier
+	p.StateRevision++
+	metadata.SetPack(p)
+
+	seam := &failSecondCAS{Metadata: metadata, failKey: entries1[1].Key, fail: true}
+	pub.Metadata = seam
+	pub.Guard = testGuard{store: seam, allow: true}
+	counters := NewCounters(time.Unix(0, 0))
+	pub.Counters = counters
+
+	newRef, newData, newSidecar, newEntries := twoPack(t)
+	_, err = pub.Publish(ctx, newRef, newData, newSidecar, newEntries, rows)
+	if !errors.Is(err, storage.ErrUnavailable) {
+		t.Fatalf("expected ErrUnavailable on partial publish failure, got %v", err)
+	}
+	snap := counters.Snapshot()
+	if snap.RevivedChunks != 1 || snap.RevivedBytes != uint64(newEntries[0].StoredLen) {
+		t.Fatalf("expected entry 1 recorded on partial failure: got chunks=%d bytes=%d", snap.RevivedChunks, snap.RevivedBytes)
+	}
+
+	seam.fail = false
+	prior2, _ := metadata.GetChunks(ctx, []storage.ChunkKey{entries1[0].Key, entries1[1].Key}, true)
+	retryRef, retryData, retrySidecar, retryEntries := twoPack(t)
+	_, err = pub.Publish(ctx, retryRef, retryData, retrySidecar, retryEntries, prior2)
+	if err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	snap2 := counters.Snapshot()
+	if snap2.RevivedChunks != 2 || snap2.RevivedBytes != uint64(newEntries[0].StoredLen+retryEntries[1].StoredLen) {
+		t.Fatalf("expected exactly 2 revived chunks after retry without double-counting entry 1: got %+v", snap2)
 	}
 }
 

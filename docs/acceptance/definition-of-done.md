@@ -1,6 +1,6 @@
 # Definition of Done và evidence nghiệm thu
 
-**Trạng thái: bản dự thảo để lead review, chưa phê duyệt.** Đầu ra của W01-HUNG-02 (A01), phụ thuộc W01-HUNG-01. Không tự đóng task, không xác nhận feature đã triển khai, CI đã chạy hay nghiệm thu đã đạt. Các tuần là mốc dự kiến, không phải kết quả.
+**Trạng thái: bản dự thảo để lead review, chưa phê duyệt.** Đầu ra tài liệu use case/scope/DoD (A01), phụ thuộc bàn giao nguồn v4/v2. Không tự đóng task, không xác nhận feature đã triển khai, CI đã chạy hay nghiệm thu đã đạt. Các tuần là mốc dự kiến, không phải kết quả.
 
 Nguồn hợp đồng: [kiến trúc v4](../dedup-storage-gateway-architecture.md) (KT) và [API v2](../dedup-storage-gateway-api.md) (API). Tài liệu này chỉ suy ra kế hoạch nghiệm thu; khi có khác biệt phải review nguồn, không tự thay hợp đồng. Backlog local được đọc để ánh xạ người/tuần, không phải dependency của tài liệu được commit.
 
@@ -81,4 +81,4 @@ Một evidence record cần tối thiểu: **criterion/UC/task ID; commit/build 
 | Simulator/cost | Trace/seed/Clock ảo,4policies≥3traces, shared policy version, pricing Region/as_of/official source, byte-time/restore/retention assumptions và toàn bộ infra/network | Dự báo theo mô hình, không là hóa đơn AWS/observed performance. Tách measured/modelled; VM Edge, dead Cold, controls, retry và restored temp đều phải tính |
 | Recovery/fault | Injection point, input/state revisions/op_id/fence, timeline, selected sealed cut/history/checkpoint/chain, inventory retention, before/after hashes/quota/auth, observed RPO/RTO, failed/unsupported targets | RPO là tuổi cut sealed thực tế, không phải export60s hay bảo đảm1h. Không chờ90ngày trong CI; ghi Clock boundary riêng + tập AWS thật phù hợp |
 
-Review task W01-HUNG-02 theo D1: kiểm đủ ba file và 30 UC, phân loại API, INV-01..10, ownership/mốc, precise references, CL-01..03 đã đồng bộ theo §6 và bảng gate/evidence; chỉ nguồn docs và backlog local được cập nhật có chủ đích, giữ report/apps/ignore nguyên trạng. Người review ghi nhận còn thiếu và quyết định duyệt ngoài bản nháp này. Không tự cập nhật task Done.
+Review bộ tài liệu use case/scope/DoD theo D1: kiểm đủ ba file và 30 UC, phân loại API, INV-01..10, ownership/mốc, precise references, CL-01..03 đã đồng bộ theo §6 và bảng gate/evidence; chỉ nguồn docs và backlog local được cập nhật có chủ đích, giữ report/apps/ignore nguyên trạng. Người review ghi nhận còn thiếu và quyết định duyệt ngoài bản nháp này. Không tự cập nhật task Done.

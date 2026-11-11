@@ -1,9 +1,9 @@
 # Jobs / Nodes operational contract
 
-W04-HUNG-02 implements shared operational records, worker state transitions,
+This work implements shared operational records, worker state transitions,
 node heartbeat/drain plumbing, metrics export and CLI transport. It does not run
 tiering/GC/scrub, perform R1/R2 side effects or expose a production Admin listener.
-W05-HUNG-01/02 composes those pieces with the real authorities and executors.
+Later Hưng work composes those pieces with the real authorities and executors.
 
 ## Ownership and persistence
 
