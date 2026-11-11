@@ -89,7 +89,7 @@ func (b *Buckets) CreateBucket(w http.ResponseWriter, r *Request) error {
 		// AccessDenied, not InvalidAccessKeyId (API v2 2.2.3).
 		return &Error{Code: ErrAccessDenied}
 	case err != nil:
-		return fmt.Errorf("s3: create bucket %q: %w", r.Bucket, err)
+		return MetadataWriteError(err)
 	case !created:
 		if bucket.OwnerID == r.Caller.UserID {
 			return &Error{Code: ErrBucketAlreadyOwnedByYou, Bucket: r.Bucket}

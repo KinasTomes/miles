@@ -34,6 +34,10 @@ run "private_immutable_launch" {
     error_message = "Bootstrap must pin and verify the release, retain drain hook, and default deep_observation to false."
   }
   assert {
+    condition     = strcontains(base64decode(aws_launch_template.gateway[0].user_data), "\"enable_test_fault_injection\":false")
+    error_message = "Fault injection must default to disabled."
+  }
+  assert {
     condition     = aws_autoscaling_group.gateway[0].timeouts.delete == "45m"
     error_message = "Terraform must wait longer than the controller's 35-minute drain budget when pausing."
   }
@@ -43,27 +47,32 @@ run "deep_observation_launch" {
   command = plan
   module { source = "../../modules/fleet" }
   variables {
-    enabled                 = true
-    name                    = "miles-dev"
-    account_id              = "123456789012"
-    region                  = "ap-southeast-1"
-    ami_id                  = "ami-0123456789abcdef0"
-    instance_type           = "t4g.small"
-    architecture            = "arm64"
-    subnet_ids              = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
-    security_group_id       = "sg-0123456789abcdef0"
-    instance_profile        = "miles-dev-gateway"
-    service_linked_role_arn = "arn:aws:iam::123456789012:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_miles-dev"
-    kms_key_arn             = "arn:aws:kms:ap-southeast-1:123456789012:key/00000000-0000-0000-0000-000000000001"
-    target_group_arn        = "arn:aws:elasticloadbalancing:ap-southeast-1:123456789012:targetgroup/miles-dev-s3/0123456789abcdef"
-    data_bucket_name        = "miles-dev-data-123456789012-ap-southeast-1"
-    release_sha256          = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    release_version_id      = "fixture-version-1"
-    runtime_secret_arn      = "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:runtime-fixture"
-    deep_observation        = true
+    enabled                     = true
+    name                        = "miles-dev"
+    account_id                  = "123456789012"
+    region                      = "ap-southeast-1"
+    ami_id                      = "ami-0123456789abcdef0"
+    instance_type               = "t4g.small"
+    architecture                = "arm64"
+    subnet_ids                  = ["subnet-0123456789abcdef0", "subnet-0123456789abcdef1"]
+    security_group_id           = "sg-0123456789abcdef0"
+    instance_profile            = "miles-dev-gateway"
+    service_linked_role_arn     = "arn:aws:iam::123456789012:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_miles-dev"
+    kms_key_arn                 = "arn:aws:kms:ap-southeast-1:123456789012:key/00000000-0000-0000-0000-000000000001"
+    target_group_arn            = "arn:aws:elasticloadbalancing:ap-southeast-1:123456789012:targetgroup/miles-dev-s3/0123456789abcdef"
+    data_bucket_name            = "miles-dev-data-123456789012-ap-southeast-1"
+    release_sha256              = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    release_version_id          = "fixture-version-1"
+    runtime_secret_arn          = "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:runtime-fixture"
+    deep_observation            = true
+    enable_test_fault_injection = true
   }
   assert {
     condition     = strcontains(base64decode(aws_launch_template.gateway[0].user_data), "\"deep_observation\":true")
     error_message = "Gateway bootstrap must pass deep_observation=true when enabled."
+  }
+  assert {
+    condition     = strcontains(base64decode(aws_launch_template.gateway[0].user_data), "\"enable_test_fault_injection\":true")
+    error_message = "Only an explicit isolated test opt-in enables fault injection."
   }
 }

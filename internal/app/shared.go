@@ -86,6 +86,9 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 		dOpt := clients.metadata.Options()
 		dOpt.HTTPClient = faults.WrapHTTPClient(dOpt.HTTPClient, faultReg, c.RuntimeNodeID)
 		clients.metadata = ddb.New(dOpt)
+		sOpt := clients.packs.Options()
+		sOpt.HTTPClient = faults.WrapS3HTTPClient(sOpt.HTTPClient, faultReg, c.RuntimeNodeID)
+		clients.packs = awss3.New(sOpt)
 	}
 	m, err := sharedStore(c, clients, utc)
 	if err != nil {
@@ -200,6 +203,9 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 			Chunking: engine.ChunkingParams{Min: int(p.Chunking.MinBytes), Avg: int(p.Chunking.AvgBytes), Max: int(p.Chunking.MaxBytes)}, Compression: engine.CompressionPolicy{Enabled: p.Compression.Enabled, Codec: p.Compression.Codec, Level: int(p.Compression.Level), MinSavingRatio: ratio}, WriteCounters: runtimeMetrics.Write,
 			BucketPolicy: func(id string) (config.BucketSnapshot, error) {
 				record, e := m.GetBucketPolicy(ctx, bucket, id, 0)
+				if errors.Is(e, storage.ErrNotFound) && !errors.Is(e, storage.ErrBucketNotFound) {
+					return v.NewBucketSnapshot(id, 1, config.DefaultCachePolicy())
+				}
 				if e != nil {
 					return config.BucketSnapshot{}, e
 				}
@@ -330,8 +336,9 @@ func composeShared(ctx context.Context, c config.Startup, clients runtimeClients
 			flushErr = fmt.Errorf("shutdown journal flush: %w", flushErr)
 		}
 		registry.Invalidate()
+		admissionErr := metadata.closeError(ctx)
 		clients.transport.CloseIdleConnections()
-		return errors.Join(e, flushErr, metadata.closeError(), resident.Close())
+		return errors.Join(e, flushErr, admissionErr, resident.Close())
 	}
 	return Dependencies{NodeID: c.RuntimeNodeID, Faults: faultReg, Statistics: measurements, Metadata: metadata, Packs: faultPacks, Cache: resident, ObjectsForRequest: objects, S3ListTokenKey: cursor, Admin: a, Probe: probe, Journal: journal,
 		Operations:       operational,

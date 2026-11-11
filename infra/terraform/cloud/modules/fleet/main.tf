@@ -3,20 +3,21 @@ locals {
   hook_name   = "${var.name}-drain"
   release_key = var.release_sha256 == null ? null : "releases/${var.release_sha256}/miles-linux-${var.architecture}.tar.gz"
   bootstrap = jsonencode({
-    account_id           = var.account_id
-    region               = var.region
-    asg_name             = local.asg_name
-    hook_name            = local.hook_name
-    target_group_arn     = var.target_group_arn
-    bucket               = var.data_bucket_name
-    release_key          = local.release_key
-    release_sha256       = var.release_sha256
-    release_version      = var.release_version_id
-    runtime_secret_arn   = var.runtime_secret_arn
-    table_prefix         = "${var.name}-"
-    kms_key_arn          = var.kms_key_arn
-    owner_ssh_public_key = var.owner_ssh_public_key
-    deep_observation     = var.deep_observation
+    account_id                  = var.account_id
+    region                      = var.region
+    asg_name                    = local.asg_name
+    hook_name                   = local.hook_name
+    target_group_arn            = var.target_group_arn
+    bucket                      = var.data_bucket_name
+    release_key                 = local.release_key
+    release_sha256              = var.release_sha256
+    release_version             = var.release_version_id
+    runtime_secret_arn          = var.runtime_secret_arn
+    table_prefix                = "${var.name}-"
+    kms_key_arn                 = var.kms_key_arn
+    owner_ssh_public_key        = var.owner_ssh_public_key
+    deep_observation            = var.deep_observation
+    enable_test_fault_injection = var.enable_test_fault_injection
   })
 }
 

@@ -3,6 +3,7 @@ package recovery
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -209,27 +210,16 @@ func (w Sealer) Seal(ctx context.Context, r s.RecoveryCutRequest) (AttachmentRef
 			if event.Validate() != nil || event.HistoryID != r.HistoryID || event.Epoch != r.Epoch || event.ID <= last || event.ID <= q.After {
 				return zero, s.ErrInvalid
 			}
-			if err = w.Exporter.Export(ctx, event.ID); err != nil {
-				return zero, err
+			member, err := w.Exporter.verifiedExport(ctx, event)
+			if errors.Is(err, s.ErrNotFound) {
+				if err = w.Exporter.Export(ctx, event.ID); err == nil {
+					member, err = w.Exporter.verifiedExport(ctx, event)
+				}
 			}
-			progress, err := w.Store.GetOutboxExport(ctx, event.ID)
 			if err != nil {
 				return zero, err
 			}
-			if !reflect.DeepEqual(progress.Event, event) || progress.DescriptorKey != eventRoot(event)+"descriptor.json" {
-				return zero, s.ErrConflict
-			}
-			body, err := w.Objects.Read(ctx, progress.DescriptorKey)
-			if err != nil {
-				return zero, err
-			}
-			if digest(body) != progress.DescriptorSHA256 {
-				return zero, s.ErrInvalid
-			}
-			if err = VerifyEvent(ctx, w.Objects, Member{ID: event.ID, Descriptor: ref(body)}, r.HistoryID, r.Epoch); err != nil {
-				return zero, err
-			}
-			if err = tree.add(ctx, Member{ID: event.ID, Descriptor: ref(body)}); err != nil {
+			if err = tree.add(ctx, member); err != nil {
 				return zero, err
 			}
 			chain, err = s.RecoveryDigest(chain, event)

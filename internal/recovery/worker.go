@@ -57,6 +57,20 @@ func (w Worker) Flush(ctx context.Context) error {
 		return s.ErrFenced
 	}
 	for epoch := state.NextToSeal; epoch <= g.Epoch; epoch++ {
+		if epoch < g.Epoch {
+			e, err := w.Store.GetRecoveryEpoch(ctx, g.HistoryID, epoch)
+			if err != nil {
+				return err
+			}
+			r := s.RecoveryCutRequest{HistoryID: g.HistoryID, Epoch: epoch, CloseID: e.CloseID, Worker: w.Fence}
+			if _, err = w.Store.BeginRecoveryCut(ctx, r); err != nil {
+				return err
+			}
+			if _, err = w.sealer().Seal(ctx, r); err != nil {
+				return err
+			}
+			continue
+		}
 		q := s.OutboxQuery{HistoryID: g.HistoryID, Epoch: epoch, Limit: 128}
 		for {
 			next, err := w.sealer().Exporter.RunPage(ctx, q)
@@ -70,19 +84,6 @@ func (w Worker) Flush(ctx context.Context) error {
 				return s.ErrInvalid
 			}
 			q.After = next
-		}
-		if epoch < g.Epoch {
-			e, err := w.Store.GetRecoveryEpoch(ctx, g.HistoryID, epoch)
-			if err != nil {
-				return err
-			}
-			r := s.RecoveryCutRequest{HistoryID: g.HistoryID, Epoch: epoch, CloseID: e.CloseID, Worker: w.Fence}
-			if _, err = w.Store.BeginRecoveryCut(ctx, r); err != nil {
-				return err
-			}
-			if _, err = w.sealer().Seal(ctx, r); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
