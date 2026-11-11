@@ -106,7 +106,7 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 			if err != nil && !errors.Is(err, s.ErrNotFound) {
 				return err
 			}
-			if err == nil && a.Fence == old.Worker && a.Kind == old.Type && (a.State == "Done" || a.State == "Skipped" || a.State == "NotApplied" || a.State == "Waiting") {
+			if err == nil && a.Fence == old.Worker && a.Kind == old.Type && (a.State == "Done" || a.State == "Skipped" || a.State == "NotApplied" || a.State == "Waiting" && a.StepID != "") {
 				old.PendingStep = ""
 				old.Checkpoint = []byte(`{"lifecycle_reconciled":true}`)
 			}

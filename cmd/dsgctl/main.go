@@ -43,6 +43,8 @@ Credentials: credentials create --user u [--system-admin] [--debug-allowed] --ou
 Tokens: admin-token create --user u [--system-admin] [--ttl 24h] --out file; admin-token ls [--user u]; admin-token revoke <token_id>
   admin-token bootstrap --user u [--ttl 24h] --token-file file (--local-data-path dir | --ddb-table-prefix p --region r [--ddb-endpoint url])
     offline, gateway stopped; DynamoDB credentials from AWS_* env
+Lifecycle upgrade: lifecycle-upgrade-gate --ddb-table-prefix p --region r [--ddb-endpoint url]
+  read-only V1 action/Job/R1 inventory; stop gateways and workers first; see docs/lifecycle-upgrade.md
 Jobs: job ls, job show <id>, job run <type> [--dry-run] [--params-file file] [--policy-revision n], job cancel <id>
 Faults: fault ls; fault add --type <t> [--scope node] --node id [--rate r] [--duration s]; fault rm <id>
 Nodes: node ls, node drain <id>
@@ -80,6 +82,9 @@ SSH tunnel: ssh -N -L 127.0.0.1:19000:<node>:9000 <bastion>; DSGCTL_ENDPOINT=htt
 	args = flags.Args()
 	if len(args) >= 2 && args[0] == "admin-token" && args[1] == "bootstrap" {
 		return bootstrap(ctx, args[2:], stdout)
+	}
+	if args[0] == "lifecycle-upgrade-gate" {
+		return lifecycleUpgradeGate(ctx, args[1:], stdout)
 	}
 	var cmd command
 	var err error

@@ -191,7 +191,7 @@ func TestLocalR1ManagedPutPeerGetAndCopySourcePins(t *testing.T) {
 		t.Fatal("copied object body", err)
 	}
 	t.Run("metadata-copy-binds-destination-root", func(t *testing.T) {
-		head, sourceDone, err := reader.BindSource(ctx, r.Head.Object, readDeadline)
+		head, _, sourceDone, err := reader.BindSource(ctx, r.Head.Object, readDeadline)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -121,6 +121,9 @@ func (m *Store) RetireSweep(ctx context.Context, j jobs.Job) (out lifecycle.Acti
 		if e != nil {
 			return e
 		}
+		if e = requireLifecycleStep(a, j); e != nil {
+			return e
+		}
 		if a.State != "Prepared" || a.Kind != "gc" || a.Fence != j.Worker || !lifecycle.RetirableData(a.Source) {
 			return s.ErrConflict
 		}
@@ -203,6 +206,9 @@ func (m *Store) RetireCanonical(ctx context.Context, j jobs.Job, expected s.Chun
 		}
 		action, e := r1Read[lifecycle.Action](t, lifecycleKey(j.ID))
 		if e != nil {
+			return e
+		}
+		if e = requireLifecycleStep(action, j); e != nil {
 			return e
 		}
 		if action.Kind != "gc" || action.State != "Prepared" || action.Fence != j.Worker || !lifecycle.RetirableData(action.Source) || action.Source.Ref != expected.Location.Pack {

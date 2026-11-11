@@ -1,14 +1,14 @@
 # CopyObject, DeleteObjects và bucket P1 validation
 
-Kiểm chứng CopyObject cùng miền, DeleteObjects, DeleteBucket và GetBucketLocation.
+Kiểm chứng CopyObject cùng miền và khác miền, DeleteObjects, DeleteBucket và GetBucketLocation.
 Yêu cầu: single-copy ≤ 5 GiB, bucket/delete operations đúng hợp đồng; copy khác miền
-trả lỗi rõ thay vì ghi tham chiếu chéo miền.
+tra đích trước, tái sử dụng chunks hợp lệ và chỉ ghi pack Warm đích cho chunks thiếu.
 Hợp đồng: [API §2.2.3, §4.2, §4.5, §4.6](../dedup-storage-gateway-api.md),
 [kiến trúc §5.3](../dedup-storage-gateway-architecture.md).
 
 | Yêu cầu | Implementation / proof |
 |---|---|
-| CopyObject cùng miền, MetadataDirective COPY/REPLACE/self-copy, giữ opaque ETag/checksum nguồn, nguồn được bảo vệ trước khi resolve | `object.Service.CopyObject` + `readpath.WarmReader.BindSource` + `WriteSession.PrepareCopy`/`write.CopyManifest`; handler `internal/api/s3/copy.go`. `TestCopySameDomainRepeatsRefsWithoutPayload`, `TestCopyToItself`, `TestCopySourceHeadIsProtectedAgainstRetirement`, `TestCopyObjectSourceAndDirective`, `TestCopyObjectMetadataReadsBack` |
+| CopyObject cùng miền và khác miền, MetadataDirective COPY/REPLACE/self-copy, giữ opaque ETag/checksum nguồn, nguồn được bảo vệ trước khi resolve | `object.Service.CopyObject` + `readpath.WarmReader.BindSource` + `WriteSession.PrepareCopy`/`WriteSession.PrepareCrossDomainCopy`; handler `internal/api/s3/copy.go`. `TestCopySameDomainRepeatsRefsWithoutPayload`, `TestCopyToItself`, `TestCopySourceHeadIsProtectedAgainstRetirement`, `TestCopyObjectSourceAndDirective`, `TestCopyObjectMetadataReadsBack`, `TestCopyCrossDomain`, `TestCopyColdSource`, `TestCopyObjectCrossDomainHandler` |
 | DeleteObjects XML per-key, DeleteBucket empty guard, GetBucketLocation | `internal/api/s3/delete_objects.go`, `bucket.go`; `storage.MetadataStore.DeleteBucket` qua control mutation `Buckets`/`entity_delete`. `TestDeleteObjectsPerKeyResults`, `TestDeleteObjectsRejectsBeforeAnyDelete`, `TestDeleteBucketFreesTheName`, contract `s3-delete-bucket-owner-incarnation-and-recreate` (Badger + DynamoDB), `TestGetBucketLocation` |
 | Read nguồn/write đích, quota owner đích, threshold−1/=/+1, UploadPartCopy 501 | `TestCopyObjectNeedsSourceReadAndDestinationWrite`, dòng CopyObject của `authorization.json`; `TestCopySameDomainRepeatsRefsWithoutPayload` (grantee copy, owner trả quota), `TestCopyQuotaExceededKeepsDestination`; `TestCopyRejectsBeforeAdmission` (5 GiB + 1 / đúng 5 GiB); dòng `UploadPartCopy is P2` của `routes.json`; smoke AWS CLI bên dưới |
 
@@ -24,8 +24,10 @@ Hợp đồng: [API §2.2.3, §4.2, §4.5, §4.6](../dedup-storage-gateway-api.m
   GET (đối chứng) và CopyObject đều bị `ErrConflict`, request hoàn tất và bản copy đọc đúng
   byte nguồn.
 - Trước admission (head nguồn thay qua metadata của reader): tombstone `NoSuchKey`, 5 GiB + 1
-  `InvalidRequest`, đúng 5 GiB qua giới hạn copy rồi dừng ở quota, miền khác
-  `NotImplemented`, đổi checksum algorithm `InvalidRequest`, cùng algorithm thành công.
+  `InvalidRequest`, đúng 5 GiB qua giới hạn copy rồi dừng ở quota,
+  đổi checksum algorithm `InvalidRequest`, cùng algorithm thành công.
+- Copy khác miền (`TestCopyCrossDomain`): tra từng chunk ở miền đích, reuse Warm/Restored đủ hạn không đọc payload nguồn; thiếu mới đọc/verify nguồn và ghi pack Warm đích. Manifest đích chỉ chứa chunk refs thuộc miền đích (không có cross-domain reference). Đọc lại khớp 100% payload và ETag/checksum. Copy lần hai cùng dữ liệu vào miền đích ghi 0 pack mới. REPLACE cập nhật HTTP metadata.
+- Nguồn Cold (`TestCopyColdSource`): cùng miền copy Cold metadata thành công không cần đọc payload; khác miền khi đích đã có đủ chunks copy thành công không cần restore nguồn; khác miền khi thiếu chunks ở đích trả `ErrCold` (403 `InvalidObjectState`) và kích hoạt auto-restore cho đúng pack cần đọc.
 - Metadata: REPLACE lưu Content-Language và mặc định `application/octet-stream` khi thiếu
   Content-Type; HEAD và GET của bản REPLACE trả header mới, bản COPY trả header nguồn.
 - Handler qua `s3.Router` trên fake metadata: parse `x-amz-copy-source` (dấu `/` đầu, decode
@@ -73,9 +75,8 @@ region `ap-southeast-1`, path-style:
 
 ## Giới hạn
 
-- Copy khác miền trả `NotImplemented`: chưa có đường đọc/verify chunk nguồn rồi ghi lại
-  trong miền đích. Nguồn ở pack không Warm/IR trả `InvalidObjectState`: copy metadata hiện
-  chỉ nhận nguồn đọc được ngay.
+- CopyObject đơn cap 5 GiB (`MaxCopyBytes`); file > 5 GiB không hỗ trợ single-copy P1, cần tải về và upload multipart. UploadPartCopy và GetObjectTagging giữ ở P2 (trả 501).
+- Lệnh `aws s3 mv` thực hiện CopyObject rồi mới DeleteObject nguồn sau khi response copy thành công; không cam kết atomic move khi có ghi đồng thời trên nguồn.
 - Grant của incarnation đã xóa không bị dọn vật lý; chúng gắn `bucket_id` cũ nên không có
   hiệu lực. Chưa có journal cleanup theo `bucket_id`.
 - Trong ≤ 5 giây sau DeleteBucket, node còn snapshot quyền có thể trả HeadBucket 200 hoặc
