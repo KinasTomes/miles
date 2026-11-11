@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math/big"
-	"strings"
 	"testing"
 	"time"
 
@@ -463,7 +462,23 @@ func TestCrossDomainCopyColdSourceAutoRestoreDynamoDB(t *testing.T) {
 			return created, err
 		},
 		AdmitWriter: func(ctx context.Context, r object.WriterRequest) (object.AdmittedWriter, error) {
-			return warmAdmit(ctx, m, strings.Repeat("1", 32), r)
+			mutation, w, e := registry.AdmitProducer(ctx, r.Object, r.OpID, r.Deadline)
+			if e != nil {
+				return object.AdmittedWriter{}, e
+			}
+			_, stop, e := w.KeepAlive(ctx)
+			if e != nil {
+				_ = w.Release()
+				return object.AdmittedWriter{}, e
+			}
+			bounds, e := utc.Bounds(ctx)
+			if e != nil {
+				stop()
+				_ = w.Release()
+				return object.AdmittedWriter{}, e
+			}
+			protected := bounds.Upper.Add(15 * time.Minute)
+			return object.AdmittedWriter{Producer: &mutation, Fence: mutation.Writer, ProtectedUntil: protected, Finish: func() { stop(); _ = w.Release() }}, nil
 		},
 		Chunking:    engine.ChunkingParams{Min: 16 << 10, Avg: 16 << 10, Max: 16 << 10},
 		Compression: engine.CompressionPolicy{Enabled: true, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)},
