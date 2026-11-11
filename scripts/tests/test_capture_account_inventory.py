@@ -39,6 +39,8 @@ class AccountInventoryTests(unittest.TestCase):
 
     def test_role_policy_changes_and_removal_are_detected(self):
         def fetch(profile, region, service, operation, *args):
+            if operation == "get-role":
+                return {"Role": {"RoleName": "deploy", "RoleId": "deploy-id", "AssumeRolePolicyDocument": {"Statement": []}}}
             if operation == "list-role-policies":
                 return {"PolicyNames": ["temporary"]}
             if operation == "get-role-policy":
@@ -47,9 +49,17 @@ class AccountInventoryTests(unittest.TestCase):
                 return {"AttachedPolicies": []}
             self.fail(f"unexpected operation {operation}")
         entries = role_policy_snapshot("p", "r", ["deploy"], fetch)
-        self.assertEqual(len(entries), 1)
+        self.assertEqual(len(entries), 2)
         self.assertEqual(compare_baseline({"role_policies": []}, {"role_policies": entries})["role_policies"], entries)
         self.assertEqual(compare_baseline({"role_policies": entries}, {"role_policies": []})["role_policies_removed"], entries)
+
+    def test_baseline_preservation_detects_missing_resources(self):
+        baseline = {"buckets": ["existing-bucket"], "roles": ["existing-role"], "vpcs": ["vpc-existing"]}
+        final = {"buckets": [], "roles": [], "vpcs": ["vpc-new"]}
+        self.assertEqual(compare_baseline(baseline, final), {
+            "buckets_removed": ["existing-bucket"], "roles_removed": ["existing-role"],
+            "vpcs_removed": ["vpc-existing"], "vpcs": ["vpc-new"],
+        })
 
     def test_all_managed_policy_versions_are_audited(self):
         def fetch(profile, region, service, operation, *args):

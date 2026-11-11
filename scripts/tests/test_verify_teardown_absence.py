@@ -23,8 +23,9 @@ from scripts.verify_teardown_absence import (
     TeardownAbsenceVerifier,
     main,
     remove_approved_pending,
+    validate_pending_deletion_approvals,
 )
-from scripts.capture_account_inventory import SPECS
+from scripts.capture_account_inventory import SCHEMA_VERSION, SPECS, role_policy_snapshot
 
 
 class VerifyTeardownAbsenceTests(unittest.TestCase):
@@ -43,12 +44,25 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(result["status"], "FAIL")
 
     def test_only_approved_owned_and_verified_pending_resources_are_exempt(self):
-        residuals = {"kms_keys": ["owned", "other"], "secrets": ["secret"]}
-        inventory = {"kms_keys": ["arn:aws:kms:r:a:key/owned"], "secrets": ["secret"]}
+        residuals = {"kms_keys": ["owned", "other-owned", "other"], "kms_keys_removed": ["existing"], "secrets": ["secret"]}
+        inventory = {"kms_keys": ["arn:aws:kms:r:a:key/owned", "other-owned", "other"], "secrets": ["secret"]}
+        state = [{"id": key, "type": "aws_kms_key"} for key in ("owned", "other-owned")]
+        state.append({"id": "secret", "type": "aws_secretsmanager_secret"})
+        baseline = {"kms_keys": [], "secrets": []}
+        approved = validate_pending_deletion_approvals(["kms_key=arn:aws:kms:r:a:key/owned", "secret=secret"], inventory, state, baseline)
         pending = lambda resource: {"status": "PENDING_DELETION"}
         active = lambda resource: {"status": "STILL_PRESENT"}
-        self.assertEqual(remove_approved_pending(residuals, inventory, [], pending, pending), residuals)
-        self.assertEqual(remove_approved_pending(residuals, inventory, ["kms_key", "secret"], pending, active), {"kms_keys": ["other"], "secrets": ["secret"]})
+        self.assertEqual(remove_approved_pending(residuals, set(), pending, pending), residuals)
+        self.assertEqual(remove_approved_pending(residuals, approved, pending, active),
+                         {"kms_keys": ["other-owned", "other"], "kms_keys_removed": ["existing"], "secrets": ["secret"]})
+        for invalid in (
+            ["kms_key"], ["kms_key=other"], ["kms_key=arn:aws:kms:r:wrong:key/owned"],
+            ["kms_key=owned", "kms_key=arn:aws:kms:r:a:key/owned"],
+        ):
+            with self.subTest(approvals=invalid), self.assertRaises(ValueError):
+                validate_pending_deletion_approvals(invalid, inventory, state, baseline)
+        with self.assertRaises(ValueError):
+            validate_pending_deletion_approvals(["kms_key=owned"], inventory, state, {"kms_keys": ["owned"], "secrets": []})
 
     def test_owned_log_group_launch_template_and_kms_alias_are_checked(self):
         def runner(cmd):
@@ -96,10 +110,21 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         runtime_hash = hashlib.sha256(runtime).hexdigest()
         manifest["provenance"]["runtime_sha256"] = runtime_hash
         account_resources = {key: [] for key in SPECS}
-        account_resources.update(nat_gateways=[], metric_alarms=[], composite_alarms=[], role_policies=[], managed_policy_versions=[])
-        account_baseline = json.dumps({"schema_version": "miles-account-inventory/v1", "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "captured_at_utc": "2026-11-09T23:50:00Z", "iam_roles_to_audit": ["deploy", "auditor"], "resources": account_resources}).encode()
+        deploy = {"RoleName": "deploy", "RoleId": "deploy-id", "AssumeRolePolicyDocument": {"Statement": []}}
+        role_responses = {
+            "get-role": {"Role": deploy},
+            "list-role-policies": {"PolicyNames": []},
+            "list-attached-role-policies": {"AttachedPolicies": []},
+        }
+        role_policies = role_policy_snapshot("profile", "region", ["deploy"], lambda _, __, ___, operation, *args: role_responses[operation])
+        account_resources.update(
+            buckets=["bootstrap"], roles=["deploy", "shared-role"], vpcs=["vpc-existing"],
+            nat_gateways=[], metric_alarms=[], composite_alarms=[], role_policies=role_policies, managed_policy_versions=[],
+        )
+        account_baseline = json.dumps({"schema_version": SCHEMA_VERSION, "run_id": "run", "account_id": "123456789012", "region": "ap-southeast-1", "captured_at_utc": "2026-11-09T23:50:00Z", "iam_roles_to_audit": ["deploy"], "resources": account_resources}).encode()
         manifest["provenance"]["account_baseline_sha256"] = hashlib.sha256(account_baseline).hexdigest()
         manifest["provenance"]["deploy_role"] = "deploy"
+        manifest["provenance"]["audit_role"] = "auditor"
         def runner_with_replacement(cmd):
             if "describe-instances" in cmd:
                 return 0, json.dumps({"Reservations": [{"Instances": [{"InstanceId": "i-new", "VpcId": "vpc-1", "State": {"Name": "running"}}]}]}), ""
@@ -115,28 +140,30 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
                 return 0, json.dumps({"Volumes": []}), ""
             if "describe-nat-gateways" in cmd:
                 return 0, json.dumps({"NatGateways": []}), ""
-            if "list-role-policies" in cmd:
-                return 0, json.dumps({"PolicyNames": []}), ""
-            if "list-attached-role-policies" in cmd:
-                return 0, json.dumps({"AttachedPolicies": []}), ""
+            if cmd[0] == "iam" and cmd[1] in role_responses and "deploy" in cmd:
+                return 0, json.dumps(role_responses[cmd[1]]), ""
             if "describe-alarms" in cmd:
                 return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
             if "--vpc-ids" in cmd:
                 return runner(cmd)
-            for command, list_key, _ in SPECS.values():
+            for kind, (command, list_key, field) in SPECS.items():
                 if cmd[:len(command)] == list(command):
-                    return 0, json.dumps({list_key: []}), ""
+                    ids = account_resources[kind]
+                    if kind == "roles":
+                        ids = [*ids, "auditor"]
+                    return 0, json.dumps({list_key: [{field: identity} for identity in ids] if field else ids}), ""
             return runner(cmd)
         verified = TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", state_json=state, state_sha256=digest, runtime_json=runtime, runtime_sha256=runtime_hash, volume_baseline_json=baseline, account_baseline_json=account_baseline, cli_runner=runner_clean_runtime).verify_all()
         self.assertEqual(verified["status"], "UNVERIFIED")
         self.assertFalse(verified["all_absent"])
         self.assertEqual(verified["error"], "EXTERNAL_RESOURCE_RECONCILIATION_UNAVAILABLE")
-        manifest["provenance"]["audit_role"] = "auditor"
         def final_runner(cmd):
             if "get-caller-identity" in cmd:
                 return 0, json.dumps({"Account": "123456789012", "Arn": "arn:aws:iam::123456789012:root"}), ""
-            if "get-role" in cmd:
+            if "get-role" in cmd and "deploy" not in cmd:
                 return 255, "", "NoSuchEntity"
+            if "list-roles" in cmd:
+                return 0, json.dumps({"Roles": [{"RoleName": role} for role in account_resources["roles"]]}), ""
             return runner_clean_runtime(cmd)
         def final_verification(fetch):
             return TeardownAbsenceVerifier(inventory=dict(inventory), manifest=manifest, mode="live", final_audit=True, state_json=state, state_sha256=digest, runtime_json=runtime, runtime_sha256=runtime_hash, volume_baseline_json=baseline, account_baseline_json=account_baseline, cli_runner=fetch).verify_all()
@@ -144,6 +171,32 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(final["status"], "PASS")
         self.assertTrue(final["audit_role_deleted"])
         self.assertTrue(final["all_absent"])
+        for kind, command, entries in (
+            ("buckets_removed", "list-buckets", {"Buckets": []}),
+            ("vpcs_removed", "describe-vpcs", {"Vpcs": []}),
+            ("roles_removed", "list-roles", {"Roles": [{"RoleName": "deploy"}]}),
+        ):
+            with self.subTest(missing=kind):
+                def missing_baseline(cmd):
+                    return (0, json.dumps(entries), "") if command in cmd and "--vpc-ids" not in cmd else final_runner(cmd)
+                result = final_verification(missing_baseline)
+                self.assertEqual(result["status"], "FAIL")
+                self.assertEqual(result["error"], "ACCOUNT_BASELINE_CHANGED")
+                self.assertIn(kind, result["residuals"])
+        for change in (
+            {"AssumeRolePolicyDocument": {"Statement": [{"Effect": "Allow"}]}},
+            {"PermissionsBoundary": {"PermissionsBoundaryArn": "arn:aws:iam::123456789012:policy/changed"}},
+            {"RoleId": "replacement-role-id"},
+        ):
+            with self.subTest(role_change=change):
+                def changed_role(cmd):
+                    if "get-role" in cmd and "deploy" in cmd:
+                        return 0, json.dumps({"Role": {**deploy, **change}}), ""
+                    return final_runner(cmd)
+                self.assertEqual(final_verification(changed_role)["error"], "ACCOUNT_BASELINE_CHANGED")
+        manifest["provenance"]["audit_role"] = "shared-role"
+        self.assertIn("temporary_audit_role_not_bound_to_run", final_verification(final_runner)["state_errors"])
+        manifest["provenance"]["audit_role"] = "auditor"
         for result in [(0, '{"Role": {}}', ''), (255, '', 'AccessDenied')]:
             def unproven_role(cmd):
                 return result if "get-role" in cmd else final_runner(cmd)

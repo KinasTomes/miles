@@ -34,7 +34,7 @@ Chỉ bắt đầu lượt tính phí sau khi hoàn tất bước 1 và ghi nh�
 - [ ] Tạo phiên `miles-dev` bằng `aws login --remote`. Gửi link bấm trực tiếp. Người dùng Switch back rồi Switch role mới sang `MilesDevDeploy`, chọn đúng role khi cấp code.
 - [ ] Làm trống `cli-login-code.txt` trước khi xin code, chuyển nguyên mã vào phiên CLI đang chờ mà không in ra output, xóa mã ngay sau khi dùng. Làm tương tự với `iam-login-code.txt` khi cần phiên quản trị IAM.
 - [ ] Xác minh STS account/role, Region Singapore và expiry. Workload dùng deploy role, root chỉ thực hiện IAM và audit đã duyệt. Dùng credential_process có thể refresh cho Terraform, tránh giữ một bản credential hết hạn suốt apply.
-- [ ] Chụp baseline account, EBS và policy/version IAM, ghi hash riêng. Các script repo là `capture_account_inventory.py` và `capture_volume_baseline.py`. Tạo auditor chỉ đọc, đưa cả deploy role và auditor vào baseline trước khi gắn grant tạm.
+- [ ] Chụp baseline account v2 và EBS trước khi tạo auditor hoặc gắn grant tạm. Dùng `capture_account_inventory.py --iam-role <deploy-role>` và `capture_volume_baseline.py`, ghi hash riêng. Sau baseline mới tạo auditor chỉ đọc và ghi đúng tên role này vào manifest.
 - [ ] Kiểm tra role `AWSServiceRoleForAutoScaling_miles-dev`. Nếu có sẵn, xác nhận baseline ownership, import đúng address với biến active trước saved fleet plan, rồi ghi rõ cách giữ lại role lúc teardown. Lượt trước thiếu bước này nên ASG chưa launch.
 - [ ] Chuẩn bị grant tạm có expiry, permissions boundary, validation và simulation cả quyền tạo/chạy/xóa. Lưu default version và document baseline để khôi phục. Rà cảnh báo wildcard của policy generator trước khi cấp.
 - [ ] Bổ sung sẵn quyền cleanup cho đúng inventory. Cần `dynamodb:DeleteTable` và `DescribeTable` kể cả sau khi tags của bảng đã mất, `s3:ListBucketMultipartUploads`/versions, `DeleteBucketPolicy`, quyền disassociate route trên subnet và route table, `kms:DeleteAlias` trên cả alias và key, `iam:ListInstanceProfilesForRole` cho role Edge.
@@ -74,13 +74,13 @@ Với mỗi trial, recorder phải bao phủ từ trước dispatch tới sau re
 ## 5. Khi lỗi và cleanup
 
 - [ ] Khi một gate lỗi, dừng dispatch, drain request đang chạy, export evidence và ghi FAIL cho gate đó. Các gate phụ thuộc còn lại ghi chưa nghiệm thu. Chuyển cleanup theo envelope đã duyệt.
-- [ ] Chụp state JSON, outputs và native ASG/instance/EBS inventory trước destroy. Freeze manifest với state/runtime/account baseline hashes, deploy role, audit role và các pending-deletion exceptions đã duyệt. Thêm ACM certificate và tài nguyên ngoài Terraform vào inventory.
+- [ ] Chụp state JSON, outputs và native ASG/instance/EBS inventory trước destroy. Freeze manifest với state/runtime/account baseline hashes, deploy role và audit role. Ghi từng ngoại lệ đã duyệt bằng `--approve-pending-deletion kms_key=<key-id>` hoặc `--approve-pending-deletion secret=<secret-arn>`, chỉ dùng ID tài nguyên mới có trong frozen state. Thêm ACM certificate và tài nguyên ngoài Terraform vào inventory.
 - [ ] Xuất dữ liệu synthetic cần chẩn đoán, đối chiếu PUT outcome chưa rõ. Xóa S3 versions/delete markers/multipart và fixture data, xác minh lại bucket rỗng.
 - [ ] Rà plan gỡ deletion protection và plan destroy. Chỉ gỡ bảo vệ trong bản cấu hình cleanup riêng đã kiểm tra. Giữ tài nguyên baseline, bootstrap/state và role Auto Scaling có sẵn.
 - [ ] Dừng gateway sạch và thu `shutdown complete` của đúng invocation, đợi target drain. Xóa root disk synthetic không backup theo duyệt. Kiểm cả node thay thế và detached volume bằng inventory native.
 - [ ] KMS/secret mới schedule deletion 30 ngày. Xóa ACM, runtime IAM và service-linked roles tạo trong lượt. ELB role có thể còn bị AWS từ chối vì tham chiếu ALB cũ, theo dõi và thử lại đến khi có `GetRole NoSuchEntity`.
 - [ ] Khôi phục default versions và document IAM, xóa toàn bộ policy versions/grants tạo trong lượt, so sánh policy baseline. Xóa auditor sau bước kiểm tra đầu.
-- [ ] Chạy `verify_teardown_absence.py --final-audit` với danh tính root chỉ đọc và đầy đủ frozen artifacts. Chấp nhận `PASS` hoặc `PASS_WITH_PENDING` cho đúng KMS/secret exceptions. `UNVERIFIED` hoặc residual cần tiếp tục đối chiếu.
+- [ ] Chạy `verify_teardown_absence.py --final-audit` với danh tính root chỉ đọc và đầy đủ frozen artifacts. Xác nhận không thiếu tài nguyên baseline, role auditor mới đã biến mất, IAM khớp snapshot và chỉ còn đúng các ID KMS/secret đã được duyệt chờ xóa. `UNVERIFIED`, tài nguyên baseline thiếu hoặc tài nguyên dư cần tiếp tục đối chiếu.
 - [ ] Đăng xuất root, dừng credential bridge/tunnel thuộc lượt, xóa mã login khỏi file. Lưu private progress/handoff và các resource ngoại lệ cần theo dõi.
 
 ## 6. Chốt kết quả

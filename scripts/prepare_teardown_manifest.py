@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.freeze_terraform_inventory import augment_inventory, compare_inventory, extract_resources
 from scripts.capture_runtime_inventory import reconcile_snapshot
 from scripts.capture_account_inventory import validate_baseline
-from scripts.verify_teardown_absence import METADATA_INVENTORY_KEYS, TeardownAbsenceVerifier
+from scripts.verify_teardown_absence import METADATA_INVENTORY_KEYS, TeardownAbsenceVerifier, validate_pending_deletion_approvals
 
 
 def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region, runtime_bytes=None, runtime_sha256=None, account_baseline_bytes=None, account_baseline_sha256=None, approved_pending=None, deploy_role=None, audit_role=None):
@@ -32,8 +32,9 @@ def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region
         raise ValueError("runtime inventory and hash must be provided together")
     if (account_baseline_bytes is None) != (account_baseline_sha256 is None):
         raise ValueError("account baseline and hash must be provided together")
+    account_baseline = None
     if account_baseline_bytes is not None:
-        validate_baseline(account_baseline_bytes, account_baseline_sha256, run_id, account, region)
+        account_baseline = validate_baseline(account_baseline_bytes, account_baseline_sha256, run_id, account, region)
     if runtime_bytes is not None:
         if not hmac.compare_digest(hashlib.sha256(runtime_bytes).hexdigest(), runtime_sha256):
             raise ValueError("runtime inventory hash mismatch")
@@ -62,13 +63,13 @@ def build_manifest(state_bytes, state_sha256, inventory, run_id, account, region
     if deploy_role:
         manifest["provenance"]["deploy_role"] = deploy_role
     if audit_role:
-        if not account_baseline_bytes or audit_role == deploy_role or audit_role not in json.loads(account_baseline_bytes).get("iam_roles_to_audit", []):
-            raise ValueError("audit role must be separately recorded in the account baseline")
+        if account_baseline is None or audit_role in account_baseline["roles"]:
+            raise ValueError("temporary audit role must be new since the account baseline")
         manifest["provenance"]["audit_role"] = audit_role
-    pending = approved_pending or []
-    if len(pending) != len(set(pending)) or any(item not in ("kms_key", "secret") for item in pending):
-        raise ValueError("invalid pending-deletion exception")
-    manifest["provenance"]["approved_pending_deletion"] = sorted(pending)
+    pending = validate_pending_deletion_approvals(
+        [] if approved_pending is None else approved_pending, resources, state_resources, account_baseline,
+    )
+    manifest["provenance"]["approved_pending_deletion"] = [f"{kind}={identity}" for kind, identity in sorted(pending)]
     _, validation_errors = TeardownAbsenceVerifier.validate_manifest_schema_and_reconciliation(manifest, inventory, account_id=account, region=region)
     if validation_errors:
         raise ValueError("manifest validation failed: " + "; ".join(validation_errors))
@@ -83,7 +84,8 @@ def main():
     parser.add_argument("--runtime-sha256")
     parser.add_argument("--account-baseline")
     parser.add_argument("--account-baseline-sha256")
-    parser.add_argument("--approve-pending-deletion", action="append", choices=("kms_key", "secret"), default=[])
+    parser.add_argument("--approve-pending-deletion", action="append", metavar="TYPE=ID", default=[],
+                        help="Exact approved resource, kms_key=<key ID or ARN> or secret=<secret ARN>")
     parser.add_argument("--deploy-role", help="Persistent deploy role whose IAM policy must be restored")
     parser.add_argument("--audit-role", help="Temporary read-only role that must be deleted before final root audit")
     args = parser.parse_args()

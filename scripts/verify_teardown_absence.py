@@ -46,18 +46,47 @@ def _iso_utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def remove_approved_pending(residuals, inventory, approved, check_key, check_secret):
+PENDING_DELETION_TYPES = {"kms_key": ("kms_keys", "aws_kms_key"), "secret": ("secrets", "aws_secretsmanager_secret")}
+
+
+def pending_identity(kind, identity):
+    return identity.rsplit("/", 1)[-1] if kind == "kms_key" else identity
+
+
+def validate_pending_deletion_approvals(approvals, inventory, state_resources, baseline):
+    if not isinstance(approvals, list):
+        raise ValueError("invalid pending-deletion approvals")
+    approved = set()
+    for approval in approvals:
+        kind, _, requested = approval.partition("=") if isinstance(approval, str) else ("", "", "")
+        if kind not in PENDING_DELETION_TYPES or not requested or baseline is None:
+            raise ValueError("pending-deletion approval requires type=identity and account baseline")
+        key, state_type = PENDING_DELETION_TYPES[kind]
+        identity = pending_identity(kind, requested)
+        pair = (kind, identity)
+        manifest_ids = inventory.get(key, [])
+        if requested != identity and requested not in manifest_ids:
+            raise ValueError("pending-deletion approval ARN must match the frozen manifest")
+        owned = {pending_identity(kind, entry) for entry in manifest_ids}
+        state_ids = {pending_identity(kind, r["id"]) for r in state_resources if r["type"] == state_type}
+        if pair in approved or identity not in owned or identity not in state_ids or identity in baseline[key]:
+            raise ValueError("pending-deletion approval must identify a unique new resource in frozen state")
+        approved.add(pair)
+    return approved
+
+
+def remove_approved_pending(residuals, approved, check_key, check_secret):
     remaining = {kind: list(ids) for kind, ids in residuals.items()}
-    for kind, approval, inventory_key, checker in (
-        ("kms_keys", "kms_key", "kms_keys", check_key),
-        ("secrets", "secret", "secrets", check_secret),
+    for kind, approval, checker in (
+        ("kms_keys", "kms_key", check_key),
+        ("secrets", "secret", check_secret),
     ):
-        if approval not in approved or kind not in remaining:
+        if kind not in remaining:
             continue
-        owned = set(inventory.get(inventory_key, []))
-        if kind == "kms_keys":
-            owned = {str(key).rsplit("/", 1)[-1] for key in owned}
-        remaining[kind] = [identity for identity in remaining[kind] if identity not in owned or checker(identity).get("status") != "PENDING_DELETION"]
+        remaining[kind] = [
+            identity for identity in remaining[kind]
+            if (approval, identity) not in approved or checker(identity).get("status") != "PENDING_DELETION"
+        ]
         if not remaining[kind]:
             del remaining[kind]
     return remaining
@@ -1619,10 +1648,11 @@ class TeardownAbsenceVerifier:
                     provenance = self.manifest.get("provenance", {})
                     account_baseline = validate_account_baseline(self.account_baseline_json, provenance.get("account_baseline_sha256"), self.manifest.get("run_id"), self.account_id, self.region)
                     audit_roles = json.loads(self.account_baseline_json)["iam_roles_to_audit"]
-                    if self.caller_role not in audit_roles:
-                        state_errors.append("caller_role_missing_from_iam_baseline")
+                    audit_role = provenance.get("audit_role")
+                    if audit_role != self.caller_role or audit_role in account_baseline["roles"]:
+                        state_errors.append("temporary_audit_role_not_bound_to_run")
                     deploy_role = provenance.get("deploy_role")
-                    if not isinstance(deploy_role, str) or deploy_role not in audit_roles or deploy_role == self.caller_role:
+                    if deploy_role not in audit_roles:
                         state_errors.append("separate_deploy_role_audit_missing")
                     if self.runtime_json and self.volume_baseline_json:
                         runtime_at = utc_timestamp(json.loads(self.runtime_json).get("captured_at_utc"))
@@ -1635,9 +1665,14 @@ class TeardownAbsenceVerifier:
                     state_errors.append("invalid_account_baseline")
             else:
                 state_errors.append("missing_account_baseline")
-            approved_pending = self.manifest.get("provenance", {}).get("approved_pending_deletion", []) if isinstance(self.manifest, dict) and isinstance(self.manifest.get("provenance"), dict) else []
-            if not isinstance(approved_pending, list) or any(not isinstance(item, str) or item not in ("kms_key", "secret") for item in approved_pending) or len(approved_pending) != len(set(approved_pending)):
-                state_errors.append("invalid_pending_deletion_approval")
+            if not state_errors:
+                try:
+                    approved_pending = validate_pending_deletion_approvals(
+                        provenance.get("approved_pending_deletion", []),
+                        self.manifest["expected_resources"], resources, account_baseline,
+                    )
+                except (ValueError, TypeError, KeyError, AttributeError):
+                    state_errors.append("invalid_pending_deletion_approval")
             if state_errors:
                 return {
                     "timestamp_utc": _iso_utc_now(), "mode": self.mode,
@@ -1662,17 +1697,16 @@ class TeardownAbsenceVerifier:
                     raise ValueError(f"account discovery failed for {command[0]} {command[1]} (exit {rc})")
                 return json.loads(output)
             try:
-                final_roles = [role for role in audit_roles if not self.final_audit or role != self.caller_role]
-                account_now = collect_account_inventory(self.profile, self.region, fetch=fetch_account, iam_roles=final_roles)
-                if self.final_audit:
-                    account_baseline = dict(account_baseline)
-                    account_baseline["role_policies"] = [entry for entry in account_baseline["role_policies"] if not entry.startswith(self.caller_role + "|")]
+                account_now = collect_account_inventory(self.profile, self.region, fetch=fetch_account, iam_roles=audit_roles)
+                if not self.final_audit:
+                    account_now["roles"].remove(self.caller_role)
                 account_residuals = compare_account_baseline(account_baseline, account_now)
             except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError) as error:
                 return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "UNVERIFIED", "all_absent": False, "error": "ACCOUNT_DISCOVERY_FAILED", "reason": str(error), "total_checked": 0, "resources": {}}
-            account_residuals = remove_approved_pending(account_residuals, self.inventory, approved_pending, self.check_kms_key_pending_deletion, self.check_secret_pending_deletion)
+            account_residuals = remove_approved_pending(account_residuals, approved_pending, self.check_kms_key_pending_deletion, self.check_secret_pending_deletion)
             if account_residuals:
-                return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "FAIL", "all_absent": False, "error": "ACCOUNT_RESOURCES_REMAIN", "residuals": account_residuals, "total_checked": 0, "resources": {}}
+                error = "ACCOUNT_BASELINE_CHANGED" if any(kind.endswith("_removed") for kind in account_residuals) else "ACCOUNT_RESOURCES_REMAIN"
+                return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "FAIL", "all_absent": False, "error": error, "residuals": account_residuals, "total_checked": 0, "resources": {}}
 
         # Guard 0.8: Manifest schema validation or two-way reconciliation failure
         if self.manifest_errors:
@@ -2073,7 +2107,11 @@ class TeardownAbsenceVerifier:
         pending_del_count = sum(1 for r in results.values() if r["status"] == "PENDING_DELETION")
         still_present = [r["resource"] for r in results.values() if r["status"] == "STILL_PRESENT"]
         unexpected_errors = [r for r in results.values() if r["status"] == "UNEXPECTED_ERROR"]
-        unapproved_pending = [r["resource"] for r in results.values() if r["status"] == "PENDING_DELETION" and self.mode == "live" and r.get("type") not in approved_pending]
+        unapproved_pending = [
+            r["resource"] for r in results.values()
+            if r["status"] == "PENDING_DELETION" and self.mode == "live"
+            and (r["type"], pending_identity(r["type"], r["resource"])) not in approved_pending
+        ]
 
         accepted = (len(still_present) == 0 and len(unexpected_errors) == 0 and not unapproved_pending)
         all_absent = accepted and pending_del_count == 0
