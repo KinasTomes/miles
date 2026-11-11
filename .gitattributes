@@ -10,3 +10,8 @@
 Makefile text eol=lf
 # Evidence manifests verify the same bytes on Windows and clean Linux checkouts.
 docs/testing/evidence/** text eol=lf
+# Pin text evidence bytes without treating binary archives as text.
+benchmarks/evidence/**/*.json text eol=lf
+benchmarks/evidence/**/*.txt text eol=lf
+benchmarks/evidence/**/*.py text eol=lf
+benchmarks/datasets/*.json text eol=lf
