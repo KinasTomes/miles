@@ -524,7 +524,22 @@ func TestLocalLifecycleTerminalGuardBindsOriginalFenceAndPendingStep(t *testing.
 	}
 }
 
-func TestLegacyLifecycleV1WithoutStepIsReadableButCannotReconcile(t *testing.T) {
+func TestLegacyLifecycleV1CodecReadsMissingStepID(t *testing.T) {
+	id := "job_" + strings.Repeat("a", 32)
+	old := lifecycle.Action{Version: lifecycle.ActionVersionLegacy, ID: id, JobID: id, Kind: "tiering", State: "Unknown", Revision: 1,
+		Fence: s.WriterFence{LeaseID: id}, Source: s.PackInfo{Version: 1, Ref: s.PackRef{ID: strings.Repeat("b", 32), Generation: strings.Repeat("c", 32)}, StateRevision: 1, Size: 1, Class: s.Standard, State: "Warm"}}
+	item, err := nativeItem(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(item, "step_id")
+	decoded, err := r1Decode[lifecycle.Action](item)
+	if err != nil || decoded.StepID != "" || decoded.Version != lifecycle.ActionVersionLegacy {
+		t.Fatal("legacy v1 action was not readable", decoded, err)
+	}
+}
+
+func TestLegacyLifecycleV1WithoutStepFailsClosed(t *testing.T) {
 	m, _, j, _, _, _, _ := lifeFixture(t, "tiering", s.GlacierIR)
 	ctx := t.Context()
 	packs, err := m.GetPacks(ctx, []s.PackRef{{ID: "lifecycle-pack", Generation: "generation-1"}})
