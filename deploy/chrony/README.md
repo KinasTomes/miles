@@ -9,6 +9,9 @@ run plan. Do not configure the operator's workstation with these files.
 measurement/statistics/tracking logs. Capture this baseline before changing it.
 `aws-burst.conf` is a diagnostic candidate, not an accepted fix: it allows shorter
 minimum polling and recovery bursts when a good measurement is unavailable.
+The candidate permits up to four requests per burst at polling level 4. A
+minimum polling level of 3 permits only two; live testing exhausted those two
+attempts on consecutive delay-filter rejections and observed stale tracking.
 Chrony's delay filters and the runtime's freshness/uncertainty guards stay intact.
 See [AWS configuration](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configure-ec2-ntp.html)
 and [Chrony burst/log directives](https://chrony-project.org/doc/4.3/chrony.conf.html).
