@@ -59,8 +59,11 @@ func (m *Store) InspectLifecycleUpgrade(ctx context.Context) ([]LifecycleUpgrade
 		return nil, fmt.Errorf("read R1 admission gate: %w", err)
 	}
 	gate, err := r1Decode[s.R1Gate](gateItem)
-	if err != nil || gate.State != "Maintenance" || gate.Active != 0 || gate.Resolving != 0 {
-		return nil, fmt.Errorf("R1 gate must be Maintenance with zero active/resolving leases: %w", s.ErrFenced)
+	// Closing is the supported admission freeze. Once Active and Resolving are
+	// both zero, no lease remains that can perform lifecycle side effects, and
+	// new acquisitions are rejected while the gate remains Closing.
+	if err != nil || gate.State != "Closing" || gate.Active != 0 || gate.Resolving != 0 {
+		return nil, fmt.Errorf("R1 gate must be Closing with zero active/resolving leases: %w", s.ErrFenced)
 	}
 	var items []Item
 	var cursor map[string]types.AttributeValue
