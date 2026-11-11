@@ -11,7 +11,7 @@ ARM64 release SHA-256: `579dc555f1474a312d0a47ee10e9600e3564426aca6f79ec8fe1a24a
 Singapore, two Cloud gateways, one Edge and one client, all on AWS. Four private
 `t4g.small` ARM64 instances, CPU Standard, disposable encrypted 20 GiB gp3 roots,
 internal TLS ALB and private endpoints; 117 Terraform-managed resources.
-Oracle ran operator CLI only. For the initial baseline/burst comparison, runtime binary, startup configuration,
+Oracle hosted no benchmark gateway; it ran operator CLI and isolated offline tests. For the initial baseline/burst comparison, runtime binary, startup configuration,
 shared installation and metadata backend were unchanged. A later Edge-only
 release changed CreateBucket error classification; that replay is separate.
 
@@ -142,19 +142,70 @@ stops had complete success proofs. The flush timeout now requires a separate
 native reproduction/classification before another paid run; it is not fixed by
 changing a clock polling profile.
 
+The retained precleanup metadata has epoch 0 Sealed and epoch 1 Closed. Epoch 1
+contains 177 Outbox items without recorded `export_progress` (237 with it); 20
+journal-flush jobs are succeeded and one remains running. These are metadata
+observations, not an independent proof of missing or present S3 bytes. They are
+retained for the offline flush reproduction and do not justify accepting the
+shutdown as complete.
+
+A retrospective, read-only CloudWatch audit confirms native Outbox throttling:
+`ReadMaxOnDemandThroughputThrottleEvents` sums to **518** over the one-minute bins
+13:47 through 13:55 UTC, overlapping the failed Edge flush; 603 events occur in
+the broader 13:40–14:16 audit window. Outbox's configured max read remained 128.
+These are native service events, not injected faults. They confirm a backend
+capacity bottleneck during shutdown, without proving it was the sole cause of
+the timeout. [AWS defines this metric as throttling at the configured on-demand
+maximum](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/metrics-dimensions.html#dynamodb-metrics:ReadMaxOnDemandThroughputThrottleEvents).
+
+Code inspection identifies a matching amplification path: `ListOutbox` scans the
+physical Outbox table for each logical page. If a later scan page fails, the
+shutdown retry starts a new flush/discovery from the beginning. The offline
+reproduction must test that combination with historical rows, concurrent export
+and a throttled later page before selecting an enumeration/retry fix. Do not
+silently increase Outbox's cap to obtain a PASS.
+
+## Source integration and focused verification
+
+Main advanced during this run. Merge `7f2d241` integrates its terminal-lifecycle
+coverage while preserving the explicit loopback/live/S3-fault fixture paths.
+`make check` passes. Native/race shared Cloud/Edge, the four terminal-provider
+scenarios and journal S3-fault regressions pass in 73.751 seconds. The affected
+S3 package race suite and 37 telemetry/deployment tests also pass. These are
+offline results on the integrated repository; AWS results remain bound to the
+separate runtime sources above. CI is 5/5 green on `7f2d241`; no new live acceptance is implied by merging main.
+
 ## Cleanup and limits
 
-Cleanup in progress: native logs exported, four VM/root IDs frozen, Edge process
-gone, Cloud scaled to zero and draining. The reviewed delete-only plan covers
-exactly 117 managed resources; twenty table protections have been removed in a
-private cleanup copy. Purge only after all application processes are gone, restore
-IAM, remove run-owned service roles/auditor and verify strict absence. Preserve
-bootstrap/state; only the new key/secret may remain in approved 30-day deletion.
+Cleanup is complete. Terraform deleted **117** owned managed resources and its
+remote managed state is empty. All four VM and four disposable root disks are
+absent. **5,672** synthetic S3 versions were removed after applications stopped;
+all twenty table snapshots and native clock evidence were retained privately
+before deletion. The out-of-state imported certificate was deleted separately.
+Both Cloud VM terminated naturally; no operator force or ABANDON was used.
+Neither that termination nor the failed final Edge stop is counted as clean
+shutdown acceptance.
 
-Approved envelope: 10 USD before tax, at most four hours including cleanup from
-11:36:41 UTC; no new tests after 14:26:41, cleanup starts by 14:36:41 and completes
-by 15:36:41. Initial Pricing API estimate was 6.42 USD with reserves, not a billing
-hard cap. Final cost evidence and independent cleanup verdict are pending.
+The deploy/runtime-boundary managed policies and versions were restored to the
+pre-run baseline, temporary grants/policy/auditor and both run-owned service
+roles were removed. The ELB role initially retained exactly this run's deleted
+ALB ARN; native Describe returned LoadBalancerNotFound. Failed deletion receipts
+were kept and bounded retries completed at 14:37:58 UTC. The failed preliminary
+audit was retained, then the strict final audit was rerun without exceptions.
+
+Final native result: **PASS_WITH_PENDING**, accepted; **88** identifiers checked,
+**86** absent, exactly **two approved 30-day pending deletions** (the new KMS key
+and secret), zero unapproved residuals or unexpected errors. Bootstrap/state and
+pre-run account resources were preserved. The final audit receipt is dated
+14:41:43 UTC, before the original 15:36:41 cleanup deadline. Operator tunnel
+processes are stopped and CLI logout/code clearing are recorded in private
+closeout evidence.
+
+Paid window started 11:36:41 UTC; workload destroy completed by 14:19 UTC. The
+final conservative resource/usage estimate, including reserves, is approximately
+**4.74 USD before tax** against the approved 10 USD envelope. This is not a final
+billing statement; metric and billing delivery can lag. IAM cleanup waiting did
+not reopen workload or extend the four-hour authorization.
 
 This is functional clock/conflict diagnosis on small instances. It does not
 replace sizing/performance acceptance or the already accepted unrelated

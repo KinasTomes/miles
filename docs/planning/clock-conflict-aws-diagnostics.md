@@ -21,7 +21,13 @@ although real-AWS request/AWS-ID/cancellation-reason logging is now verified.
 Before spending on another run, reproduce/classify the eight-minute shutdown
 journal flush timeout with concurrent native shared-runtime supervisors/jobs and
 a quiesced request workload. Preserve the original deadline, worker authority,
-export cursor and failure behavior. Identify whether time is spent acquiring
+export cursor and failure behavior. Native CloudWatch records 518 Outbox
+on-demand read-limit throttle events in the minute bins overlapping the failed
+flush; Outbox remains capped at 128. Reproduce historical-table scans and a
+throttled later scan page with concurrent exporters. A failed page currently
+causes the outer flush retry to restart discovery; verify progress and authority
+before choosing a bounded enumeration/retry correction. Do not raise the cap
+without a separate comparison decision. Identify whether time is spent acquiring
 recovery authority, discovering/exporting a page, publishing a seal or closing
 the worker; use bounded stage/result diagnostics through the existing worker
 observer if needed, without entity keys or raw backend errors. A released-lease
