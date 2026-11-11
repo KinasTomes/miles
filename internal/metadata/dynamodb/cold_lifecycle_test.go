@@ -511,9 +511,22 @@ func TestCrossDomainCopyColdSourceAutoRestoreDynamoDB(t *testing.T) {
 	if e != nil || len(jobsAfter.Jobs) != len(jobsBefore.Jobs)+1 {
 		t.Fatalf("expected 1 new restore job enqueued, before=%d after=%d: %v", len(jobsBefore.Jobs), len(jobsAfter.Jobs), e)
 	}
-	latestJob := jobsAfter.Jobs[len(jobsAfter.Jobs)-1]
+	var latestJob *jobs.Job
+	beforeIDs := map[string]bool{}
+	for _, j := range jobsBefore.Jobs {
+		beforeIDs[j.ID] = true
+	}
+	for i := range jobsAfter.Jobs {
+		if !beforeIDs[jobsAfter.Jobs[i].ID] {
+			latestJob = &jobsAfter.Jobs[i]
+			break
+		}
+	}
+	if latestJob == nil {
+		t.Fatalf("no new restore job found among %+v", jobsAfter.Jobs)
+	}
 	if latestJob.Type != "pack_restore" || latestJob.State != jobs.Queued {
-		t.Fatalf("unexpected job: %+v", latestJob)
+		t.Fatalf("unexpected job: %+v", *latestJob)
 	}
 	params, e := lifecycle.Decode(latestJob.Params, latestJob.Type)
 	if e != nil || params.PackID != chunk.Location.Pack.ID {
