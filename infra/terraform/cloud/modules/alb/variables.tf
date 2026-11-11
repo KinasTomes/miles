@@ -51,3 +51,7 @@ variable "health_check_unhealthy_threshold" {
     error_message = "Unhealthy threshold must be between 2 and 10."
   }
 }
+variable "internal" {
+  type    = bool
+  default = false
+}

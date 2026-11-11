@@ -15,12 +15,46 @@ import (
 
 var _ s.OutboxExportStore = (*Store)(nil)
 
+// Only a producer-enforced open epoch can use atomic mutation membership to
+// skip idle discovery. Closed cuts always enumerate Outbox independently.
+func (m *Store) emptyOpenOutboxEpoch(ctx context.Context, q s.OutboxQuery) (bool, error) {
+	if _, shared := m.authority.(*SharedAuthority); !shared || !m.requireProducers || q.After != "" {
+		return false, nil
+	}
+	gate, err := m.GetR1Gate(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !gate.RecoveryEnabled || gate.State != "Open" || gate.HistoryID != q.HistoryID || gate.Epoch != q.Epoch {
+		return false, nil
+	}
+	if _, err := m.GetRecoveryEpoch(ctx, q.HistoryID, q.Epoch); !errors.Is(err, s.ErrNotFound) {
+		return false, err
+	}
+	page, err := m.api.Query(ctx, &ddb.QueryInput{
+		TableName: aws.String(m.tables["Leases"]), ConsistentRead: aws.Bool(true), Limit: aws.Int32(1),
+		KeyConditionExpression: aws.String("#pk = :partition"), ProjectionExpression: aws.String("#sk"),
+		ExpressionAttributeNames:  map[string]string{"#pk": "resource_id", "#sk": "lease_id"},
+		ExpressionAttributeValues: Item{":partition": text(recoveryPartition("mutations", q.HistoryID, q.Epoch))},
+	})
+	if err != nil {
+		return false, backend(err)
+	}
+	if page == nil || len(page.Items) == 0 && len(page.LastEvaluatedKey) != 0 {
+		return false, s.ErrUnavailable
+	}
+	return len(page.Items) == 0, nil
+}
+
 // The frozen inventory has no event ordering index. A base scan retains only
 // Limit+1 smallest IDs after the cursor. Memory is bounded; read cost is linear
 // in table size. Neither consistent reads nor this discovery scan seal an epoch.
 func (m *Store) ListOutbox(ctx context.Context, q s.OutboxQuery) (s.OutboxPage, error) {
 	var out s.OutboxPage
 	if err := q.Validate(); err != nil {
+		return out, err
+	}
+	if empty, err := m.emptyOpenOutboxEpoch(ctx, q); err != nil || empty {
 		return out, err
 	}
 	candidates := map[string]Item{}

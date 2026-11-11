@@ -60,7 +60,7 @@ Chưa hoàn thành:
 
 ## 5. Workstream L — AWS follow-up acceptance (chỉ viết plan, CHƯA THỰC THI)
 
-**Bản nháp riêng:** [edge-acceptance-aws-run-plan-draft.md](edge-acceptance-aws-run-plan-draft.md). Phải cập nhật release SHA, hashes, IAM, dataset, resource quota, spend và owner approval theo thời điểm thực thi. Không tái sử dụng old signed plan/approval/keys.
+**Bản nháp riêng:** [edge-acceptance-aws-run-plan-draft.md](edge-acceptance-aws-run-plan-draft.md), cùng [edge-aws-approval-package.md](edge-aws-approval-package.md) (DRAFT / NOT APPROVED). Phải cập nhật release SHA, hashes, IAM, dataset, resource quota, spend và owner approval theo thời điểm thực thi. Không tái sử dụng old signed plan/approval/keys.
 
 - [ ] L0 / Gate C: xác nhận đúng account `499388132734` + Region `ap-southeast-1` bằng scoped non-root IAM; read-only inventory mới; Terraform fmt/validate/test & new saved plans; estimate chi phí, timeout gồm teardown, owner approval mới. **Cấm tự apply trước Gate C.**
 - [ ] L1 / Gate D0: fresh install theo scoped plan; chứng minh 2 Cloud+1 Edge (nếu cần), ALB, DDB, synthetic dataset, SSM/SSH, Chrony verified per-host/probe, server readiness. Bật host diagnostic sampling trước workload (không dùng hidden retries).
@@ -79,7 +79,7 @@ Chưa hoàn thành:
 | 0 | Workspace và plan (đang chuẩn bị) | File này + AWS draft; nhánh mới từ merged #73 | Chưa chạy AWS |
 | 1 | P1 fail-fast | `internal/benchmark/*`, `cmd/warmbench/*`, tests, CI; PR riêng | Gate F |
 | 2 | P0/P1 RCA offline | Analyzer, sanitized report, tests; PR riêng | Gate R |
-| 3 | AWS approval package | Cập nhật bản nháp run plan, release/dataset, budget, IAM, stop/teardown | Owner quyết định |
+| 3 | AWS approval package | [Run plan DRAFT](edge-acceptance-aws-run-plan-draft.md) + [Owner approval package](edge-aws-approval-package.md), release/dataset, budget, IAM, stop/teardown | **Đã soạn tài liệu; chưa được owner phê duyệt / không gọi AWS** |
 | 4 | AWS D2/D3/D4/E | Edge C1→C4, native R1/R2, 8 alarms, teardown, RCA | Gate L |
 
 **Điều kiện chuyển sang AWS:** (i) Gate F + R PASS hoặc ghi rõ evidence gap/diagnostic-only objective; (ii) PR liên quan được review/merge; (iii) full offline suite & release pin PASS; (iv) owner duyệt mới bằng văn bản; (v) teardown và chi phí có guardrails khả thi.
@@ -91,7 +91,9 @@ Chưa hoàn thành:
 - [x] Bắt đầu F1–F3 (không apply AWS).
 - [x] Kiểm thử race/stop/reconcile và cập nhật contract/docs cho F4–F7. PR #74 đã merge vào `main`.
 - [x] Đối chiếu evidence offline (R1–R7); không xuất private telemetry vào repo. Báo cáo RCA tại `docs/testing/edge-clock-rca-followup.md`.
-- [ ] Review/merge các PR kế tiếp.
+- [x] PR #75 (Gate R) squash merge vào `main` tại `633cb0e`; PR #74 (Gate F) tại `d4c6ead`.
+- [x] Soạn bộ hồ sơ AWS bước tiếp theo: `docs/planning/edge-aws-approval-package.md` và cập nhật `edge-acceptance-aws-run-plan-draft.md` (DRAFT; không cấp quyền thực thi).
+- [ ] BLOCKED — pending reviewer hotfix verification: Hoàn thiện/kiểm thử offline host clock sampler và native absence verifier (PR #77 squash merge tại `1dcc35298bd0432f434492d3a59f936738b61d27`; PR #76 hotfix hoàn thiện 5/5 findings).
 - [ ] Xin phê duyệt phiên AWS sau khi hoàn thành offline (đặc biệt D3/D4 không được tuyên bố PASS trước).
 
 **Lưu ý:** Bản kế hoạch này là tài liệu định hướng công việc, không phải quyền truy cập AWS hay giấy phép tiêu tiền.

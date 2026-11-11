@@ -24,6 +24,56 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
+type createBucketErrorStore struct {
+	BucketStore
+	err error
+	got storage.BucketCreate
+}
+
+func (s *createBucketErrorStore) CreateBucket(_ context.Context, r storage.BucketCreate) (storage.Bucket, bool, error) {
+	s.got = r
+	return storage.Bucket{}, false, s.err
+}
+
+func TestCreateBucketClassifiesAdmissionAndCommitErrors(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		code ErrorCode
+	}{
+		{storage.ErrR1Busy, ErrServiceUnavailable},
+		{fmt.Errorf("admission: %w", storage.ErrR1Busy), ErrServiceUnavailable},
+		{storage.ErrUnavailable, ErrServiceUnavailable},
+		{storage.ErrFenced, ErrServiceUnavailable},
+		{storage.ErrClockUncertain, ErrServiceUnavailable},
+		{storage.ErrConflict, ErrOperationAborted},
+		{storage.ErrAccessDenied, ErrAccessDenied},
+		{errors.New("private backend detail"), ErrInternalError},
+	} {
+		t.Run(string(tc.code)+"/"+tc.err.Error(), func(t *testing.T) {
+			w := newBucketWorld(t)
+			store := &createBucketErrorStore{BucketStore: w.store, err: tc.err}
+			w.router.Handlers = NewBucketHandlers(store)
+			req := httptest.NewRequest(http.MethodPut, "/fresh", nil)
+			signPayload(req, accessKey("owner"), "secret-owner", emptySHA256)
+			rec := httptest.NewRecorder()
+			w.router.ServeHTTP(rec, req)
+			got := checkErrorBody(t, rec)
+			if got != tc.code || rec.Code != (&Error{Code: tc.code}).Status() {
+				t.Fatalf("response %d %v, want %s", rec.Code, got, tc.code)
+			}
+			if store.got.CredentialID != accessKey("owner") || store.got.UserID != "user-owner" || store.got.Name != "fresh" {
+				t.Fatal("changed authenticated creation identity", store.got)
+			}
+			if strings.Contains(rec.Body.String(), "private backend detail") {
+				t.Fatal("backend error leaked into S3 response")
+			}
+			if _, err := w.store.GetBucket(t.Context(), "fresh"); !errors.Is(err, storage.ErrNotFound) {
+				t.Fatal("failed admission published a bucket", err)
+			}
+		})
+	}
+}
+
 // buckets.json is the pinned contract of the P0 bucket operations (API v2
 // 4.2 "Thao tác bucket"): bucket naming, CreateBucket with and against the
 // configured region, the collision codes of a taken name, HeadBucket per

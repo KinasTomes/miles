@@ -47,6 +47,7 @@ func (m *Runtime) DynamoDB(leaseTable string) func(*middleware.Stack) error {
 			}
 			start := time.Now()
 			out, meta, err := next.HandleInitialize(ctx, in)
+			logTransactionConflict(ctx, in.Parameters, meta, err)
 			m.add("miles_ddb_calls_total", 1)
 			m.add("miles_ddb_transactions_total", float64(transactions))
 			m.add("miles_ddb_lease_write_attempts_total", float64(leases))

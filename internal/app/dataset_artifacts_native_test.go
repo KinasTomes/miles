@@ -40,7 +40,7 @@ func TestNativeDatasetArtifacts(t *testing.T) {
 	if err := os.Mkdir(out, 0700); err != nil {
 		t.Fatal("output must be new", err)
 	}
-	runNativeScenario(t, true, "", func(ctx context.Context, nodes []Dependencies, m *dynamodb.Store, _ *s3.Client, _ string, bucket storage.Bucket, token string) {
+	runNativeScenario(t, func(ctx context.Context, nodes []Dependencies, m *dynamodb.Store, _ *s3.Client, _ string, bucket storage.Bucket, token string) {
 		captureDatasetArtifacts(t, ctx, out, nodes, m, bucket, token)
 	})
 }

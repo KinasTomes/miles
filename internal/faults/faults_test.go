@@ -11,6 +11,9 @@ import (
 
 	"github.com/KinasTomes/miles/internal/storage"
 	"github.com/KinasTomes/miles/internal/storage/fake"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 )
 
 type dummyHTTPClient struct {
@@ -211,6 +214,47 @@ func TestWrapHTTPClientDDBThrottle(t *testing.T) {
 	}
 	if dummy.called {
 		t.Fatal("underlying client should not have been called when throttled")
+	}
+}
+
+func TestWrapS3HTTPClientInjectsOnlyOnTargetNode(t *testing.T) {
+	reg := NewRegistry(true)
+	if _, err := reg.Add(time.Now(), FaultRule{Type: FaultS35xx, Scope: ScopeNode, NodeID: "node-1", Rate: 1, Duration: 60}); err != nil {
+		t.Fatal(err)
+	}
+	underlying := &dummyHTTPClient{}
+	client := WrapS3HTTPClient(underlying, reg, "node-1")
+	req, _ := http.NewRequest("GET", "https://s3.ap-southeast-1.amazonaws.com/bucket/key", nil)
+	response, err := client.Do(req)
+	if err != nil || response.StatusCode != http.StatusInternalServerError || underlying.called {
+		t.Fatal("S3 failure escaped local injection", response, err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || !bytes.Contains(body, []byte("InternalError")) {
+		t.Fatal("missing S3 error body", err)
+	}
+	reg.SetEnabled(false)
+	response, err = client.Do(req)
+	if err != nil || !underlying.called {
+		t.Fatal("disabled injection failed to delegate", err)
+	}
+	response.Body.Close()
+}
+
+func TestInjectedS3ErrorReachesSDKWithoutNetwork(t *testing.T) {
+	reg := NewRegistry(true)
+	if _, err := reg.Add(time.Now(), FaultRule{Type: FaultS35xx, Scope: ScopeNode, NodeID: "node-1", Rate: 1, Duration: 60}); err != nil {
+		t.Fatal(err)
+	}
+	underlying := &dummyHTTPClient{}
+	client := s3.New(s3.Options{Region: "ap-southeast-1", Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+		return aws.Credentials{AccessKeyID: "test", SecretAccessKey: "test"}, nil
+	}), HTTPClient: WrapS3HTTPClient(underlying, reg, "node-1"), RetryMaxAttempts: 1})
+	_, err := client.GetObject(context.Background(), &s3.GetObjectInput{Bucket: aws.String("test-bucket"), Key: aws.String("key")})
+	var api smithy.APIError
+	if !errors.As(err, &api) || api.ErrorCode() != "InternalError" || underlying.called {
+		t.Fatal("S3 SDK did not receive injected error", err)
 	}
 }
 

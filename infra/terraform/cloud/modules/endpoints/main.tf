@@ -1,5 +1,5 @@
 locals {
-  services = toset(["kms", "ssm", "ssmmessages", "secretsmanager", "logs", "monitoring", "sts", "elasticloadbalancing", "autoscaling"])
+  services = toset(concat(["kms", "ssm", "ssmmessages", "secretsmanager", "logs", "monitoring", "sts", "elasticloadbalancing", "autoscaling"], var.enable_roles_anywhere ? ["rolesanywhere"] : []))
 }
 resource "aws_vpc_endpoint" "gateway" {
   for_each          = toset(["s3", "dynamodb"])
@@ -40,7 +40,11 @@ resource "aws_vpc_endpoint" "interface" {
   private_dns_enabled = true
   subnet_ids          = values(var.private_subnets)
   security_group_ids  = [aws_security_group.interfaces[0].id]
-  tags                = { Name = "${var.name}-${each.key}" }
+  policy = each.key == "rolesanywhere" ? jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Principal = "*", Action = "rolesanywhere:CreateSession", Resource = var.roles_anywhere_trust_anchor_arn }]
+  }) : null
+  tags = { Name = "${var.name}-${each.key}" }
 }
 output "gateway_ids" { value = { for n, e in aws_vpc_endpoint.gateway : n => e.id } }
 output "interface_ids" { value = { for n, e in aws_vpc_endpoint.interface : n => e.id } }

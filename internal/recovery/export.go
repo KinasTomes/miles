@@ -10,9 +10,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/KinasTomes/miles/internal/recovery/format"
 	"io"
+	"reflect"
 	"strconv"
 
 	s "github.com/KinasTomes/miles/internal/storage"
@@ -100,6 +102,9 @@ func (w Exporter) Export(ctx context.Context, id string) error {
 	}
 	if e.Validate() != nil || e.Epoch > maxInteger {
 		return s.ErrInvalid
+	}
+	if _, err := w.verifiedExport(ctx, e); !errors.Is(err, s.ErrNotFound) {
+		return err
 	}
 	r, err := w.Payloads.Open(ctx, e.PayloadPointer)
 	if err != nil {
@@ -190,6 +195,35 @@ func (w Exporter) Export(ctx context.Context, id string) error {
 		return err
 	}
 	return w.Metadata.MarkOutboxExported(ctx, s.OutboxExport{Event: e, DescriptorKey: key, DescriptorSHA256: digest(body), Worker: w.Worker})
+}
+
+// A durable receipt saves rewriting immutable artifacts on every retry. Read
+// back the complete bundle and its native source before trusting that receipt.
+func (w Exporter) verifiedExport(ctx context.Context, event s.OutboxEvent) (Member, error) {
+	var member Member
+	progress, err := w.Metadata.GetOutboxExport(ctx, event.ID)
+	if err != nil {
+		return member, err
+	}
+	if !reflect.DeepEqual(progress.Event, event) || progress.DescriptorKey != eventRoot(event)+"descriptor.json" {
+		return member, s.ErrConflict
+	}
+	body, err := w.Objects.Read(ctx, progress.DescriptorKey)
+	if err != nil {
+		return member, err
+	}
+	if digest(body) != progress.DescriptorSHA256 {
+		return member, s.ErrInvalid
+	}
+	member = Member{ID: event.ID, Descriptor: ref(body)}
+	source, err := verifiedEvent(ctx, w.Objects, member, event.HistoryID, event.Epoch)
+	if err != nil {
+		return Member{}, err
+	}
+	if !reflect.DeepEqual(source, event) {
+		return Member{}, s.ErrConflict
+	}
+	return member, nil
 }
 
 type guardedObjects struct {
