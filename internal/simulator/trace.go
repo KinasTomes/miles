@@ -38,13 +38,83 @@ type Trace struct {
 }
 
 type Event struct {
-	AtNS         int64                           `json:"at_ns"`
-	Snapshot     *cost.Snapshot                  `json:"snapshot,omitempty"`
-	Counters     cost.WriteCounters              `json:"write_counters"`
-	Traffic      map[cost.Route]uint64           `json:"traffic_bytes"`
-	Usage        []cost.Usage                    `json:"usage"`
-	StorageBytes map[storage.StorageClass]uint64 `json:"billable_storage_bytes"`
-	Tiering      *Tiering                        `json:"tiering,omitempty"`
+	AtNS                        int64                           `json:"at_ns"`
+	Snapshot                    *cost.Snapshot                  `json:"snapshot,omitempty"`
+	Counters                    cost.WriteCounters              `json:"write_counters"`
+	Traffic                     map[cost.Route]uint64           `json:"traffic_bytes"`
+	Usage                       []cost.Usage                    `json:"usage"`
+	StorageBytes                map[storage.StorageClass]uint64 `json:"billable_storage_bytes"`
+	Tiering                     *Tiering                        `json:"tiering,omitempty"`
+	ColdLogicalDeliveredBytes   uint64                          `json:"cold_logical_delivered_bytes,omitempty"`
+	ColdLogicalDeliveredByClass map[storage.StorageClass]uint64 `json:"cold_logical_delivered_by_class,omitempty"`
+}
+
+// ColdDeliveredForClass retrieves the proven logical delivered bytes for a specific cold storage class.
+// It checks class-specific telemetry first, then falls back to general cold delivery bytes.
+func (e *Event) ColdDeliveredForClass(class storage.StorageClass) (uint64, bool) {
+	if e == nil {
+		return 0, false
+	}
+	if e.ColdLogicalDeliveredByClass != nil {
+		if b, ok := e.ColdLogicalDeliveredByClass[class]; ok && b > 0 {
+			return b, true
+		}
+	}
+	if e.ColdLogicalDeliveredBytes > 0 {
+		return e.ColdLogicalDeliveredBytes, true
+	}
+	return 0, false
+}
+
+func (e *Event) UnmarshalJSON(data []byte) error {
+	type eventAlias struct {
+		AtNS                        int64                           `json:"at_ns"`
+		Snapshot                    *cost.Snapshot                  `json:"snapshot,omitempty"`
+		Counters                    cost.WriteCounters              `json:"write_counters"`
+		Traffic                     map[cost.Route]uint64           `json:"traffic_bytes"`
+		Usage                       []cost.Usage                    `json:"usage"`
+		StorageBytes                map[storage.StorageClass]uint64 `json:"billable_storage_bytes"`
+		Tiering                     *Tiering                        `json:"tiering,omitempty"`
+		ColdLogicalDeliveredRaw     json.RawMessage                 `json:"cold_logical_delivered_bytes,omitempty"`
+		ColdLogicalDeliveredByClass map[storage.StorageClass]uint64 `json:"cold_logical_delivered_by_class,omitempty"`
+	}
+
+	d := json.NewDecoder(bytes.NewReader(data))
+	d.DisallowUnknownFields()
+	var raw eventAlias
+	if err := d.Decode(&raw); err != nil {
+		return err
+	}
+
+	e.AtNS = raw.AtNS
+	e.Snapshot = raw.Snapshot
+	e.Counters = raw.Counters
+	e.Traffic = raw.Traffic
+	e.Usage = raw.Usage
+	e.StorageBytes = raw.StorageBytes
+	e.Tiering = raw.Tiering
+	e.ColdLogicalDeliveredByClass = raw.ColdLogicalDeliveredByClass
+
+	if len(raw.ColdLogicalDeliveredRaw) > 0 && string(raw.ColdLogicalDeliveredRaw) != "null" {
+		var num uint64
+		if err := json.Unmarshal(raw.ColdLogicalDeliveredRaw, &num); err == nil {
+			e.ColdLogicalDeliveredBytes = num
+			return nil
+		}
+		var classMap map[storage.StorageClass]uint64
+		if err := json.Unmarshal(raw.ColdLogicalDeliveredRaw, &classMap); err == nil {
+			if e.ColdLogicalDeliveredByClass == nil {
+				e.ColdLogicalDeliveredByClass = classMap
+			} else {
+				for k, v := range classMap {
+					e.ColdLogicalDeliveredByClass[k] = v
+				}
+			}
+			return nil
+		}
+		return errors.New("invalid cold_logical_delivered_bytes: must be a number or a map of storage class to bytes")
+	}
+	return nil
 }
 
 // These facts are trace assumptions, never proof of a live operation's safety.
@@ -89,7 +159,7 @@ func (t Trace) snapshot() (config.GlobalSnapshot, error) {
 	}
 	last := int64(0)
 	for _, event := range t.Events {
-		if event.AtNS < last || event.AtNS > t.DurationNS || len(event.Usage) > 16 || len(event.Traffic) > 8 || len(event.StorageBytes) > 4 {
+		if event.AtNS < last || event.AtNS > t.DurationNS || len(event.Usage) > 16 || len(event.Traffic) > 8 || len(event.StorageBytes) > 4 || len(event.ColdLogicalDeliveredByClass) > 4 {
 			return config.GlobalSnapshot{}, errors.New("trace order, timestamp or event bound invalid")
 		}
 		last = event.AtNS

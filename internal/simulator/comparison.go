@@ -878,6 +878,14 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		var coldDeliveredBytes uint64
 		hasUnprovenColdDelivery := false
 
+		var targetClass storage.StorageClass
+		switch polName {
+		case PolicyWarmGlacierIR:
+			targetClass = storage.GlacierIR
+		case PolicyWarmGlacierFlex:
+			targetClass = storage.Glacier
+		}
+
 		for _, event := range trace.Events {
 			hasColdReadInEvent := false
 
@@ -905,26 +913,14 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 			}
 
 			if hasColdReadInEvent {
-				matchedTiering := false
-				if event.Tiering != nil && event.Tiering.LiveBytes > 0 {
-					switch polName {
-					case PolicyWarmGlacierIR:
-						if event.Tiering.Pack.Class == "" || event.Tiering.Pack.Class == storage.GlacierIR {
-							coldDeliveredBytes += uint64(event.Tiering.LiveBytes)
-							matchedTiering = true
-						}
-					case PolicyWarmGlacierFlex:
-						if event.Tiering.Pack.Class == "" || event.Tiering.Pack.Class == storage.Glacier {
-							coldDeliveredBytes += uint64(event.Tiering.LiveBytes)
-							matchedTiering = true
-						}
-					}
-				}
-				if !matchedTiering {
-					// Trace only records total traffic on gateway_to_client without per-operation
-					// cold delivery telemetry. Since aggregate client traffic may include warm
-					// cache hits without S3 GET lines, aggregate traffic cannot prove the cold
-					// delivery denominator. Fail closed by returning nil for unproven denominator.
+				if delivered, ok := event.ColdDeliveredForClass(targetClass); ok && delivered > 0 {
+					coldDeliveredBytes += delivered
+				} else {
+					// Trace contains cold retrieval usage for this policy, but lacks explicit,
+					// provenance-verified cold logical delivered bytes telemetry linked to this operation.
+					// Aggregate client traffic (which may include warm cache hits) and unrelated
+					// lifecycle/tiering state cannot prove the cold delivery denominator.
+					// Fail closed by returning nil for unproven denominator.
 					hasUnprovenColdDelivery = true
 				}
 			}

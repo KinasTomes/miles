@@ -532,15 +532,7 @@ func TestComparePoliciesRestoreAmplification(t *testing.T) {
 			StorageBytes: map[storage.StorageClass]uint64{
 				storage.GlacierIR: 1073741824,
 			},
-			Tiering: &Tiering{
-				Pack: storage.PackInfo{
-					Ref:   storage.PackRef{ID: "ir-pack-1", Generation: "g1"},
-					Size:  1073741824,
-					Class: storage.GlacierIR,
-				},
-				LiveBytes:  64 * 1024 * 1024, // 64 MiB verified cold delivery per operation
-				TotalBytes: 1073741824,
-			},
+			ColdLogicalDeliveredBytes: 64 * 1024 * 1024,
 			Traffic: map[cost.Route]uint64{
 				cost.GatewayClient: 64 * 1024 * 1024, // 64 MiB delivered to client
 			},
@@ -1467,15 +1459,7 @@ func TestComparePoliciesRestoreAmplificationPolicyIsolation(t *testing.T) {
 			Traffic: map[cost.Route]uint64{
 				cost.GatewayClient: 64 * 1024 * 1024,
 			},
-			Tiering: &Tiering{
-				Pack: storage.PackInfo{
-					Ref:   storage.PackRef{ID: "ir-pack-1", Generation: "g1"},
-					Size:  1073741824,
-					Class: storage.GlacierIR,
-				},
-				LiveBytes:  64 * 1024 * 1024,
-				TotalBytes: 1073741824,
-			},
+			ColdLogicalDeliveredBytes: 64 * 1024 * 1024,
 			Usage: []cost.Usage{
 				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
 			},
@@ -2147,7 +2131,7 @@ func TestComparePoliciesRestoreAmplificationWarmCacheHitsWithoutPerOperationTele
 		t.Fatalf("expected RestoreAmplification to be nil when per-operation cold delivery telemetry is missing, got %v (must not assume aggregate traffic 192 MiB is cold)", *irPol.RestoreAmplification)
 	}
 
-	// When per-operation cold delivery telemetry IS provided via Tiering.LiveBytes:
+	// When per-operation cold delivery telemetry IS provided via ColdLogicalDeliveredBytes:
 	traceWithTelemetry := trace
 	traceWithTelemetry.Events = []Event{
 		{
@@ -2159,15 +2143,7 @@ func TestComparePoliciesRestoreAmplificationWarmCacheHitsWithoutPerOperationTele
 			StorageBytes: map[storage.StorageClass]uint64{
 				storage.GlacierIR: oneGiB,
 			},
-			Tiering: &Tiering{
-				Pack: storage.PackInfo{
-					Ref:   storage.PackRef{ID: "ir-pack-1", Generation: "g1"},
-					Size:  int64(oneGiB),
-					Class: storage.GlacierIR,
-				},
-				LiveBytes:  64 * 1024 * 1024,
-				TotalBytes: int64(oneGiB),
-			},
+			ColdLogicalDeliveredBytes: 64 * 1024 * 1024,
 			Traffic: map[cost.Route]uint64{
 				cost.GatewayClient: (64 + 128) * 1024 * 1024, // 192 MiB total
 			},
@@ -2184,5 +2160,196 @@ func TestComparePoliciesRestoreAmplificationWarmCacheHitsWithoutPerOperationTele
 	irWithTel := resWithTel.Policies[2]
 	if irWithTel.RestoreAmplification == nil || *irWithTel.RestoreAmplification != 16.0 {
 		t.Fatalf("expected RestoreAmplification to be 16.0 with verified per-operation cold delivery telemetry, got %v", irWithTel.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationPackLiveBytesDoesNotDiluteClientDeliveredBytes(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "pack-live-bytes-vs-delivered"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+
+	// Regression:
+	// - Pack has 512 MiB live data (Tiering.LiveBytes = 512 MiB)
+	// - Client reads 64 MiB (ColdLogicalDeliveredBytes = 64 MiB)
+	// - Cold retrieval = 1 GiB
+	// Simulator must return 16x (1024 / 64), NOT 2x (1024 / 512).
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:   storage.PackRef{ID: "ir-pack-1", Generation: "g1"},
+					Size:  int64(oneGiB),
+					Class: storage.GlacierIR,
+				},
+				LiveBytes:  512 * 1024 * 1024, // 512 MiB live data in pack for tiering decisions
+				TotalBytes: int64(oneGiB),
+			},
+			ColdLogicalDeliveredBytes: 64 * 1024 * 1024, // 64 MiB delivered to client for this cold read
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: 64 * 1024 * 1024,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2]
+	if irPol.RestoreAmplification == nil {
+		t.Fatal("expected non-nil RestoreAmplification")
+	}
+	if *irPol.RestoreAmplification != 16.0 {
+		t.Fatalf("expected RestoreAmplification to be 16.0 (1024/64), got %v (must not use Tiering.LiveBytes 512 MiB to yield 2x)", *irPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationUnrelatedTieringObservationDoesNotProvideDeliveryProof(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "unrelated-tiering-amplification"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+
+	// Regression:
+	// - Cold retrieval: 1 GiB
+	// - Event contains a Tiering observation belonging to an unrelated pack (e.g. background scan)
+	// - No ColdLogicalDeliveredBytes telemetry provided for the cold read
+	// Simulator must return nil (null) because Tiering observation does not prove cold delivery for this read.
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:   storage.PackRef{ID: "unrelated-pack", Generation: "g99"},
+					Size:  int64(oneGiB),
+					Class: storage.GlacierIR,
+				},
+				LiveBytes:  64 * 1024 * 1024, // Unrelated pack live bytes
+				TotalBytes: int64(oneGiB),
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: 64 * 1024 * 1024,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2]
+	if irPol.RestoreAmplification != nil {
+		t.Fatalf("expected RestoreAmplification to be nil when cold read lacks delivery telemetry (must not repurpose unrelated Tiering observation), got %v", *irPol.RestoreAmplification)
+	}
+}
+
+func TestTraceJSONDecodingColdDeliveredBytesFormats(t *testing.T) {
+	traceJSONScalar := `{
+		"schema_version": 1,
+		"name": "test-scalar-cold-delivered",
+		"kind": "synthetic",
+		"region": "ap-southeast-1",
+		"profile": "cloud",
+		"metadata_backend": "dynamodb",
+		"topology": "Test topology",
+		"start": "2026-01-01T00:00:00Z",
+		"duration_ns": 1000,
+		"bytes_per_gb": 1073741824,
+		"storage_month_seconds": 2592000,
+		"policy_revision": 1,
+		"policy": {
+			"tiering": {"enabled": true, "warm_storage_class": "STANDARD", "cold_storage_class": "GLACIER_IR", "cold_after_days": 30, "min_pack_live_ratio": 0.8, "auto_restore": true, "auto_restore_days": 1, "auto_restore_tier": "Standard"},
+			"compression": {"enabled": true, "codec": "zstd", "level": 3, "min_saving_ratio": 0.1},
+			"chunking": {"min_bytes": 262144, "avg_bytes": 1048576, "max_bytes": 4194304}
+		},
+		"omissions": ["test"],
+		"events": [
+			{
+				"at_ns": 0,
+				"cold_logical_delivered_bytes": 67108864,
+				"traffic_bytes": {},
+				"write_counters": {"chunk_occurrences": 0, "dup_occurrences": 0, "revived_distinct_chunks": 0, "revived_bytes_stored": 0},
+				"usage": [],
+				"billable_storage_bytes": {}
+			}
+		]
+	}`
+
+	trScalar, err := Read(strings.NewReader(traceJSONScalar))
+	if err != nil {
+		t.Fatalf("failed to read trace with scalar cold_logical_delivered_bytes: %v", err)
+	}
+	if trScalar.Events[0].ColdLogicalDeliveredBytes != 67108864 {
+		t.Fatalf("expected 67108864 scalar cold delivered bytes, got %d", trScalar.Events[0].ColdLogicalDeliveredBytes)
+	}
+
+	traceJSONMap := `{
+		"schema_version": 1,
+		"name": "test-map-cold-delivered",
+		"kind": "synthetic",
+		"region": "ap-southeast-1",
+		"profile": "cloud",
+		"metadata_backend": "dynamodb",
+		"topology": "Test topology",
+		"start": "2026-01-01T00:00:00Z",
+		"duration_ns": 1000,
+		"bytes_per_gb": 1073741824,
+		"storage_month_seconds": 2592000,
+		"policy_revision": 1,
+		"policy": {
+			"tiering": {"enabled": true, "warm_storage_class": "STANDARD", "cold_storage_class": "GLACIER_IR", "cold_after_days": 30, "min_pack_live_ratio": 0.8, "auto_restore": true, "auto_restore_days": 1, "auto_restore_tier": "Standard"},
+			"compression": {"enabled": true, "codec": "zstd", "level": 3, "min_saving_ratio": 0.1},
+			"chunking": {"min_bytes": 262144, "avg_bytes": 1048576, "max_bytes": 4194304}
+		},
+		"omissions": ["test"],
+		"events": [
+			{
+				"at_ns": 0,
+				"cold_logical_delivered_bytes": {"GLACIER_IR": 67108864},
+				"traffic_bytes": {},
+				"write_counters": {"chunk_occurrences": 0, "dup_occurrences": 0, "revived_distinct_chunks": 0, "revived_bytes_stored": 0},
+				"usage": [],
+				"billable_storage_bytes": {}
+			}
+		]
+	}`
+
+	trMap, err := Read(strings.NewReader(traceJSONMap))
+	if err != nil {
+		t.Fatalf("failed to read trace with map cold_logical_delivered_bytes: %v", err)
+	}
+	bytesIR, ok := trMap.Events[0].ColdDeliveredForClass(storage.GlacierIR)
+	if !ok || bytesIR != 67108864 {
+		t.Fatalf("expected 67108864 for GLACIER_IR, got ok=%v bytes=%d", ok, bytesIR)
 	}
 }
