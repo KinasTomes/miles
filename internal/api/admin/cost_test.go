@@ -439,6 +439,7 @@ func TestCostReportBucketApportionsFromGlobalGlacier(t *testing.T) {
 	glacierStats := &fakeStats{
 		globalFunc: func(context.Context) (stats.Summary, error) {
 			return stats.Summary{
+				SnapshotID:       "snap-glacier-1",
 				PhysicalComplete: true,
 				Metrics: stats.Metrics{
 					BytesLogical: 1073741824,
@@ -455,6 +456,7 @@ func TestCostReportBucketApportionsFromGlobalGlacier(t *testing.T) {
 					Bucket:   bucket,
 					BucketID: "bkt-g",
 					Summary: stats.Summary{
+						SnapshotID:       "snap-glacier-1",
 						PhysicalComplete: true,
 						Metrics: stats.Metrics{
 							BytesLogical: 1073741824,
@@ -977,4 +979,182 @@ func TestCostReportSmallBucketPreservesPhysicalBytesAndAvoidsZeroCostSavings(t *
 	if rStd.Results.PricedSubtotalUSDExact == "0" {
 		t.Fatalf("expected non-zero subtotal for 1 byte of Standard storage, got 0")
 	}
+}
+
+func TestCostReportBucketInferenceStrictConditions(t *testing.T) {
+	// Round 5 regression tests for all 3 cases:
+	// 1. Incomplete global inventory (PhysicalComplete = false) with only Standard observed
+	//    must NOT infer Standard for the bucket.
+	// 2. Total class bytes less than global.BytesStored (unclassified global bytes)
+	//    must NOT infer 100% Standard for the bucket.
+	// 3. Mismatched SnapshotID between Global and Bucket
+	//    must NOT infer storage class from stale/unmatched snapshot.
+	stored1GiB := int64(1073741824)
+	stored2000 := int64(2000)
+	stored500 := int64(500)
+
+	t.Run("incomplete_global_inventory_omits_class_inference", func(t *testing.T) {
+		statsProvider := &fakeStats{
+			globalFunc: func(context.Context) (stats.Summary, error) {
+				return stats.Summary{
+					SnapshotID:       "snap-same",
+					PhysicalComplete: false, // incomplete global inventory
+					Metrics: stats.Metrics{
+						BytesLogical: 1073741824,
+						BytesStored:  &stored1GiB,
+					},
+					PhysicalClasses: map[string]int64{
+						string(storage.Standard): 1073741824,
+					},
+				}, nil
+			},
+			bucketFunc: func(ctx context.Context, bucket string) (stats.BucketSummary, error) {
+				return stats.BucketSummary{
+					Bucket:   bucket,
+					BucketID: "bkt-test",
+					Summary: stats.Summary{
+						SnapshotID:       "snap-same",
+						PhysicalComplete: true,
+						Metrics: stats.Metrics{
+							BytesLogical: 1073741824,
+							BytesStored:  &stored1GiB,
+						},
+						PhysicalClasses: nil,
+					},
+				}, nil
+			},
+		}
+		w, server := newCostTestWorld(t, statsProvider)
+		req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?bucket=bkt", nil)
+		req.Header.Set("Authorization", "Bearer "+w.root)
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var r CostReportResponse
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, ok := r.DSGStorage.StorageByClass[string(storage.Standard)]; ok {
+			t.Fatalf("expected Standard class NOT to be inferred when global inventory is incomplete, got: %v", r.DSGStorage.StorageByClass)
+		}
+		if r.DSGStorage.StorageByClass["UNKNOWN"] != 1073741824 {
+			t.Fatalf("expected 1GiB UNKNOWN in storage_by_class, got: %v", r.DSGStorage.StorageByClass)
+		}
+		if r.Results.IndicativeStorageDiffUSD != nil {
+			t.Fatalf("expected nil indicative_storage_difference_usd, got: %v", *r.Results.IndicativeStorageDiffUSD)
+		}
+	})
+
+	t.Run("unclassified_global_bytes_omits_class_inference", func(t *testing.T) {
+		statsProvider := &fakeStats{
+			globalFunc: func(context.Context) (stats.Summary, error) {
+				return stats.Summary{
+					SnapshotID:       "snap-same",
+					PhysicalComplete: true,
+					Metrics: stats.Metrics{
+						BytesLogical: 2000,
+						BytesStored:  &stored2000, // 2000 bytes total
+					},
+					PhysicalClasses: map[string]int64{
+						string(storage.Standard): 1000, // only 1000 accounted for; 1000 unclassified
+					},
+				}, nil
+			},
+			bucketFunc: func(ctx context.Context, bucket string) (stats.BucketSummary, error) {
+				return stats.BucketSummary{
+					Bucket:   bucket,
+					BucketID: "bkt-test",
+					Summary: stats.Summary{
+						SnapshotID:       "snap-same",
+						PhysicalComplete: true,
+						Metrics: stats.Metrics{
+							BytesLogical: 500,
+							BytesStored:  &stored500,
+						},
+						PhysicalClasses: nil,
+					},
+				}, nil
+			},
+		}
+		w, server := newCostTestWorld(t, statsProvider)
+		req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?bucket=bkt", nil)
+		req.Header.Set("Authorization", "Bearer "+w.root)
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var r CostReportResponse
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, ok := r.DSGStorage.StorageByClass[string(storage.Standard)]; ok {
+			t.Fatalf("expected Standard class NOT to be inferred when global has unclassified bytes, got: %v", r.DSGStorage.StorageByClass)
+		}
+		if r.DSGStorage.StorageByClass["UNKNOWN"] != 500 {
+			t.Fatalf("expected 500 UNKNOWN in storage_by_class, got: %v", r.DSGStorage.StorageByClass)
+		}
+		if r.Results.IndicativeStorageDiffUSD != nil {
+			t.Fatalf("expected nil indicative_storage_difference_usd, got: %v", *r.Results.IndicativeStorageDiffUSD)
+		}
+	})
+
+	t.Run("mismatched_snapshot_id_omits_class_inference", func(t *testing.T) {
+		statsProvider := &fakeStats{
+			globalFunc: func(context.Context) (stats.Summary, error) {
+				return stats.Summary{
+					SnapshotID:       "snap-new", // different snapshot
+					PhysicalComplete: true,
+					Metrics: stats.Metrics{
+						BytesLogical: 1073741824,
+						BytesStored:  &stored1GiB,
+					},
+					PhysicalClasses: map[string]int64{
+						string(storage.Standard): 1073741824,
+					},
+				}, nil
+			},
+			bucketFunc: func(ctx context.Context, bucket string) (stats.BucketSummary, error) {
+				return stats.BucketSummary{
+					Bucket:   bucket,
+					BucketID: "bkt-test",
+					Summary: stats.Summary{
+						SnapshotID:       "snap-old", // stale snapshot
+						PhysicalComplete: true,
+						Metrics: stats.Metrics{
+							BytesLogical: 1073741824,
+							BytesStored:  &stored1GiB,
+						},
+						PhysicalClasses: nil,
+					},
+				}, nil
+			},
+		}
+		w, server := newCostTestWorld(t, statsProvider)
+		req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?bucket=bkt", nil)
+		req.Header.Set("Authorization", "Bearer "+w.root)
+		resp, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var r CostReportResponse
+		if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, ok := r.DSGStorage.StorageByClass[string(storage.Standard)]; ok {
+			t.Fatalf("expected Standard class NOT to be inferred when SnapshotID mismatches, got: %v", r.DSGStorage.StorageByClass)
+		}
+		if r.DSGStorage.StorageByClass["UNKNOWN"] != 1073741824 {
+			t.Fatalf("expected 1GiB UNKNOWN in storage_by_class, got: %v", r.DSGStorage.StorageByClass)
+		}
+		if r.Results.IndicativeStorageDiffUSD != nil {
+			t.Fatalf("expected nil indicative_storage_difference_usd, got: %v", *r.Results.IndicativeStorageDiffUSD)
+		}
+	})
 }

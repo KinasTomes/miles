@@ -233,22 +233,31 @@ func (s *server) costReport(c *call) error {
 		methodology = "bucket_inventory_snapshot"
 
 		// Finding 1: If bucket summary has no per-class breakdown (PhysicalClasses is empty),
-		// we check if global inventory has positive stored bytes in EXACTLY ONE storage class.
-		// If global contains only one class (e.g. 100% Glacier), all gateway storage is that class with 100% certainty.
-		// If global contains multiple storage classes (e.g. Standard AND Glacier) or is empty,
-		// we do NOT infer a synthetic ratio from global totals; the class breakdown is left unknown/unpriced
-		// to avoid asserting false bucket costs.
+		// we only infer storage class from global when ALL conditions are strictly met:
+		// 1. Global inventory is complete (global.PhysicalComplete is true).
+		// 2. Both Global and Bucket share the exact same snapshot generation (non-empty SnapshotID match).
+		// 3. Exactly one storage class exists in global.PhysicalClasses with positive bytes.
+		// 4. The total bytes accounted in that single class exactly matches global.BytesStored (no unclassified bytes).
+		// If ANY of these conditions cannot be proven, we do NOT infer a class;
+		// the bucket's physical storage class remains UNKNOWN, unpriced, and omitted from indicative savings.
 		if len(summary.PhysicalClasses) == 0 && summary.BytesStored != nil && *summary.BytesStored > 0 {
-			if len(global.PhysicalClasses) > 0 && global.BytesStored != nil && *global.BytesStored > 0 {
+			if global.PhysicalComplete &&
+				global.SnapshotID != "" &&
+				global.SnapshotID == summary.SnapshotID &&
+				global.BytesStored != nil &&
+				*global.BytesStored > 0 &&
+				len(global.PhysicalClasses) > 0 {
 				var singleClass string
+				var globalClassTotal int64
 				singleClassCount := 0
 				for cStr, gBytes := range global.PhysicalClasses {
 					if gBytes > 0 {
 						singleClass = cStr
+						globalClassTotal += gBytes
 						singleClassCount++
 					}
 				}
-				if singleClassCount == 1 {
+				if singleClassCount == 1 && globalClassTotal == *global.BytesStored {
 					summary.PhysicalClasses = map[string]int64{
 						singleClass: *summary.BytesStored,
 					}
