@@ -46,6 +46,7 @@ func operationCommand(args []string) (command, error) {
 		to := f.String("to", "", "to timestamp")
 		bucket := f.String("bucket", "", "filter bucket")
 		domain := f.String("domain", "", "filter domain")
+		workload := f.String("workload", "", "modeled workload trace: cloud-tiering-boundary|edge-revival")
 		set, ok := parse(f, args[2:])
 		if !ok {
 			return command{}, invalid
@@ -74,6 +75,9 @@ func operationCommand(args []string) (command, error) {
 		}
 		if set["domain"] {
 			q.Set("domain", *domain)
+		}
+		if set["workload"] {
+			q.Set("workload", *workload)
 		}
 		path := "/admin/v1/cost/report"
 		if len(q) > 0 {

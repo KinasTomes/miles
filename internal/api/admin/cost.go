@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"math/big"
@@ -12,6 +13,7 @@ import (
 	pricingschema "github.com/KinasTomes/miles/configs/pricing"
 	"github.com/KinasTomes/miles/internal/cost"
 	"github.com/KinasTomes/miles/internal/pricing"
+	"github.com/KinasTomes/miles/internal/simulator"
 	"github.com/KinasTomes/miles/internal/stats"
 	"github.com/KinasTomes/miles/internal/storage"
 )
@@ -32,11 +34,13 @@ type CostReportInputs struct {
 }
 
 type DirectS3Breakdown struct {
-	LogicalBytes    uint64 `json:"logical_bytes"`
-	StorageCostUSD  string `json:"storage_cost_usd"`
-	RequestsCostUSD string `json:"requests_cost_usd"`
-	NetworkCostUSD  string `json:"network_cost_usd"`
-	TotalCostUSD    string `json:"total_cost_usd"`
+	LogicalBytes     uint64 `json:"logical_bytes"`
+	StorageCostUSD   string `json:"storage_cost_usd"`
+	RequestsCostUSD  string `json:"requests_cost_usd"`
+	RetrievalCostUSD string `json:"retrieval_cost_usd,omitempty"`
+	RestoreCostUSD   string `json:"restore_cost_usd,omitempty"`
+	NetworkCostUSD   string `json:"network_cost_usd"`
+	TotalCostUSD     string `json:"total_cost_usd"`
 }
 
 type BaselineReport struct {
@@ -58,6 +62,8 @@ type DSGRequestsNetworkReport struct {
 	TransitionFees    string            `json:"transition_fees"`
 	RestoreFees       string            `json:"restore_fees"`
 	EarlyDeletionFees string            `json:"early_deletion_fees"`
+	TrafficBytes      map[string]uint64 `json:"traffic_bytes,omitempty"`
+	TrafficUSD        map[string]string `json:"traffic_usd,omitempty"`
 }
 
 type InfrastructureReport struct {
@@ -85,6 +91,8 @@ type CostReportResults struct {
 	IndicativeStorageDiffUSD *string  `json:"indicative_storage_difference_usd,omitempty"`
 	BreakEven                *string  `json:"break_even"`
 	RestoreAmplification     *float64 `json:"restore_amplification"`
+	JournalWatermark         *uint64  `json:"journal_watermark,omitempty"`
+	ExportLagSeconds         *float64 `json:"export_lag_seconds,omitempty"`
 }
 
 type CostReportResponse struct {
@@ -105,7 +113,7 @@ func (s *server) costReport(c *call) error {
 	if err := c.admin(); err != nil {
 		return err
 	}
-	q, err := query(c.r, "region", "as_of", "scenario", "profile", "from", "to", "bucket", "domain")
+	q, err := query(c.r, "region", "as_of", "scenario", "profile", "from", "to", "bucket", "domain", "workload")
 	if err != nil {
 		return err
 	}
@@ -210,6 +218,193 @@ func (s *server) costReport(c *call) error {
 		from = s.now().Add(-duration).Format(time.RFC3339)
 	}
 
+	bucket := q.Get("bucket")
+	workload := q.Get("workload")
+	if workload != "" && workload != "live_gateway_snapshot" {
+		if bucket != "" {
+			return invalid("bucket filter %q is not supported for modeled workload simulation", bucket)
+		}
+		var traceData []byte
+		candidates := []string{workload}
+		if workload == "cloud-tiering-boundary" {
+			candidates = append(candidates, "cloud-boundary")
+		} else if workload == "edge-revival-accounting" {
+			candidates = append(candidates, "edge-revival")
+		}
+		for _, name := range candidates {
+			for _, p := range []string{
+				fmt.Sprintf("benchmarks/traces/%s.json", name),
+				fmt.Sprintf("../../benchmarks/traces/%s.json", name),
+				fmt.Sprintf("../../../benchmarks/traces/%s.json", name),
+			} {
+				if b, readErr := os.ReadFile(p); readErr == nil {
+					traceData = b
+					break
+				}
+			}
+			if traceData != nil {
+				break
+			}
+		}
+		if traceData == nil {
+			return invalid("workload trace %q not found", workload)
+		}
+		tr, parseErr := simulator.Read(bytes.NewReader(traceData))
+		if parseErr != nil {
+			return invalid("failed to parse workload trace %q: %v", workload, parseErr)
+		}
+		comp, compErr := simulator.ComparePolicies(c.r.Context(), tr, catalog)
+		if compErr != nil {
+			return &apiError{http.StatusInternalServerError, "simulation_failed", compErr.Error()}
+		}
+
+		var directPol, candidatePol *simulator.PolicySummary
+		for i := range comp.Policies {
+			p := &comp.Policies[i]
+			if p.Name == simulator.PolicyDirectS3 {
+				directPol = p
+			}
+			if candidatePol == nil && p.Name != simulator.PolicyDirectS3 {
+				if scenario == "A" && p.Name == simulator.PolicyWarmStandardOnly {
+					candidatePol = p
+				} else if scenario == "B" && p.Name == simulator.PolicyWarmGlacierIR {
+					candidatePol = p
+				}
+			}
+		}
+		if candidatePol == nil && len(comp.Policies) > 1 {
+			candidatePol = &comp.Policies[1]
+		}
+		if directPol == nil {
+			return &apiError{http.StatusInternalServerError, "missing_baseline", "baseline direct_s3 policy missing in simulation"}
+		}
+
+		directStorage := "0"
+		directReq := "0"
+		directNet := "0"
+		directRet := "0"
+		directRest := "0"
+		if directPol.Breakdown != nil {
+			directStorage = directPol.Breakdown.StorageUSD
+			directReq = directPol.Breakdown.RequestsUSD
+			directNet = directPol.Breakdown.NetworkUSD
+			directRet = directPol.Breakdown.RetrievalUSD
+			directRest = directPol.Breakdown.RestoreUSD
+		}
+
+		candStorageMap := map[string]int64{}
+		for _, l := range candidatePol.Report.Lines {
+			if strings.HasPrefix(l.RateID, "s3.storage.") {
+				class := strings.ToUpper(strings.TrimPrefix(l.RateID, "s3.storage."))
+				candStorageMap[class] = int64(candidatePol.PhysicalBytes)
+			}
+		}
+
+		reqByType := map[string]uint64{}
+		retFees := "0"
+		transFees := "0"
+		restFees := "0"
+		earlyFees := "0"
+		var trafficBytes map[string]uint64
+		if candidatePol.Breakdown != nil {
+			reqByType = candidatePol.Breakdown.RequestsByType
+			retFees = candidatePol.Breakdown.RetrievalUSD
+			earlyFees = candidatePol.Breakdown.EarlyDeletionUSD
+			restFees = candidatePol.Breakdown.RestoreUSD
+			trafficBytes = candidatePol.Breakdown.TrafficBytes
+		}
+
+		computeCost := "omitted"
+		albCost := "omitted"
+		if scenario == "A" {
+			computeCost = "omitted (cloud ec2)"
+			albCost = "omitted (cloud alb)"
+		} else {
+			computeCost = "omitted (edge hardware)"
+			albCost = "not_applicable (edge deployment has no ALB)"
+		}
+		if candidatePol.Breakdown != nil && candidatePol.Breakdown.InfrastructureUSD != "0" {
+			computeCost = candidatePol.Breakdown.InfrastructureUSD
+		}
+
+		response := CostReportResponse{
+			ReportType:    "simulated_comparative_policy_report",
+			SchemaVersion: 1,
+			Inputs: CostReportInputs{
+				Region:                catalog.Region,
+				AsOf:                  catalog.AsOf,
+				PricingSource:         catalog.Sources,
+				Profile:               profile,
+				Scenario:              scenario,
+				From:                  from,
+				To:                    to,
+				Workload:              workload,
+				AllocationMethodology: "modeled_trace_replay",
+				Assumptions: []string{
+					"This report is produced from deterministic offline trace simulation replay.",
+					"Comparative accounting across candidates: direct_s3, warm_standard_only, warm_glacier_ir, warm_glacier_flexible.",
+				},
+			},
+			Baseline: BaselineReport{
+				DirectS3: DirectS3Breakdown{
+					LogicalBytes:     directPol.LogicalBytes,
+					StorageCostUSD:   directStorage,
+					RequestsCostUSD:  directReq,
+					RetrievalCostUSD: directRet,
+					RestoreCostUSD:   directRest,
+					NetworkCostUSD:   directNet,
+					TotalCostUSD:     directPol.TotalCostUSD,
+				},
+				CostReport: directPol.Report,
+			},
+			DSGStorage: DSGStorageReport{
+				StorageByClass:                       candStorageMap,
+				DeadRetiredStorageBytes:              0,
+				SidecarJournalCheckpointStorageBytes: 0,
+				TemporaryRestoredStorageBytes:        0,
+				CostReport:                           candidatePol.Report,
+			},
+			DSGRequestsNetwork: DSGRequestsNetworkReport{
+				RequestsByType:    reqByType,
+				RetrievalFees:     retFees,
+				TransitionFees:    transFees,
+				RestoreFees:       restFees,
+				EarlyDeletionFees: earlyFees,
+				TrafficBytes:      trafficBytes,
+			},
+			Infrastructure: InfrastructureReport{
+				ComputeOrEdgeVM:       computeCost,
+				DiskEBS:               "omitted",
+				ALBLCU:                albCost,
+				DynamoDB:              "omitted",
+				KMSCloudWatch:         "omitted",
+				NATInterfaceEndpoints: "omitted",
+			},
+			RevivalCopy: RevivalCopyReport{
+				RevivedChunks:              nil,
+				RevivedBytesStored:         nil,
+				CopySourceDownloadBytes:    0,
+				CopyDestinationUploadBytes: 0,
+				Note:                       "Revival and copy breakdowns are accounted in totals; not double charged.",
+			},
+			Results: CostReportResults{
+				PricedSubtotalUSDExact:   candidatePol.Report.Subtotal,
+				CompleteTotalUSD:         candidatePol.Report.CompleteTotalUSD,
+				NetSavingUSDVsBaseline:   candidatePol.SavingsUSD,
+				SavingsPercentVsBaseline: candidatePol.SavingsPercent,
+				IndicativeStorageDiffUSD: candidatePol.IndicativeStorageDiffUSD,
+				BreakEven:                candidatePol.BreakEven,
+				RestoreAmplification:     candidatePol.RestoreAmplification,
+			},
+			Omissions:   comp.Omissions,
+			Limitations: comp.Limitations,
+		}
+
+		c.w.Header().Set("Cache-Control", "no-store")
+		c.json(http.StatusOK, response)
+		return nil
+	}
+
 	if s.Statistics == nil {
 		return &apiError{http.StatusServiceUnavailable, "unavailable", "statistics provider is unavailable"}
 	}
@@ -218,7 +413,6 @@ func (s *server) costReport(c *call) error {
 		return &apiError{http.StatusServiceUnavailable, "unavailable", "statistics backend is unavailable"}
 	}
 
-	bucket := q.Get("bucket")
 	var summary stats.Summary
 	methodology := "global_inventory_snapshot"
 	if bucket != "" {

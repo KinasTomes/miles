@@ -251,7 +251,9 @@ func TestCostReportFullContractResponse(t *testing.T) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200 OK, got %d", resp.StatusCode)
+		var errObj map[string]any
+		json.NewDecoder(resp.Body).Decode(&errObj)
+		t.Fatalf("expected 200 OK, got %d: %v", resp.StatusCode, errObj)
 	}
 
 	var r CostReportResponse
@@ -1200,5 +1202,71 @@ func TestCostReportInconsistentInventoryOmitsIndicativeSavings(t *testing.T) {
 	}
 	if len(r.DSGStorage.CostReport.Unpriced) == 0 {
 		t.Fatalf("expected unpriced marker for inconsistent inventory")
+	}
+}
+
+func TestCostReportModeledWorkloadSimulation(t *testing.T) {
+	w, server := newCostTestWorld(t, &fakeStats{})
+
+	// 1. Valid workload simulation: cloud-tiering-boundary
+	url := server.URL + "/admin/v1/cost/report?workload=cloud-tiering-boundary&scenario=A&profile=cloud"
+	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req.Header.Set("Authorization", "Bearer "+w.root)
+
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errObj map[string]any
+		json.NewDecoder(resp.Body).Decode(&errObj)
+		t.Fatalf("expected 200 OK, got %d: %v", resp.StatusCode, errObj)
+	}
+
+	var r CostReportResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		t.Fatal(err)
+	}
+
+	if r.ReportType != "simulated_comparative_policy_report" {
+		t.Fatalf("expected simulated_comparative_policy_report, got %q", r.ReportType)
+	}
+	if r.Inputs.Workload != "cloud-tiering-boundary" {
+		t.Fatalf("expected workload cloud-tiering-boundary, got %q", r.Inputs.Workload)
+	}
+	if r.Baseline.DirectS3.LogicalBytes == 0 {
+		t.Fatal("expected non-zero baseline logical bytes")
+	}
+	if len(r.Baseline.CostReport.Lines) == 0 {
+		t.Fatal("expected baseline cost lines")
+	}
+	if len(r.DSGStorage.CostReport.Lines) == 0 {
+		t.Fatal("expected dsg cost lines")
+	}
+
+	// 2. Non-existent workload returns 400
+	badReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=nonexistent-trace-name", nil)
+	badReq.Header.Set("Authorization", "Bearer "+w.root)
+	badResp, err := server.Client().Do(badReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer badResp.Body.Close()
+	if badResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for nonexistent workload, got %d", badResp.StatusCode)
+	}
+
+	// 3. Workload combined with bucket filter returns 400
+	conflictReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=cloud-tiering-boundary&bucket=demo", nil)
+	conflictReq.Header.Set("Authorization", "Bearer "+w.root)
+	conflictResp, err := server.Client().Do(conflictReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conflictResp.Body.Close()
+	if conflictResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for workload with bucket filter, got %d", conflictResp.StatusCode)
 	}
 }
