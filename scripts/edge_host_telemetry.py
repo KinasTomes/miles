@@ -10,7 +10,7 @@ high-resolution, contemporaneous evidence distinguishing between:
 
 Strict Guardrails:
 - Zero sensitive data leakage: records numerical metrics and chrony status only.
-- Read-only to chrony: only runs allowlisted read commands (tracking, sources, sourcestats).
+- Read-only to chrony: only runs allowlisted diagnostic commands.
 - Local execution duration measurement: nanosecond monotonic timers capture true host duration.
 - Bounded private ring buffer: strictly bounded to <= max_bytes in /run/miles with 0600 permissions.
 - Hard cap invariant: oversized records (> max_bytes) are safely dropped; file size strictly bounded.
@@ -50,7 +50,7 @@ except ImportError:
         parse_chrony_tracking = None  # type: ignore
 
 
-ALLOWLISTED_CHRONY_COMMANDS = frozenset({"tracking", "sources", "sourcestats", "serverstats"})
+ALLOWLISTED_CHRONY_COMMANDS = frozenset({"tracking", "sources", "sourcestats", "serverstats", "ntpdata"})
 
 
 def _iso_utc_now() -> str:
@@ -203,6 +203,10 @@ class ChronyProbe:
                 res["sourcestats"] = self.execute_chrony_subcommand("sourcestats")
             except Exception as e:
                 res["sourcestats"] = {"error": str(e)}
+            try:
+                res["ntpdata"] = self.execute_chrony_subcommand("ntpdata")
+            except Exception as e:
+                res["ntpdata"] = {"error": str(e)}
 
         return res
 

@@ -86,6 +86,27 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         self.assertEqual(res_timeout["returncode"], -1)
         self.assertTrue(res_timeout["timed_out"])
 
+    def test_ntp_acceptance_counters_do_not_override_stale_tracking(self):
+        calls = []
+
+        def runner(cmd, timeout):
+            calls.append(cmd[-1])
+            if cmd[-1] == "tracking":
+                ref = time.time() - 40
+                return 0, f"A9FEA97B,169.254.169.123,3,{ref},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16,Normal\n", ""
+            return 0, "507,507,507,449\n", ""
+
+        probe = ChronyProbe(runner=runner)
+        result = probe.sample_full()
+        self.assertEqual(calls, ["tracking", "sources", "sourcestats", "ntpdata"])
+        self.assertEqual(result["ntpdata"]["stdout"], "507,507,507,449\n")
+        self.assertTrue(result["parsed_tracking"]["uncertainty_exceeded"])
+        calls.clear()
+        probe.sample_full(sample_sources=False)
+        self.assertEqual(calls, ["tracking"])
+        with self.assertRaises(ValueError):
+            probe.execute_chrony_subcommand("ntpdata; makestep")
+
     def test_active_preflight_check(self):
         """[P1 Regression] Preflight check actively tests chrony daemon readiness and tracking output."""
         # 1. Daemon healthy with valid tracking -> PASS
