@@ -146,7 +146,8 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 		}
 		old, e := r1Read[lifecycle.Action](t, lifecycleKey(j.ID))
 		if e == nil {
-			if old.Kind != j.Type || old.StepID != j.PendingStep || old.Source.Ref != p.Ref() || old.Days != p.Days || old.Tier != p.Tier || !old.RequiredUntil.Equal(p.RequiredUntil) || lifecycle.Repack(old.Kind) && (old.PlanSHA256 != planHash || old.Digest != digest) {
+			terminal := old.State == "Done" || old.State == "Skipped" || old.State == "NotApplied"
+			if old.Kind != j.Type || old.StepID != j.PendingStep && !terminal || old.Source.Ref != p.Ref() || old.Days != p.Days || old.Tier != p.Tier || !old.RequiredUntil.Equal(p.RequiredUntil) || lifecycle.Repack(old.Kind) && (old.PlanSHA256 != planHash || old.Digest != digest) {
 				return s.ErrConflict
 			}
 			if old.Fence != j.Worker {
