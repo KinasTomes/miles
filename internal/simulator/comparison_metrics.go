@@ -227,42 +227,113 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 	}
 
 	for _, event := range trace.Events {
-		hasColdReadInEvent := false
+		hasColdReadForPolicy := false
+		var coldBytesInThisEvent uint64
+		hasIRInEvent := false
+		hasFlexInEvent := false
 
 		for _, u := range event.Usage {
-			switch polName {
-			case PolicyWarmGlacierIR:
-				if u.RateID == "s3.retrieval_ir" {
-					if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+			switch {
+			case u.RateID == "s3.retrieval_ir":
+				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+					hasIRInEvent = true
+					if polName == PolicyWarmGlacierIR {
 						gbFloat, _ := q.Float64()
 						b := uint64(gbFloat * float64(trace.BytesPerGB))
 						coldBytesRetrieved += b
-						hasColdReadInEvent = true
+						coldBytesInThisEvent += b
+						hasColdReadForPolicy = true
 					}
 				}
-			case PolicyWarmGlacierFlex:
-				if u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
-					if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+			case u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb":
+				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+					hasFlexInEvent = true
+					if polName == PolicyWarmGlacierFlex {
 						gbFloat, _ := q.Float64()
 						b := uint64(gbFloat * float64(trace.BytesPerGB))
 						coldBytesRetrieved += b
-						hasColdReadInEvent = true
+						coldBytesInThisEvent += b
+						hasColdReadForPolicy = true
 					}
 				}
 			}
 		}
 
-		if hasColdReadInEvent {
-			if delivered, ok := event.ColdDeliveredForClass(targetClass); ok && delivered > 0 {
-				coldDeliveredBytes += delivered
-			} else {
+		coldClassesWithRetrieval := 0
+		if hasIRInEvent {
+			coldClassesWithRetrieval++
+		}
+		if hasFlexInEvent {
+			coldClassesWithRetrieval++
+		}
+
+		if hasColdReadForPolicy {
+			clientTraffic := event.ClientTrafficBytes()
+
+			// Consistency check 1: Measured client traffic in this scope must be positive.
+			// When gateway_to_client + s3_to_client == 0, no data reached the client in this scope;
+			// any claimed cold delivery contradicts measured traffic (or lacks client delivery evidence).
+			if clientTraffic == 0 {
+				hasUnprovenColdDelivery = true
+				continue
+			}
+
+			// Consistency check 2: The sum of cold deliveries across all classes in this event
+			// must not exceed measured client traffic (e.g. IR 64 MiB + Flex 64 MiB = 128 MiB > 64 MiB client traffic).
+			totalColdDelivered := event.TotalColdDeliveredBytes()
+			if totalColdDelivered > clientTraffic {
+				hasUnprovenColdDelivery = true
+				continue
+			}
+
+			// Precedence and fallback rule:
+			// If class-specific telemetry is provided, look up targetClass directly.
+			// If class-specific telemetry is missing, scalar fallback is ONLY allowed if
+			// exactly ONE cold storage class had retrieval operations in this event.
+			var delivered uint64
+			var hasProvenDelivery bool
+
+			if len(event.ColdLogicalDeliveredByClass) > 0 {
+				if b, ok := event.ColdLogicalDeliveredByClass[targetClass]; ok && b > 0 {
+					delivered = b
+					hasProvenDelivery = true
+				}
+				// When class-specific telemetry is present, never fall back to scalar.
+			} else if event.ColdLogicalDeliveredBytes > 0 {
+				if coldClassesWithRetrieval == 1 {
+					delivered = event.ColdLogicalDeliveredBytes
+					hasProvenDelivery = true
+				} else {
+					// Multiple cold classes were retrieved in the same event, but only scalar
+					// telemetry was provided. Scalar telemetry cannot disambiguate delivered
+					// bytes between classes.
+					hasProvenDelivery = false
+				}
+			}
+
+			if !hasProvenDelivery || delivered == 0 {
 				// Trace contains cold retrieval usage for this policy, but lacks explicit,
 				// provenance-verified cold logical delivered bytes telemetry linked to this operation.
 				// Aggregate client traffic (which may include warm cache hits) and unrelated
 				// lifecycle/tiering state cannot prove the cold delivery denominator.
 				// Fail closed by returning nil for unproven denominator.
 				hasUnprovenColdDelivery = true
+				continue
 			}
+
+			// Consistency check 3: Cold delivery for this class must not exceed measured client traffic.
+			if delivered > clientTraffic {
+				hasUnprovenColdDelivery = true
+				continue
+			}
+
+			// Consistency check 4: Cold delivery cannot exceed physical bytes retrieved for this class in this event.
+			if coldBytesInThisEvent > 0 && delivered > coldBytesInThisEvent {
+				hasUnprovenColdDelivery = true
+				continue
+			}
+
+			coldDeliveredBytes += delivered
 		}
 	}
 

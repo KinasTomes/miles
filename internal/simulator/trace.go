@@ -49,16 +49,52 @@ type Event struct {
 	ColdLogicalDeliveredByClass map[storage.StorageClass]uint64 `json:"cold_logical_delivered_by_class,omitempty"`
 }
 
+// ClientTrafficBytes returns total outbound traffic delivered to client measured in this event
+// (sum of gateway_to_client and s3_to_client routes).
+func (e *Event) ClientTrafficBytes() uint64 {
+	if e == nil || e.Traffic == nil {
+		return 0
+	}
+	return e.Traffic[cost.GatewayClient] + e.Traffic[cost.S3Client]
+}
+
+// TotalColdDeliveredBytes returns the total claimed cold delivered bytes across all cold classes in this event.
+// When class-specific telemetry is provided, it sums the bytes across all classes in the map.
+// Otherwise, it falls back to the scalar ColdLogicalDeliveredBytes.
+func (e *Event) TotalColdDeliveredBytes() uint64 {
+	if e == nil {
+		return 0
+	}
+	if len(e.ColdLogicalDeliveredByClass) > 0 {
+		var total uint64
+		for _, b := range e.ColdLogicalDeliveredByClass {
+			if b > ^uint64(0)-total {
+				return ^uint64(0)
+			}
+			total += b
+		}
+		return total
+	}
+	return e.ColdLogicalDeliveredBytes
+}
+
 // ColdDeliveredForClass retrieves the proven logical delivered bytes for a specific cold storage class.
-// It checks class-specific telemetry first, then falls back to general cold delivery bytes.
+// Telemetry precedence and fallback rules:
+//  1. Authoritative class-specific telemetry: If ColdLogicalDeliveredByClass is provided (non-empty),
+//     it is the sole authoritative source of truth. If the queried class exists in the map with bytes > 0,
+//     it returns (bytes, true). If the class is missing from the map or has 0 bytes, it returns (0, false).
+//     It NEVER falls back to scalar ColdLogicalDeliveredBytes when class-specific telemetry is present.
+//  2. Scalar fallback: If ColdLogicalDeliveredByClass is absent or empty, it falls back to
+//     ColdLogicalDeliveredBytes only when ColdLogicalDeliveredBytes > 0.
 func (e *Event) ColdDeliveredForClass(class storage.StorageClass) (uint64, bool) {
 	if e == nil {
 		return 0, false
 	}
-	if e.ColdLogicalDeliveredByClass != nil {
+	if len(e.ColdLogicalDeliveredByClass) > 0 {
 		if b, ok := e.ColdLogicalDeliveredByClass[class]; ok && b > 0 {
 			return b, true
 		}
+		return 0, false
 	}
 	if e.ColdLogicalDeliveredBytes > 0 {
 		return e.ColdLogicalDeliveredBytes, true

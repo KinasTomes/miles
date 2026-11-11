@@ -579,3 +579,223 @@ func TestComparePoliciesRestoreAmplificationUnrelatedTieringObservationDoesNotPr
 		t.Fatalf("expected RestoreAmplification to be nil when cold read lacks delivery telemetry (must not repurpose unrelated Tiering observation), got %v", *irPol.RestoreAmplification)
 	}
 }
+
+func TestComparePoliciesRestoreAmplificationZeroClientTrafficReturnsNil(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "zero-client-traffic-amplification"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+
+	// Regression 1:
+	// - gateway_to_client = 0
+	// - cold-delivered = 64 MiB
+	// - cold retrieval = 1 GiB
+	// When measured client traffic in the scope is 0, any claimed cold delivery contradicts
+	// measured traffic. Simulator must return nil (null) instead of 16x.
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+			},
+			ColdLogicalDeliveredBytes: 64 * 1024 * 1024,
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: 0,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2]
+	if irPol.RestoreAmplification != nil {
+		t.Fatalf("expected RestoreAmplification to be nil when gateway_to_client is 0 despite cold delivery telemetry, got %v", *irPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationMultiClassDeliveryExceedingClientTrafficReturnsNil(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "multi-class-delivery-exceeds-client-traffic"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Regression 2:
+	// - IR cold retrieval = 1 GiB, Flexible cold restore = 1 GiB
+	// - Total cold-delivered = 64 MiB (IR) + 64 MiB (Flexible) = 128 MiB
+	// - Client traffic (gateway_to_client) = 64 MiB
+	// Total claimed cold delivery across classes (128 MiB) exceeds measured client traffic (64 MiB).
+	// Since the data is contradictory, BOTH policies must return nil (null).
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  2 * oneGiB,
+				Physical: 2 * oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+				storage.Glacier:   oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.GlacierIR: sixtyFourMiB,
+				storage.Glacier:   sixtyFourMiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB, // Only 64 MiB measured client traffic
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2]
+	flexPol := res.Policies[3]
+
+	if irPol.RestoreAmplification != nil {
+		t.Fatalf("expected IR RestoreAmplification to be nil when total cold delivery exceeds client traffic, got %v", *irPol.RestoreAmplification)
+	}
+	if flexPol.RestoreAmplification != nil {
+		t.Fatalf("expected Flex RestoreAmplification to be nil when total cold delivery exceeds client traffic, got %v", *flexPol.RestoreAmplification)
+	}
+
+	// Conversely, when client traffic is sufficient (>= 128 MiB), both policies calculate 16.0x:
+	traceValid := trace
+	traceValid.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  2 * oneGiB,
+				Physical: 2 * oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+				storage.Glacier:   oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.GlacierIR: sixtyFourMiB,
+				storage.Glacier:   sixtyFourMiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: 2 * sixtyFourMiB, // 128 MiB measured client traffic accommodates both
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	resValid, err := ComparePolicies(context.Background(), traceValid, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies valid failed: %v", err)
+	}
+	if resValid.Policies[2].RestoreAmplification == nil || *resValid.Policies[2].RestoreAmplification != 16.0 {
+		t.Fatalf("expected IR 16.0x with sufficient client traffic, got %v", resValid.Policies[2].RestoreAmplification)
+	}
+	if resValid.Policies[3].RestoreAmplification == nil || *resValid.Policies[3].RestoreAmplification != 16.0 {
+		t.Fatalf("expected Flex 16.0x with sufficient client traffic, got %v", resValid.Policies[3].RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationScalarFallbackRules(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "scalar-fallback-rules"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Rule 1: When multiple cold storage classes have retrieval in the same event,
+	// scalar telemetry cannot disambiguate delivered bytes between classes -> must return nil.
+	traceMultiScalar := trace
+	traceMultiScalar.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  2 * oneGiB,
+				Physical: 2 * oneGiB,
+			},
+			ColdLogicalDeliveredBytes: sixtyFourMiB, // Scalar number
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: 128 * 1024 * 1024,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	resMulti, err := ComparePolicies(context.Background(), traceMultiScalar, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies multi-scalar failed: %v", err)
+	}
+	if resMulti.Policies[2].RestoreAmplification != nil {
+		t.Fatalf("expected IR amplification nil when scalar telemetry is used with multiple cold classes, got %v", *resMulti.Policies[2].RestoreAmplification)
+	}
+	if resMulti.Policies[3].RestoreAmplification != nil {
+		t.Fatalf("expected Flex amplification nil when scalar telemetry is used with multiple cold classes, got %v", *resMulti.Policies[3].RestoreAmplification)
+	}
+
+	// Rule 2: When class-specific telemetry is provided, NEVER fall back to scalar for missing classes.
+	traceClassMap := trace
+	traceClassMap.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  2 * oneGiB,
+				Physical: 2 * oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.GlacierIR: sixtyFourMiB, // Only IR specified
+			},
+			ColdLogicalDeliveredBytes: sixtyFourMiB, // Scalar also present
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: 128 * 1024 * 1024,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	resClass, err := ComparePolicies(context.Background(), traceClassMap, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies class-map failed: %v", err)
+	}
+	// IR has explicit class-specific telemetry -> 16.0x
+	if resClass.Policies[2].RestoreAmplification == nil || *resClass.Policies[2].RestoreAmplification != 16.0 {
+		t.Fatalf("expected IR 16.0x with class-specific telemetry, got %v", resClass.Policies[2].RestoreAmplification)
+	}
+	// Flex has no entry in class map -> must NOT fall back to scalar -> nil
+	if resClass.Policies[3].RestoreAmplification != nil {
+		t.Fatalf("expected Flex amplification nil (must not fall back to scalar when class-specific map is present), got %v", *resClass.Policies[3].RestoreAmplification)
+	}
+}
