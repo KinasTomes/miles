@@ -2,11 +2,13 @@ package simulator
 
 import (
 	"context"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/cost"
+	"github.com/KinasTomes/miles/internal/pricing"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -439,7 +441,17 @@ func TestComparePoliciesCompleteMatchedSavingsAndBreakEven(t *testing.T) {
 	dayNS := int64(24 * time.Hour)
 	baseTrace, catalog := fixture(t, "cloud-boundary")
 
-	// Build a complete matched trace with only verified prices (S3 standard, IR, and DDB)
+	// Set transfer.internet_egress to verified with a valid rate tier
+	for i := range catalog.Rates {
+		if catalog.Rates[i].ID == "transfer.internet_egress" {
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{
+				{Begin: "0", End: nil, USD: "0.09"},
+			}
+		}
+	}
+
+	// Build a complete matched trace with only verified prices (S3 standard, requests, network, and infrastructure)
 	trace := baseTrace
 	trace.Name = "complete-matched-model"
 	trace.DurationNS = 30 * dayNS
@@ -458,6 +470,7 @@ func TestComparePoliciesCompleteMatchedSavingsAndBreakEven(t *testing.T) {
 			},
 			Usage: []cost.Usage{
 				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+				{RateID: "transfer.internet_egress", Unit: "GB", Quantity: "2"},
 				{RateID: "alb.hour", Unit: "Hrs", Quantity: "10"}, // $0.0275/hr * 10 = $0.275
 			},
 		},
@@ -596,5 +609,230 @@ func TestComparePoliciesCloudVsEdgeNetworkTopologyAndRetries(t *testing.T) {
 	}
 	if edgeWarm.Breakdown.TrafficBytes[string(cost.ClientGateway)] != 3221225472 {
 		t.Fatalf("expected 3221225472 client_to_gateway traffic in edge, got %d", edgeWarm.Breakdown.TrafficBytes[string(cost.ClientGateway)])
+	}
+}
+
+func TestComparePoliciesIncompleteTelemetrySuppressesCompleteTotalAndSavings(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	// 1. Trace with storage only (no requests, no network, no infrastructure)
+	trace1 := baseTrace
+	trace1.Name = "storage-only-trace"
+	trace1.DurationNS = 30 * dayNS
+	trace1.Omissions = []string{"Deterministic simulation note"} // No standard omission keywords
+	trace1.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:      2000 * 1024 * 1024,
+				UniqueRaw:    1000 * 1024 * 1024,
+				UniqueStored: 500 * 1024 * 1024,
+				Physical:     500 * 1024 * 1024,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: 500 * 1024 * 1024,
+			},
+		},
+	}
+
+	res1, err := ComparePolicies(context.Background(), trace1, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	for _, p := range res1.Policies {
+		if p.Report.CompleteTotalUSD != nil {
+			t.Fatalf("policy %s must have nil CompleteTotalUSD for storage-only trace", p.Name)
+		}
+		if p.SavingsUSD != nil {
+			t.Fatalf("policy %s must have nil SavingsUSD for storage-only trace", p.Name)
+		}
+		if p.BreakEven != nil {
+			t.Fatalf("policy %s must have nil BreakEven for storage-only trace", p.Name)
+		}
+	}
+
+	// 2. Trace with storage and requests, but NO network
+	trace2 := trace1
+	trace2.Name = "missing-network-trace"
+	trace2.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  2000 * 1024 * 1024,
+				Physical: 500 * 1024 * 1024,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: 500 * 1024 * 1024,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+				{RateID: "alb.hour", Unit: "Hrs", Quantity: "10"},
+			},
+		},
+	}
+
+	res2, err := ComparePolicies(context.Background(), trace2, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	if res2.Policies[1].Report.CompleteTotalUSD != nil || res2.Policies[1].SavingsUSD != nil {
+		t.Fatal("expected nil CompleteTotalUSD and SavingsUSD when network telemetry is missing")
+	}
+
+	// 3. Trace with storage, requests, and network, but NO infrastructure for candidate policy
+	trace3 := trace1
+	trace3.Name = "missing-infra-trace"
+	// Enable verified transfer.internet_egress
+	for i := range catalog.Rates {
+		if catalog.Rates[i].ID == "transfer.internet_egress" {
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.09"}}
+		}
+	}
+	trace3.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  2000 * 1024 * 1024,
+				Physical: 500 * 1024 * 1024,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: 500 * 1024 * 1024,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+				{RateID: "transfer.internet_egress", Unit: "GB", Quantity: "2"},
+			},
+		},
+	}
+
+	res3, err := ComparePolicies(context.Background(), trace3, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	// Direct S3 is complete (no infra required for baseline)
+	if res3.Policies[0].Report.CompleteTotalUSD == nil {
+		t.Fatal("expected baseline Direct S3 to be complete")
+	}
+	// Candidate policy warm_standard_only is missing infrastructure
+	if res3.Policies[1].Report.CompleteTotalUSD != nil {
+		t.Fatal("expected warm_standard_only CompleteTotalUSD to be nil without infrastructure telemetry")
+	}
+	if res3.Policies[1].SavingsUSD != nil {
+		t.Fatal("expected warm_standard_only SavingsUSD to be nil when candidate infra is missing")
+	}
+	if res3.Policies[1].BreakEven != nil {
+		t.Fatal("expected warm_standard_only BreakEven to be nil when candidate infra is missing")
+	}
+}
+
+func TestComparePoliciesRestoreCappedToRemainingTraceDuration(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "restore-time-cap-test"
+	trace.DurationNS = 30 * dayNS
+	// Restore happens at 30 days minus 2 hours (only 2 hours remaining in simulation period)
+	restoreAtNS := trace.DurationNS - int64(2*time.Hour)
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  1073741824,
+				Physical: 1073741824,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: 1073741824,
+			},
+		},
+		{
+			AtNS: restoreAtNS,
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3] // WarmGlacierFlex
+	// Find temporary restored Standard line
+	var stdLine *cost.Line
+	for i := range flexPol.Report.Lines {
+		if flexPol.Report.Lines[i].RateID == "s3.storage.standard" {
+			stdLine = &flexPol.Report.Lines[i]
+			break
+		}
+	}
+	if stdLine == nil {
+		t.Fatal("expected s3.storage.standard line for temporary restored Standard copy")
+	}
+
+	// Expected usage: 1 GB for 2 hours in a 30-day (720 hour) month = 2/720 GB-Mo = 1/360 GB-Mo
+	expectedRat := new(big.Rat).SetFrac64(2, 720)
+	actualRat, ok := new(big.Rat).SetString(stdLine.Quantity)
+	if !ok {
+		t.Fatalf("invalid quantity rational %q", stdLine.Quantity)
+	}
+	// stdLine combines 8 KiB Glacier metadata Standard copy (8192/1073741824) with 2h restore copy
+	metadataRat := new(big.Rat).SetFrac64(8192, 1073741824)
+	restoreRat := new(big.Rat).Sub(actualRat, metadataRat)
+	if restoreRat.Cmp(expectedRat) != 0 {
+		t.Fatalf("expected %s GB-Mo for 2 hours restore copy, got %s (actual total: %s)", expectedRat.RatString(), restoreRat.RatString(), actualRat.RatString())
+	}
+}
+
+func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "early-deletion-test"
+	trace.DurationNS = 30 * dayNS
+	startTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	trace.Start = startTime
+
+	packBytes := int64(100 * 1024 * 1024) // 100 MiB
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  1073741824,
+				Physical: uint64(packBytes),
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: uint64(packBytes),
+			},
+		},
+		{
+			AtNS: 10 * dayNS, // Deleted after 10 days (GLACIER_IR has 90-day minimum retention)
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					State:      "Deleting",
+					Size:       packBytes,
+					Class:      storage.GlacierIR,
+					LastAccess: startTime,
+				},
+				LiveBytes: packBytes,
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2] // WarmGlacierIR
+	if irPol.Breakdown == nil {
+		t.Fatal("expected breakdown")
+	}
+	if irPol.Breakdown.EarlyDeletionUSD == "0" || irPol.Breakdown.EarlyDeletionUSD == "" {
+		t.Fatalf("expected early deletion fees to be accrued, got %q", irPol.Breakdown.EarlyDeletionUSD)
 	}
 }

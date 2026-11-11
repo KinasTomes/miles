@@ -253,6 +253,9 @@ func (s *server) costReport(c *call) error {
 		if parseErr != nil {
 			return invalid("failed to parse workload trace %q: %v", workload, parseErr)
 		}
+		if tr.Profile != "" && tr.Profile != profile {
+			return invalid("workload trace %q has profile %q, which is incompatible with requested profile %q (scenario %s)", workload, tr.Profile, profile, scenario)
+		}
 		comp, compErr := simulator.ComparePolicies(c.r.Context(), tr, catalog)
 		if compErr != nil {
 			return &apiError{http.StatusInternalServerError, "simulation_failed", compErr.Error()}
@@ -293,10 +296,18 @@ func (s *server) costReport(c *call) error {
 		}
 
 		candStorageMap := map[string]int64{}
-		for _, l := range candidatePol.Report.Lines {
-			if strings.HasPrefix(l.RateID, "s3.storage.") {
-				class := strings.ToUpper(strings.TrimPrefix(l.RateID, "s3.storage."))
-				candStorageMap[class] = int64(candidatePol.PhysicalBytes)
+		if len(candidatePol.StorageBytesByClass) > 0 {
+			for class, b := range candidatePol.StorageBytesByClass {
+				if b > 0 {
+					candStorageMap[class] = int64(b)
+				}
+			}
+		} else {
+			for _, l := range candidatePol.Report.Lines {
+				if strings.HasPrefix(l.RateID, "s3.storage.") {
+					class := strings.ToUpper(strings.TrimPrefix(l.RateID, "s3.storage."))
+					candStorageMap[class] = int64(candidatePol.PhysicalBytes)
+				}
 			}
 		}
 
@@ -309,6 +320,7 @@ func (s *server) costReport(c *call) error {
 		if candidatePol.Breakdown != nil {
 			reqByType = candidatePol.Breakdown.RequestsByType
 			retFees = candidatePol.Breakdown.RetrievalUSD
+			transFees = candidatePol.Breakdown.TransitionUSD
 			earlyFees = candidatePol.Breakdown.EarlyDeletionUSD
 			restFees = candidatePol.Breakdown.RestoreUSD
 			trafficBytes = candidatePol.Breakdown.TrafficBytes
@@ -361,7 +373,7 @@ func (s *server) costReport(c *call) error {
 				StorageByClass:                       candStorageMap,
 				DeadRetiredStorageBytes:              0,
 				SidecarJournalCheckpointStorageBytes: 0,
-				TemporaryRestoredStorageBytes:        0,
+				TemporaryRestoredStorageBytes:        int64(candidatePol.TemporaryRestoredBytes),
 				CostReport:                           candidatePol.Report,
 			},
 			DSGRequestsNetwork: DSGRequestsNetworkReport{

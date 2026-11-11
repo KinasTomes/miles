@@ -1269,4 +1269,64 @@ func TestCostReportModeledWorkloadSimulation(t *testing.T) {
 	if conflictResp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for workload with bucket filter, got %d", conflictResp.StatusCode)
 	}
+
+	// 4. Finding 5: Workload topology / profile mismatch returns 400
+	mismatchEdgeReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=edge-revival-accounting&scenario=A&profile=cloud", nil)
+	mismatchEdgeReq.Header.Set("Authorization", "Bearer "+w.root)
+	mismatchEdgeResp, err := server.Client().Do(mismatchEdgeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mismatchEdgeResp.Body.Close()
+	if mismatchEdgeResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for edge workload under cloud profile, got %d", mismatchEdgeResp.StatusCode)
+	}
+
+	mismatchCloudReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=cloud-tiering-boundary&scenario=B&profile=edge", nil)
+	mismatchCloudReq.Header.Set("Authorization", "Bearer "+w.root)
+	mismatchCloudResp, err := server.Client().Do(mismatchCloudReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mismatchCloudResp.Body.Close()
+	if mismatchCloudResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for cloud workload under edge profile, got %d", mismatchCloudResp.StatusCode)
+	}
+
+	// 5. Finding 2: Valid Edge workload simulation preserves physical byte distribution without double counting
+	edgeReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=edge-revival-accounting&scenario=B&profile=edge", nil)
+	edgeReq.Header.Set("Authorization", "Bearer "+w.root)
+	edgeResp, err := server.Client().Do(edgeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer edgeResp.Body.Close()
+	if edgeResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for edge workload under edge profile, got %d", edgeResp.StatusCode)
+	}
+
+	var edgeReport CostReportResponse
+	if err := json.NewDecoder(edgeResp.Body).Decode(&edgeReport); err != nil {
+		t.Fatal(err)
+	}
+
+	classes := edgeReport.DSGStorage.StorageByClass
+	if classes == nil {
+		t.Fatal("expected non-nil StorageByClass")
+	}
+	stdBytes := classes["STANDARD"]
+	irBytes := classes["GLACIER_IR"]
+	if stdBytes != 536870912 {
+		t.Fatalf("expected 536870912 STANDARD bytes, got %d", stdBytes)
+	}
+	if irBytes != 1073741824 {
+		t.Fatalf("expected 1073741824 GLACIER_IR bytes, got %d", irBytes)
+	}
+	totalAccounted := stdBytes + irBytes
+	if totalAccounted != 1610612736 {
+		t.Fatalf("expected total 1610612736 (1.5 GiB), got %d (must NOT double count to 3 GiB!)", totalAccounted)
+	}
+	if edgeReport.DSGRequestsNetwork.TransitionFees == "" {
+		t.Fatal("expected populated TransitionFees")
+	}
 }
