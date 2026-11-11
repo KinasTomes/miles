@@ -1,8 +1,17 @@
 # Plan tiếp tục nghiệm thu AWS
 
-Cập nhật sau lượt chạy ngày 10/11/2026. Mục tiêu là nghiệm thu lại bản sửa trên AWS, hoàn tất Edge C1/C4, recovery/GC và tám alarm, sau đó cleanup có bằng chứng.
+Cập nhật sau lượt chạy ngày 11/11/2026. Mục tiêu là nghiệm thu lại bản sửa trên AWS, hoàn tất Edge C1/C4, recovery/GC và tám alarm, sau đó cleanup có bằng chứng.
 
-## Trạng thái bắt đầu
+## Phần còn lại sau lượt 11/11
+
+[Báo cáo hiện tại](../testing/edge-private-aws-recheck.md) thay cho trạng thái lịch sử bên dưới. Edge C1/C4, native R1/R2/GC đã đạt. Release `063cd72` đã seal cả epoch 1.242 events và epoch rỗng kế tiếp trên AWS; `VerifyCut` chỉ đọc S3 độc lập cũng đạt. Sáu history alarm đã có datapoint và telemetry hợp lệ; hai alarm throttling chưa hồi phục dưới trần đọc 128. Cleanup đã xong lúc 05:46 UTC: audit độc lập kiểm 96 định danh, 94 absent và hai KMS/secret chờ xóa đã được duyệt; baseline được giữ nguyên. Không coi PR đã nghiệm thu hết.
+
+1. Kiểm tra bản sửa shutdown `88e605f`: retry `ErrUnavailable` sau khi lease cleanup thành công, giữ budget gốc và dừng khi fenced hoặc cleanup thất bại. Regression đã tái hiện trên code cũ, race và native shutdown/peer-recovery suites đã đạt. Bản này chưa chạy lại trên AWS.
+2. Kiểm tra bản sửa discovery Outbox `e07cfd7`: chỉ bỏ quét lịch sử khi gate hiện tại Open, chưa có closure record và atomic membership rỗng. Epoch Closed vẫn được kiểm độc lập; regression bảo vệ event không có membership, pagination và native recovery. Bản sửa này chưa chạy trên AWS. Đo cả scheduler tiering đọc Chunks. Phân biệt lỗi thuật toán với thiếu capacity bằng số request/throttle native.
+3. Chuẩn bị release mới từ worktree sạch và pin đúng cặp S3 key/VersionId/hash theo runbook. Lập plan, ngân sách và cleanup cho lượt mới; không dùng lại grant đã hết hạn. Mọi tăng trần đọc hoặc gia hạn phải nằm trong scope được duyệt.
+4. Chạy lại hai alarm throttling với cả natural và injected errors được ghi riêng. Thu `OK → ALARM → OK` cùng telemetry fresh; xác nhận shutdown thật có `shutdown complete` của đúng invocation trước khi chốt. Không dùng mất metric lúc tắt máy để thay bằng chứng hồi phục.
+
+## Trạng thái bắt đầu của lượt trước
 
 - PR đang làm là [PR #76](https://github.com/KinasTomes/miles/pull/76), branch `docs/edge-aws-approval-package`. Worktree hiện tại `/home/ubuntu/miles-worktrees/edge-aws-approval-package`.
 - Lượt trước dùng release `e87c665`. Edge ready và LIST thành công, PUT đầu tiên trả `404 NoSuchKey`. Fail-fast đã dừng lượt thử. C4, native recovery/GC và alarm chưa được nghiệm thu.
