@@ -31,17 +31,32 @@ func (p PolicyName) Valid() bool {
 	return false
 }
 
+type PolicyCostBreakdown struct {
+	StorageUSD        string            `json:"storage_usd"`
+	RequestsUSD       string            `json:"requests_usd"`
+	RetrievalUSD      string            `json:"retrieval_usd"`
+	RestoreUSD        string            `json:"restore_usd"`
+	EarlyDeletionUSD  string            `json:"early_deletion_usd"`
+	NetworkUSD        string            `json:"network_usd"`
+	InfrastructureUSD string            `json:"infrastructure_usd"`
+	RequestsByType    map[string]uint64 `json:"requests_by_type,omitempty"`
+	TrafficBytes      map[string]uint64 `json:"traffic_bytes,omitempty"`
+}
+
 type PolicySummary struct {
-	Name                     PolicyName  `json:"policy_name"`
-	Description              string      `json:"description"`
-	LogicalBytes             uint64      `json:"logical_bytes"`
-	PhysicalBytes            uint64      `json:"physical_bytes"`
-	TotalReduction           *float64    `json:"total_reduction,omitempty"`
-	Report                   cost.Report `json:"cost_report"`
-	TotalCostUSD             string      `json:"total_cost_usd"`
-	SavingsUSD               *string     `json:"savings_usd_vs_baseline"`
-	SavingsPercent           *float64    `json:"savings_percent_vs_baseline"`
-	IndicativeStorageDiffUSD *string     `json:"indicative_storage_difference_usd,omitempty"`
+	Name                     PolicyName           `json:"policy_name"`
+	Description              string               `json:"description"`
+	LogicalBytes             uint64               `json:"logical_bytes"`
+	PhysicalBytes            uint64               `json:"physical_bytes"`
+	TotalReduction           *float64             `json:"total_reduction,omitempty"`
+	Report                   cost.Report          `json:"cost_report"`
+	Breakdown                *PolicyCostBreakdown `json:"breakdown,omitempty"`
+	TotalCostUSD             string               `json:"total_cost_usd"`
+	SavingsUSD               *string              `json:"savings_usd_vs_baseline"`
+	SavingsPercent           *float64             `json:"savings_percent_vs_baseline"`
+	IndicativeStorageDiffUSD *string              `json:"indicative_storage_difference_usd,omitempty"`
+	BreakEven                *string              `json:"break_even,omitempty"`
+	RestoreAmplification     *float64             `json:"restore_amplification,omitempty"`
 }
 
 type ComparisonResult struct {
@@ -162,18 +177,32 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		}
 
 		// 3. WarmGlacierIR: standard/IA on Standard, cold on Glacier IR
+		// Applies Glacier IR storage rule: 128 KiB minimum billable bytes padding
+		irBillableCold := coldBytes
+		if rule, ok := catalog.RuleForClass(string(storage.GlacierIR)); ok && coldBytes > 0 {
+			adj := cost.ApplyStorageRules(rule, coldBytes, 1)
+			irBillableCold = adj.BillableBytes
+		}
 		if err := addStorageUsage(glacierIRTotals, storage.Standard, standardBytes, d); err != nil {
 			return err
 		}
-		if err := addStorageUsage(glacierIRTotals, storage.GlacierIR, coldBytes, d); err != nil {
+		if err := addStorageUsage(glacierIRTotals, storage.GlacierIR, irBillableCold, d); err != nil {
 			return err
 		}
 
 		// 4. WarmGlacierFlexible: standard/IA on Standard, cold on Glacier
-		if err := addStorageUsage(glacierFlexTotals, storage.Standard, standardBytes, d); err != nil {
+		// Applies Glacier Flexible storage rule: 8 KiB Standard + 32 KiB Glacier metadata per pack
+		flexStandardBytes := standardBytes
+		flexGlacierBytes := coldBytes
+		if rule, ok := catalog.RuleForClass(string(storage.Glacier)); ok && coldBytes > 0 {
+			adj := cost.ApplyStorageRules(rule, coldBytes, 1)
+			flexGlacierBytes = adj.BillableBytes + adj.MetadataArchiveBytes
+			flexStandardBytes += adj.MetadataStandardBytes
+		}
+		if err := addStorageUsage(glacierFlexTotals, storage.Standard, flexStandardBytes, d); err != nil {
 			return err
 		}
-		if err := addStorageUsage(glacierFlexTotals, storage.Glacier, coldBytes, d); err != nil {
+		if err := addStorageUsage(glacierFlexTotals, storage.Glacier, flexGlacierBytes, d); err != nil {
 			return err
 		}
 
@@ -204,6 +233,30 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	}
 	if err := step(trace.DurationNS); err != nil {
 		return ComparisonResult{}, err
+	}
+
+	// Track temporary restored Standard storage byte-time during restores in Glacier Flexible
+	for _, event := range trace.Events {
+		for _, u := range event.Usage {
+			if u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
+				if q, ok := new(big.Rat).SetString(u.Quantity); ok {
+					gbFloat, _ := q.Float64()
+					restoredBytes := uint64(gbFloat * float64(trace.BytesPerGB))
+					if restoredBytes > 0 {
+						tempRestoreDur := 24 * time.Hour // default 1-day temporary Standard copy
+						tempU, err := cost.TemporaryRestoredUsage(restoredBytes, tempRestoreDur, trace.BytesPerGB, monthDuration)
+						if err == nil {
+							if qRat, ok := new(big.Rat).SetString(tempU.Quantity); ok {
+								if glacierFlexTotals[tempU.RateID] == nil {
+									glacierFlexTotals[tempU.RateID] = new(big.Rat)
+								}
+								glacierFlexTotals[tempU.RateID].Add(glacierFlexTotals[tempU.RateID], qRat)
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 
 	buildUsage := func(totals map[string]*big.Rat, filter func(cost.Usage) bool) []cost.Usage {
@@ -264,6 +317,43 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	if err != nil {
 		return ComparisonResult{}, fmt.Errorf("evaluating warm_glacier_flexible: %w", err)
 	}
+
+	isComplete := func(r cost.Report) bool {
+		if len(r.Unpriced) > 0 {
+			return false
+		}
+		for _, om := range trace.Omissions {
+			lower := strings.ToLower(om)
+			if strings.Contains(lower, "omitted") || strings.Contains(lower, "not exercised") ||
+				strings.Contains(lower, "not modeled") || strings.Contains(lower, "not modelled") ||
+				strings.Contains(lower, "require additional observations") {
+				return false
+			}
+		}
+		return true
+	}
+
+	if isComplete(directReport) {
+		sub := directReport.Subtotal
+		directReport.CompleteTotalUSD = &sub
+	}
+	if isComplete(warmStdReport) {
+		sub := warmStdReport.Subtotal
+		warmStdReport.CompleteTotalUSD = &sub
+	}
+	if isComplete(glacierIRReport) {
+		sub := glacierIRReport.Subtotal
+		glacierIRReport.CompleteTotalUSD = &sub
+	}
+	if isComplete(glacierFlexReport) {
+		sub := glacierFlexReport.Subtotal
+		glacierFlexReport.CompleteTotalUSD = &sub
+	}
+
+	directBreakdown := categorizeReport(directReport, baseResult.Traffic)
+	warmStdBreakdown := categorizeReport(warmStdReport, baseResult.Traffic)
+	glacierIRBreakdown := categorizeReport(glacierIRReport, baseResult.Traffic)
+	glacierFlexBreakdown := categorizeReport(glacierFlexReport, baseResult.Traffic)
 
 	// Helper to calculate savings vs baseline:
 	// Only conclude true net savings if BOTH baseline and candidate policy have CompleteTotalUSD != nil.
@@ -341,6 +431,54 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		return &s, &pct, indicativeDiff
 	}
 
+	calcBreakEven := func(polReport cost.Report, polBreakdown PolicyCostBreakdown) *string {
+		dStorageRat, _ := new(big.Rat).SetString(directBreakdown.StorageUSD)
+		pStorageRat, _ := new(big.Rat).SetString(polBreakdown.StorageUSD)
+		infraRat, _ := new(big.Rat).SetString(polBreakdown.InfrastructureUSD)
+		if dStorageRat == nil || pStorageRat == nil || currentLogical == 0 {
+			return nil
+		}
+		storageSaving := new(big.Rat).Sub(dStorageRat, pStorageRat)
+		if storageSaving.Sign() <= 0 {
+			return nil
+		}
+		logicalGBRat := new(big.Rat).SetFrac64(int64(currentLogical), int64(trace.BytesPerGB))
+		if logicalGBRat.Sign() <= 0 {
+			return nil
+		}
+		unitSaving := new(big.Rat).Quo(storageSaving, logicalGBRat)
+		if infraRat != nil && infraRat.Sign() > 0 {
+			return cost.BreakEven(infraRat, unitSaving)
+		}
+		zeroStr := "0 GB (no fixed infrastructure overhead)"
+		return &zeroStr
+	}
+
+	calcRestoreAmplification := func(polName PolicyName) *float64 {
+		if polName != PolicyWarmGlacierIR && polName != PolicyWarmGlacierFlex {
+			return nil
+		}
+		var coldBytesRetrieved uint64
+		for _, event := range trace.Events {
+			for _, u := range event.Usage {
+				if u.RateID == "s3.retrieval_ir" || u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
+					if q, ok := new(big.Rat).SetString(u.Quantity); ok {
+						gbFloat, _ := q.Float64()
+						coldBytesRetrieved += uint64(gbFloat * float64(trace.BytesPerGB))
+					}
+				}
+			}
+		}
+		if coldBytesRetrieved == 0 {
+			return nil
+		}
+		logicalDelivered := baseResult.Traffic[cost.GatewayClient]
+		if logicalDelivered == 0 {
+			logicalDelivered = currentLogical
+		}
+		return cost.RestoreAmplification(coldBytesRetrieved, logicalDelivered)
+	}
+
 	warmStdSavingsUSD, warmStdSavingsPct, warmStdStorageDiff := calcSavings(warmStdReport)
 	glacierIRSavingsUSD, glacierIRSavingsPct, glacierIRStorageDiff := calcSavings(glacierIRReport)
 	glacierFlexSavingsUSD, glacierFlexSavingsPct, glacierFlexStorageDiff := calcSavings(glacierFlexReport)
@@ -353,6 +491,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		PhysicalBytes:  currentLogical,
 		TotalReduction: &reduction10,
 		Report:         directReport,
+		Breakdown:      &directBreakdown,
 		TotalCostUSD:   directReport.Subtotal,
 	}
 
@@ -363,10 +502,12 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		PhysicalBytes:            currentPhysical,
 		TotalReduction:           baseResult.Ratios.TotalReduction,
 		Report:                   warmStdReport,
+		Breakdown:                &warmStdBreakdown,
 		TotalCostUSD:             warmStdReport.Subtotal,
 		SavingsUSD:               warmStdSavingsUSD,
 		SavingsPercent:           warmStdSavingsPct,
 		IndicativeStorageDiffUSD: warmStdStorageDiff,
+		BreakEven:                calcBreakEven(warmStdReport, warmStdBreakdown),
 	}
 
 	glacierIRSummary := PolicySummary{
@@ -376,10 +517,13 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		PhysicalBytes:            currentPhysical,
 		TotalReduction:           baseResult.Ratios.TotalReduction,
 		Report:                   glacierIRReport,
+		Breakdown:                &glacierIRBreakdown,
 		TotalCostUSD:             glacierIRReport.Subtotal,
 		SavingsUSD:               glacierIRSavingsUSD,
 		SavingsPercent:           glacierIRSavingsPct,
 		IndicativeStorageDiffUSD: glacierIRStorageDiff,
+		BreakEven:                calcBreakEven(glacierIRReport, glacierIRBreakdown),
+		RestoreAmplification:     calcRestoreAmplification(PolicyWarmGlacierIR),
 	}
 
 	glacierFlexSummary := PolicySummary{
@@ -389,10 +533,13 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		PhysicalBytes:            currentPhysical,
 		TotalReduction:           baseResult.Ratios.TotalReduction,
 		Report:                   glacierFlexReport,
+		Breakdown:                &glacierFlexBreakdown,
 		TotalCostUSD:             glacierFlexReport.Subtotal,
 		SavingsUSD:               glacierFlexSavingsUSD,
 		SavingsPercent:           glacierFlexSavingsPct,
 		IndicativeStorageDiffUSD: glacierFlexStorageDiff,
+		BreakEven:                calcBreakEven(glacierFlexReport, glacierFlexBreakdown),
+		RestoreAmplification:     calcRestoreAmplification(PolicyWarmGlacierFlex),
 	}
 
 	omissions := append([]string{
@@ -436,4 +583,75 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	}
 
 	return res, nil
+}
+
+func categorizeReport(r cost.Report, traffic map[cost.Route]uint64) PolicyCostBreakdown {
+	var storageRat, reqRat, retRat, restRat, earlyRat, netRat, infraRat big.Rat
+	reqByType := map[string]uint64{}
+
+	for _, l := range r.Lines {
+		val, _ := new(big.Rat).SetString(l.USD)
+		if val == nil {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(l.RateID, "s3.storage."):
+			if strings.Contains(l.RateID, "early_deletion") {
+				earlyRat.Add(&earlyRat, val)
+			} else {
+				storageRat.Add(&storageRat, val)
+			}
+		case strings.HasPrefix(l.RateID, "s3.put_") || strings.HasPrefix(l.RateID, "s3.get_"):
+			reqRat.Add(&reqRat, val)
+			if q, ok := new(big.Rat).SetString(l.Quantity); ok {
+				qInt := new(big.Int).Quo(q.Num(), q.Denom()).Uint64()
+				if strings.HasPrefix(l.RateID, "s3.put_") {
+					reqByType["s3_put"] += qInt
+				} else {
+					reqByType["s3_get"] += qInt
+				}
+			}
+		case strings.HasPrefix(l.RateID, "s3.transition_"):
+			reqRat.Add(&reqRat, val)
+			if q, ok := new(big.Rat).SetString(l.Quantity); ok {
+				qInt := new(big.Int).Quo(q.Num(), q.Denom()).Uint64()
+				reqByType["s3_transition"] += qInt
+			}
+		case strings.HasPrefix(l.RateID, "s3.retrieval_"):
+			retRat.Add(&retRat, val)
+		case strings.HasPrefix(l.RateID, "s3.restore_"):
+			restRat.Add(&restRat, val)
+			if strings.Contains(l.RateID, "requests") {
+				if q, ok := new(big.Rat).SetString(l.Quantity); ok {
+					qInt := new(big.Int).Quo(q.Num(), q.Denom()).Uint64()
+					reqByType["s3_restore"] += qInt
+				}
+			}
+		case strings.HasPrefix(l.RateID, "transfer.") || strings.HasPrefix(l.RateID, "network."):
+			netRat.Add(&netRat, val)
+		case strings.HasPrefix(l.RateID, "ec2.") || strings.HasPrefix(l.RateID, "ebs.") ||
+			strings.HasPrefix(l.RateID, "alb.") || strings.HasPrefix(l.RateID, "ddb.") ||
+			strings.HasPrefix(l.RateID, "kms.") || strings.HasPrefix(l.RateID, "cw.") ||
+			strings.HasPrefix(l.RateID, "secret.") || strings.HasPrefix(l.RateID, "ssm.") ||
+			strings.HasPrefix(l.RateID, "edge."):
+			infraRat.Add(&infraRat, val)
+		}
+	}
+
+	trafficMap := map[string]uint64{}
+	for route, b := range traffic {
+		trafficMap[string(route)] = b
+	}
+
+	return PolicyCostBreakdown{
+		StorageUSD:        storageRat.RatString(),
+		RequestsUSD:       reqRat.RatString(),
+		RetrievalUSD:      retRat.RatString(),
+		RestoreUSD:        restRat.RatString(),
+		EarlyDeletionUSD:  earlyRat.RatString(),
+		NetworkUSD:        netRat.RatString(),
+		InfrastructureUSD: infraRat.RatString(),
+		RequestsByType:    reqByType,
+		TrafficBytes:      trafficMap,
+	}
 }
