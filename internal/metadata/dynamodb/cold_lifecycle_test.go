@@ -415,6 +415,17 @@ func TestCrossDomainCopyColdSourceAutoRestoreDynamoDB(t *testing.T) {
 		t.Fatal(e)
 	}
 
+	// Set pack StateRevision = 2 while snapshot.Revision = 1 to verify PolicyRevision is used
+	if e := m.update(ctx, func(tx *transaction) error {
+		p, err := get[s.PackInfo](tx, packKey(chunk.Location.Pack))
+		if err != nil {
+			return err
+		}
+		p.StateRevision = 2
+		return put(tx, packKey(p.Ref), p)
+	}); e != nil {
+		t.Fatal(e)
+	}
 	// 3. Set up object.Service on DynamoDB
 	local, err := clock.NewVirtual(utc.Now(), 1000)
 	if err != nil {
@@ -527,6 +538,9 @@ func TestCrossDomainCopyColdSourceAutoRestoreDynamoDB(t *testing.T) {
 	}
 	if latestJob.Type != "pack_restore" || latestJob.State != jobs.Queued {
 		t.Fatalf("unexpected job: %+v", *latestJob)
+	}
+	if latestJob.PolicyRevision != snapshot.Revision() {
+		t.Fatalf("expected PolicyRevision %d, got %d", snapshot.Revision(), latestJob.PolicyRevision)
 	}
 	params, e := lifecycle.Decode(latestJob.Params, latestJob.Type)
 	if e != nil || params.PackID != chunk.Location.Pack.ID {

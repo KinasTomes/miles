@@ -244,14 +244,8 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 						if err := sourceView.Resolved(ctx); err != nil {
 							return nil, err
 						}
-						rev := packInfo.StateRevision
-						if rev == 0 {
-							rev = s.o.Reader.PolicyRevision()
-						}
-						if rev == 0 {
-							rev = 1
-						}
-						if _, err := s.o.Restore(ctx, sourceView, src, chunk.Location.Pack, rev, requiredUntil, nil); err != nil {
+						policyRev := s.o.Reader.PolicyRevision()
+						if _, err := s.o.Restore(ctx, sourceView, src, chunk.Location.Pack, policyRev, requiredUntil, nil); err != nil {
 							return nil, err
 						}
 					}

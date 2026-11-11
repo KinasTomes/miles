@@ -452,8 +452,11 @@ func TestCopyColdSource(t *testing.T) {
 	if len(restoredPacks) != 1 || restoredPacks[0] != packRef {
 		t.Fatalf("expected restore triggered for %v, got %v", packRef, restoredPacks)
 	}
-	if restoreRev == 0 {
-		t.Fatalf("expected nonzero revision passed to Restore, got 0")
+	if restoreRev != f.options.Reader.PolicyRevision() {
+		t.Fatalf("expected PolicyRevision %d, got %d", f.options.Reader.PolicyRevision(), restoreRev)
+	}
+	if restoreRev == pInfo.StateRevision {
+		t.Fatalf("expected PolicyRevision != StateRevision, both were %d", restoreRev)
 	}
 
 	// 3. Put same data into destination domain so destination already has all chunks
