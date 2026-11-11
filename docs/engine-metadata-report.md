@@ -186,5 +186,6 @@ input/pricing đã pin, không là hóa đơn AWS.
 
 Dataset manifests và điều kiện workload được mô tả trong
 [dataset procedure](../benchmarks/datasets/README.md) và
-[baseline](../benchmarks/baseline.md). Số đo lịch sử
+[baseline](../benchmarks/baseline.md). Cách tạo và kiểm chứng snapshots nằm trong
+[artifact procedure](../benchmarks/engine-metadata-artifacts.md). Số đo lịch sử
 phải giữ source commit/backend/scope gốc; không gắn sang release hiện tại.

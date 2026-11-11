@@ -76,6 +76,12 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool, coldClass ...coldFlowSce
 }
 
 func runNativeRuntime(t *testing.T, gcFlows bool, terminal string, coldClass ...coldFlowScenario) {
+	runNativeScenario(t, gcFlows, terminal, nil, coldClass...)
+}
+
+type nativeScenario func(context.Context, []Dependencies, *dynamodb.Store, *s3.Client, string, storage.Bucket, string)
+
+func runNativeScenario(t *testing.T, gcFlows bool, terminal string, scenario nativeScenario, coldClass ...coldFlowScenario) {
 	dEndpoint, sEndpoint := nativeEndpoint(t, "MILES_DDB_LOCAL_ENDPOINT"), nativeEndpoint(t, "MILES_RECOVERY_S3_ENDPOINT")
 	timeout := 90 * time.Second
 	if gcFlows {
@@ -230,6 +236,10 @@ func runNativeRuntime(t *testing.T, gcFlows bool, terminal string, coldClass ...
 	nodes[1].Admin.Finish(ctx, mutation)
 	if e != nil {
 		t.Fatal(e)
+	}
+	if scenario != nil {
+		scenario(ctx, nodes, m, clients.packs, c.PackBucket, bucket, tokenID+"."+tokenSecret)
+		return
 	}
 	if terminal != "" {
 		nativeTerminalFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, terminal, tokenID+"."+tokenSecret)
