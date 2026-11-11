@@ -271,6 +271,14 @@ func (s *Store) ChangeStorageClass(ctx context.Context, ref storage.PackRef, nex
 	in := &awss3.CopyObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key),
 		CopySource: aws.String(s.bucket + "/" + url.PathEscape(key)), StorageClass: types.StorageClass(next),
 		MetadataDirective: types.MetadataDirectiveCopy}
+	if actionID, marked := storage.LifecycleActionFromContext(ctx); marked {
+		// CopyObject is a mutable one-shot operation. Preserve its action identity
+		// on the new S3 version so a lost response can be reconciled against that
+		// exact completed copy instead of current HEAD state.
+		in.MetadataDirective = types.MetadataDirectiveReplace
+		in.Metadata = map[string]string{"miles-lifecycle-action": actionID}
+		in.ContentType = aws.String("application/octet-stream")
+	}
 	if s.kmsKey != "" {
 		in.ServerSideEncryption = types.ServerSideEncryptionAwsKms
 		in.SSEKMSKeyId = aws.String(s.kmsKey)

@@ -436,6 +436,61 @@ func TestLocalLifecycleTrustedReconcileAndImmutableRetry(t *testing.T) {
 	})
 }
 
+func TestLocalLifecycleTerminalGuardBindsOriginalFenceAndPendingStep(t *testing.T) {
+	m, w, j, policy, _, physical, _ := lifeFixture(t, "tiering", s.GlacierIR)
+	physical.lose = true
+	if out, err := w.Step(t.Context(), j, policy); err == nil || out.Settled {
+		t.Fatal(out, err)
+	}
+	a, err := m.GetLifecycle(t.Context(), j.ID)
+	if err != nil || a.State != "Unknown" {
+		t.Fatal(a, err)
+	}
+	observe := func() error {
+		return m.view(t.Context(), func(tx *transaction) error { return VerifyLifecycleIsolation(a, r1Observe(tx)) })
+	}
+	if err = observe(); err != nil {
+		t.Fatal("exact active action was not bound to its pending step", err)
+	}
+	if err = m.update(t.Context(), func(tx *transaction) error {
+		lease, e := r1Read[s.R1Lease](tx, r1LeaseKey(j.ID))
+		if e != nil {
+			return e
+		}
+		lease.Pending = nil
+		lease.Revision++
+		return r1Put(tx, r1LeaseKey(j.ID), lease)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = observe(); !errors.Is(err, s.ErrR1Busy) {
+		t.Fatal("missing action protection was accepted", err)
+	}
+	if err = m.update(t.Context(), func(tx *transaction) error {
+		lease, e := r1Read[s.R1Lease](tx, r1LeaseKey(j.ID))
+		if e != nil {
+			return e
+		}
+		lease.Pending = []string{"lifecycle/" + j.ID}
+		lease.Revision++
+		if e = r1Put(tx, r1LeaseKey(j.ID), lease); e != nil {
+			return e
+		}
+		job, e := get[jobs.Job](tx, key("jobs", j.ID))
+		if e != nil {
+			return e
+		}
+		job.PendingStep = ""
+		job.Revision++
+		return put(tx, key("jobs", j.ID), job)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = observe(); !errors.Is(err, s.ErrFenced) {
+		t.Fatal("a different job step inherited the action proof", err)
+	}
+}
+
 type lifeAckAPI struct {
 	API
 	state     string

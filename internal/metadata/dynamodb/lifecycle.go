@@ -703,6 +703,39 @@ type LifecycleTerminalGuard interface {
 	Terminal(context.Context, lifecycle.Action, Observe) (bool, error)
 }
 
+// VerifyLifecycleIsolation binds a terminal backend proof to the exact durable
+// lifecycle action, its original job step, and its R1 protection row. The
+// action's one-shot Dispatched state prevents any second physical send.
+func VerifyLifecycleIsolation(a lifecycle.Action, observe Observe) error {
+	if observe == nil || a.Validate() != nil || a.State != "Unknown" && a.State != "Dispatched" {
+		return s.ErrInvalid
+	}
+	lease, err := r1Observed[s.R1Lease](observe, r1LeaseKey(a.Fence.LeaseID))
+	if err != nil {
+		return err
+	}
+	if lease.Fence != a.Fence || lease.State == "Released" || !slices.Contains(lease.Pending, "lifecycle/"+a.ID) {
+		return s.ErrR1Busy
+	}
+	job, err := r1Observed[jobs.Job](observe, stringKey("Jobs", "job_id", a.JobID))
+	if err != nil {
+		return err
+	}
+	if job.ID != a.JobID || job.Type != a.Kind || job.Worker != a.Fence || job.PendingStep == "" || job.State != jobs.Running && job.State != jobs.Cancelling {
+		return s.ErrFenced
+	}
+	if a.Kind == "pack_restore" {
+		owner, err := r1Observed[lifeRestoreOwner](observe, lifecycleRestoreKey(a.Source.Ref))
+		if err != nil {
+			return err
+		}
+		if owner.ID != a.ID {
+			return s.ErrFenced
+		}
+	}
+	return nil
+}
+
 func (m *Store) ResolveLifecycle(ctx context.Context, j jobs.Job) (out lifecycle.Action, err error) {
 	err = m.update(ctx, func(t *transaction) error {
 		if e := m.fence(t, j.Worker); e != nil {
@@ -722,7 +755,7 @@ func (m *Store) ResolveLifecycle(ctx context.Context, j jobs.Job) (out lifecycle
 			out = a
 			return nil
 		}
-		if a.State != "Unknown" || a.Kind != "tiering" && a.Kind != "gc" {
+		if a.State != "Unknown" || a.Kind != "tiering" && a.Kind != "gc" && a.Kind != "pack_restore" {
 			return s.ErrConflict
 		}
 		authority, e := m.r1Authority()
@@ -732,7 +765,11 @@ func (m *Store) ResolveLifecycle(ctx context.Context, j jobs.Job) (out lifecycle
 		if authority.LifecycleTerminal == nil {
 			return jobs.ErrReconciliation
 		}
-		applied, e := authority.LifecycleTerminal.Terminal(ctx, a, r1Observe(t))
+		observe := r1Observe(t)
+		if e = VerifyLifecycleIsolation(a, observe); e != nil {
+			return e
+		}
+		applied, e := authority.LifecycleTerminal.Terminal(ctx, a, observe)
 		if e != nil {
 			return e
 		}

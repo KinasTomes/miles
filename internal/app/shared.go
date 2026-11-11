@@ -40,7 +40,12 @@ func sharedStore(c config.Startup, clients runtimeClients, utc storage.R1TimeSou
 	if clients.telemetry != nil {
 		onRetry = clients.telemetry.Retry
 	}
-	return dynamodb.New(dynamodb.Options{OnRetry: onRetry, API: clients.metadata, Tables: tables, Authority: &dynamodb.SharedAuthority{Time: utc, Lifetime: time.Minute}, RequireProducers: true})
+	physical, err := packs3.New(clients.packs, c.PackBucket, c.PackKMSKeyID)
+	if err != nil {
+		return nil, err
+	}
+	authority := &dynamodb.SharedAuthority{Time: utc, Lifetime: time.Minute, LifecycleTerminal: runtimeLifecycleTerminal{backend: physical}}
+	return dynamodb.New(dynamodb.Options{OnRetry: onRetry, API: clients.metadata, Tables: tables, Authority: authority, RequireProducers: true})
 }
 
 func bootstrapShared(c config.Startup) (Dependencies, error) {

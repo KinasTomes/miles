@@ -24,9 +24,10 @@ import (
 )
 
 type object struct {
-	body    []byte
-	class   types.StorageClass
-	restore string
+	body     []byte
+	class    types.StorageClass
+	restore  string
+	metadata map[string]string
 }
 
 type fakeAPI struct {
@@ -79,7 +80,7 @@ func (f *fakeAPI) HeadObject(ctx context.Context, in *awss3.HeadObjectInput, _ .
 	if !ok {
 		return nil, &smithy.GenericAPIError{Code: "NotFound"}
 	}
-	out := &awss3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(o.body))), StorageClass: o.class}
+	out := &awss3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(o.body))), StorageClass: o.class, Metadata: cloneMetadata(o.metadata)}
 	if o.restore != "" {
 		out.Restore = aws.String(o.restore)
 	}
@@ -119,12 +120,23 @@ func (f *fakeAPI) CopyObject(ctx context.Context, in *awss3.CopyObjectInput, _ .
 		return nil, &smithy.GenericAPIError{Code: "NoSuchKey"}
 	}
 	source, err := url.PathUnescape(aws.ToString(in.CopySource))
-	if err != nil || in.MetadataDirective != types.MetadataDirectiveCopy || !strings.HasSuffix(source, "/"+*in.Key) {
+	if err != nil || in.MetadataDirective != types.MetadataDirectiveCopy && in.MetadataDirective != types.MetadataDirectiveReplace || !strings.HasSuffix(source, "/"+*in.Key) {
 		return nil, errors.New("copy lost source or metadata")
 	}
 	o.class = in.StorageClass
+	if in.MetadataDirective == types.MetadataDirectiveReplace {
+		o.metadata = cloneMetadata(in.Metadata)
+	}
 	f.objects[*in.Key] = o
 	return &awss3.CopyObjectOutput{}, nil
+}
+
+func cloneMetadata(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (f *fakeAPI) RestoreObject(ctx context.Context, in *awss3.RestoreObjectInput, _ ...func(*awss3.Options)) (*awss3.RestoreObjectOutput, error) {
