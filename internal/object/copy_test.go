@@ -431,7 +431,9 @@ func TestCopyColdSource(t *testing.T) {
 	// 2. Cross-domain copy when destination is MISSING the chunks and source is Cold:
 	// must fail with ErrCold and trigger auto-restore if configured
 	restoredPacks := []storage.PackRef{}
+	var restoreRev uint64
 	f.options.Restore = func(ctx context.Context, view *coordination.WarmView, head storage.ObjectHead, ref storage.PackRef, revision uint64, required time.Time, explicit *storage.RestoreRequest) (bool, error) {
+		restoreRev = revision
 		restoredPacks = append(restoredPacks, ref)
 		return true, nil
 	}
@@ -449,6 +451,9 @@ func TestCopyColdSource(t *testing.T) {
 	}
 	if len(restoredPacks) != 1 || restoredPacks[0] != packRef {
 		t.Fatalf("expected restore triggered for %v, got %v", packRef, restoredPacks)
+	}
+	if restoreRev == 0 {
+		t.Fatalf("expected nonzero revision passed to Restore, got 0")
 	}
 
 	// 3. Put same data into destination domain so destination already has all chunks

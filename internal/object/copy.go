@@ -224,6 +224,9 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 				if err != nil {
 					return nil, err
 				}
+				if physical.Ref != packInfo.Ref || physical.Size != packInfo.Size || physical.Class != packInfo.Class {
+					return nil, storage.ErrConflict
+				}
 				var readable bool
 				if physical.State == "Restored" && !physical.RestoredUntil.IsZero() {
 					now := s.o.Clock.Now().WallUTC.UTC()
@@ -235,7 +238,19 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 				}
 				if !readable {
 					if s.o.Restore != nil && sourceView != nil {
-						_, _ = s.o.Restore(ctx, sourceView, src, chunk.Location.Pack, 0, requiredUntil, nil)
+						if err := sourceView.Pin(ctx, []storage.PackRef{chunk.Location.Pack}); err != nil {
+							return nil, err
+						}
+						rev := s.o.Reader.PolicyRevision()
+						if rev == 0 {
+							rev = packInfo.StateRevision
+						}
+						if rev == 0 {
+							rev = 1
+						}
+						if _, err := s.o.Restore(ctx, sourceView, src, chunk.Location.Pack, rev, requiredUntil, nil); err != nil {
+							return nil, err
+						}
 					}
 					return nil, storage.ErrCold
 				}

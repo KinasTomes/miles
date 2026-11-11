@@ -4,11 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/big"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/cache"
+	"github.com/KinasTomes/miles/internal/clock"
+	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/coordination"
+	"github.com/KinasTomes/miles/internal/engine"
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/lifecycle"
+	"github.com/KinasTomes/miles/internal/object"
+	"github.com/KinasTomes/miles/internal/readpath"
 	s "github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -381,5 +390,154 @@ func TestLocalRetiredColdSweepRequiresEveryProtection(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCrossDomainCopyColdSourceAutoRestoreDynamoDB(t *testing.T) {
+	m, _, _, snapshot, utc, physical, chunk := lifeFixture(t, "pack_restore", s.Glacier)
+	ctx := t.Context()
+
+	// 1. Get source object head
+	p, e := m.ObservePage(ctx, s.ObservationRequest{Kind: "heads", Limit: 100})
+	if e != nil || len(p.Heads) != 1 {
+		t.Fatal(p, e)
+	}
+	srcHead := p.Heads[0]
+
+	// 2. Create destination bucket in other-domain with owner quota
+	b2 := s.Bucket{Name: "dst-bkt", ID: "bucket-dst", OwnerID: srcHead.Object.Bucket, Domain: "other-domain", Revision: 1, Active: true}
+	if e := m.update(ctx, func(tx *transaction) error {
+		if err := put(tx, key("buckets", b2.Name), b2); err != nil {
+			return err
+		}
+		return put(tx, key("quotas", b2.OwnerID), s.LogicalQuota{OwnerID: b2.OwnerID, Limit: 1 << 30})
+	}); e != nil {
+		t.Fatal(e)
+	}
+
+	// 3. Set up object.Service on DynamoDB
+	local, err := clock.NewVirtual(utc.Now(), 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lru, err := cache.NewLRU(cache.Limits{CapacityBytes: 1 << 20, MaxEntries: 16, MaxCopyBytes: 1 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate, err := coordination.NewSharedR1Gate(local, "shared-service", "reader", coordination.LeaseLimits{Lifetime: 30 * time.Second, Heartbeat: 5 * time.Second}, m, utc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := coordination.NewWriterRegistry(gate, coordination.LeaseLimits{Lifetime: 30 * time.Second, Heartbeat: 5 * time.Second}, coordination.Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	admission, err := readpath.NewAdmission(readpath.Limits{
+		Node:   readpath.ScopeLimits{ActiveRequests: 100, Budget: warmBudget(64 << 20)},
+		Bucket: readpath.ScopeLimits{ActiveRequests: 100, Budget: warmBudget(64 << 20)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := readpath.NewWarmReader(readpath.WarmOptions{
+		Metadata: m, Packs: physical, Cache: lru, Admission: admission, Gate: gate, Clock: local, UTC: utc,
+		Global: snapshot, Metrics: &readpath.WarmMetrics{}, TransportBytes: 4096,
+		MaxManifestPages: 4, MaxManifestChunks: 20000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator, err := config.NewPolicyValidator(config.DSGPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachePolicy := config.DefaultCachePolicy()
+	svc, err := object.New(object.Options{
+		Metadata: m, Packs: physical, Cache: lru, Registry: registry, Clock: local, ReadUTC: utc,
+		Restore: func(ctx context.Context, view *coordination.WarmView, head s.ObjectHead, ref s.PackRef, revision uint64, required time.Time, explicit *s.RestoreRequest) (bool, error) {
+			f, err := view.SharedFence(ctx)
+			if err != nil {
+				return false, err
+			}
+			_, created, err := m.QueueReadRestore(ctx, f, head, ref, revision, required, explicit)
+			return created, err
+		},
+		AdmitWriter: func(ctx context.Context, r object.WriterRequest) (object.AdmittedWriter, error) {
+			return warmAdmit(ctx, m, strings.Repeat("1", 32), r)
+		},
+		Chunking:    engine.ChunkingParams{Min: 16 << 10, Avg: 16 << 10, Max: 16 << 10},
+		Compression: engine.CompressionPolicy{Enabled: true, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)},
+		Events:      object.MetadataEvents{}, Reader: reader,
+		BucketPolicy: func(id string) (config.BucketSnapshot, error) {
+			return validator.NewBucketSnapshot(id, 1, cachePolicy)
+		},
+		Budget:         warmBudget(64 << 20),
+		MaxOutstanding: 3,
+		RequestTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Jobs before copy
+	jobsBefore, e := m.ListJobs(ctx, jobs.PageRequest{Limit: 100, ActiveOnly: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	// 4. Case 1: Missing chunk in destination domain: CopyObject fails with ErrCold and ENQUEUES a restore job
+	_, err = svc.CopyObject(ctx, object.CopyRequest{
+		Source:    s.Bucket{Name: srcHead.Object.Bucket, ID: srcHead.Object.BucketID, Domain: srcHead.Domain},
+		SourceKey: srcHead.Object.Key,
+		Bucket:    b2, Key: "dst-missing",
+		UserID: b2.OwnerID, CredentialID: "owner-key",
+	})
+	if !errors.Is(err, s.ErrCold) {
+		t.Fatalf("expected ErrCold, got %v", err)
+	}
+
+	// Verify the restore job was enqueued in DynamoDB
+	jobsAfter, e := m.ListJobs(ctx, jobs.PageRequest{Limit: 100, ActiveOnly: true})
+	if e != nil || len(jobsAfter.Jobs) != len(jobsBefore.Jobs)+1 {
+		t.Fatalf("expected 1 new restore job enqueued, before=%d after=%d: %v", len(jobsBefore.Jobs), len(jobsAfter.Jobs), e)
+	}
+	latestJob := jobsAfter.Jobs[len(jobsAfter.Jobs)-1]
+	if latestJob.Type != "pack_restore" || latestJob.State != jobs.Queued {
+		t.Fatalf("unexpected job: %+v", latestJob)
+	}
+	params, e := lifecycle.Decode(latestJob.Params, latestJob.Type)
+	if e != nil || params.PackID != chunk.Location.Pack.ID {
+		t.Fatalf("expected restore for pack %q, got params: %+v, err: %v", chunk.Location.Pack.ID, params, e)
+	}
+
+	// 5. Case 2: Destination domain already has the chunk: CopyObject does NOT enqueue a restore job
+	destChunk := chunk
+	destChunk.Key.Domain = "other-domain"
+	destFence := s.WriterFence{LeaseID: "seed-other", Epoch: 1, ServiceIncarnation: "shared-service"}
+	if _, _, e = m.PutChunkIfAbsent(ctx, destChunk, destFence); e != nil {
+		t.Fatal(e)
+	}
+
+	jobsBeforeSecond, e := m.ListJobs(ctx, jobs.PageRequest{Limit: 100, ActiveOnly: true})
+	if e != nil {
+		t.Fatal(e)
+	}
+
+	outSuccess, err := svc.CopyObject(ctx, object.CopyRequest{
+		Source:    s.Bucket{Name: srcHead.Object.Bucket, ID: srcHead.Object.BucketID, Domain: srcHead.Domain},
+		SourceKey: srcHead.Object.Key,
+		Bucket:    b2, Key: "dst-has-chunk",
+		UserID: b2.OwnerID, CredentialID: "owner-key",
+	})
+	if err != nil {
+		t.Fatalf("copy with existing destination chunks failed: %v", err)
+	}
+	if outSuccess.ETag != srcHead.ETag {
+		t.Fatalf("ETag mismatch: got %q want %q", outSuccess.ETag, srcHead.ETag)
+	}
+
+	jobsAfterSecond, e := m.ListJobs(ctx, jobs.PageRequest{Limit: 100, ActiveOnly: true})
+	if e != nil || len(jobsAfterSecond.Jobs) != len(jobsBeforeSecond.Jobs) {
+		t.Fatalf("expected no new jobs when chunks already exist in destination, before=%d after=%d", len(jobsBeforeSecond.Jobs), len(jobsAfterSecond.Jobs))
 	}
 }
