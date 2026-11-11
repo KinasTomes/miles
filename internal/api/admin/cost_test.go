@@ -1360,3 +1360,69 @@ func TestCostReportModeledWorkloadSimulation(t *testing.T) {
 		t.Fatalf("expected 'omitted' for DiskEBS, got %q", cloudReport.Infrastructure.DiskEBS)
 	}
 }
+
+func TestCostReportWorkloadSecurityAndTimeline(t *testing.T) {
+	w, server := newCostTestWorld(t, &fakeStats{})
+
+	// 1. Path traversal attempt must return HTTP 400 Bad Request and not leak parser error or file content
+	traversalReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?scenario=A&profile=cloud&workload=../../configs/pricing/pricing.ap-southeast-1.example", nil)
+	traversalReq.Header.Set("Authorization", "Bearer "+w.root)
+	traversalResp, err := server.Client().Do(traversalReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer traversalResp.Body.Close()
+	if traversalResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request for path traversal attempt, got %d", traversalResp.StatusCode)
+	}
+	var travErr struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(traversalResp.Body).Decode(&travErr); err != nil {
+		t.Fatal(err)
+	}
+	errMsg := travErr.Error.Message
+	if !strings.Contains(errMsg, "not found") {
+		t.Fatalf("expected 'not found' in error message, got %q", errMsg)
+	}
+	if strings.Contains(errMsg, "as_of") {
+		t.Fatalf("error message must NOT leak parsed file contents or 'as_of': %q", errMsg)
+	}
+
+	// 2. Reject 'from' and 'to' filters on modeled workload
+	fromToReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?scenario=A&profile=cloud&workload=cloud-boundary&from=2026-01-01T00:00:00Z&to=2026-01-02T00:00:00Z", nil)
+	fromToReq.Header.Set("Authorization", "Bearer "+w.root)
+	fromToResp, err := server.Client().Do(fromToReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fromToResp.Body.Close()
+	if fromToResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request when 'from'/'to' supplied with workload, got %d", fromToResp.StatusCode)
+	}
+
+	// 3. Modeled workload response echoes tr.Start and tr.Start + tr.DurationNS
+	validReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?scenario=A&profile=cloud&workload=cloud-boundary", nil)
+	validReq.Header.Set("Authorization", "Bearer "+w.root)
+	validResp, err := server.Client().Do(validReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer validResp.Body.Close()
+	if validResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for valid workload, got %d", validResp.StatusCode)
+	}
+	var rep CostReportResponse
+	if err := json.NewDecoder(validResp.Body).Decode(&rep); err != nil {
+		t.Fatal(err)
+	}
+	if rep.Inputs.From != "2026-01-01T00:00:00Z" {
+		t.Fatalf("expected Inputs.From to match trace start '2026-01-01T00:00:00Z', got %q", rep.Inputs.From)
+	}
+	if rep.Inputs.To != "2026-01-31T00:00:00Z" {
+		t.Fatalf("expected Inputs.To to match trace end '2026-01-31T00:00:00Z', got %q", rep.Inputs.To)
+	}
+}

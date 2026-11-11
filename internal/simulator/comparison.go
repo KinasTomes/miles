@@ -116,6 +116,9 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	currentStorageBytes := map[storage.StorageClass]uint64{}
 
 	hasObservedCold := false
+	hasUnprovenColdPacks := false
+	hasStorageInconsistency := false
+	activeColdPacks := make(map[string]storage.PackInfo)
 	var previous int64
 
 	addStorageUsage := func(totals map[string]*big.Rat, class storage.StorageClass, bytes uint64, d time.Duration) error {
@@ -155,8 +158,9 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		coldBytes := uint64(0)
 
 		if len(currentStorageBytes) > 0 {
+			sumStorageBytes := uint64(0)
 			for class, b := range currentStorageBytes {
-				totalPhysical += b
+				sumStorageBytes += b
 				switch class {
 				case storage.Standard, storage.StandardIA:
 					standardBytes += b
@@ -164,14 +168,17 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 					coldBytes += b
 				}
 			}
+			if currentPhysical > 0 && currentPhysical != sumStorageBytes {
+				hasStorageInconsistency = true
+			}
+			totalPhysical = currentPhysical
+			if totalPhysical == 0 {
+				totalPhysical = sumStorageBytes
+			}
 		} else {
 			totalPhysical = currentPhysical
 			standardBytes = currentPhysical
 			coldBytes = 0
-		}
-
-		if coldBytes > 0 {
-			hasObservedCold = true
 		}
 
 		// 2. WarmStandardOnly: all physical bytes (including IA and Cold) stay on Standard
@@ -180,12 +187,62 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		}
 
 		// 3. WarmGlacierIR: standard/IA on Standard, cold on Glacier IR
-		// Applies Glacier IR storage rule: 128 KiB minimum billable bytes padding
-		irBillableCold := coldBytes
-		if rule, ok := catalog.RuleForClass(string(storage.GlacierIR)); ok && coldBytes > 0 {
-			adj := cost.ApplyStorageRules(rule, coldBytes, 1)
-			irBillableCold = adj.BillableBytes
+		// Applies Glacier IR storage rule: 128 KiB minimum billable bytes padding per pack
+		irBillableCold := uint64(0)
+		flexStandardBytes := standardBytes
+		flexGlacierBytes := uint64(0)
+
+		if coldBytes > 0 {
+			hasObservedCold = true
+
+			sumColdPackBytes := uint64(0)
+			for _, pack := range activeColdPacks {
+				if pack.Size > 0 {
+					sumColdPackBytes += uint64(pack.Size)
+				}
+			}
+
+			if len(activeColdPacks) > 0 && sumColdPackBytes == coldBytes {
+				// Measured per-pack accounting from observed tiering events
+				if irRule, ok := catalog.RuleForClass(string(storage.GlacierIR)); ok {
+					for _, pack := range activeColdPacks {
+						adj := cost.ApplyStorageRules(irRule, uint64(pack.Size), 1)
+						irBillableCold += adj.BillableBytes
+					}
+				} else {
+					irBillableCold = coldBytes
+				}
+
+				if flexRule, ok := catalog.RuleForClass(string(storage.Glacier)); ok {
+					for _, pack := range activeColdPacks {
+						adj := cost.ApplyStorageRules(flexRule, uint64(pack.Size), 1)
+						flexGlacierBytes += adj.BillableBytes + adj.MetadataArchiveBytes
+						flexStandardBytes += adj.MetadataStandardBytes
+					}
+				} else {
+					flexGlacierBytes = coldBytes
+				}
+			} else {
+				// Cold storage bytes are present but per-pack distribution is unproven.
+				// Fail closed on completeness.
+				hasUnprovenColdPacks = true
+				if irRule, ok := catalog.RuleForClass(string(storage.GlacierIR)); ok {
+					adj := cost.ApplyStorageRules(irRule, coldBytes, 1)
+					irBillableCold = adj.BillableBytes
+				} else {
+					irBillableCold = coldBytes
+				}
+
+				if flexRule, ok := catalog.RuleForClass(string(storage.Glacier)); ok {
+					adj := cost.ApplyStorageRules(flexRule, coldBytes, 1)
+					flexGlacierBytes = adj.BillableBytes + adj.MetadataArchiveBytes
+					flexStandardBytes += adj.MetadataStandardBytes
+				} else {
+					flexGlacierBytes = coldBytes
+				}
+			}
 		}
+
 		if err := addStorageUsage(glacierIRTotals, storage.Standard, standardBytes, d); err != nil {
 			return err
 		}
@@ -195,13 +252,6 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 
 		// 4. WarmGlacierFlexible: standard/IA on Standard, cold on Glacier
 		// Applies Glacier Flexible storage rule: 8 KiB Standard + 32 KiB Glacier metadata per pack
-		flexStandardBytes := standardBytes
-		flexGlacierBytes := coldBytes
-		if rule, ok := catalog.RuleForClass(string(storage.Glacier)); ok && coldBytes > 0 {
-			adj := cost.ApplyStorageRules(rule, coldBytes, 1)
-			flexGlacierBytes = adj.BillableBytes + adj.MetadataArchiveBytes
-			flexStandardBytes += adj.MetadataStandardBytes
-		}
 		if err := addStorageUsage(glacierFlexTotals, storage.Standard, flexStandardBytes, d); err != nil {
 			return err
 		}
@@ -229,7 +279,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	earlyDeletedPacks := make(map[string]bool)
 
 	// Replay events through timeline
-	for _, event := range trace.Events {
+	for eventIdx, event := range trace.Events {
 		if err := ctx.Err(); err != nil {
 			return ComparisonResult{}, err
 		}
@@ -253,22 +303,45 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 				eventTime := trace.Start.Add(time.Duration(event.AtNS))
 				isDeleting := pack.State == "Deleting" || pack.State == "Retiring" ||
 					pack.State == "Deleted" || pack.State == "Retired"
+
+				packKey := ""
+				if pack.Ref.ID != "" {
+					packKey = fmt.Sprintf("%s:%s", pack.Ref.ID, pack.Ref.Generation)
+				} else {
+					packKey = fmt.Sprintf("event-idx-%d", eventIdx)
+				}
+
 				if isDeleting {
+					if pack.Ref.ID != "" {
+						delete(activeColdPacks, packKey)
+					} else {
+						for k, p := range activeColdPacks {
+							if p.Size == pack.Size {
+								delete(activeColdPacks, k)
+								break
+							}
+						}
+					}
+
 					alreadyCharged := false
 					if pack.Ref.ID != "" {
-						packKey := fmt.Sprintf("%s:%s:%s", pack.Ref.ID, pack.Ref.Generation, pack.Class)
-						if earlyDeletedPacks[packKey] {
+						chargeKey := fmt.Sprintf("%s:%s:%s", pack.Ref.ID, pack.Ref.Generation, pack.Class)
+						if earlyDeletedPacks[chargeKey] {
 							alreadyCharged = true
 						} else {
-							earlyDeletedPacks[packKey] = true
+							earlyDeletedPacks[chargeKey] = true
 						}
 					}
 					if !alreadyCharged {
 						if rule, ok := catalog.RuleForClass(string(pack.Class)); ok && rule.MinimumDays > 0 {
 							minRetention := time.Duration(rule.MinimumDays) * 24 * time.Hour
 							var retained time.Duration
-							if !pack.MinRetentionUntil.IsZero() && pack.MinRetentionUntil.After(eventTime) {
-								retained = minRetention - pack.MinRetentionUntil.Sub(eventTime)
+							if !pack.MinRetentionUntil.IsZero() {
+								if pack.MinRetentionUntil.After(eventTime) {
+									retained = minRetention - pack.MinRetentionUntil.Sub(eventTime)
+								} else {
+									retained = minRetention
+								}
 							} else if !pack.LastAccess.IsZero() && eventTime.After(pack.LastAccess) {
 								retained = eventTime.Sub(pack.LastAccess)
 							}
@@ -294,6 +367,8 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 							}
 						}
 					}
+				} else if pack.Class == storage.Glacier || pack.Class == storage.GlacierIR || pack.State == "Cold" {
+					activeColdPacks[packKey] = pack
 				}
 			}
 		}
@@ -405,6 +480,12 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	}
 
 	isComplete := func(polName PolicyName, r cost.Report) bool {
+		if hasStorageInconsistency {
+			return false
+		}
+		if hasUnprovenColdPacks && (polName == PolicyWarmGlacierIR || polName == PolicyWarmGlacierFlex) {
+			return false
+		}
 		if len(r.Unpriced) > 0 {
 			return false
 		}
@@ -561,7 +642,19 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		glacierFlexReport.CompleteTotalUSD = &sub
 	}
 
-	directBreakdown := categorizeReport(directReport, baseResult.Traffic, earlyDeletionUSDByPolicy[PolicyDirectS3].RatString())
+	directTraffic := make(map[cost.Route]uint64)
+	if b, ok := baseResult.Traffic[cost.ClientGateway]; ok {
+		directTraffic[cost.ClientS3] = b
+	} else if b, ok := baseResult.Traffic[cost.ClientS3]; ok {
+		directTraffic[cost.ClientS3] = b
+	}
+	if b, ok := baseResult.Traffic[cost.GatewayClient]; ok {
+		directTraffic[cost.S3Client] = b
+	} else if b, ok := baseResult.Traffic[cost.S3Client]; ok {
+		directTraffic[cost.S3Client] = b
+	}
+
+	directBreakdown := categorizeReport(directReport, directTraffic, earlyDeletionUSDByPolicy[PolicyDirectS3].RatString())
 	warmStdBreakdown := categorizeReport(warmStdReport, baseResult.Traffic, earlyDeletionUSDByPolicy[PolicyWarmStandardOnly].RatString())
 	glacierIRBreakdown := categorizeReport(glacierIRReport, baseResult.Traffic, earlyDeletionUSDByPolicy[PolicyWarmGlacierIR].RatString())
 	glacierFlexBreakdown := categorizeReport(glacierFlexReport, baseResult.Traffic, earlyDeletionUSDByPolicy[PolicyWarmGlacierFlex].RatString())
@@ -656,8 +749,13 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		if storageSaving.Sign() <= 0 {
 			return nil
 		}
-		logicalGBRat := new(big.Rat).SetFrac64(int64(currentLogical), int64(trace.BytesPerGB))
-		if logicalGBRat.Sign() <= 0 {
+		var logicalGBRat *big.Rat
+		if stdTotal, ok := directTotals["s3.storage.standard"]; ok && stdTotal != nil && stdTotal.Sign() > 0 {
+			logicalGBRat = new(big.Rat).Set(stdTotal)
+		} else {
+			logicalGBRat = new(big.Rat).SetFrac64(int64(currentLogical), int64(trace.BytesPerGB))
+		}
+		if logicalGBRat == nil || logicalGBRat.Sign() <= 0 {
 			return nil
 		}
 		unitSaving := new(big.Rat).Quo(storageSaving, logicalGBRat)
@@ -687,10 +785,20 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		var coldBytesRetrieved uint64
 		for _, event := range trace.Events {
 			for _, u := range event.Usage {
-				if u.RateID == "s3.retrieval_ir" || u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
-					if q, ok := new(big.Rat).SetString(u.Quantity); ok {
-						gbFloat, _ := q.Float64()
-						coldBytesRetrieved += uint64(gbFloat * float64(trace.BytesPerGB))
+				switch polName {
+				case PolicyWarmGlacierIR:
+					if u.RateID == "s3.retrieval_ir" {
+						if q, ok := new(big.Rat).SetString(u.Quantity); ok {
+							gbFloat, _ := q.Float64()
+							coldBytesRetrieved += uint64(gbFloat * float64(trace.BytesPerGB))
+						}
+					}
+				case PolicyWarmGlacierFlex:
+					if u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
+						if q, ok := new(big.Rat).SetString(u.Quantity); ok {
+							gbFloat, _ := q.Float64()
+							coldBytesRetrieved += uint64(gbFloat * float64(trace.BytesPerGB))
+						}
 					}
 				}
 			}
@@ -700,7 +808,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		}
 		logicalDelivered := baseResult.Traffic[cost.GatewayClient]
 		if logicalDelivered == 0 {
-			logicalDelivered = currentLogical
+			return nil
 		}
 		return cost.RestoreAmplification(coldBytesRetrieved, logicalDelivered)
 	}
@@ -709,12 +817,13 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 	glacierIRSavingsUSD, glacierIRSavingsPct, glacierIRStorageDiff := calcSavings(glacierIRReport)
 	glacierFlexSavingsUSD, glacierFlexSavingsPct, glacierFlexStorageDiff := calcSavings(glacierFlexReport)
 
-	finalPhysical := uint64(0)
+	finalPhysical := currentPhysical
 	finalStandardBytes := uint64(0)
 	finalColdBytes := uint64(0)
 	if len(currentStorageBytes) > 0 {
+		sumStorageBytes := uint64(0)
 		for class, b := range currentStorageBytes {
-			finalPhysical += b
+			sumStorageBytes += b
 			switch class {
 			case storage.Standard, storage.StandardIA:
 				finalStandardBytes += b
@@ -722,13 +831,15 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 				finalColdBytes += b
 			}
 		}
+		if currentPhysical > 0 && currentPhysical != sumStorageBytes {
+			hasStorageInconsistency = true
+		}
 	} else {
-		finalPhysical = currentPhysical
 		finalStandardBytes = currentPhysical
 		finalColdBytes = 0
 	}
 	if finalPhysical == 0 {
-		finalPhysical = currentPhysical
+		finalPhysical = finalStandardBytes + finalColdBytes
 	}
 
 	directClassMap := map[string]uint64{"STANDARD": currentLogical}
@@ -825,6 +936,12 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 			"Trace contains no observed cold inventory or tiering transitions; warm_glacier_ir evaluated with zero cold byte-time",
 			"Trace contains no observed cold inventory or tiering transitions; warm_glacier_flexible evaluated with zero cold byte-time",
 		)
+	}
+	if hasStorageInconsistency {
+		omissions = append(omissions, "Storage inventory inconsistent: snapshot physical bytes do not match sum of storage bytes by class")
+	}
+	if hasUnprovenColdPacks {
+		omissions = append(omissions, "Glacier per-pack pricing unproven: trace contains cold storage without per-pack tiering evidence")
 	}
 	if hasUnpricedOmission {
 		omissions = append(omissions, "Net savings and savings percent vs baseline omitted: unpriced items present in baseline or candidate policy cost evaluation")

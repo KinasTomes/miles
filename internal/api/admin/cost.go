@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -224,25 +225,27 @@ func (s *server) costReport(c *call) error {
 		if bucket != "" {
 			return invalid("bucket filter %q is not supported for modeled workload simulation", bucket)
 		}
-		var traceData []byte
-		candidates := []string{workload}
-		if workload == "cloud-tiering-boundary" {
-			candidates = append(candidates, "cloud-boundary")
-		} else if workload == "edge-revival-accounting" {
-			candidates = append(candidates, "edge-revival")
+		if q.Get("from") != "" || q.Get("to") != "" {
+			return invalid("time range filters 'from' and 'to' are not supported for modeled workload simulation; workload traces define their own fixed timeline")
 		}
-		for _, name := range candidates {
-			for _, p := range []string{
-				fmt.Sprintf("benchmarks/traces/%s.json", name),
-				fmt.Sprintf("../../benchmarks/traces/%s.json", name),
-				fmt.Sprintf("../../../benchmarks/traces/%s.json", name),
-			} {
-				if b, readErr := os.ReadFile(p); readErr == nil {
-					traceData = b
-					break
-				}
-			}
-			if traceData != nil {
+
+		// Security: prevent path traversal and arbitrary filesystem reads.
+		// Only explicit allowed workload identifiers are supported.
+		var traceFileName string
+		switch workload {
+		case "cloud-tiering-boundary", "cloud-boundary":
+			traceFileName = "cloud-boundary.json"
+		case "edge-revival-accounting", "edge-revival":
+			traceFileName = "edge-revival.json"
+		default:
+			return invalid("workload trace %q not found", workload)
+		}
+
+		var traceData []byte
+		for _, dir := range []string{"benchmarks/traces", "../../benchmarks/traces", "../../../benchmarks/traces"} {
+			p := filepath.Join(dir, traceFileName)
+			if b, readErr := os.ReadFile(p); readErr == nil {
+				traceData = b
 				break
 			}
 		}
@@ -251,8 +254,10 @@ func (s *server) costReport(c *call) error {
 		}
 		tr, parseErr := simulator.Read(bytes.NewReader(traceData))
 		if parseErr != nil {
-			return invalid("failed to parse workload trace %q: %v", workload, parseErr)
+			return invalid("workload trace %q is invalid", workload)
 		}
+		from = tr.Start.UTC().Format(time.RFC3339)
+		to = tr.Start.Add(time.Duration(tr.DurationNS)).UTC().Format(time.RFC3339)
 		if tr.Profile != "" && tr.Profile != profile {
 			return invalid("workload trace %q has profile %q, which is incompatible with requested profile %q (scenario %s)", workload, tr.Profile, profile, scenario)
 		}

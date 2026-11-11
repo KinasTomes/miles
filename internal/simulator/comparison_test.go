@@ -1183,3 +1183,427 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 		t.Fatalf("expected Glacier Flexible early deletion fee to be charged (did global pack identity swallow it?), got %q", flexChange.Breakdown.EarlyDeletionUSD)
 	}
 }
+
+func TestComparePoliciesGlacierPerPackRules(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	// 2 packs of 1024 bytes tiered to cold storage
+	trace := baseTrace
+	trace.Name = "two-cold-packs"
+	trace.DurationNS = 30 * dayNS
+	startTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	trace.Start = startTime
+
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  2048,
+				Physical: 2048,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: 2048,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:   storage.PackRef{ID: "pack-1", Generation: "g1"},
+					Size:  1024,
+					Class: storage.GlacierIR,
+					State: "Cold",
+				},
+				LiveBytes: 1024,
+			},
+		},
+		{
+			AtNS: 0,
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:   storage.PackRef{ID: "pack-2", Generation: "g1"},
+					Size:  1024,
+					Class: storage.GlacierIR,
+					State: "Cold",
+				},
+				LiveBytes: 1024,
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2] // WarmGlacierIR
+	var irLine *cost.Line
+	for i := range irPol.Report.Lines {
+		if irPol.Report.Lines[i].RateID == "s3.storage.glacier_ir" {
+			irLine = &irPol.Report.Lines[i]
+			break
+		}
+	}
+	if irLine == nil {
+		t.Fatalf("missing s3.storage.glacier_ir line: %+v", irPol.Report.Lines)
+	}
+
+	// 2 packs × 128 KiB (131072) = 256 KiB (262144 bytes).
+	// 262144 / 1073741824 = 1/4096 GB-Mo (NOT 1/8192!).
+	if irLine.Quantity != "1/4096" {
+		t.Fatalf("expected 2 packs padded to 256 KiB (1/4096 GB-Mo), got %s", irLine.Quantity)
+	}
+
+	flexPol := res.Policies[3] // WarmGlacierFlex
+	var flexGlacierLine, flexStdLine *cost.Line
+	for i := range flexPol.Report.Lines {
+		if flexPol.Report.Lines[i].RateID == "s3.storage.glacier" {
+			flexGlacierLine = &flexPol.Report.Lines[i]
+		}
+		if flexPol.Report.Lines[i].RateID == "s3.storage.standard" {
+			flexStdLine = &flexPol.Report.Lines[i]
+		}
+	}
+	if flexGlacierLine == nil || flexStdLine == nil {
+		t.Fatalf("missing flex lines: %+v", flexPol.Report.Lines)
+	}
+
+	// 2 packs × 32 KiB archive metadata = 64 KiB = 65536 bytes.
+	// Total glacier = 2048 + 65536 = 67584 bytes -> 67584 / 1073741824 = 33/524288 GB-Mo.
+	if flexGlacierLine.Quantity != "33/524288" {
+		t.Fatalf("expected 2 packs glacier metadata quantity 33/524288, got %s", flexGlacierLine.Quantity)
+	}
+	// 2 packs × 8 KiB standard metadata = 16 KiB = 16384 bytes.
+	// 16384 / 1073741824 = 1/65536 GB-Mo.
+	if flexStdLine.Quantity != "1/65536" {
+		t.Fatalf("expected 2 packs standard metadata quantity 1/65536, got %s", flexStdLine.Quantity)
+	}
+}
+
+func TestComparePoliciesEarlyDeletionExpiredRetentionNoRecharge(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "expired-retention-test"
+	trace.DurationNS = 100 * dayNS
+	startTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	trace.Start = startTime
+	packBytes := int64(100 * 1024 * 1024)
+
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  1073741824,
+				Physical: uint64(packBytes),
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: uint64(packBytes),
+			},
+		},
+		{
+			AtNS: 95 * dayNS, // Deleted at day 95, where MinRetentionUntil was day 90 (expired!)
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:               storage.PackRef{ID: "expired-pack", Generation: "g1"},
+					State:             "Deleting",
+					Size:              packBytes,
+					Class:             storage.GlacierIR,
+					MinRetentionUntil: startTime.Add(90 * 24 * time.Hour), // Retention expired 5 days ago!
+					LastAccess:        startTime.Add(94 * 24 * time.Hour), // LastAccess was day 94
+				},
+				LiveBytes: packBytes,
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2] // WarmGlacierIR
+	if irPol.Breakdown == nil {
+		t.Fatal("expected breakdown")
+	}
+	if irPol.Breakdown.EarlyDeletionUSD != "0" {
+		t.Fatalf("expected EarlyDeletionUSD to be '0' for pack deleted after expired retention, got %q (did it recharge from LastAccess?)", irPol.Breakdown.EarlyDeletionUSD)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationPolicyIsolation(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	// 1. Trace with IR retrieval only: Flex amplification must be nil
+	traceIR := baseTrace
+	traceIR.Name = "ir-amplification-only"
+	traceIR.DurationNS = 30 * dayNS
+	traceIR.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  1073741824,
+				Physical: 1073741824,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: 64 * 1024 * 1024,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	resIR, err := ComparePolicies(context.Background(), traceIR, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	irPol := resIR.Policies[2]
+	flexPol := resIR.Policies[3]
+	if irPol.RestoreAmplification == nil || *irPol.RestoreAmplification != 16.0 {
+		t.Fatalf("expected IR amplification 16.0, got %v", irPol.RestoreAmplification)
+	}
+	if flexPol.RestoreAmplification != nil {
+		t.Fatalf("expected Flex amplification to be nil when only IR retrieval was present, got %v", *flexPol.RestoreAmplification)
+	}
+
+	// 2. Denominator: GatewayClient traffic == 0 must return nil (not fallback to logical)
+	traceNoClient := traceIR
+	traceNoClient.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  1073741824,
+				Physical: 1073741824,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: 0, // 0 delivered bytes
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	resNoClient, err := ComparePolicies(context.Background(), traceNoClient, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	if resNoClient.Policies[2].RestoreAmplification != nil {
+		t.Fatalf("expected nil amplification when GatewayClient traffic is 0, got %v", *resNoClient.Policies[2].RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesStalePhysicalClassMapInconsistency(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	oneGiB := uint64(1024 * 1024 * 1024)
+	trace := baseTrace
+	trace.Name = "stale-inventory-test"
+	trace.DurationNS = 30 * dayNS
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: oneGiB,
+			},
+		},
+		{
+			AtNS: 15 * dayNS,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: 2 * oneGiB, // Physical increased 1 -> 2 GiB
+			},
+			// StorageBytes omitted or still 1 GiB -> sumStorageBytes != currentPhysical!
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	warmStd := res.Policies[1]
+	if warmStd.PhysicalBytes != 2*oneGiB {
+		t.Fatalf("expected summary PhysicalBytes to be updated to 2 GiB (%d), got %d", 2*oneGiB, warmStd.PhysicalBytes)
+	}
+	if warmStd.StorageBytesByClass["STANDARD"] != 2*oneGiB {
+		t.Fatalf("expected warmStd class map STANDARD to be 2 GiB, got %d", warmStd.StorageBytesByClass["STANDARD"])
+	}
+	if warmStd.Report.CompleteTotalUSD != nil {
+		t.Fatalf("expected CompleteTotalUSD to be nil on inconsistent inventory, got %v", *warmStd.Report.CompleteTotalUSD)
+	}
+	if warmStd.SavingsUSD != nil {
+		t.Fatalf("expected SavingsUSD to be nil on inconsistent inventory, got %v", *warmStd.SavingsUSD)
+	}
+
+	foundInconsistentOmission := false
+	for _, om := range res.Omissions {
+		if strings.Contains(om, "Storage inventory inconsistent") {
+			foundInconsistentOmission = true
+			break
+		}
+	}
+	if !foundInconsistentOmission {
+		t.Fatalf("expected storage inventory inconsistent omission, got: %v", res.Omissions)
+	}
+}
+
+func TestComparePoliciesDirectS3ExcludesGatewayTraffic(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	oneGiB := uint64(1024 * 1024 * 1024)
+	trace := baseTrace
+	trace.Name = "direct-traffic-isolation"
+	trace.DurationNS = 30 * dayNS
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.ClientGateway: oneGiB,
+				cost.GatewayClient: oneGiB,
+				cost.GatewayS3:     oneGiB,
+				cost.S3Gateway:     500,
+				cost.InterNode:     100,
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	directPol := res.Policies[0]
+	if directPol.Breakdown == nil {
+		t.Fatal("expected breakdown")
+	}
+	tb := directPol.Breakdown.TrafficBytes
+	if tb["gateway_to_s3_upload"] != 0 {
+		t.Fatalf("direct_s3 must not have gateway_to_s3_upload, got %d", tb["gateway_to_s3_upload"])
+	}
+	if tb["s3_to_gateway_download"] != 0 {
+		t.Fatalf("direct_s3 must not have s3_to_gateway_download, got %d", tb["s3_to_gateway_download"])
+	}
+	if tb["inter_node"] != 0 {
+		t.Fatalf("direct_s3 must not have inter_node, got %d", tb["inter_node"])
+	}
+	if tb["client_to_s3"] != oneGiB {
+		t.Fatalf("expected client_to_s3 = 1 GiB, got %d", tb["client_to_s3"])
+	}
+	if tb["s3_to_client"] != oneGiB {
+		t.Fatalf("expected s3_to_client = 1 GiB, got %d", tb["s3_to_client"])
+	}
+}
+
+func TestComparePoliciesBreakEvenTimeWeightedStorage(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	// Set verified rate tiers for all required dimensions
+	for i := range catalog.Rates {
+		switch catalog.Rates[i].ID {
+		case "transfer.internet_egress":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.09"}}
+		case "ec2.compute":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.0416"}}
+		case "ebs.gp3":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.08"}}
+		}
+	}
+
+	oneGiB := uint64(1024 * 1024 * 1024)
+	trace := baseTrace
+	trace.Name = "breakeven-time-weighted"
+	trace.DurationNS = 30 * dayNS
+	startTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	trace.Start = startTime
+	trace.Omissions = []string{"Full verified observation"}
+
+	// Logical storage 2 GiB for first 15 days, 4 GiB for second 15 days -> time-weighted 3 GB-Mo
+	// Physical storage is 1 GiB throughout -> savings = 2 GB-Mo Standard storage.
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  2 * oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: oneGiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.ClientGateway: 0,
+				cost.GatewayClient: 0,
+				cost.GatewayS3:     0,
+				cost.S3Gateway:     0,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "100"},
+				{RateID: "ec2.compute", Unit: "Hrs", Quantity: "720"},
+				{RateID: "ebs.gp3", Unit: "GB-Mo", Quantity: "20"},
+				{RateID: "alb.hour", Unit: "Hrs", Quantity: "720"},
+				{RateID: "alb.lcu", Unit: "LCU-Hrs", Quantity: "720"},
+				{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1"},
+				{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "100"},
+			},
+		},
+		{
+			AtNS: 15 * dayNS,
+			Snapshot: &cost.Snapshot{
+				Logical:  4 * oneGiB, // Final snapshot is 4 GiB
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: oneGiB,
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	warmStd := res.Policies[1]
+	if warmStd.BreakEven == nil {
+		t.Fatal("expected non-nil BreakEven")
+	}
+
+	// Verify break-even basis:
+	// Direct S3 storage: 2 GiB * 15/30 + 4 GiB * 15/30 = 3 GB-Mo.
+	// WarmStd storage: 1 GiB * 30/30 = 1 GB-Mo.
+	// Storage saving: 2 GB-Mo * $0.025/GB = $0.05 (1/20 USD).
+	// Logical GB basis must be 3 GB-Mo (time-weighted), NOT 4 GB (final snapshot).
+	// unitSaving = 0.05 / 3 = 1/60 USD/GB -> BreakEven = infra * 60.
+	// If it incorrectly used final snapshot 4 GB: unitSaving = 0.05 / 4 = 1/80 USD/GB -> BreakEven = infra * 80.
+	beStr := *warmStd.BreakEven
+	beRat, ok := new(big.Rat).SetString(beStr)
+	if !ok {
+		t.Fatalf("failed to parse break even rational: %s", beStr)
+	}
+
+	infraRat, _ := new(big.Rat).SetString(warmStd.Breakdown.InfrastructureUSD)
+	expectedTimeWeighted := new(big.Rat).Mul(infraRat, big.NewRat(60, 1))
+	incorrectSnapshotBasis := new(big.Rat).Mul(infraRat, big.NewRat(80, 1))
+
+	if beRat.Cmp(incorrectSnapshotBasis) == 0 {
+		t.Fatalf("break-even used final snapshot 4 GB basis (%s) instead of time-weighted 3 GB-Mo basis", beStr)
+	}
+	if beRat.Cmp(expectedTimeWeighted) != 0 {
+		t.Fatalf("expected break-even to match time-weighted basis %s, got %s", expectedTimeWeighted.RatString(), beStr)
+	}
+}
