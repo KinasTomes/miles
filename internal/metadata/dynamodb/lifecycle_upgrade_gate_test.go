@@ -2,6 +2,7 @@ package dynamodb
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -54,7 +55,7 @@ func gateStore(t *testing.T, state string, active, resolving uint64, actions boo
 		a := lifecycle.Action{Version: lifecycle.ActionVersionLegacy, ID: "job-1", JobID: "job-1", Kind: "tiering", State: "Done", Revision: 1, Fence: fence, Source: s.PackInfo{Ref: ref}}
 		ak := lifecycleKey("job-1")
 		rows[physicalIdentity(tables["SystemConfig"], ak.Attributes)] = upgradeRow(t, "SystemConfig", ak.Attributes, a)
-		j := jobs.Job{ID: "job-1", Type: "tiering", State: jobs.Succeeded}
+		j := jobs.Job{ID: "job-1", Type: "tiering", State: jobs.Succeeded, PolicyRevision: 1, Revision: 3, Params: json.RawMessage(`{}`), CreatedAt: now.Add(-time.Hour), StartedAt: now.Add(-30 * time.Minute), FinishedAt: now, WorkerNodeID: "node-1", WorkerNodeIncarnation: "node-inc-1", Worker: fence}
 		jk := stringKey("Jobs", "job_id", "job-1")
 		rows[physicalIdentity(tables["Jobs"], jk.Attributes)] = upgradeRow(t, "Jobs", jk.Attributes, j)
 		lease := s.R1Lease{Version: s.ModelVersion, Fence: fence, Owner: "owner", Kind: "control", State: "Released", Deadline: now.Add(time.Hour), ExpiresAt: now.Add(30 * time.Minute), Revision: 1}
@@ -117,10 +118,11 @@ func TestLifecycleUpgradeGateBlocksLegacyUnknownWithRetainedProtection(t *testin
 	api.rows[physicalIdentity("pre_SystemConfig", ak.Attributes)] = item
 	api.scanned = []Item{item}
 	jk := stringKey("Jobs", "job_id", "job-1")
-	job := jobs.Job{ID: "job-1", Type: "tiering", State: jobs.Failed, PendingStep: strings.Repeat("1", 32)}
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	job := jobs.Job{ID: "job-1", Type: "tiering", State: jobs.Running, PolicyRevision: 1, Revision: 2, Params: json.RawMessage(`{}`), CreatedAt: now.Add(-time.Hour), StartedAt: now.Add(-30 * time.Minute), WorkerNodeID: "node-1", WorkerNodeIncarnation: "node-inc-1", Worker: fence, PendingStep: strings.Repeat("1", 32)}
 	api.rows[physicalIdentity("pre_Jobs", jk.Attributes)] = upgradeRow(t, "Jobs", jk.Attributes, job)
 	leaseKey := r1LeaseKey("job-1")
-	lease := s.R1Lease{Version: s.ModelVersion, Fence: fence, Owner: "owner", Kind: "control", State: "Closed", Deadline: time.Now().Add(time.Hour), ExpiresAt: time.Now().Add(30 * time.Minute), Revision: 2, Pending: []string{"lifecycle/job-1"}, PinCount: 1}
+	lease := s.R1Lease{Version: s.ModelVersion, Fence: fence, Owner: "owner", Kind: "control", State: "Closed", Deadline: now.Add(time.Hour), ExpiresAt: now.Add(30 * time.Minute), Revision: 2, Pending: []string{"lifecycle/job-1"}, PinCount: 1}
 	api.rows[physicalIdentity("pre_Leases", leaseKey.Attributes)] = upgradeRow(t, "Leases", leaseKey.Attributes, lease)
 	findings, err := m.InspectLifecycleUpgrade(context.Background())
 	if err != nil || len(findings) != 1 || !findings[0].Blocked || !findings[0].Pending {
@@ -188,7 +190,7 @@ func TestLifecycleUpgradeGateUsesOnlyRequiredReadAPIsAndTables(t *testing.T) {
 			t.Errorf("missing required GetItem table %s; got %#v", table, api.getTables)
 		}
 	}
-	if len(api.getTables) != 4 {
-		t.Fatalf("expected gate plus action/job/lease GetItem reads only, got %#v", api.getTables)
+	if len(api.getTables) != 3 {
+		t.Fatalf("expected gate/job/lease GetItem reads only, got %#v", api.getTables)
 	}
 }
