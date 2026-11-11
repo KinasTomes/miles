@@ -20,6 +20,15 @@ import (
 func lifecycleKey(id string) Key {
 	return stringKey("SystemConfig", "config_id", "lifecycle/action/"+id)
 }
+func requireLifecycleStep(a lifecycle.Action, j jobs.Job) error {
+	if a.StepID == "" {
+		return jobs.ErrReconciliation
+	}
+	if a.StepID != j.PendingStep {
+		return s.ErrFenced
+	}
+	return nil
+}
 func (m *Store) GetLifecycle(ctx context.Context, id string) (lifecycle.Action, error) {
 	a, e := readLifecycle(m, ctx, id)
 	if e == nil && (a.Validate() != nil || a.ID != id) {
@@ -75,6 +84,9 @@ func (m *Store) CheckLifecycle(ctx context.Context, j jobs.Job) error {
 		}
 		a, e := r1Read[lifecycle.Action](t, lifecycleKey(j.ID))
 		if e != nil {
+			return e
+		}
+		if e = requireLifecycleStep(a, j); e != nil {
 			return e
 		}
 		if a.Fence != j.Worker || a.State != "Dispatched" && (a.State != "Unknown" || a.Kind == "gc") {
@@ -146,7 +158,11 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 		}
 		old, e := r1Read[lifecycle.Action](t, lifecycleKey(j.ID))
 		if e == nil {
-			if old.Kind != j.Type || old.Source.Ref != p.Ref() || old.Days != p.Days || old.Tier != p.Tier || !old.RequiredUntil.Equal(p.RequiredUntil) || lifecycle.Repack(old.Kind) && (old.PlanSHA256 != planHash || old.Digest != digest) {
+			terminal := old.State == "Done" || old.State == "Skipped" || old.State == "NotApplied"
+			if old.StepID == "" && !terminal {
+				return jobs.ErrReconciliation
+			}
+			if old.Kind != j.Type || old.StepID != j.PendingStep && !terminal || old.Source.Ref != p.Ref() || old.Days != p.Days || old.Tier != p.Tier || !old.RequiredUntil.Equal(p.RequiredUntil) || lifecycle.Repack(old.Kind) && (old.PlanSHA256 != planHash || old.Digest != digest) {
 				return s.ErrConflict
 			}
 			if old.Fence != j.Worker {
@@ -183,7 +199,7 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 		if e != nil {
 			return e
 		}
-		a := lifecycle.Action{Version: 1, ID: j.ID, JobID: j.ID, Kind: j.Type, State: "Prepared", Revision: 1, Fence: j.Worker, Source: source, Days: p.Days, Tier: p.Tier, RequiredUntil: p.RequiredUntil, PlanPages: pageCount, PlanSHA256: planHash, Digest: digest}
+		a := lifecycle.Action{Version: lifecycle.ActionVersionCurrent, ID: j.ID, JobID: j.ID, StepID: j.PendingStep, Kind: j.Type, State: "Prepared", Revision: 1, Fence: j.Worker, Source: source, Days: p.Days, Tier: p.Tier, RequiredUntil: p.RequiredUntil, PlanPages: pageCount, PlanSHA256: planHash, Digest: digest}
 		a.Destination = lifecycle.Destination(j.Type, j.ID, source.Ref)
 		switch j.Type {
 		case "gc":
@@ -298,6 +314,9 @@ func (m *Store) dispatchLifecycle(ctx context.Context, j jobs.Job, target s.Stor
 		if e != nil {
 			return e
 		}
+		if e = requireLifecycleStep(a, j); e != nil {
+			return e
+		}
 		if a.Fence != j.Worker {
 			return s.ErrFenced
 		}
@@ -410,6 +429,9 @@ func (m *Store) UnknownLifecycle(ctx context.Context, j jobs.Job) error {
 		if e != nil {
 			return e
 		}
+		if e = requireLifecycleStep(a, j); e != nil {
+			return e
+		}
 		if a.Fence != j.Worker {
 			return s.ErrFenced
 		}
@@ -434,6 +456,9 @@ func (m *Store) FinishLifecycle(ctx context.Context, j jobs.Job, physical s.Pack
 		}
 		a, e := r1Read[lifecycle.Action](t, lifecycleKey(j.ID))
 		if e != nil {
+			return e
+		}
+		if e = requireLifecycleStep(a, j); e != nil {
 			return e
 		}
 		if a.Fence != j.Worker {
@@ -563,6 +588,9 @@ func (m *Store) SkipLifecycle(ctx context.Context, j jobs.Job) (out lifecycle.Ac
 		if e != nil {
 			return e
 		}
+		if e = requireLifecycleStep(a, j); e != nil {
+			return e
+		}
 		if a.Fence != j.Worker {
 			return s.ErrFenced
 		}
@@ -634,6 +662,9 @@ func (m *Store) AppliedLifecycle(ctx context.Context, j jobs.Job) error {
 		if e != nil {
 			return e
 		}
+		if e = requireLifecycleStep(a, j); e != nil {
+			return e
+		}
 		if a.Fence != j.Worker {
 			return s.ErrFenced
 		}
@@ -703,6 +734,42 @@ type LifecycleTerminalGuard interface {
 	Terminal(context.Context, lifecycle.Action, Observe) (bool, error)
 }
 
+// VerifyLifecycleIsolation binds a terminal backend proof to the exact durable
+// lifecycle action, its original job step, and its R1 protection row. The
+// action's one-shot Dispatched state prevents any second physical send.
+func VerifyLifecycleIsolation(a lifecycle.Action, observe Observe) error {
+	if observe == nil || a.Validate() != nil || a.State != "Unknown" && a.State != "Dispatched" {
+		return s.ErrInvalid
+	}
+	if a.StepID == "" {
+		return jobs.ErrReconciliation
+	}
+	lease, err := r1Observed[s.R1Lease](observe, r1LeaseKey(a.Fence.LeaseID))
+	if err != nil {
+		return err
+	}
+	if lease.Fence != a.Fence || lease.State == "Released" || !slices.Contains(lease.Pending, "lifecycle/"+a.ID) {
+		return s.ErrR1Busy
+	}
+	job, err := r1Observed[jobs.Job](observe, stringKey("Jobs", "job_id", a.JobID))
+	if err != nil {
+		return err
+	}
+	if job.ID != a.JobID || job.Type != a.Kind || job.Worker != a.Fence || job.PendingStep != a.StepID || job.State != jobs.Running && job.State != jobs.Cancelling {
+		return s.ErrFenced
+	}
+	if a.Kind == "pack_restore" {
+		owner, err := r1Observed[lifeRestoreOwner](observe, lifecycleRestoreKey(a.Source.Ref))
+		if err != nil {
+			return err
+		}
+		if owner.ID != a.ID {
+			return s.ErrFenced
+		}
+	}
+	return nil
+}
+
 func (m *Store) ResolveLifecycle(ctx context.Context, j jobs.Job) (out lifecycle.Action, err error) {
 	err = m.update(ctx, func(t *transaction) error {
 		if e := m.fence(t, j.Worker); e != nil {
@@ -715,6 +782,9 @@ func (m *Store) ResolveLifecycle(ctx context.Context, j jobs.Job) (out lifecycle
 		if e != nil {
 			return e
 		}
+		if e = requireLifecycleStep(a, j); e != nil {
+			return e
+		}
 		if a.Fence != j.Worker {
 			return s.ErrFenced
 		}
@@ -722,7 +792,7 @@ func (m *Store) ResolveLifecycle(ctx context.Context, j jobs.Job) (out lifecycle
 			out = a
 			return nil
 		}
-		if a.State != "Unknown" || a.Kind != "tiering" && a.Kind != "gc" {
+		if a.State != "Unknown" || a.Kind != "tiering" && a.Kind != "gc" && a.Kind != "pack_restore" {
 			return s.ErrConflict
 		}
 		authority, e := m.r1Authority()
@@ -732,7 +802,11 @@ func (m *Store) ResolveLifecycle(ctx context.Context, j jobs.Job) (out lifecycle
 		if authority.LifecycleTerminal == nil {
 			return jobs.ErrReconciliation
 		}
-		applied, e := authority.LifecycleTerminal.Terminal(ctx, a, r1Observe(t))
+		observe := r1Observe(t)
+		if e = VerifyLifecycleIsolation(a, observe); e != nil {
+			return e
+		}
+		applied, e := authority.LifecycleTerminal.Terminal(ctx, a, observe)
 		if e != nil {
 			return e
 		}
@@ -761,6 +835,9 @@ func (m *Store) ClaimLifecycleSend(ctx context.Context, j jobs.Job) (out lifecyc
 		}
 		a, e := r1Read[lifecycle.Action](t, lifecycleKey(j.ID))
 		if e != nil {
+			return e
+		}
+		if e = requireLifecycleStep(a, j); e != nil {
 			return e
 		}
 		if a.Fence != j.Worker {
@@ -825,7 +902,7 @@ func (m *Store) LifecycleQuiescent(ctx context.Context, id string, f s.WriterFen
 		if e != nil {
 			return e
 		}
-		if a.Fence != f || a.State != "Done" && a.State != "Skipped" && a.State != "NotApplied" && a.State != "Waiting" {
+		if a.Fence != f || a.State != "Done" && a.State != "Skipped" && a.State != "NotApplied" && (a.State != "Waiting" || a.StepID == "") {
 			return jobs.ErrReconciliation
 		}
 		lease, e := r1Read[s.R1Lease](t, r1LeaseKey(id))
