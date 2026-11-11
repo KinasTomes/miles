@@ -79,6 +79,13 @@ func NewWarmReader(o WarmOptions) (*WarmReader, error) {
 	return &WarmReader{options: o}, nil
 }
 
+func (r *WarmReader) PolicyRevision() uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.options.Global.Revision()
+}
+
 // Read emits only verified logical slices, in order. emit borrows each slice
 // until return. An error after prior emission requires the HTTP consumer to abort
 // the stream; it cannot send a new success/error body. No HTTP endpoint is owned
