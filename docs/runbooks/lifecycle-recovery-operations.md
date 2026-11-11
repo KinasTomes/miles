@@ -153,9 +153,14 @@ pack generation when the job reports a lifecycle state change.
    ```
 
    The dry-run result is observational. Review root reasons, canonical
-   locations, referenced/unreferenced counts and candidate versions. It issues
-   no physical deletion. It is not a promise that a later live run sees the
-   same inventory.
+   locations, referenced/unreferenced counts and reported byte/count summaries.
+   It does **not** enumerate physical S3 version IDs or candidate versions, and
+   it issues no physical deletion. Do not treat `job show` as evidence of the
+   exact versions a live run would delete. Before destructive live GC, obtain
+   exact physical-version evidence through a separately approved, read-only
+   inventory/audit path and retain that evidence with the approval. The live
+   path rechecks its own inventory; the dry-run is not a promise that a later
+   live run sees the same objects or versions.
 2. Only after a separate approval, run the same exact-generation job without
    `--dry-run`. The runtime re-marks roots, checks active pins and retention,
    reserves maintenance, binds exact S3 version IDs, and requires verified
