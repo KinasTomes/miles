@@ -72,6 +72,10 @@ func TestNativeWarmGCObjectFlows(t *testing.T) {
 }
 
 func runNativeSharedRuntime(t *testing.T, gcFlows bool, coldClass ...coldFlowScenario) {
+	runNativeRuntime(t, gcFlows, "", coldClass...)
+}
+
+func runNativeRuntime(t *testing.T, gcFlows bool, terminal string, coldClass ...coldFlowScenario) {
 	dEndpoint, sEndpoint := nativeEndpoint(t, "MILES_DDB_LOCAL_ENDPOINT"), nativeEndpoint(t, "MILES_RECOVERY_S3_ENDPOINT")
 	timeout := 90 * time.Second
 	if gcFlows {
@@ -174,7 +178,7 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool, coldClass ...coldFlowSce
 		nodeTransport := transport.Clone()
 		nodeHTTP := &http.Client{Transport: nodeTransport}
 		if gcFlows || len(coldClass) > 0 {
-			nodeHTTP.Transport = gcFlowTransport{nodeTransport}
+			nodeHTTP.Transport = terminalFaultTransport{gcFlowTransport{nodeTransport}}
 		}
 		nodeClients := runtimeClients{metadata: ddb.New(ddb.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(dEndpoint), Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(sEndpoint), UsePathStyle: true, Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), transport: nodeTransport}
 		d, e := composeShared(ctx, c, nodeClients, testClock, utc, "cluster-v1", bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32))
@@ -226,6 +230,10 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool, coldClass ...coldFlowSce
 	nodes[1].Admin.Finish(ctx, mutation)
 	if e != nil {
 		t.Fatal(e)
+	}
+	if terminal != "" {
+		nativeTerminalFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, terminal, tokenID+"."+tokenSecret)
+		return
 	}
 	if gcFlows {
 		nativeWarmGCFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, global)
