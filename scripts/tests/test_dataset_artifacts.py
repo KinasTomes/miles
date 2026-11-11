@@ -79,6 +79,11 @@ class MeasuredBundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "must be null"):
             artifacts.verify(self.root)
 
+    def test_boolean_is_not_a_byte_count(self):
+        self.change("phases/empty/global.json", lambda g: g.update(bytes_unique_raw=False))
+        with self.assertRaisesRegex(ValueError, "integer"):
+            artifacts.verify(self.root)
+
     def test_bad_get_hash_rejected(self):
         self.change("verified-gets.json", lambda gets: gets[0].update(sha256="0" * 64))
         with self.assertRaisesRegex(ValueError, "GET checksum"):

@@ -170,12 +170,14 @@ def measurements(root, require_clean=True):
     allowed.update("policies/" + a + ".json" for a in ALIASES)
     summaries = []
     for count, phase in enumerate(run["phases"]):
-        require(phase["owners"] == count, "phase owner count mismatch")
+        require(integer(phase["owners"]) == count, "phase owner count mismatch")
         prefix = "phases/" + phase["name"] + "/"
         g = load(root, prefix + "global.json")
         allowed.add(prefix + "global.json")
         require(g["physical_complete"] is True and g["bytes_stored"] is not None, "incomplete physical snapshot")
         physical = integer(g["bytes_stored"])
+        for field in ("bytes_logical", "bytes_unique_raw", "bytes_unique_stored", "objects", "chunks"):
+            integer(g[field])
         require(g["consistency"] == "approximate" and g["snapshot_id"] == phase["snapshot_id"], "snapshot identity/scope mismatch")
         require(stamp(g["collection_started_at"]) >= stamp(phase["workload_finished_at"])
                 and stamp(g["as_of"]) >= stamp(g["collection_started_at"]), "stale collection")
@@ -193,6 +195,10 @@ def measurements(root, require_clean=True):
             bp, up = prefix + "bucket-" + c["alias"] + ".json", prefix + "usage-" + c["alias"] + ".json"
             allowed.update((bp, up))
             b, usage = load(root, bp), load(root, up)
+            for field in ("bytes_logical", "bytes_unique_raw", "bytes_unique_stored", "objects", "chunks"):
+                integer(b[field])
+            for field in ("bytes_logical_used", "bytes_logical_limit", "bytes_logical_reserved", "bytes_logical_staged", "active_upload_count"):
+                integer(usage[field])
             expected_logical = manifest["total_bytes"] if i < count else 0
             require(b["bucket"] == c["bucket"] and b["bucket_id"] == c["bucket_id"]
                     and b["snapshot_id"] == g["snapshot_id"] and b["as_of"] == g["as_of"], "bucket snapshot/incarnation mismatch")
