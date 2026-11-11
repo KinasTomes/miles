@@ -1,9 +1,12 @@
 package dynamodb
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
+
+	s "github.com/KinasTomes/miles/internal/storage"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -40,6 +43,37 @@ func TestNativeItemSizeBounds(t *testing.T) {
 	cycle.Value["cycle"] = cycle
 	if _, err := ItemSizeUpperBound(map[string]types.AttributeValue{"root": cycle}); err == nil {
 		t.Fatal("unbounded nesting")
+	}
+}
+
+func TestTransactionExactAggregateAndActionBoundaries(t *testing.T) {
+	for _, delta := range []int{-1, 0, 1} {
+		t.Run(fmt.Sprintf("bytes_%+d", delta), func(t *testing.T) {
+			in, images := transactionFixture(11, 0)
+			remaining := MaxTransactionBytes + delta
+			for i, image := range images {
+				overhead, err := ItemSizeUpperBound(image)
+				if err != nil {
+					t.Fatal(err)
+				}
+				target := remaining / (len(images) - i)
+				image["body"] = &types.AttributeValueMemberB{Value: make([]byte, target-overhead)}
+				remaining -= target
+			}
+			err := ValidateTransactionPlan(in, images, Tables())
+			if remaining != 0 || (delta <= 0 && err != nil) || (delta > 0 && !errors.Is(err, s.ErrInvalid)) {
+				t.Fatal("aggregate boundary", remaining, err)
+			}
+		})
+	}
+	for _, n := range []int{99, 100, 101} {
+		t.Run(fmt.Sprintf("actions_%d", n), func(t *testing.T) {
+			in, images := transactionFixture(n, 0)
+			err := ValidateTransactionPlan(in, images, Tables())
+			if (n <= MaxTransactionActions && err != nil) || (n > MaxTransactionActions && !errors.Is(err, s.ErrInvalid)) {
+				t.Fatal("action boundary", n, err)
+			}
+		})
 	}
 }
 
