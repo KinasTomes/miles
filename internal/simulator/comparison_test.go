@@ -2,10 +2,15 @@ package simulator
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/KinasTomes/miles/internal/cost"
+	"github.com/KinasTomes/miles/internal/storage"
 )
 
-func TestComparePoliciesFourPoliciesDeterminismAndSavings(t *testing.T) {
+func TestComparePoliciesFourPoliciesDeterminismAndUnpricedOmission(t *testing.T) {
 	trace, catalog := fixture(t, "cloud-boundary")
 	res, err := ComparePolicies(context.Background(), trace, catalog)
 	if err != nil {
@@ -20,7 +25,6 @@ func TestComparePoliciesFourPoliciesDeterminismAndSavings(t *testing.T) {
 		t.Fatalf("expected 4 policies, got %d", len(res.Policies))
 	}
 
-	// Verify all 4 policy names are present
 	policies := map[PolicyName]PolicySummary{}
 	for _, p := range res.Policies {
 		policies[p.Name] = p
@@ -36,16 +40,33 @@ func TestComparePoliciesFourPoliciesDeterminismAndSavings(t *testing.T) {
 		}
 	}
 
-	direct := policies[PolicyDirectS3]
 	warmStd := policies[PolicyWarmStandardOnly]
-
-	if direct.TotalCostUSD == "" {
-		t.Fatalf("direct policy has empty cost")
+	// Finding 1 regression: cloud-boundary has unpriced items (transfer.internet_egress).
+	// Savings must NOT be concluded from partial priced subtotals!
+	if warmStd.SavingsUSD != nil || warmStd.SavingsPercent != nil {
+		t.Fatalf("expected savings to be nil when unpriced items exist, got USD=%v, Pct=%v", warmStd.SavingsUSD, warmStd.SavingsPercent)
 	}
 
-	// Verify that Miles Warm with Dedup + Compression achieves positive savings over Direct S3
-	if warmStd.SavingsPercent == nil || *warmStd.SavingsPercent <= 0 {
-		t.Fatalf("expected warm_standard_only to show positive savings vs direct_s3, got: %+v", warmStd.SavingsPercent)
+	// Verify omission recorded
+	hasOmission := false
+	for _, om := range res.Omissions {
+		if strings.Contains(om, "Net savings and savings percent vs baseline omitted") {
+			hasOmission = true
+			break
+		}
+	}
+	if !hasOmission {
+		t.Fatalf("expected unpriced omission in res.Omissions, got: %v", res.Omissions)
+	}
+
+	// Finding 2 regression: cloud-boundary has eligible decision at end of month,
+	// but NO cold transition or cold inventory was observed.
+	// Cold byte-time must NOT be fabricated (no 50% split).
+	glacierIR := policies[PolicyWarmGlacierIR]
+	for _, line := range glacierIR.Report.Lines {
+		if line.RateID == "s3.storage_glacier_ir" || line.RateID == "s3.transition_ir" {
+			t.Fatalf("unexpected cold rate in glacierIR policy when no transition observed: %+v", line)
+		}
 	}
 
 	// Repeat for determinism
@@ -56,6 +77,137 @@ func TestComparePoliciesFourPoliciesDeterminismAndSavings(t *testing.T) {
 	if res.Policies[0].TotalCostUSD != res2.Policies[0].TotalCostUSD ||
 		res.Policies[1].TotalCostUSD != res2.Policies[1].TotalCostUSD {
 		t.Fatalf("ComparePolicies is non-deterministic")
+	}
+}
+
+func TestComparePoliciesTimelineReplayMultiplePackTransitions(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+	trace := baseTrace
+	trace.Name = "multi-transition-test"
+	trace.DurationNS = 30 * dayNS
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:      2000 * 1024 * 1024,
+				UniqueRaw:    1000 * 1024 * 1024,
+				UniqueStored: 1000 * 1024 * 1024,
+				Physical:     1000 * 1024 * 1024,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: 1000 * 1024 * 1024,
+			},
+		},
+		{
+			AtNS: 10 * dayNS,
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard:  600 * 1024 * 1024,
+				storage.GlacierIR: 400 * 1024 * 1024,
+			},
+		},
+		{
+			AtNS: 20 * dayNS,
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard:  400 * 1024 * 1024,
+				storage.GlacierIR: 600 * 1024 * 1024,
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	policies := map[PolicyName]PolicySummary{}
+	for _, p := range res.Policies {
+		policies[p.Name] = p
+	}
+
+	// Verify WarmGlacierIR has both Standard and GlacierIR storage lines
+	irPolicy := policies[PolicyWarmGlacierIR]
+	var stdLine, irLine *cost.Line
+	for i := range irPolicy.Report.Lines {
+		line := &irPolicy.Report.Lines[i]
+		if line.RateID == "s3.storage.standard" {
+			stdLine = line
+		}
+		if line.RateID == "s3.storage.glacier_ir" {
+			irLine = line
+		}
+	}
+
+	if stdLine == nil || irLine == nil {
+		t.Fatalf("expected both standard and glacier_ir storage lines, got: %+v", irPolicy.Report.Lines)
+	}
+
+	// Expected standard byte-time:
+	// Interval 0..10 days (10 days): 1000 MB
+	// Interval 10..20 days (10 days): 600 MB
+	// Interval 20..30 days (10 days): 400 MB
+	// Total standard MB-days = 1000*10 + 600*10 + 400*10 = 20,000 MB-days.
+	//
+	// Expected glacier IR byte-time:
+	// Interval 0..10 days (10 days): 0 MB
+	// Interval 10..20 days (10 days): 400 MB
+	// Interval 20..30 days (10 days): 600 MB
+	// Total glacier MB-days = 400*10 + 600*10 = 10,000 MB-days.
+	//
+	// In reduced fractions:
+	// 20000 / 30720 = 125/192
+	// 10000 / 30720 = 125/384
+	// Ratio of standard to glacier IR byte-time is exactly 2.0!
+	stdGBMo := stdLine.Quantity
+	irGBMo := irLine.Quantity
+	if stdGBMo != "125/192" || irGBMo != "125/384" {
+		t.Fatalf("expected stdGBMo=125/192 and irGBMo=125/384, got std=%s, ir=%s", stdGBMo, irGBMo)
+	}
+}
+
+func TestComparePoliciesFullyPricedComputesSavings(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+	trace := baseTrace
+	trace.Name = "fully-priced-test"
+	trace.DurationNS = 30 * dayNS
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:      2000 * 1024 * 1024,
+				UniqueRaw:    1000 * 1024 * 1024,
+				UniqueStored: 500 * 1024 * 1024,
+				Physical:     500 * 1024 * 1024,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: 500 * 1024 * 1024,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	policies := map[PolicyName]PolicySummary{}
+	for _, p := range res.Policies {
+		policies[p.Name] = p
+	}
+
+	warmStd := policies[PolicyWarmStandardOnly]
+	// Now both direct S3 and warmStd have complete totals without unpriced items!
+	if warmStd.SavingsUSD == nil || warmStd.SavingsPercent == nil {
+		t.Fatalf("expected non-nil savings for fully priced trace, got: USD=%v, Pct=%v", warmStd.SavingsUSD, warmStd.SavingsPercent)
+	}
+	if *warmStd.SavingsPercent <= 0 {
+		t.Fatalf("expected positive savings percentage, got %f", *warmStd.SavingsPercent)
 	}
 }
 
