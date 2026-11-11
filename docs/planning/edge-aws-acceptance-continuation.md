@@ -14,7 +14,7 @@ Cập nhật sau lượt chạy ngày 10/11/2026. Mục tiêu là nghiệm thu l
 
 [Báo cáo lượt trước](../testing/edge-private-aws-validation.md) ghi kết quả và giới hạn bằng chứng. Các dữ kiện trên là lịch sử, cần kiểm tra lại hiện trạng lúc thực hiện.
 
-Dùng [runbook và mẫu nhật ký từng bước](../testing/edge-aws-runbook.md) để lặp lại cách dựng đã xác minh. Cập nhật nhật ký ngay sau mỗi bước, ghi rõ lý do nếu thay đổi trình tự hoặc cấu hình.
+Dùng [runbook và mẫu nhật ký từng bước](../testing/edge-aws-runbook.md) để lặp lại cách dựng đã xác minh. Tạo `run-log.md` trong thư mục riêng của lượt trước bước 1 và cập nhật ngay sau mỗi bước. Ghi rõ lý do nếu thay đổi trình tự hoặc cấu hình.
 
 ## 1. Chuẩn bị offline trước khi tính phí
 
@@ -49,9 +49,9 @@ Chỉ bắt đầu lượt tính phí sau khi hoàn tất bước 1 và ghi nh�
 4. Nếu bootstrap trả outcome unknown, giữ token, export trạng thái và xác minh tất cả bảng/installation marker trước khi quyết định retry. Lượt trước bị từ chối do clock chưa ổn định rồi mới chứng minh được metadata còn rỗng.
 5. Cài Edge với Roles Anywhere certificate riêng. Instance profile của Edge chỉ phục vụ SSM/bootstrap. Kiểm tra readiness, identity backend, TLS, private HTTPS và Admin tunnel.
 6. Upload release vào S3 theo prefix SHA, pin VersionId. Lập và rà saved fleet plan sau khi reconcile service-linked role. Apply hai Cloud node, ALB HTTPS nội bộ và đúng tám runtime alarms.
-7. Kiểm tra hai Cloud healthy qua ALB, Edge ready, credential refresh, shared history và policy, đúng release SHA trên từng node. Ghi inventory thật, EBS và đường network của client.
+7. Kiểm tra hai Cloud healthy qua ALB, Edge ready, credential refresh, shared history và đúng release SHA trên từng node. Nếu đọc bucket policy để kiểm tra Cloud/Edge nhìn thấy cùng cấu hình, dùng bucket smoke riêng. Ghi inventory thật, EBS và đường network của client.
 8. Chạy `edge_host_telemetry.py probe` từ release trên host và yêu cầu exit 0. Khởi động recorder, xác nhận process còn chạy, file 0600 có record Chrony/OS hợp lệ và sample tiếp tục tăng. Chưa đủ bằng chứng này thì dừng trước workload.
-9. Sinh dataset `backup30` trên client AWS, lưu manifest hash/size. Tạo identity, user/domain và bucket synthetic riêng cho mỗi trial.
+9. Sinh dataset `backup30` trên client AWS, lưu manifest hash/size. Tạo identity, user/domain và bucket synthetic riêng cho mỗi trial. Với Edge C1, ghi thứ tự CreateBucket → LIST → PUT vào nhật ký. Mọi Admin GET/PUT policy trên bucket C1 phải sau PUT đầu tiên vì ngay cả GET cũng có thể ghi policy mặc định.
 
 ## 4. Ma trận nghiệm thu
 
