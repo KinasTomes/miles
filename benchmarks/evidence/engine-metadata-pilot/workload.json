@@ -1,0 +1,30 @@
+{
+  "cohorts": [
+    {
+      "alias": "owner-a",
+      "owner": "owner",
+      "bucket": "shared-runtime",
+      "bucket_id": "f0d56d4c4fbfa4c5882082fa3e8e7066",
+      "domain": "default"
+    },
+    {
+      "alias": "owner-b",
+      "owner": "artifact-shared",
+      "bucket": "artifact-owner-b",
+      "bucket_id": "c7edd5def3d2381dc7a5c3b78ecfb005",
+      "domain": "default"
+    },
+    {
+      "alias": "owner-c",
+      "owner": "artifact-isolated",
+      "bucket": "artifact-owner-c",
+      "bucket_id": "231b0a80d9d5454e5713ce37022e9b94",
+      "domain": "artifact-isolated"
+    }
+  ],
+  "key_prefix": "dataset/",
+  "layout_selection": "version-zero from each entropy family, final phase only",
+  "live_keys": "all versions use distinct keys",
+  "mode": "controlled-incremental-domain-demonstration",
+  "order": "manifest-order-per-owner"
+}
