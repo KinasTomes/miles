@@ -178,6 +178,8 @@ type Options struct {
 	RequestTimeout time.Duration
 	// Uploads serves the multipart operations; nil leaves them unavailable.
 	Uploads Uploads
+	// WriteCounters optionally accumulates PUT/UploadPart revival and orphans.
+	WriteCounters *write.Counters
 }
 
 type Service struct{ o Options }
@@ -278,7 +280,7 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (out PutResult, e
 		return PutResult{}, storage.ErrInvalid
 	}
 	stage = "prepare"
-	prepared, err := session.Prepare(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression, WriteCache: s.o.Cache, AdmitOnWrite: cachePolicy.Cache().AdmitOnWrite}, r.Body, manifestID)
+	prepared, err := session.Prepare(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression, WriteCache: s.o.Cache, AdmitOnWrite: cachePolicy.Cache().AdmitOnWrite, Counters: s.o.WriteCounters}, r.Body, manifestID)
 	if err != nil {
 		s.release(ctx, reservationID, opID, fence)
 		return PutResult{}, fmt.Errorf("prepare: %w", err)

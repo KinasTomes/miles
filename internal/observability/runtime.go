@@ -1,9 +1,11 @@
 package observability
 
 import (
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/engine/write"
 	"github.com/KinasTomes/miles/internal/readpath"
 )
 
@@ -15,7 +17,11 @@ type Runtime struct {
 	gauges   map[string]float64
 	observed time.Time
 	Warm     readpath.WarmMetrics
+	// Write is optional: nil omits the write-path counters.
+	Write *write.Counters
 }
+
+var writeCounters = []string{"miles_revived_chunks_total", "miles_revived_stored_bytes_total", "miles_orphaned_chunks_total", "miles_orphaned_stored_bytes_total"}
 
 var runtimeCounters = []string{
 	"miles_ddb_calls_total", "miles_ddb_transactions_total", "miles_ddb_call_seconds_total",
@@ -88,6 +94,12 @@ func (m *Runtime) Snapshot(at time.Time) []Metric {
 	} {
 		out = append(out, Metric{Name: "miles_warm_read_" + v.name + "_total", Value: float64(v.n), Counter: true})
 	}
+	if m.Write != nil {
+		c := m.Write.Snapshot()
+		for i, n := range []uint64{c.RevivedChunks, c.RevivedBytes, c.OrphanedChunks, c.OrphanedBytes} {
+			out = append(out, Metric{Name: writeCounters[i], Value: float64(n), Counter: true})
+		}
+	}
 	return out
 }
 func validRuntimeMetric(m Metric) bool {
@@ -97,10 +109,8 @@ func validRuntimeMetric(m Metric) bool {
 	if m.Name == "miles_runtime_observation_age_seconds" {
 		return !m.Counter && m.Value >= 0
 	}
-	for _, name := range runtimeCounters {
-		if name == m.Name {
-			return m.Counter && m.Value >= 0
-		}
+	if slices.Contains(runtimeCounters, m.Name) || slices.Contains(writeCounters, m.Name) {
+		return m.Counter && m.Value >= 0
 	}
 	for _, name := range runtimeGauges {
 		if name == m.Name {

@@ -36,11 +36,15 @@ type Summary struct {
 	PhysicalLifecycle      map[string]int64 `json:"listed_bytes_by_pack_lifecycle,omitempty"`
 	PhysicalClasses        map[string]int64 `json:"listed_bytes_by_storage_class,omitempty"`
 	KnownProtectedBytes    *int64           `json:"listed_known_protected_bytes,omitempty"`
+	PackOverhead           *int64           `json:"listed_pack_overhead_bytes,omitempty"`
 	Breakdown              map[string]int64 `json:"listed_bytes_by_category"`
 	Unallocated            *int64           `json:"unallocated_physical_bytes"`
 	TemporaryRestoredBytes *int64           `json:"temporary_restored_billed_bytes"`
+	WriteCountersSince     *time.Time       `json:"write_counters_since"`
 	RevivedChunks          *uint64          `json:"revived_chunks_total"`
 	RevivedBytes           *uint64          `json:"revived_bytes_stored_total"`
+	OrphanedChunks         *uint64          `json:"orphaned_chunks_total"`
+	OrphanedBytes          *uint64          `json:"orphaned_bytes_stored_total"`
 	Packs                  map[string]int64 `json:"packs"`
 }
 type BucketSummary struct {
@@ -187,6 +191,7 @@ func Calculate(in Input) (Report, error) {
 	}
 	weights := map[s.PackRef]map[string]*big.Rat{}
 	ranges := map[s.PackRef][]s.ByteRange{}
+	live := map[s.PackRef]int64{}
 	var liveStored int64
 	for k, buckets := range users {
 		c := in.Chunks[k]
@@ -195,9 +200,11 @@ func Calculate(in Input) (Report, error) {
 		if add(&r.Global.BytesUniqueRaw, c.RawBytes) != nil || add(&r.Global.BytesUniqueStored, c.Location.Range.Length) != nil {
 			return r, s.ErrUnavailable
 		}
-		if add(&liveStored, c.Location.Range.Length) != nil {
+		n := live[c.Location.Pack]
+		if add(&liveStored, c.Location.Range.Length) != nil || add(&n, c.Location.Range.Length) != nil {
 			return r, s.ErrUnavailable
 		}
+		live[c.Location.Pack] = n
 		if weights[c.Location.Pack] == nil {
 			weights[c.Location.Pack] = map[string]*big.Rat{}
 		}
@@ -247,7 +254,7 @@ func Calculate(in Input) (Report, error) {
 	alloc := map[string]*big.Rat{}
 	physicalSeen := map[string]bool{}
 	packSeen := map[s.PackRef]bool{}
-	var physical, protected int64
+	var physical, protected, overhead int64
 	r.Global.PhysicalLifecycle = map[string]int64{}
 	r.Global.PhysicalClasses = map[string]int64{}
 	for _, o := range in.Physical.Objects {
@@ -281,8 +288,12 @@ func Calculate(in Input) (Report, error) {
 				state = "retired"
 			case len(weights[o.Pack]) != 0:
 				state = "head_live"
-			case p.State == "Warm" || p.State == "Cold" || p.State == "Restored" || p.State == "Restoring":
+			case p.State == "Warm":
 				state = "no_live_head"
+			case p.State == "Cold" || p.State == "Restored" || p.State == "Restoring":
+				// Archive generations superseded by revival/promotion still bill
+				// storage and minimum retention until GC eligibility.
+				state = "cold_dead"
 			default:
 				state = "unsettled"
 			}
@@ -323,6 +334,10 @@ func Calculate(in Input) (Report, error) {
 		if payload.Cmp(big.NewRat(o.Size, 1)) > 0 || o.PayloadBytes != nil && payload.Cmp(big.NewRat(*o.PayloadBytes, 1)) > 0 {
 			return r, s.ErrUnavailable
 		}
+		// Header/footer/index plus dead or race-loser blobs in a live pack.
+		if len(weights[o.Pack]) != 0 && add(&overhead, o.Size-live[o.Pack]) != nil {
+			return r, s.ErrUnavailable
+		}
 	}
 	if in.Physical.Complete {
 		for ref := range weights {
@@ -334,6 +349,7 @@ func Calculate(in Input) (Report, error) {
 			return r, s.ErrUnavailable
 		}
 		r.Global.BytesStored = &physical
+		r.Global.PackOverhead = &overhead
 		if !in.ObservedAt.IsZero() || in.Protected != nil {
 			r.Global.KnownProtectedBytes = &protected
 		}

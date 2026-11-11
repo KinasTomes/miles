@@ -567,7 +567,17 @@ func (w *Worker) promote(ctx context.Context, j jobs.Job, a Action, data, index 
 			continue
 		} // a concurrent canonical winner is never rebased over
 		if _, e = w.Store.CompareAndSwapChunkLocation(ctx, entry.Key, old.LocationRevision, entry.Location(dest.Ref), j.Worker); e != nil {
-			return e
+			if !errors.Is(e, s.ErrConflict) {
+				return e
+			}
+			// Lost the race after the read (e.g. a body revival): the destination
+			// blob stays protected garbage; only an unchanged row is a real conflict.
+			if current, e = w.Store.GetChunks(ctx, []s.ChunkKey{entry.Key}, true); e != nil {
+				return e
+			}
+			if row, ok = current[entry.Key]; !ok || row == old {
+				return s.ErrConflict
+			}
 		}
 	}
 	return nil
