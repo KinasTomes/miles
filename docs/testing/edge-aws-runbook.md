@@ -24,6 +24,17 @@ Bắt đầu từ [plan tiếp tục nghiệm thu](../planning/edge-aws-acceptan
 - **Pin release Cloud.** Lấy đúng `release_key` từ fleet contract (`releases/<sha>/miles-linux-arm64.tar.gz` cho ARM64). VersionId phải thuộc chính key đó. Trước apply, GET đúng cặp key/version, kiểm SHA-256 của archive với manifest và saved plan; HEAD/kích thước bổ sung kiểm tra cấu hình. Không dùng VersionId của cùng bytes ở tên file khác. Gate thất bại phải dừng trước apply. Khi thay node, xác nhận native máy cũ đã terminated trước bước có thể tạo máy mới và giữ mọi ID/volume cũ trong ledger cleanup.
 - **Định danh cleanup SSM/IAM.** SSM outputs có thể chứa ARN, còn state dùng tên `/...`. Khi tạo policy, ARN đầy đủ phải được giữ nguyên; chỉ thêm prefix ARN vào tên parameter. Không ghép `parameter/arn:aws:...`. Validate policy rồi probe đúng resource trước destroy. Với service-linked role tạo trong lượt, đối chiếu RoleId với receipt tạo trước khi xóa; chỉ retry task deletion sau khi lưu trạng thái lỗi cũ. Giữ role baseline ngoài state.
 
+## Bổ sung từ lượt recovery/alarm/shutdown
+
+- Grant assume-role phải trỏ đúng auditor của lượt hiện tại. Nếu sửa binding sau validation, lưu cả bản trước/sau và để rollback guard so với đúng document đã gắn; baseline vẫn giữ nguyên.
+- Ghi Terraform outputs vào file tạm rồi rename nguyên tử; consumer phải parse và kiểm đủ keys trước khi dùng. Lượt chạy đã gặp reader đọc file đang ghi, trước mọi thay đổi host.
+- Sau mỗi restart, chọn node hiện tại bằng Ready và không Draining; dùng incarnation mới cho cache jobs. Không lấy bản ghi Edge đầu tiên từ history. Purge phải hoàn tất trước fault đọc pack.
+- Khi đổi release trên Edge, dừng process và lưu journal theo InvocationID trước; cài archive đã xác minh, giữ nguyên startup/config/secret và xác nhận binary hash sau cài. Recorder lấy từ `/opt/miles/current/scripts/edge_host_telemetry.py`, tránh giữ đường dẫn bundle cũ.
+- Dùng thời điểm response cuối do client ghi để chốt telemetry window. Giữ raw collector, parser SHA và bản summary cũ nếu cần sửa phép tổng hợp. Sample Chrony còn mới lúc lấy mẫu vẫn có thể hết freshness trước response tiếp theo; kiểm cả khoảng giữa sample và cuối window.
+- Clock stale phải giữ fail-closed. Ready trước tải không chứng minh NTP luôn mới trong tải; lưu source/reference age và CPU/network allowance counters cùng window. Counter tích lũy của ENA không tự chứng minh nguyên nhân làm mất mẫu NTP.
+- Phân biệt native DynamoDB capacity throttles với fault giả lập SDK. Nếu được duyệt so sánh read cap, chỉ đổi bảng/quyền được chốt, đọc lại cap native và giữ write cap. Lượt này chỉ nâng Chunks128→512; Outbox giữ128. Đo window không có observer scan Outbox để đánh giá idle discovery.
+- Counter có thể tiếp tục tăng trong thời gian alarm đang ALARM. Bằng chứng recovery cần khoảng yên lặng cuối, native ALARM→OK và telemetry fresh gần recovery; không dùng việc tắt gateway hay sửa alarm state để tạo PASS.
+
 ## Nhật ký cho mỗi lượt
 
 Tạo `run-log.md` trong thư mục riêng của lượt. Đầu file ghi run ID, Region, source/release SHA, topology và deadline cleanup. Sau **mỗi bước**, cập nhật một dòng trước khi chuyển bước hoặc bàn giao.

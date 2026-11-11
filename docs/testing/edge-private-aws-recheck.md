@@ -1,5 +1,35 @@
 # Private Edge AWS recheck
 
+## Latest run: recovery, alarms and shutdown
+
+**Partial acceptance; keep Draft.** Recovery, all eight alarms and Edge shutdown passed. Clock-source freshness under load and the original PUT conflict remain unresolved.
+
+This Singapore run began at 06:17:48 UTC on November 11 with an approved four-hour, 10 USD envelope. Cloud ran `5143cfe`. Edge progressed from that source to `1ad93fe` for safe conflict diagnostics, then `0ee6d2f` for admission cleanup recovery. No clock threshold or Chrony tuning changed.
+
+| Edge trial | PUT | HEAD | Successful SHA-256 GET | Result |
+|---|---:|---:|---:|---|
+| Initial C1, `5143cfe` | 47/48 dispatched | — | — | PUT returned 409 OperationAborted; fail-fast stopped dispatch |
+| Diagnostic C1, `1ad93fe` | 90/90 | 90/90 | 360/360 | PASS with a verified Chrony window |
+| Diagnostic C4, `1ad93fe` | 64/68 dispatched | — | — | Four writes failed after the NTP reference became stale |
+| C1, `0ee6d2f` | 90/90 | 90/90 | 160 | GET stream failed at 08:45:26 UTC with `clock_uncertainty_exceeded`; corrected collector returned UNVERIFIED |
+| C4, `0ee6d2f` | — | — | — | Skipped after C1 failure |
+
+The first hourly epoch sealed 934 events. Independent S3-only, write-forbidden `VerifyCut(epoch0)` passed. Empty epoch 1 subsequently sealed and `NextToSeal` advanced to 2. Available CloudWatch samples for the 08:23–08:33 UTC idle window reported zero Outbox read capacity and no native Chunks/Outbox read throttles; metric-delivery lag is recorded with the raw query results. Only Chunks read capacity changed to the approved 512; writes and all other tables remained 128.
+
+All eight Cloud/Edge alarm cases passed the 08:49:23 UTC snapshot: exact definitions, native OK → ALARM → OK histories, corresponding metric samples and fresh runtime telemetry near recovery. Controlled corrupt-pack GETs returned 502 while active, then 200 with the expected SHA-256 after expiry. Injected SDK errors are recorded separately from natural DynamoDB capacity throttles.
+
+The pre-diagnostic `5143cfe`, post-DynamoDB-fault `1ad93fe`, and final `0ee6d2f` Edge invocations each exited 0 with a matching `shutdown complete` message. The corrected Edge stopped at 08:50:41 UTC. Both Cloud instances terminated without operator ABANDON; this alone is not exact-invocation clean-shutdown proof for Cloud.
+
+A native regression reproduced the permanent cleanup-error boolean after a failed lease close was later durably recovered. `0ee6d2f` tracks individual fences, confirms release or safe supersession and preserves unknown pending work. Active/released/superseded/pending cases passed native race tests; `make check` passed. The latent error was not reproduced live. `a928c21` corrects collector freshness coverage between observations and the final response. `f56e265` corrects counter-alarm validation to accept repeated breaches before a quiet recovery interval; its regression still rejects breaches within that interval. CI passed 5/5 on that source.
+
+The original 409 was not reproduced or claimed fixed by safe stage logging. The later streaming GET failure independently confirms the clock availability issue. A post-failure NTP snapshot reported 507 TX, 507 valid RX and 449 good RX; cumulative counters do not identify why the accepted reference was stale in the failure window. See the [continuation plan](../planning/edge-aws-acceptance-continuation.md) for timestamped measurement logging and the unchanged fail-closed boundary.
+
+Cleanup started at 08:49 UTC. Evidence from all 20 tables was exported and 3,991 synthetic S3 versions removed after gateways stopped. Terraform destroyed all 117 owned managed resources and its state is empty. The imported certificate was deleted, deploy policies/boundary restored, temporary grants removed and auditor absence verified. Both run-created service-linked roles are absent. ELB role deletion initially failed because AWS retained the deleted ALB reference; bounded retries succeeded at 09:29 UTC. Independent final audit at 09:34:25 UTC returned **PASS_WITH_PENDING**: 88 identifiers checked, 86 absent, exactly the approved new KMS key and secret pending deletion for 30 days, zero unapproved residuals/errors and baseline preservation accepted. Bootstrap/state and the existing Auto Scaling role were preserved. Operator tunnels/bridge and the private audit CLI profile were removed, both AWS CLI profiles logged out, and login-code files cleared. Cleanup finished before the 10:17:48 UTC deadline.
+
+The operating estimate is approximately 4.46 USD before tax, including service reserves; it is not a final bill. Raw evidence, frozen provenance, failed attempts and cleanup ledgers are retained privately under `edge-acceptance-recheck/edge-final-check-20261111T060908Z`.
+
+## Earlier completed run
+
 **Partial acceptance; keep the PR draft.** Edge C1/C4, native R1/R2/GC, live epoch sealing and independent S3-only cut verification passed. Six of eight runtime alarm histories passed; both throttling recovery cases remain incomplete under the 128 read caps. The subsequent shutdown retry correction passed local/native tests but has not run on AWS. Cleanup completed at 05:46 UTC with the independent final audit accepted: 94 identifiers absent and only the two approved KMS/secret deletion windows pending.
 
 The November 11 Singapore run began at 02:03 UTC. Cleanup finished before the 06:03 UTC deadline, within the approved four-hour, 10 USD envelope. The initial runtime source was `328b700`. The ARM64 release archive SHA-256 is `b7f59f92b1db5d7d9914f60a746329bbafc5be876aa701cc86b417fe4a94db61`. Terraform source `9332e90` adds a reference to the pre-existing Auto Scaling service-linked role. Both Cloud nodes, Edge and client ran privately on AWS.
