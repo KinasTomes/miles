@@ -351,7 +351,12 @@ func replayTimeline(ctx context.Context, trace Trace, catalog *pricing.Catalog, 
 						if remainingTraceDur <= 0 {
 							continue
 						}
-						tempRestoreDur := 24 * time.Hour // default 1-day temporary Standard copy
+						restoreDur, ok := trace.RestoreDuration(event)
+						if !ok {
+							hasUnprovenColdPacks = true
+							continue
+						}
+						tempRestoreDur := restoreDur
 						if tempRestoreDur > remainingTraceDur {
 							tempRestoreDur = remainingTraceDur
 						}

@@ -2,6 +2,7 @@ package simulator
 
 import (
 	"context"
+	"encoding/json"
 	"math/big"
 	"strings"
 	"testing"
@@ -289,6 +290,90 @@ func TestComparePoliciesTemporaryRestoredStandard(t *testing.T) {
 	}
 	if stdLine.USD == "" {
 		t.Fatal("empty standard storage USD")
+	}
+}
+
+func TestComparePoliciesTemporaryRestoredStandardHonorsAutoRestoreDays(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "temp-restored-auto-restore-days-3"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+
+	// Set policy auto_restore_days = 3
+	trace.Policy = json.RawMessage(`{
+		"tiering": {
+			"enabled": true,
+			"warm_storage_class": "STANDARD",
+			"cold_storage_class": "GLACIER",
+			"cold_after_days": 30,
+			"min_pack_live_ratio": 0.8,
+			"auto_restore": true,
+			"auto_restore_days": 3,
+			"auto_restore_tier": "Standard"
+		},
+		"compression": {
+			"enabled": true,
+			"codec": "zstd",
+			"level": 3,
+			"min_saving_ratio": 0.1
+		},
+		"chunking": {
+			"min_bytes": 262144,
+			"avg_bytes": 1048576,
+			"max_bytes": 4194304
+		}
+	}`)
+
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:      oneGiB,
+				UniqueRaw:    oneGiB,
+				UniqueStored: oneGiB,
+				Physical:     oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3]
+	var stdLine *cost.Line
+	for i := range flexPol.Report.Lines {
+		if flexPol.Report.Lines[i].RateID == "s3.storage.standard" {
+			stdLine = &flexPol.Report.Lines[i]
+			break
+		}
+	}
+	if stdLine == nil {
+		t.Fatalf("expected standard storage line from restore and metadata: %+v", flexPol.Report.Lines)
+	}
+
+	// For 1 GiB for 3 days in a 30-day month: 1 * 3/30 = 0.1 GB-Mo = 1/10 GB-Mo
+	// Plus standard storage metadata overhead 1/131072 GB-Mo = 65541/655360 GB-Mo
+	qRat, ok := new(big.Rat).SetString(stdLine.Quantity)
+	if !ok {
+		t.Fatalf("invalid quantity: %s", stdLine.Quantity)
+	}
+	expectedRat := big.NewRat(65541, 655360)
+	if qRat.Cmp(expectedRat) != 0 {
+		t.Fatalf("expected 3-day standard storage quantity %s, got %s", expectedRat.RatString(), qRat.RatString())
+	}
+	if flexPol.TemporaryRestoredBytes != oneGiB {
+		t.Fatalf("expected TemporaryRestoredBytes %d, got %d", oneGiB, flexPol.TemporaryRestoredBytes)
 	}
 }
 

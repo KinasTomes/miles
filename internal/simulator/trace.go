@@ -213,3 +213,34 @@ func (t Trace) snapshot() (config.GlobalSnapshot, error) {
 	}
 	return v.DecodeGlobal(storage.PolicySnapshot{Version: storage.ModelVersion, Revision: t.PolicyRevision, Document: t.Policy})
 }
+
+// RestoreDuration returns the proven duration that a restored copy of a Glacier pack remains active.
+// Precedence:
+//  1. Authoritative pack/operation metadata: If event.Tiering has a non-zero Pack.RestoredUntil and
+//     t.Start is set, the duration is calculated from the event's timestamp (t.Start + event.AtNS)
+//     to RestoredUntil. If RestoredUntil is strictly after event timestamp, it returns (duration, true).
+//     If RestoredUntil is at or before event timestamp, it returns (0, false) (already expired).
+//  2. Policy auto_restore_days: If policy specifies tiering.auto_restore_days > 0, the duration is
+//     auto_restore_days * 24 hours, returning (duration, true).
+//  3. If neither pack metadata nor policy evidence provides a valid positive restore duration,
+//     it returns (0, false), indicating expiry duration is unproven.
+func (t Trace) RestoreDuration(event Event) (time.Duration, bool) {
+	if event.Tiering != nil && !event.Tiering.Pack.RestoredUntil.IsZero() && !t.Start.IsZero() {
+		eventTime := t.Start.Add(time.Duration(event.AtNS))
+		if event.Tiering.Pack.RestoredUntil.After(eventTime) {
+			return event.Tiering.Pack.RestoredUntil.Sub(eventTime), true
+		}
+		return 0, false
+	}
+	if len(t.Policy) > 0 {
+		var p struct {
+			Tiering struct {
+				AutoRestoreDays int64 `json:"auto_restore_days"`
+			} `json:"tiering"`
+		}
+		if err := json.Unmarshal(t.Policy, &p); err == nil && p.Tiering.AutoRestoreDays > 0 {
+			return time.Duration(p.Tiering.AutoRestoreDays) * 24 * time.Hour, true
+		}
+	}
+	return 0, false
+}

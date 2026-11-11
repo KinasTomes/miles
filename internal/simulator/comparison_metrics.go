@@ -1,6 +1,7 @@
 package simulator
 
 import (
+	"math"
 	"math/big"
 	"strings"
 	"time"
@@ -277,7 +278,17 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 						b := uint64(gbFloat * float64(trace.BytesPerGB))
 						coldBytesRetrieved += b
 						hasColdUsageForPolicy = true
-						expiry := event.AtNS + int64(24*time.Hour)
+						restoreDur, ok := trace.RestoreDuration(event)
+						if !ok {
+							hasUnprovenColdDelivery = true
+							continue
+						}
+						durNS := restoreDur.Nanoseconds()
+						if durNS <= 0 || durNS > math.MaxInt64-event.AtNS {
+							hasUnprovenColdDelivery = true
+							continue
+						}
+						expiry := event.AtNS + durNS
 						if expiry > activeRestoreUntilNS {
 							activeRestoreUntilNS = expiry
 						}
@@ -335,6 +346,18 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 		if hasDeliveryClaim {
 			// Provenance check: verify the delivery can be linked to an active retrieval or restore.
 			if polName == PolicyWarmGlacierFlex {
+				// If this event carries authoritative pack metadata with RestoredUntil, update active restore window or detect expiry.
+				if event.Tiering != nil && !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
+					eventTime := trace.Start.Add(time.Duration(event.AtNS))
+					if !event.Tiering.Pack.RestoredUntil.After(eventTime) {
+						hasUnprovenColdDelivery = true
+						continue
+					}
+					packExpiryNS := event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
+					if packExpiryNS > activeRestoreUntilNS {
+						activeRestoreUntilNS = packExpiryNS
+					}
+				}
 				// For Glacier Flexible, delivery must be linked to a prior/current restore that has not expired.
 				if coldBytesRetrieved == 0 || event.AtNS > activeRestoreUntilNS {
 					hasUnprovenColdDelivery = true
