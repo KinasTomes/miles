@@ -457,7 +457,7 @@ func TestLocalLifecycleTerminalGuardBindsOriginalFenceAndPendingStep(t *testing.
 		t.Fatal(out, err)
 	}
 	a, err := m.GetLifecycle(t.Context(), j.ID)
-	if err != nil || a.State != "Unknown" {
+	if err != nil || a.State != "Unknown" || a.Version != lifecycle.ActionVersionCurrent || a.StepID != j.PendingStep {
 		t.Fatal(a, err)
 	}
 	observe := func() error {
@@ -521,6 +521,44 @@ func TestLocalLifecycleTerminalGuardBindsOriginalFenceAndPendingStep(t *testing.
 	j.PendingStep = wrongStep
 	if _, err = m.ResolveLifecycle(t.Context(), j); !errors.Is(err, s.ErrFenced) {
 		t.Fatal("ResolveLifecycle accepted terminal proof for a different step", err)
+	}
+}
+
+func TestLegacyLifecycleV1WithoutStepIsReadableButCannotReconcile(t *testing.T) {
+	m, _, j, _, _, _, _ := lifeFixture(t, "tiering", s.GlacierIR)
+	ctx := t.Context()
+	packs, err := m.GetPacks(ctx, []s.PackRef{{ID: "lifecycle-pack", Generation: "generation-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := lifecycle.Action{Version: lifecycle.ActionVersionLegacy, ID: j.ID, JobID: j.ID, Kind: j.Type, State: "Unknown", Revision: 2, Fence: j.Worker, Source: packs[(s.PackRef{ID: "lifecycle-pack", Generation: "generation-1"})], Target: s.GlacierIR}
+	item, err := nativeItem(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(item, "step_id")
+	decoded, err := r1Decode[lifecycle.Action](item)
+	if err != nil || decoded.StepID != "" || decoded.Version != lifecycle.ActionVersionLegacy {
+		t.Fatal("legacy v1 action was not readable", decoded, err)
+	}
+	if err = m.update(ctx, func(tx *transaction) error { return r1Put(tx, lifecycleKey(j.ID), old) }); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.GetLifecycle(ctx, j.ID); err != nil || got.StepID != "" {
+		t.Fatal("GetLifecycle rejected the inspectable legacy row", got, err)
+	}
+	params, err := lifecycle.Decode(j.Params, j.Type)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.PrepareLifecycle(ctx, j, params, nil, ""); !errors.Is(err, jobs.ErrReconciliation) {
+		t.Fatal("legacy active action was allowed to prepare without original-step evidence", err)
+	}
+	if _, err = m.ResolveLifecycle(ctx, j); !errors.Is(err, jobs.ErrReconciliation) {
+		t.Fatal("legacy Unknown action was allowed to reconcile without original-step evidence", err)
+	}
+	if err = m.LifecycleQuiescent(ctx, j.ID, j.Worker); !errors.Is(err, jobs.ErrReconciliation) {
+		t.Fatal("legacy Unknown action released protection without original-step evidence", err)
 	}
 }
 

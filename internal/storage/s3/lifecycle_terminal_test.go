@@ -37,7 +37,7 @@ func (a *terminalAPI) HeadObject(ctx context.Context, in *awss3.HeadObjectInput,
 
 func terminalAction(kind jobs.Type) lifecycle.Action {
 	id := strings.Repeat("a", 32)
-	return lifecycle.Action{Version: 1, ID: id, JobID: id, StepID: strings.Repeat("e", 32), Kind: kind, State: "Unknown", Revision: 2,
+	return lifecycle.Action{Version: lifecycle.ActionVersionCurrent, ID: id, JobID: id, StepID: strings.Repeat("e", 32), Kind: kind, State: "Unknown", Revision: 2,
 		Fence:  s.WriterFence{LeaseID: id, ServiceIncarnation: strings.Repeat("b", 32), Epoch: 1},
 		Source: s.PackInfo{Version: 1, Ref: s.PackRef{ID: strings.Repeat("c", 32), Generation: strings.Repeat("d", 32)}, StateRevision: 3, Size: 64, Class: s.GlacierIR, State: "Cold"},
 	}
