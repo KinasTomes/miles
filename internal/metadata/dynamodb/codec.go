@@ -224,7 +224,7 @@ func unmarshalNative(a types.AttributeValue, v reflect.Value) error {
 			// StepID was absent from deployed v1 lifecycle rows. Missing values
 			// mean an unbound legacy action; validation keeps it readable while
 			// active operations fail closed.
-			if v.Type() == reflect.TypeOf(lifecycle.Action{}) && x.Value[name] == nil && name == "StepID" {
+			if v.Type() == reflect.TypeOf(lifecycle.Action{}) && x.Value[name] == nil && name == fieldName("StepID") {
 				continue
 			}
 			// Older Nodes records have no drain proof. Missing proof remains
