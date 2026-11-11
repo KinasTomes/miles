@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/engine/write"
+	"github.com/KinasTomes/miles/internal/policy"
+	"github.com/KinasTomes/miles/internal/readpath"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -51,8 +55,7 @@ type CopyResult struct {
 // payload: ETag and checksum are the source's, kept opaque. The source head is
 // read once under a bound source read view that keeps retirement closed until
 // the destination writer holds its own generation pins, so a concurrent source
-// overwrite or retirement cannot mix versions or drop a referenced pack. Only
-// same-domain copies are served.
+// overwrite or retirement cannot mix versions or drop a referenced pack.
 func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, error) {
 	if ctx == nil || r.Key == "" || r.SourceKey == "" || r.UserID == "" || r.CredentialID == "" ||
 		r.Source.Name == "" || r.Source.ID == "" || r.Source.Domain == "" ||
@@ -68,7 +71,7 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 	if err != nil {
 		return CopyResult{}, err
 	}
-	src, sourceDone, err := s.o.Reader.BindSource(ctx, source, deadline)
+	src, sourceView, sourceDone, err := s.o.Reader.BindSource(ctx, source, deadline)
 	switch {
 	case errors.Is(err, storage.ErrBucketNotFound):
 		return CopyResult{}, ErrNoSuchCopySourceBucket
@@ -86,8 +89,6 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 	switch {
 	case src.Size > MaxCopyBytes:
 		return CopyResult{}, ErrCopySourceTooLarge
-	case src.Domain != r.Bucket.Domain:
-		return CopyResult{}, ErrCrossDomainCopy
 	case r.ChecksumAlgorithm != "" && !strings.EqualFold(r.ChecksumAlgorithm, src.Checksum.Algorithm):
 		return CopyResult{}, ErrCopyChecksumChange
 	case r.Metadata == nil && source.BucketID == object.BucketID && source.Key == object.Key:
@@ -137,15 +138,153 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 		s.release(ctx, reservationID, opID, fence)
 		return CopyResult{}, err
 	}
-	prepared, err := session.PrepareCopy(src, manifestID)
-	if err == nil {
-		// Every source generation is now pinned by the destination writer.
-		sourceHeld = false
-		err = sourceDone(ctx)
-	}
-	if err != nil {
-		s.release(ctx, reservationID, opID, fence)
-		return CopyResult{}, fmt.Errorf("prepare copy: %w", err)
+	var prepared write.PreparedObject
+	if src.Domain == r.Bucket.Domain {
+		prepared, err = session.PrepareCopy(src, manifestID)
+		if err == nil {
+			// Every source generation is now pinned by the destination writer.
+			sourceHeld = false
+			err = sourceDone(ctx)
+		}
+		if err != nil {
+			s.release(ctx, reservationID, opID, fence)
+			return CopyResult{}, fmt.Errorf("prepare copy: %w", err)
+		}
+	} else {
+		var (
+			reqUTC   policy.Request
+			proofUTC policy.UTCProof
+		)
+		if s.o.ReadUTC != nil {
+			var errUTC error
+			reqUTC, proofUTC, errUTC = coordination.RequestUTC(ctx, s.o.Clock, s.o.ReadUTC, deadline)
+			if errUTC != nil {
+				s.release(ctx, reservationID, opID, fence)
+				return CopyResult{}, errUTC
+			}
+		}
+		requiredUntil, _ := policy.RestoreRequiredUntil(reqUTC, proofUTC)
+
+		var (
+			pageIdx    uint32
+			chunkIdx   int
+			currPage   storage.ManifestPage
+			pageLoaded bool
+		)
+		next := func(ctx context.Context) (storage.ChunkRef, error) {
+			for {
+				if !pageLoaded || chunkIdx >= len(currPage.Chunks) {
+					if pageIdx >= src.PageCount {
+						return storage.ChunkRef{}, io.EOF
+					}
+					page, err := s.o.Metadata.GetManifestPage(ctx, src.ManifestID, pageIdx)
+					if err != nil {
+						return storage.ChunkRef{}, err
+					}
+					if page.ManifestID != src.ManifestID || page.Domain != src.Domain || page.Number != pageIdx {
+						return storage.ChunkRef{}, fmt.Errorf("%w: source manifest page", storage.ErrInvalid)
+					}
+					currPage = page
+					chunkIdx = 0
+					pageLoaded = true
+					pageIdx++
+					if len(currPage.Chunks) == 0 {
+						continue
+					}
+				}
+				ref := currPage.Chunks[chunkIdx]
+				chunkIdx++
+				return ref, nil
+			}
+		}
+
+		load := func(ctx context.Context, sourceChunk storage.ChunkRef) ([]byte, error) {
+			chunks, err := s.o.Metadata.GetChunks(ctx, []storage.ChunkKey{sourceChunk.Key}, true)
+			if err != nil {
+				return nil, err
+			}
+			chunk, ok := chunks[sourceChunk.Key]
+			if !ok {
+				return nil, storage.ErrNotFound
+			}
+			infos, err := s.o.Metadata.GetPacks(ctx, []storage.PackRef{chunk.Location.Pack})
+			if err != nil {
+				return nil, err
+			}
+			packInfo, ok := infos[chunk.Location.Pack]
+			if !ok {
+				return nil, storage.ErrNotFound
+			}
+			cacheKey, entry, err := readpath.MapCanonicalRange(sourceChunk, chunk, packInfo, chunk.LocationRevision)
+			if err != nil {
+				return nil, err
+			}
+			if packInfo.Class == storage.Glacier {
+				physical, err := s.o.Packs.HeadPack(ctx, chunk.Location.Pack)
+				if err != nil {
+					return nil, err
+				}
+				if physical.Ref != packInfo.Ref || physical.Size != packInfo.Size || physical.Class != packInfo.Class {
+					return nil, storage.ErrConflict
+				}
+				var readable bool
+				if physical.State == "Restored" && !physical.RestoredUntil.IsZero() {
+					now := s.o.Clock.Now().WallUTC.UTC()
+					if !requiredUntil.IsZero() {
+						readable = !physical.RestoredUntil.Before(requiredUntil)
+					} else {
+						readable = physical.RestoredUntil.After(now)
+					}
+				}
+				if !readable {
+					if s.o.Restore != nil && sourceView != nil {
+						if err := sourceView.Pin(ctx, []storage.PackRef{chunk.Location.Pack}); err != nil {
+							return nil, err
+						}
+						if err := sourceView.Resolved(ctx); err != nil {
+							return nil, err
+						}
+						policyRev := s.o.Reader.PolicyRevision()
+						if _, err := s.o.Restore(ctx, sourceView, src, chunk.Location.Pack, policyRev, requiredUntil, nil); err != nil {
+							return nil, err
+						}
+					}
+					return nil, storage.ErrCold
+				}
+			}
+			if s.o.Cache != nil {
+				stored, hit, err := s.o.Cache.Get(ctx, cacheKey)
+				if err == nil && hit {
+					raw, err := readpath.VerifyPackEntry(ctx, entry, stored)
+					if err == nil {
+						return raw, nil
+					}
+					_ = s.o.Cache.Evict(context.WithoutCancel(ctx), cacheKey.Pack)
+				}
+			}
+			stored, err := readpath.FetchRange(ctx, s.o.Packs, cacheKey.Pack, cacheKey.Range, int64(entry.StoredLen))
+			if err != nil {
+				return nil, err
+			}
+			raw, err := readpath.VerifyPackEntry(ctx, entry, stored)
+			if err != nil {
+				return nil, err
+			}
+			if s.o.Cache != nil {
+				_ = s.o.Cache.Put(ctx, cacheKey, stored)
+			}
+			return raw, nil
+		}
+
+		prepared, err = session.PrepareCrossDomainCopy(src, manifestID, s.o.Compression, reqUTC, proofUTC, next, load)
+		if err == nil {
+			sourceHeld = false
+			err = sourceDone(ctx)
+		}
+		if err != nil {
+			s.release(ctx, reservationID, opID, fence)
+			return CopyResult{}, fmt.Errorf("prepare cross-domain copy: %w", err)
+		}
 	}
 	stored := make(map[string]string, len(metadata)+1)
 	for k, v := range metadata {

@@ -363,7 +363,7 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 			}
 		}
 		if a.State == "Dispatched" {
-			e = w.Packs.ChangeStorageClass(guarded, a.Source.Ref, a.Target)
+			e = w.Packs.ChangeStorageClass(s.WithLifecycleAction(guarded, a.ID), a.Source.Ref, a.Target)
 			if e != nil {
 				return w.unknown(ctx, j, e)
 			}
@@ -381,6 +381,18 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 		}
 		return result(a, true), nil
 	case "pack_restore":
+		if a.State == "Dispatched" && !freshSend {
+			if e = w.Store.UnknownLifecycle(ctx, j); e != nil {
+				return jobs.Step{}, e
+			}
+			a.State = "Unknown"
+		}
+		if a.State == "Unknown" {
+			a, e = w.Store.ResolveLifecycle(ctx, j)
+			if e != nil {
+				return jobs.Step{}, e
+			}
+		}
 		if a.State == "Dispatched" && freshSend {
 			e = w.Packs.Restore(guarded, a.Source.Ref, s.RestoreRequest{Days: a.Days, Tier: a.Tier})
 			if e != nil {

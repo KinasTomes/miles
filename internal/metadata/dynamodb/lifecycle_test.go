@@ -421,11 +421,25 @@ func TestLocalLifecycleTrustedReconcileAndImmutableRetry(t *testing.T) {
 		if out, e := w.Step(t.Context(), j, policy); e == nil || out.Settled {
 			t.Fatal(out, e)
 		}
+		// Unknown must go through the trusted terminal hook. A restore already
+		// accepted by S3 is terminal even while its asynchronous retrieval runs;
+		// the mutable HEAD result alone is not the proof.
+		m.authority.(*SharedAuthority).LifecycleTerminal = lifeTerminalGuard{}
+		a, e := m.GetLifecycle(t.Context(), j.ID)
+		if e != nil || a.State != "Unknown" {
+			t.Fatal(a, e)
+		}
+		proof := lifeTerminalProof{ID: a.ID, Fence: a.Fence, Target: a.Target, Terminal: true, Isolated: true, Applied: true}
+		if e = m.update(t.Context(), func(tx *transaction) error {
+			return r1Put(tx, stringKey("SystemConfig", "config_id", "fixture/lifecycle/terminal"), proof)
+		}); e != nil {
+			t.Fatal(e)
+		}
 		out, e := w.Step(t.Context(), j, policy)
 		if e != nil || !out.Settled || out.Done {
 			t.Fatal(out, e)
 		}
-		a, _ := m.GetLifecycle(t.Context(), j.ID)
+		a, _ = m.GetLifecycle(t.Context(), j.ID)
 		if e = physical.CompleteRestore(a.Source.Ref, utc.Now().Add(time.Hour)); e != nil {
 			t.Fatal(e)
 		}
@@ -434,6 +448,133 @@ func TestLocalLifecycleTrustedReconcileAndImmutableRetry(t *testing.T) {
 			t.Fatal(out, e, physical.calls)
 		}
 	})
+}
+
+func TestLocalLifecycleTerminalGuardBindsOriginalFenceAndPendingStep(t *testing.T) {
+	m, w, j, policy, _, physical, _ := lifeFixture(t, "tiering", s.GlacierIR)
+	physical.lose = true
+	if out, err := w.Step(t.Context(), j, policy); err == nil || out.Settled {
+		t.Fatal(out, err)
+	}
+	a, err := m.GetLifecycle(t.Context(), j.ID)
+	if err != nil || a.State != "Unknown" || a.Version != lifecycle.ActionVersionCurrent || a.StepID != j.PendingStep {
+		t.Fatal(a, err)
+	}
+	observe := func() error {
+		return m.view(t.Context(), func(tx *transaction) error { return VerifyLifecycleIsolation(a, r1Observe(tx)) })
+	}
+	if err = observe(); err != nil {
+		t.Fatal("exact active action was not bound to its pending step", err)
+	}
+	if err = m.update(t.Context(), func(tx *transaction) error {
+		lease, e := r1Read[s.R1Lease](tx, r1LeaseKey(j.ID))
+		if e != nil {
+			return e
+		}
+		lease.Pending = nil
+		lease.Revision++
+		return r1Put(tx, r1LeaseKey(j.ID), lease)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = observe(); !errors.Is(err, s.ErrR1Busy) {
+		t.Fatal("missing action protection was accepted", err)
+	}
+	if err = m.update(t.Context(), func(tx *transaction) error {
+		lease, e := r1Read[s.R1Lease](tx, r1LeaseKey(j.ID))
+		if e != nil {
+			return e
+		}
+		lease.Pending = []string{"lifecycle/" + j.ID}
+		lease.Revision++
+		if e = r1Put(tx, r1LeaseKey(j.ID), lease); e != nil {
+			return e
+		}
+		job, e := get[jobs.Job](tx, key("jobs", j.ID))
+		if e != nil {
+			return e
+		}
+		job.PendingStep = ""
+		job.Revision++
+		return put(tx, key("jobs", j.ID), job)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = observe(); !errors.Is(err, s.ErrFenced) {
+		t.Fatal("an empty job step inherited the action proof", err)
+	}
+	wrongStep := strings.Repeat("2", 32)
+	if err = m.update(t.Context(), func(tx *transaction) error {
+		job, e := get[jobs.Job](tx, key("jobs", j.ID))
+		if e != nil {
+			return e
+		}
+		job.PendingStep = wrongStep
+		job.Revision++
+		return put(tx, key("jobs", j.ID), job)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err = observe(); !errors.Is(err, s.ErrFenced) {
+		t.Fatal("a different nonempty job step inherited the action proof", err)
+	}
+	j.PendingStep = wrongStep
+	if _, err = m.ResolveLifecycle(t.Context(), j); !errors.Is(err, s.ErrFenced) {
+		t.Fatal("ResolveLifecycle accepted terminal proof for a different step", err)
+	}
+}
+
+func TestLegacyLifecycleV1CodecReadsMissingStepID(t *testing.T) {
+	id := "job_" + strings.Repeat("a", 32)
+	old := lifecycle.Action{Version: lifecycle.ActionVersionLegacy, ID: id, JobID: id, Kind: "tiering", State: "Unknown", Revision: 1,
+		Fence: s.WriterFence{LeaseID: id}, Source: s.PackInfo{Version: 1, Ref: s.PackRef{ID: strings.Repeat("b", 32), Generation: strings.Repeat("c", 32)}, StateRevision: 1, Size: 1, Class: s.Standard, State: "Warm"}}
+	item, err := nativeItem(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(item, "step_id")
+	decoded, err := r1Decode[lifecycle.Action](item)
+	if err != nil || decoded.StepID != "" || decoded.Version != lifecycle.ActionVersionLegacy {
+		t.Fatal("legacy v1 action was not readable", decoded, err)
+	}
+}
+
+func TestLegacyLifecycleV1WithoutStepFailsClosed(t *testing.T) {
+	m, _, j, _, _, _, _ := lifeFixture(t, "tiering", s.GlacierIR)
+	ctx := t.Context()
+	packs, err := m.GetPacks(ctx, []s.PackRef{{ID: "lifecycle-pack", Generation: "generation-1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := lifecycle.Action{Version: lifecycle.ActionVersionLegacy, ID: j.ID, JobID: j.ID, Kind: j.Type, State: "Unknown", Revision: 2, Fence: j.Worker, Source: packs[(s.PackRef{ID: "lifecycle-pack", Generation: "generation-1"})], Target: s.GlacierIR}
+	item, err := nativeItem(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delete(item, "step_id")
+	decoded, err := r1Decode[lifecycle.Action](item)
+	if err != nil || decoded.StepID != "" || decoded.Version != lifecycle.ActionVersionLegacy {
+		t.Fatal("legacy v1 action was not readable", decoded, err)
+	}
+	if err = m.update(ctx, func(tx *transaction) error { return r1Put(tx, lifecycleKey(j.ID), old) }); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.GetLifecycle(ctx, j.ID); err != nil || got.StepID != "" {
+		t.Fatal("GetLifecycle rejected the inspectable legacy row", got, err)
+	}
+	params, err := lifecycle.Decode(j.Params, j.Type)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.PrepareLifecycle(ctx, j, params, nil, ""); !errors.Is(err, jobs.ErrReconciliation) {
+		t.Fatal("legacy active action was allowed to prepare without original-step evidence", err)
+	}
+	if _, err = m.ResolveLifecycle(ctx, j); !errors.Is(err, jobs.ErrReconciliation) {
+		t.Fatal("legacy Unknown action was allowed to reconcile without original-step evidence", err)
+	}
+	if err = m.LifecycleQuiescent(ctx, j.ID, j.Worker); !errors.Is(err, jobs.ErrReconciliation) {
+		t.Fatal("legacy Unknown action released protection without original-step evidence", err)
+	}
 }
 
 type lifeAckAPI struct {

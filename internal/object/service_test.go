@@ -36,11 +36,15 @@ import (
 // memS3 is an SDK seam: the production pack adapter, metadata, decoder and
 // read path run unchanged; only the S3 service is in memory.
 type memS3 struct {
-	mu      sync.Mutex
-	objects map[string][]byte
+	mu       sync.Mutex
+	objects  map[string][]byte
+	classes  map[string]types.StorageClass
+	restores map[string]*string
 }
 
-func newMemS3() *memS3 { return &memS3{objects: map[string][]byte{}} }
+func newMemS3() *memS3 {
+	return &memS3{objects: map[string][]byte{}, classes: map[string]types.StorageClass{}, restores: map[string]*string{}}
+}
 
 func (m *memS3) PutObject(ctx context.Context, in *awss3.PutObjectInput, _ ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
 	if err := ctx.Err(); err != nil {
@@ -71,7 +75,11 @@ func (m *memS3) HeadObject(ctx context.Context, in *awss3.HeadObjectInput, _ ...
 	if !ok {
 		return nil, &types.NotFound{Message: aws.String("missing")}
 	}
-	return &awss3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(data))), StorageClass: types.StorageClassStandard}, nil
+	class := types.StorageClassStandard
+	if c, ok := m.classes[aws.ToString(in.Key)]; ok {
+		class = c
+	}
+	return &awss3.HeadObjectOutput{ContentLength: aws.Int64(int64(len(data))), StorageClass: class, Restore: m.restores[aws.ToString(in.Key)]}, nil
 }
 
 func (m *memS3) GetObject(ctx context.Context, in *awss3.GetObjectInput, _ ...func(*awss3.Options)) (*awss3.GetObjectOutput, error) {
@@ -207,9 +215,11 @@ func newServiceFixtureQuota(t *testing.T, writeCache storage.Cache, quota int64)
 	for i, fence := range fences {
 		leases[i] = storage.WriterLease{Fence: fence, ExpiresAt: f.Now.Add(72 * time.Hour)}
 	}
+	f.Users[1].DefaultDomain = "other-domain"
+	quotas := []storage.LogicalQuota{f.Quota, {OwnerID: "writer", Limit: quota}}
 	if err := db.Bootstrap(ctx, badger.Bootstrap{
 		Buckets: []storage.Bucket{f.Bucket}, Users: f.Users, Credentials: f.Credentials,
-		Grants: []storage.Grant{f.Grant}, Quotas: []storage.LogicalQuota{f.Quota},
+		Grants: []storage.Grant{f.Grant}, Quotas: quotas,
 		Writers: leases,
 	}); err != nil {
 		t.Fatal(err)
@@ -261,10 +271,6 @@ func newServiceFixtureQuota(t *testing.T, writeCache storage.Cache, quota int64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	bucketPolicy, err := validator.NewBucketSnapshot(f.Bucket.ID, 1, config.DefaultCachePolicy())
-	if err != nil {
-		t.Fatal(err)
-	}
 	readCache := storage.Cache(lru)
 	if writeCache != nil {
 		readCache = writeCache
@@ -296,11 +302,13 @@ func newServiceFixtureQuota(t *testing.T, writeCache storage.Cache, quota int64)
 			nextFence++
 			return AdmittedWriter{Fence: fence, ProtectedUntil: r.WallDeadline.Add(15 * time.Minute)}, nil
 		},
-		Chunking:       engine.ChunkingParams{Min: 16 << 10, Avg: 16 << 10, Max: 16 << 10},
-		Compression:    engine.CompressionPolicy{Enabled: true, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)},
-		Events:         fixtureEvents{},
-		Reader:         reader,
-		BucketPolicy:   func(string) (config.BucketSnapshot, error) { return bucketPolicy, nil },
+		Chunking:    engine.ChunkingParams{Min: 16 << 10, Avg: 16 << 10, Max: 16 << 10},
+		Compression: engine.CompressionPolicy{Enabled: true, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)},
+		Events:      fixtureEvents{},
+		Reader:      reader,
+		BucketPolicy: func(id string) (config.BucketSnapshot, error) {
+			return validator.NewBucketSnapshot(id, 1, config.DefaultCachePolicy())
+		},
 		Budget:         testBudget(64 << 20),
 		MaxOutstanding: 3,
 		RequestTimeout: 30 * time.Second,

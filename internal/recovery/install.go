@@ -220,7 +220,7 @@ func (w Recoverer) Recover(ctx context.Context, r RecoverRequest) (Catalog, erro
 				normalized = v
 			case "PackLifecycle":
 				var v lifecycle.Action
-				if strictJSON(value, &v) != nil {
+				if strictJSON(value, &v) != nil || v.ValidateSchema() != nil {
 					return zero, s.ErrInvalid
 				}
 				v.Fence = s.WriterFence{}

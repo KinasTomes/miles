@@ -84,6 +84,7 @@ type Action struct {
 	Version       uint32
 	ID            string
 	JobID         string
+	StepID        string
 	Kind          jobs.Type
 	State         string
 	Revision      uint64
@@ -101,6 +102,28 @@ type Action struct {
 	RequiredUntil time.Time `json:",omitzero"`
 }
 
+// Version 1 rows predate durable step binding and remain readable for upgrade
+// compatibility. Version 2 persists the immutable original PendingStep. New
+// readers accept both versions; old readers reject v2 and therefore fail
+// closed during a mixed-version rollout.
+const (
+	ActionVersionLegacy  uint32 = 1
+	ActionVersionCurrent uint32 = 2
+)
+
+func (a Action) ValidateSchema() error {
+	if a.Version == ActionVersionLegacy {
+		if a.StepID != "" && !jobs.ValidID(a.StepID) {
+			return s.ErrInvalid
+		}
+		return nil
+	}
+	if a.Version != ActionVersionCurrent || !jobs.ValidID(a.StepID) {
+		return s.ErrInvalid
+	}
+	return nil
+}
+
 func (a Action) Validate() error {
 	if !a.RequiredUntil.IsZero() && (a.Kind != "pack_restore" || a.RequiredUntil.Year() < 1 || a.RequiredUntil.Year() > 9999) {
 		return s.ErrInvalid
@@ -109,7 +132,7 @@ func (a Action) Validate() error {
 		return s.ErrInvalid
 	}
 
-	if a.Version != 1 || !jobs.ValidID(a.JobID) || a.ID != a.JobID || a.Revision < 1 || a.Revision >= s.MaxPolicyRevision || a.Source.Ref.Validate() != nil || a.Fence.LeaseID != a.JobID || len(a.Chunks) > 16384 || a.PlanPages > 512 {
+	if a.ValidateSchema() != nil || !jobs.ValidID(a.JobID) || a.ID != a.JobID || a.Revision < 1 || a.Revision >= s.MaxPolicyRevision || a.Source.Ref.Validate() != nil || a.Fence.LeaseID != a.JobID || len(a.Chunks) > 16384 || a.PlanPages > 512 {
 		return s.ErrInvalid
 	}
 	switch a.State {

@@ -108,7 +108,11 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 			if err != nil && !errors.Is(err, s.ErrNotFound) {
 				return err
 			}
-			if err == nil && a.Fence == old.Worker && a.Kind == old.Type && (a.State == "Done" || a.State == "Skipped" || a.State == "NotApplied" || a.Kind == "pack_restore" && a.State == "Waiting") {
+			// A terminal result belongs to its original step, not any later
+			// pending work on the same job. Legacy unbound actions remain blocked.
+			sameStep := a.ID == old.ID && a.JobID == old.ID && a.Kind == old.Type && a.Fence == old.Worker && a.StepID != "" && a.StepID == old.PendingStep
+			settled := a.State == "Done" || a.State == "Skipped" || a.State == "NotApplied" || a.Kind == "pack_restore" && a.State == "Waiting"
+			if err == nil && sameStep && settled {
 				old.PendingStep = ""
 				old.Checkpoint = []byte(`{"lifecycle_reconciled":true}`)
 			}
