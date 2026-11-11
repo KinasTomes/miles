@@ -301,6 +301,31 @@ func TestCostReportFullContractResponse(t *testing.T) {
 	if *r.Results.IndicativeStorageDiffUSD != "1/40" {
 		t.Fatalf("expected indicative storage difference 1/40, got %s", *r.Results.IndicativeStorageDiffUSD)
 	}
+
+	// Finding 6 regression: In unscoped_partial_storage_snapshot, fees that are not measured
+	// must be reported as "omitted", never literal "0", and copy breakdowns must not claim
+	// "accounted in totals" without evidence.
+	if r.Baseline.DirectS3.RequestsCostUSD != "omitted" {
+		t.Fatalf("expected baseline RequestsCostUSD to be 'omitted', got %q", r.Baseline.DirectS3.RequestsCostUSD)
+	}
+	if r.Baseline.DirectS3.NetworkCostUSD != "omitted" {
+		t.Fatalf("expected baseline NetworkCostUSD to be 'omitted', got %q", r.Baseline.DirectS3.NetworkCostUSD)
+	}
+	if r.DSGRequestsNetwork.RetrievalFees != "omitted" {
+		t.Fatalf("expected DSG RetrievalFees to be 'omitted', got %q", r.DSGRequestsNetwork.RetrievalFees)
+	}
+	if r.DSGRequestsNetwork.TransitionFees != "omitted" {
+		t.Fatalf("expected DSG TransitionFees to be 'omitted', got %q", r.DSGRequestsNetwork.TransitionFees)
+	}
+	if r.DSGRequestsNetwork.RestoreFees != "omitted" {
+		t.Fatalf("expected DSG RestoreFees to be 'omitted', got %q", r.DSGRequestsNetwork.RestoreFees)
+	}
+	if r.DSGRequestsNetwork.EarlyDeletionFees != "omitted" {
+		t.Fatalf("expected DSG EarlyDeletionFees to be 'omitted', got %q", r.DSGRequestsNetwork.EarlyDeletionFees)
+	}
+	if !strings.Contains(r.RevivalCopy.Note, "omitted") && !strings.Contains(r.RevivalCopy.Note, "unmeasured") {
+		t.Fatalf("expected RevivalCopy.Note to indicate unmeasured/omitted copy breakdown, got %q", r.RevivalCopy.Note)
+	}
 }
 
 func TestCostReportFiltersAndValidation(t *testing.T) {

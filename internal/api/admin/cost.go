@@ -721,11 +721,13 @@ func (s *server) costReport(c *call) error {
 		},
 		Baseline: BaselineReport{
 			DirectS3: DirectS3Breakdown{
-				LogicalBytes:    logicalBytes,
-				StorageCostUSD:  directReport.Subtotal,
-				RequestsCostUSD: "0",
-				NetworkCostUSD:  "0",
-				TotalCostUSD:    directReport.Subtotal,
+				LogicalBytes:     logicalBytes,
+				StorageCostUSD:   directReport.Subtotal,
+				RequestsCostUSD:  "omitted",
+				RetrievalCostUSD: "omitted",
+				RestoreCostUSD:   "omitted",
+				NetworkCostUSD:   "omitted",
+				TotalCostUSD:     directReport.Subtotal,
 			},
 			CostReport: directReport,
 		},
@@ -738,10 +740,10 @@ func (s *server) costReport(c *call) error {
 		},
 		DSGRequestsNetwork: DSGRequestsNetworkReport{
 			RequestsByType:    map[string]uint64{},
-			RetrievalFees:     "0",
-			TransitionFees:    "0",
-			RestoreFees:       "0",
-			EarlyDeletionFees: "0",
+			RetrievalFees:     "omitted",
+			TransitionFees:    "omitted",
+			RestoreFees:       "omitted",
+			EarlyDeletionFees: "omitted",
 		},
 		Infrastructure: InfrastructureReport{
 			ComputeOrEdgeVM:       computeCost,
@@ -756,7 +758,7 @@ func (s *server) costReport(c *call) error {
 			RevivedBytesStored:         summary.RevivedBytes,
 			CopySourceDownloadBytes:    0,
 			CopyDestinationUploadBytes: 0,
-			Note:                       "Revival and copy breakdowns are accounted in totals; not double charged.",
+			Note:                       "Revival and copy breakdowns are omitted in live snapshot; unmeasured.",
 		},
 		Results: CostReportResults{
 			PricedSubtotalUSDExact:   dsgReport.Subtotal,

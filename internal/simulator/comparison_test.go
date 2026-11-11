@@ -1010,11 +1010,11 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 			AtNS: 10 * dayNS, // Observed as Deleting at day 10 (GLACIER_IR has 90-day minimum retention)
 			Tiering: &Tiering{
 				Pack: storage.PackInfo{
-					Ref:        storage.PackRef{ID: "same-pack", Generation: "g1"},
-					State:      "Deleting",
-					Size:       packBytes,
-					Class:      storage.GlacierIR,
-					LastAccess: startTime,
+					Ref:               storage.PackRef{ID: "same-pack", Generation: "g1"},
+					State:             "Deleting",
+					Size:              packBytes,
+					Class:             storage.GlacierIR,
+					MinRetentionUntil: startTime.Add(90 * 24 * time.Hour),
 				},
 				LiveBytes: packBytes,
 			},
@@ -1023,11 +1023,11 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 			AtNS: 10 * dayNS, // Second observation as Retiring for the same pack identity and generation
 			Tiering: &Tiering{
 				Pack: storage.PackInfo{
-					Ref:        storage.PackRef{ID: "same-pack", Generation: "g1"},
-					State:      "Retiring",
-					Size:       packBytes,
-					Class:      storage.GlacierIR,
-					LastAccess: startTime,
+					Ref:               storage.PackRef{ID: "same-pack", Generation: "g1"},
+					State:             "Retiring",
+					Size:              packBytes,
+					Class:             storage.GlacierIR,
+					MinRetentionUntil: startTime.Add(90 * 24 * time.Hour),
 				},
 				LiveBytes: packBytes,
 			},
@@ -1084,25 +1084,27 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 			},
 		},
 		{
-			AtNS: 10 * dayNS, // Pack 1 deleted at day 10 (no Ref)
+			AtNS: 10 * dayNS, // Pack 1 deleted at day 10
 			Tiering: &Tiering{
 				Pack: storage.PackInfo{
-					State:      "Deleting",
-					Size:       oneGiB,
-					Class:      storage.GlacierIR,
-					LastAccess: startTime,
+					Ref:               storage.PackRef{ID: "pack-1", Generation: "g1"},
+					State:             "Deleting",
+					Size:              oneGiB,
+					Class:             storage.GlacierIR,
+					MinRetentionUntil: startTime.Add(90 * 24 * time.Hour),
 				},
 				LiveBytes: oneGiB,
 			},
 		},
 		{
-			AtNS: 10 * dayNS, // Pack 2 deleted at day 10 (no Ref) - same size, distinct pack
+			AtNS: 10 * dayNS, // Pack 2 deleted at day 10 - distinct pack identity
 			Tiering: &Tiering{
 				Pack: storage.PackInfo{
-					State:      "Deleting",
-					Size:       oneGiB,
-					Class:      storage.GlacierIR,
-					LastAccess: startTime,
+					Ref:               storage.PackRef{ID: "pack-2", Generation: "g1"},
+					State:             "Deleting",
+					Size:              oneGiB,
+					Class:             storage.GlacierIR,
+					MinRetentionUntil: startTime.Add(90 * 24 * time.Hour),
 				},
 				LiveBytes: oneGiB,
 			},
@@ -1117,7 +1119,81 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 	// Rate is $0.005/GB-Mo. 1 GiB for 80 unexpired days = 1/75 USD per pack.
 	// Two packs = 2/75 USD.
 	if irTwo.Breakdown.EarlyDeletionUSD != "2/75" {
-		t.Fatalf("expected early deletion fee '2/75' for two 1GiB packs without Ref, got %q (did it collapse packs by size?)", irTwo.Breakdown.EarlyDeletionUSD)
+		t.Fatalf("expected early deletion fee '2/75' for two 1GiB packs, got %q", irTwo.Breakdown.EarlyDeletionUSD)
+	}
+
+	// Two observations (Deleting + Retiring) of the same pack must be charged exactly once (idempotent)
+	traceDupObservation := traceTwoPacks
+	traceDupObservation.Name = "dup-observation-early-deletion"
+	traceDupObservation.Events = []Event{
+		{
+			AtNS:         0,
+			Snapshot:     &cost.Snapshot{Logical: uint64(oneGiB), Physical: uint64(oneGiB)},
+			StorageBytes: map[storage.StorageClass]uint64{storage.GlacierIR: uint64(oneGiB)},
+		},
+		{
+			AtNS: 10 * dayNS,
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:               storage.PackRef{ID: "single-pack", Generation: "g1"},
+					State:             "Deleting",
+					Size:              oneGiB,
+					Class:             storage.GlacierIR,
+					MinRetentionUntil: startTime.Add(90 * 24 * time.Hour),
+				},
+				LiveBytes: oneGiB,
+			},
+		},
+		{
+			AtNS: 10 * dayNS,
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:               storage.PackRef{ID: "single-pack", Generation: "g1"},
+					State:             "Retiring",
+					Size:              oneGiB,
+					Class:             storage.GlacierIR,
+					MinRetentionUntil: startTime.Add(90 * 24 * time.Hour),
+				},
+				LiveBytes: oneGiB,
+			},
+		},
+	}
+	resDup, err := ComparePolicies(context.Background(), traceDupObservation, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	if resDup.Policies[2].Breakdown.EarlyDeletionUSD != "1/75" {
+		t.Fatalf("expected single charge '1/75' for duplicate observations of same pack, got %q", resDup.Policies[2].Breakdown.EarlyDeletionUSD)
+	}
+
+	// Pack without Ref.ID cannot prove identity; must not be charged early deletion
+	traceNoRef := traceTwoPacks
+	traceNoRef.Name = "no-ref-early-deletion"
+	traceNoRef.Events = []Event{
+		{
+			AtNS:         0,
+			Snapshot:     &cost.Snapshot{Logical: uint64(oneGiB), Physical: uint64(oneGiB)},
+			StorageBytes: map[storage.StorageClass]uint64{storage.GlacierIR: uint64(oneGiB)},
+		},
+		{
+			AtNS: 10 * dayNS,
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					State:             "Deleting",
+					Size:              oneGiB,
+					Class:             storage.GlacierIR,
+					MinRetentionUntil: startTime.Add(90 * 24 * time.Hour),
+				},
+				LiveBytes: oneGiB,
+			},
+		},
+	}
+	resNoRef, err := ComparePolicies(context.Background(), traceNoRef, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	if resNoRef.Policies[2].Breakdown.EarlyDeletionUSD != "0" {
+		t.Fatalf("expected 0 early deletion for pack without Ref identity, got %q", resNoRef.Policies[2].Breakdown.EarlyDeletionUSD)
 	}
 
 	// Finding 2 regression: A pack with the same Ref (ID:generation) changing storage class
@@ -1145,11 +1221,11 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 			AtNS: 10 * dayNS, // Pack retiring from Glacier IR at day 10
 			Tiering: &Tiering{
 				Pack: storage.PackInfo{
-					Ref:        storage.PackRef{ID: "shared-pack", Generation: "g1"},
-					State:      "Retiring",
-					Size:       oneGiB,
-					Class:      storage.GlacierIR,
-					LastAccess: startTime,
+					Ref:               storage.PackRef{ID: "shared-pack", Generation: "g1"},
+					State:             "Retiring",
+					Size:              oneGiB,
+					Class:             storage.GlacierIR,
+					MinRetentionUntil: startTime.Add(90 * 24 * time.Hour),
 				},
 				LiveBytes: oneGiB,
 			},
@@ -1158,11 +1234,11 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 			AtNS: 11 * dayNS, // Same pack deleting from Glacier Flexible at day 11
 			Tiering: &Tiering{
 				Pack: storage.PackInfo{
-					Ref:        storage.PackRef{ID: "shared-pack", Generation: "g1"},
-					State:      "Deleting",
-					Size:       oneGiB,
-					Class:      storage.Glacier,
-					LastAccess: startTime.Add(10 * 24 * time.Hour), // LastAccess was day 10
+					Ref:               storage.PackRef{ID: "shared-pack", Generation: "g1"},
+					State:             "Deleting",
+					Size:              oneGiB,
+					Class:             storage.Glacier,
+					MinRetentionUntil: startTime.Add(10 * 24 * time.Hour).Add(90 * 24 * time.Hour),
 				},
 				LiveBytes: oneGiB,
 			},
@@ -1328,6 +1404,40 @@ func TestComparePoliciesEarlyDeletionExpiredRetentionNoRecharge(t *testing.T) {
 	if irPol.Breakdown.EarlyDeletionUSD != "0" {
 		t.Fatalf("expected EarlyDeletionUSD to be '0' for pack deleted after expired retention, got %q (did it recharge from LastAccess?)", irPol.Breakdown.EarlyDeletionUSD)
 	}
+
+	// Finding 3 regression: Deadline set further than minimum retention (e.g. 105 days for 90-day rule)
+	// must be clamped to at most 90 days penalty; retained cannot be negative and fee cannot exceed 90 days.
+	oneGiB := int64(1024 * 1024 * 1024)
+	traceClamp := baseTrace
+	traceClamp.Name = "clamp-retention-test"
+	traceClamp.DurationNS = 30 * dayNS
+	traceClamp.Start = startTime
+	traceClamp.BytesPerGB = 1024 * 1024 * 1024
+	traceClamp.Events = []Event{
+		{
+			AtNS:         0,
+			Snapshot:     &cost.Snapshot{Logical: uint64(oneGiB), Physical: uint64(oneGiB)},
+			StorageBytes: map[storage.StorageClass]uint64{storage.GlacierIR: uint64(oneGiB)},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:               storage.PackRef{ID: "clamp-pack", Generation: "g1"},
+					State:             "Deleting",
+					Size:              oneGiB,
+					Class:             storage.GlacierIR,
+					MinRetentionUntil: startTime.Add(120 * 24 * time.Hour), // 120 days > 90 days!
+				},
+				LiveBytes: oneGiB,
+			},
+		},
+	}
+	resClamp, err := ComparePolicies(context.Background(), traceClamp, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	// Maximum penalty for 1 GiB on Glacier IR (90 days = 3 months) at $0.005/GB-Mo is 3 * 0.005 = 3/200 USD.
+	if resClamp.Policies[2].Breakdown.EarlyDeletionUSD != "3/200" {
+		t.Fatalf("expected early deletion fee clamped to maximum 90 days '3/200', got %q", resClamp.Policies[2].Breakdown.EarlyDeletionUSD)
+	}
 }
 
 func TestComparePoliciesRestoreAmplificationPolicyIsolation(t *testing.T) {
@@ -1365,6 +1475,28 @@ func TestComparePoliciesRestoreAmplificationPolicyIsolation(t *testing.T) {
 	}
 	if flexPol.RestoreAmplification != nil {
 		t.Fatalf("expected Flex amplification to be nil when only IR retrieval was present, got %v", *flexPol.RestoreAmplification)
+	}
+
+	// Finding 5 regression: Denominator must not be diluted by warm reads in other events.
+	// 1 GiB cold retrieval with 64 MiB delivered in event 1 + 1 GiB warm read in event 2.
+	// Amplification must remain 1024 / 64 = 16.0, NOT diluted by 1 GiB warm read (0.94117647).
+	traceWithWarmRead := traceIR
+	traceWithWarmRead.Name = "ir-warm-read-not-diluted"
+	traceWithWarmRead.Events = append(traceWithWarmRead.Events, Event{
+		AtNS: 10 * dayNS,
+		Traffic: map[cost.Route]uint64{
+			cost.GatewayClient: 1073741824, // 1 GiB warm read delivered to client
+		},
+		Usage: []cost.Usage{
+			{RateID: "s3.get_standard", Unit: "Requests", Quantity: "100"},
+		},
+	})
+	resWarm, err := ComparePolicies(context.Background(), traceWithWarmRead, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	if resWarm.Policies[2].RestoreAmplification == nil || *resWarm.Policies[2].RestoreAmplification != 16.0 {
+		t.Fatalf("expected IR amplification to stay 16.0 without warm-read dilution, got %v", resWarm.Policies[2].RestoreAmplification)
 	}
 
 	// 2. Denominator: GatewayClient traffic == 0 must return nil (not fallback to logical)
@@ -1451,6 +1583,60 @@ func TestComparePoliciesStalePhysicalClassMapInconsistency(t *testing.T) {
 	}
 	if !foundInconsistentOmission {
 		t.Fatalf("expected storage inventory inconsistent omission, got: %v", res.Omissions)
+	}
+
+	// Finding 2 regression: Inconsistency at exact trace.DurationNS (end-of-trace)
+	// must NOT allow CompleteTotalUSD or SavingsUSD to be published.
+	traceEndInconsistent := baseTrace
+	traceEndInconsistent.Name = "end-of-trace-inconsistent"
+	traceEndInconsistent.DurationNS = 30 * dayNS
+	traceEndInconsistent.Omissions = []string{"Full verified observation"}
+	for i := range catalog.Rates {
+		switch catalog.Rates[i].ID {
+		case "transfer.internet_egress":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.09"}}
+		case "ec2.compute":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.0416"}}
+		case "ebs.gp3":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.08"}}
+		}
+	}
+	traceEndInconsistent.Events = []Event{
+		{
+			AtNS:         0,
+			Snapshot:     &cost.Snapshot{Logical: oneGiB, Physical: oneGiB},
+			StorageBytes: map[storage.StorageClass]uint64{storage.Standard: oneGiB},
+			Traffic: map[cost.Route]uint64{
+				cost.ClientGateway: 0, cost.GatewayClient: 0, cost.GatewayS3: 0, cost.S3Gateway: 0,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+				{RateID: "ec2.compute", Unit: "Hrs", Quantity: "720"},
+				{RateID: "ebs.gp3", Unit: "GB-Mo", Quantity: "20"},
+				{RateID: "alb.hour", Unit: "Hrs", Quantity: "720"},
+				{RateID: "alb.lcu", Unit: "LCU-Hrs", Quantity: "720"},
+				{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1"},
+				{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "10"},
+			},
+		},
+		{
+			AtNS:         30 * dayNS,                                            // At the very end of trace
+			Snapshot:     &cost.Snapshot{Logical: oneGiB, Physical: 2 * oneGiB}, // Inconsistent
+			StorageBytes: map[storage.StorageClass]uint64{storage.Standard: oneGiB},
+		},
+	}
+	resEnd, err := ComparePolicies(context.Background(), traceEndInconsistent, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	if resEnd.Policies[1].Report.CompleteTotalUSD != nil {
+		t.Fatalf("expected CompleteTotalUSD to be nil on end-of-trace inconsistent inventory, got %v", *resEnd.Policies[1].Report.CompleteTotalUSD)
+	}
+	if resEnd.Policies[1].SavingsUSD != nil {
+		t.Fatalf("expected SavingsUSD to be nil on end-of-trace inconsistent inventory, got %v", *resEnd.Policies[1].SavingsUSD)
 	}
 }
 
@@ -1588,22 +1774,54 @@ func TestComparePoliciesBreakEvenTimeWeightedStorage(t *testing.T) {
 	// WarmStd storage: 1 GiB * 30/30 = 1 GB-Mo.
 	// Storage saving: 2 GB-Mo * $0.025/GB = $0.05 (1/20 USD).
 	// Logical GB basis must be 3 GB-Mo (time-weighted), NOT 4 GB (final snapshot).
-	// unitSaving = 0.05 / 3 = 1/60 USD/GB -> BreakEven = infra * 60.
-	// If it incorrectly used final snapshot 4 GB: unitSaving = 0.05 / 4 = 1/80 USD/GB -> BreakEven = infra * 80.
+	// unitSaving = 0.05 / 3 = 1/60 USD/GB.
+	// Fixed infrastructure must exclude variable usage (alb.lcu and ddb.write):
+	// Fixed infra in trace = 720h EC2 (29.952) + 20 GB-Mo EBS (1.6) + 720h ALB (18.144) + 1 GB-Mo DDB (0.285) = 49.981 USD/month.
+	// BreakEven = 49.981 / (1/60) = 2998.86 GB = 149943/50 GB.
 	beStr := *warmStd.BreakEven
-	beRat, ok := new(big.Rat).SetString(beStr)
-	if !ok {
-		t.Fatalf("failed to parse break even rational: %s", beStr)
+	if beStr != "149943/50" {
+		t.Fatalf("expected break-even to be '149943/50' GB (isolating fixed infra from variable LCU/writes), got %s", beStr)
 	}
 
-	infraRat, _ := new(big.Rat).SetString(warmStd.Breakdown.InfrastructureUSD)
-	expectedTimeWeighted := new(big.Rat).Mul(infraRat, big.NewRat(60, 1))
-	incorrectSnapshotBasis := new(big.Rat).Mul(infraRat, big.NewRat(80, 1))
-
-	if beRat.Cmp(incorrectSnapshotBasis) == 0 {
-		t.Fatalf("break-even used final snapshot 4 GB basis (%s) instead of time-weighted 3 GB-Mo basis", beStr)
+	// Finding 1 regression: Break-even threshold must be independent of trace duration!
+	// A 2-day trace with the same provisioned resources and storage profile must produce the EXACT SAME break-even threshold (149943/50),
+	// rather than a 15-fold difference.
+	trace2Days := trace
+	trace2Days.Name = "breakeven-2-days"
+	trace2Days.DurationNS = 2 * dayNS
+	trace2Days.Events = []Event{
+		{
+			AtNS:         0,
+			Snapshot:     &cost.Snapshot{Logical: 2 * oneGiB, Physical: oneGiB},
+			StorageBytes: map[storage.StorageClass]uint64{storage.Standard: oneGiB},
+			Traffic: map[cost.Route]uint64{
+				cost.ClientGateway: 0, cost.GatewayClient: 0, cost.GatewayS3: 0, cost.S3Gateway: 0,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+				{RateID: "ec2.compute", Unit: "Hrs", Quantity: "48"},
+				{RateID: "ebs.gp3", Unit: "GB-Mo", Quantity: "4/3"},
+				{RateID: "alb.hour", Unit: "Hrs", Quantity: "48"},
+				{RateID: "alb.lcu", Unit: "LCU-Hrs", Quantity: "48"},
+				{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1/15"},
+				{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "10"},
+			},
+		},
+		{
+			AtNS:         1 * dayNS,
+			Snapshot:     &cost.Snapshot{Logical: 4 * oneGiB, Physical: oneGiB},
+			StorageBytes: map[storage.StorageClass]uint64{storage.Standard: oneGiB},
+		},
 	}
-	if beRat.Cmp(expectedTimeWeighted) != 0 {
-		t.Fatalf("expected break-even to match time-weighted basis %s, got %s", expectedTimeWeighted.RatString(), beStr)
+	res2Days, err := ComparePolicies(context.Background(), trace2Days, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies 2 days failed: %v", err)
+	}
+	if res2Days.Policies[1].BreakEven == nil {
+		t.Fatal("expected non-nil BreakEven for 2 days trace")
+	}
+	be2Days := *res2Days.Policies[1].BreakEven
+	if be2Days != "149943/50" {
+		t.Fatalf("expected identical break-even threshold for 2-day trace '149943/50', got %q (break-even must not vary with trace duration!)", be2Days)
 	}
 }
