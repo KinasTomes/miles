@@ -37,3 +37,8 @@ variable "deep_observation" {
   default     = false
   description = "Enable opt-in bounded DynamoDB scans for stuck completing uploads and journal export lag in gateway startup."
 }
+variable "enable_test_fault_injection" {
+  type        = bool
+  default     = false
+  description = "Enable node-scoped fault injection only for an isolated acceptance fleet."
+}

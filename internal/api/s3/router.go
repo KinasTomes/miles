@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/observability"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -55,6 +56,7 @@ type Handler func(w http.ResponseWriter, r *Request) error
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := NewRequestID()
+	r = r.WithContext(observability.WithRequestID(r.Context(), id))
 	setCommonHeaders(w.Header(), id)
 	diagnostic := failureDiagnostic{stage: "resolve"}
 	defer func() {
@@ -92,12 +94,16 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"node_id", rt.NodeID, "method", r.Method, "operation", diagnostic.operation,
 			"stage", diagnostic.stage, "failure_class", diagnostic.class)
 	}
-	if e.Code == ErrServiceUnavailable {
+	if e.Code == ErrServiceUnavailable || e.Code == ErrOperationAborted {
+		message := "s3 service unavailable"
+		if e.Code == ErrOperationAborted {
+			message = "s3 operation aborted"
+		}
 		class := e.failureClass
 		if class == "" {
 			class = diagnostic.class
 		}
-		slog.WarnContext(r.Context(), "s3 service unavailable", "request_id", id,
+		slog.WarnContext(r.Context(), message, "request_id", id,
 			"node_id", rt.NodeID, "method", r.Method, "operation", diagnostic.operation,
 			"stage", diagnostic.stage, "failure_class", class)
 	}

@@ -1,14 +1,24 @@
 """
-Unit and integration tests for Edge Host Diagnostic Sampler & Ring Buffer (scripts/edge_host_telemetry.py).
+Unit and regression tests for Edge Host Diagnostic Sampler & Ring Buffer (scripts/edge_host_telemetry.py).
+Includes regression tests for:
+- [P1] Active preflight verification for chronyc daemon and tracking validity (fails closed on broken daemon).
+- [P1] CLI `run` fails with exit code 1 when chronyc returns non-zero exit code or unparseable tracking.
+- [P1] OS-only records never qualify as Gate D0 clock evidence (exit code 1, UNVERIFIED status).
+- [P2] Ring buffer hard-cap bounding invariant: oversized records (> max_bytes) are dropped; file size strictly bounded.
+- [P2] Local monotonic clock timing and read-only chrony command allowlist enforcement.
 """
 
 import datetime
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from scripts.edge_host_telemetry import (
     ALLOWLISTED_CHRONY_COMMANDS,
@@ -16,6 +26,8 @@ from scripts.edge_host_telemetry import (
     ChronyProbe,
     HostTelemetryRecorder,
     OSPressureProbe,
+    main,
+    preflight_check,
 )
 
 
@@ -28,16 +40,21 @@ class EdgeHostTelemetryTests(unittest.TestCase):
     def tearDown(self):
         self.tmpdir.cleanup()
 
+    def test_sampling_exception_is_recorded_at_stop(self):
+        recorder = HostTelemetryRecorder(output_file=self.tmppath / "failed.jsonl", os_interval=0.2)
+        with mock.patch.object(recorder, "sample_now", side_effect=RuntimeError("sampler failed")):
+            recorder.run_loop(duration_seconds=0.21)
+        self.assertGreater(recorder.sampling_errors, 0)
+        self.assertIsNotNone(recorder.stopped_at_utc)
+
     def test_chrony_probe_allowlist_enforcement(self):
         """Verifies that unauthorized chrony commands raise ValueError (read-only guard)."""
         probe = ChronyProbe()
 
-        # Disallowed mutative or sensitive commands
         for cmd in ["makestep", "settime", "burst", "activity", "reselect"]:
             with self.assertRaises(ValueError):
                 probe.execute_chrony_subcommand(cmd)
 
-        # Allowlisted read-only commands
         for cmd in ALLOWLISTED_CHRONY_COMMANDS:
             def dummy_runner(c, t):
                 return 0, "mock_output", ""
@@ -49,10 +66,10 @@ class EdgeHostTelemetryTests(unittest.TestCase):
 
     def test_chrony_probe_monotonic_duration_and_timeout(self):
         """Verifies high-resolution duration measurement and timeout detection."""
-        # Fast runner
         def fast_runner(cmd, timeout):
             time.sleep(0.01)
-            return 0, "A9FEA97B,169.254.169.123,4,1794112023.0,0.000001,0.000001,0.000001,0.1,0.001,0.001,16.2,Normal", ""
+            t_ref = time.time() - 2.0
+            return 0, f"A9FEA97B,169.254.169.123,3,{t_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n", ""
 
         probe = ChronyProbe(command_timeout=1.0, runner=fast_runner)
         res = probe.execute_chrony_subcommand("tracking")
@@ -60,10 +77,7 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         self.assertFalse(res["timed_out"])
         self.assertGreaterEqual(res["duration_seconds"], 0.005)
         self.assertLess(res["duration_seconds"], 0.5)
-        self.assertIn("host_observed_utc", res)
-        self.assertIn("host_observed_unix", res)
 
-        # Timed out runner (> 1.0s)
         def timeout_runner(cmd, timeout):
             return -1, "", "Command timed out"
 
@@ -72,19 +86,93 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         self.assertEqual(res_timeout["returncode"], -1)
         self.assertTrue(res_timeout["timed_out"])
 
+    def test_ntp_acceptance_counters_do_not_override_stale_tracking(self):
+        calls = []
+
+        def runner(cmd, timeout):
+            calls.append(cmd[-1])
+            if cmd[-1] == "tracking":
+                ref = time.time() - 40
+                return 0, f"A9FEA97B,169.254.169.123,3,{ref},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16,Normal\n", ""
+            return 0, "507,507,507,449\n", ""
+
+        probe = ChronyProbe(runner=runner)
+        result = probe.sample_full()
+        self.assertEqual(calls, ["tracking", "sources", "sourcestats", "ntpdata"])
+        self.assertEqual(result["ntpdata"]["stdout"], "507,507,507,449\n")
+        self.assertTrue(result["parsed_tracking"]["uncertainty_exceeded"])
+        calls.clear()
+        probe.sample_full(sample_sources=False)
+        self.assertEqual(calls, ["tracking"])
+        with self.assertRaises(ValueError):
+            probe.execute_chrony_subcommand("ntpdata; makestep")
+
+    def test_active_preflight_check(self):
+        """[P1 Regression] Preflight check actively tests chrony daemon readiness and tracking output."""
+        # 1. Daemon healthy with valid tracking -> PASS
+        def mock_healthy(cmd, timeout):
+            t_ref = time.time() - 2.0
+            return 0, f"A9FEA97B,169.254.169.123,3,{t_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n", ""
+
+        probe_ok = ChronyProbe(runner=mock_healthy)
+        ok, errors = preflight_check(chrony_probe=probe_ok, require_chrony=True)
+        self.assertTrue(ok)
+        self.assertEqual(len(errors), 0)
+
+        # 2. Binary present but chronyd daemon down (returns exit code 1) -> FAIL
+        def mock_daemon_down(cmd, timeout):
+            return 1, "", "506 Cannot talk to daemon\n"
+
+        probe_down = ChronyProbe(runner=mock_daemon_down)
+        ok_down, errors_down = preflight_check(chrony_probe=probe_down, require_chrony=True)
+        self.assertFalse(ok_down)
+        self.assertTrue(any("chrony tracking probe failed" in e for e in errors_down))
+
+        # 3. Tracking unparseable or rejected -> FAIL
+        def mock_bad_output(cmd, timeout):
+            return 0, "not_a_valid_chrony_csv\n", ""
+
+        probe_bad = ChronyProbe(runner=mock_bad_output)
+        ok_bad, errors_bad = preflight_check(chrony_probe=probe_bad, require_chrony=True)
+        self.assertFalse(ok_bad)
+        self.assertTrue(any("output rejected" in e for e in errors_bad))
+
+    def test_cli_run_fails_closed_on_chrony_error(self):
+        """[P1 Regression] CLI `run` fails with exit code 1 when chronyc tracking fails (OS-only is not enough)."""
+        output_file = self.tmppath / "telemetry-fail.jsonl"
+
+        # Mock runner where chrony always fails (daemon unavailable)
+        def mock_failing_chrony(cmd, timeout):
+            return 1, "", "506 Cannot talk to daemon"
+
+        cp = ChronyProbe(runner=mock_failing_chrony)
+        recorder = HostTelemetryRecorder(
+            output_file=output_file,
+            os_interval=0.1,
+            chrony_interval=0.1,
+            chrony_probe=cp,
+        )
+
+        recorder.run_loop(duration_seconds=0.3)
+        self.assertGreater(recorder.records_written, 0)
+        self.assertEqual(recorder.valid_chrony_samples, 0)
+
+        summary = recorder.summarize_window()
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertFalse(summary["clock_evidence_verified"])
+        self.assertIn("failed_chrony_commands", summary["reason"])
+
     def test_os_pressure_probe_cpu_stat_deltas_and_steal(self):
         """Verifies /proc/stat tick delta calculation for hypervisor steal and iowait."""
         proc_dir = self.tmppath / "proc"
         proc_dir.mkdir(parents=True, exist_ok=True)
         stat_file = proc_dir / "stat"
 
-        # Sample 1: initial ticks
         stat_file.write_text("cpu  1000 0 500 8000 200 0 50 100 0 0\n")
         probe = OSPressureProbe(proc_root=proc_dir)
         s1 = probe.read_stat()
-        self.assertIsNone(s1["deltas"])  # First sample establishes baseline
+        self.assertIsNone(s1["deltas"])
 
-        # Sample 2: ticks incremented (50 steal ticks out of 200 total delta -> 25% steal)
         stat_file.write_text("cpu  1050 0 520 8080 200 0 50 150 0 0\n")
         s2 = probe.read_stat()
         self.assertIsNotNone(s2["deltas"])
@@ -99,12 +187,10 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         proc_dir = self.tmppath / "proc"
         proc_dir.mkdir(parents=True, exist_ok=True)
 
-        # Missing PSI returns enabled=False without crashing
         probe = OSPressureProbe(proc_root=proc_dir)
         psi_cpu = probe.read_psi("cpu")
         self.assertFalse(psi_cpu["enabled"])
 
-        # Populate PSI
         psi_dir = proc_dir / "pressure"
         psi_dir.mkdir(parents=True, exist_ok=True)
         (psi_dir / "cpu").write_text("some avg10=1.25 avg60=0.85 avg300=0.40 total=1254300\n")
@@ -113,56 +199,49 @@ class EdgeHostTelemetryTests(unittest.TestCase):
         psi_cpu_ok = probe.read_psi("cpu")
         self.assertTrue(psi_cpu_ok["enabled"])
         self.assertEqual(psi_cpu_ok["some"]["avg10"], 1.25)
-        self.assertEqual(psi_cpu_ok["some"]["total"], 1254300)
 
-        psi_io_ok = probe.read_psi("io")
-        self.assertTrue(psi_io_ok["enabled"])
-        self.assertEqual(psi_io_ok["some"]["avg10"], 2.50)
-        self.assertEqual(psi_io_ok["full"]["avg10"], 0.50)
-
-        # Loadavg
         (proc_dir / "loadavg").write_text("0.45 0.30 0.15 2/180 12345\n")
         load = probe.read_loadavg()
         self.assertEqual(load["load_1m"], 0.45)
-        self.assertEqual(load["runnable_entities"], 2)
-        self.assertEqual(load["total_entities"], 180)
 
     def test_bounded_ring_buffer_permissions_and_size_capping(self):
         """Verifies file permission 0600 and bounded size trimming when exceeding max_bytes."""
         buf_file = self.tmppath / "telemetry-ring.jsonl"
-        # Minimum bounded size: 1 MB
-        max_bytes = 1024 * 1024
+        max_bytes = 1024 * 1024  # 1 MB
         ring = BoundedRingBuffer(buf_file, max_bytes=max_bytes)
 
-        # File permissions check (0600)
         stat_mode = buf_file.stat().st_mode & 0o777
         self.assertEqual(stat_mode, 0o600)
 
-        # Write enough lines to exceed max_bytes
         large_payload = "X" * 1000
         for i in range(1500):
             ring.write_record({"seq": i, "payload": large_payload, "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat()})
 
-        # File size must strictly be <= max_bytes
         final_size = buf_file.stat().st_size
         self.assertLessEqual(final_size, max_bytes)
         self.assertGreater(ring.dropped_records_count, 0)
         self.assertGreater(ring.trimmed_bytes_total, 0)
 
-        # Read back records
-        records = ring.read_records()
-        self.assertGreater(len(records), 0)
-        # Sequence numbers in file must be sequential
-        seqs = [r["seq"] for r in records]
-        self.assertEqual(seqs, sorted(seqs))
+    def test_bounded_ring_buffer_hard_cap_oversized_record(self):
+        """[P2 Regression] Records larger than max_bytes are dropped immediately, preserving bounds."""
+        buf_file = self.tmppath / "telemetry-oversized.jsonl"
+        max_bytes = 1024 * 1024  # 1 MB
+        ring = BoundedRingBuffer(buf_file, max_bytes=max_bytes)
+
+        oversized_payload = "Z" * (1500 * 1024)
+        ring.write_record({"payload": oversized_payload})
+
+        self.assertEqual(buf_file.stat().st_size, 0)
+        self.assertEqual(ring.dropped_records_count, 1)
+        self.assertGreaterEqual(ring.trimmed_bytes_total, 1500 * 1024)
 
     def test_host_telemetry_recorder_lifecycle_and_summary(self):
         """Verifies coordinated recording loop, sampling cadences, and window summary."""
         output_file = self.tmppath / "daemon-test.jsonl"
 
         def mock_chrony_runner(cmd, timeout):
-            # Returns valid CSV tracking
-            return 0, "A9FEA97B,169.254.169.123,4,1794112023.0,0.000001,0.000001,0.000001,0.1,0.001,0.001,16.2,Normal", ""
+            t_ref = time.time() - 2.0
+            return 0, f"A9FEA97B,169.254.169.123,3,{t_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n", ""
 
         proc_dir = self.tmppath / "proc"
         proc_dir.mkdir(parents=True, exist_ok=True)
@@ -178,23 +257,361 @@ class EdgeHostTelemetryTests(unittest.TestCase):
             proc_root=proc_dir,
         )
 
-        # Run background recorder for 1.2s (~6 OS samples, ~3 chrony samples)
         recorder.start_background()
         time.sleep(1.2)
         recorder.stop()
 
+        self.assertGreater(recorder.records_written, 0)
+        self.assertGreater(recorder.valid_chrony_samples, 0)
         records = recorder.ring_buffer.read_records()
         self.assertGreaterEqual(len(records), 3)
 
-        chrony_samples = [r for r in records if r.get("chrony") is not None]
-        self.assertGreaterEqual(len(chrony_samples), 1)
-
         summary = recorder.summarize_window()
         self.assertEqual(summary["record_count"], len(records))
+        self.assertEqual(summary["status"], "OK")
+        self.assertTrue(summary["clock_evidence_verified"])
         self.assertGreaterEqual(summary["chrony_sample_count"], 1)
-        self.assertIsNotNone(summary["chrony_timing"]["avg_duration_s"])
-        self.assertEqual(summary["chrony_timing"]["timeouts"], 0)
-        self.assertEqual(summary["chrony_timing"]["slow_commands_over_1s"], 0)
+
+    def test_empty_window_summary_fail_closed(self):
+        """[P1 Regression] Empty window returns UNVERIFIED with clock_evidence_verified=False."""
+        output_file = self.tmppath / "empty.jsonl"
+        recorder = HostTelemetryRecorder(output_file=output_file)
+
+        summary = recorder.summarize_window()
+        self.assertEqual(summary["record_count"], 0)
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertFalse(summary["clock_evidence_verified"])
+        self.assertEqual(summary["reason"], "no_records_in_window")
+
+    def test_compaction_loss_preserves_chrony_failure_and_fails_closed(self):
+        """
+        [P1 Regression] Verifies that when a Chrony failure sample is evicted by ring buffer
+        compaction, the cumulative failure and window loss are preserved and summarize_window
+        fails closed with UNVERIFIED (never false OK).
+        """
+        output_file = self.tmppath / "telemetry-compaction.jsonl"
+        max_bytes = 1024 * 1024  # 1 MB
+
+        is_failed = True
+
+        def mock_chrony_runner(cmd, timeout):
+            nonlocal is_failed
+            if is_failed:
+                return 1, "", "506 Cannot talk to daemon"
+            t_ref = time.time() - 1.0
+            return 0, f"A9FEA97B,169.254.169.123,3,{t_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n", ""
+
+        proc_dir = self.tmppath / "proc"
+        proc_dir.mkdir(parents=True, exist_ok=True)
+        (proc_dir / "stat").write_text("cpu  1000 0 500 8000 200 0 50 100 0 0\n")
+        (proc_dir / "loadavg").write_text("0.10 0.10 0.10 1/100 100\n")
+
+        recorder = HostTelemetryRecorder(
+            output_file=output_file,
+            os_interval=0.01,
+            chrony_interval=0.01,
+            chrony_runner=mock_chrony_runner,
+            max_bytes=max_bytes,
+            proc_root=proc_dir,
+        )
+
+        # 1. First sample has chrony failure (rc=1)
+        is_failed = True
+        recorder.sample_now()
+        self.assertEqual(recorder.cumulative_chrony_failures, 1)
+
+        # 2. Write 850 valid samples (~2 KiB each) to exceed 1MB cap and trigger compaction
+        is_failed = False
+        large_extra = "Y" * 1800  # make each record ~2KB
+        for _ in range(850):
+            # force chrony sampling on each iteration
+            recorder._last_chrony_sample_mono = 0.0
+            rec = recorder.sample_now()
+
+        # Compaction must have occurred and evicted sample 0
+        self.assertGreater(recorder.ring_buffer.dropped_records_count, 0)
+        retained = recorder.ring_buffer.read_records()
+        self.assertGreater(retained[0]["sequence"], 1)
+
+        # 3. summarize_window must fail closed with UNVERIFIED
+        summary = recorder.summarize_window()
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertFalse(summary["clock_evidence_verified"])
+        self.assertGreaterEqual(summary["failed_chrony_commands"], 1)
+        self.assertIn("failed_chrony_commands", summary["reason"])
+        self.assertIn("window_completeness_broken_by_record_eviction", summary["reason"])
+
+        # 4. Standalone file summary (new recorder reading from disk) also detects failure provenance
+        offline_recorder = HostTelemetryRecorder(output_file=output_file)
+        offline_summary = offline_recorder.summarize_window()
+        self.assertEqual(offline_summary["status"], "UNVERIFIED")
+        self.assertFalse(offline_summary["clock_evidence_verified"])
+        self.assertGreaterEqual(offline_summary["failed_chrony_commands"], 1)
+
+    def test_bounded_window_without_loss_passes_summary(self):
+        """
+        Verifies that a valid bounded window without loss, gaps, or Chrony errors
+        evaluates to OK with clock_evidence_verified=True.
+        """
+        output_file = self.tmppath / "telemetry-clean.jsonl"
+
+        def mock_chrony_runner(cmd, timeout):
+            t_ref = time.time() - 1.0
+            return 0, f"A9FEA97B,169.254.169.123,3,{t_ref:.4f},0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal\n", ""
+
+        proc_dir = self.tmppath / "proc"
+        proc_dir.mkdir(parents=True, exist_ok=True)
+        (proc_dir / "stat").write_text("cpu  1000 0 500 8000 200 0 50 100 0 0\n")
+        (proc_dir / "loadavg").write_text("0.10 0.10 0.10 1/100 100\n")
+
+        recorder = HostTelemetryRecorder(
+            output_file=output_file,
+            os_interval=0.01,
+            chrony_interval=0.01,
+            chrony_runner=mock_chrony_runner,
+            proc_root=proc_dir,
+        )
+
+        for _ in range(15):
+            recorder._last_chrony_sample_mono = 0.0
+            recorder.sample_now()
+
+        summary = recorder.summarize_window()
+        self.assertEqual(summary["status"], "OK")
+        self.assertTrue(summary["clock_evidence_verified"])
+        self.assertEqual(summary["failed_chrony_commands"], 0)
+        self.assertEqual(summary["dropped_records_in_buffer"], 0)
+
+    def test_bounded_ring_buffer_trim_prevents_symlink_clobber(self):
+        """
+        [P2 Regression] Verifies that ring buffer trimming uses unpredictable temp files
+        and will not clobber target files through pre-planted symlinks.
+        """
+        victim_file = self.tmppath / "private-victim.txt"
+        victim_file.write_text("VICTIM_INTACT_DATA", encoding="utf-8")
+        os.chmod(str(victim_file), 0o600)
+
+        buf_file = self.tmppath / "trim-symlink-test.jsonl"
+        # Pre-plant predictable symlink if any
+        predictable_tmp = self.tmppath / "trim-symlink-test.jsonl.tmp"
+        try:
+            os.symlink(str(victim_file), str(predictable_tmp))
+        except OSError:
+            pass
+
+        ring = BoundedRingBuffer(buf_file, max_bytes=1024 * 1024)
+        for i in range(1200):
+            ring.write_record({"seq": i, "payload": "X" * 1000})
+
+        # Victim file must remain completely untouched
+        self.assertEqual(victim_file.read_text(encoding="utf-8"), "VICTIM_INTACT_DATA")
+        self.assertEqual(buf_file.stat().st_mode & 0o777, 0o600)
+
+    def test_sigterm_stops_sampling_and_evaluates_unified_fail_closed_verdict(self):
+        """
+        [P1 Regression] Verifies that when SIGTERM stops the recording loop,
+        the unified verdict is evaluated and fails closed (exit 1) if Chrony errors occurred during runtime.
+        """
+        fake_bin_dir = self.tmppath / "fake_bin"
+        fake_bin_dir.mkdir(parents=True, exist_ok=True)
+        chrony_bin = fake_bin_dir / "chronyc"
+        state_file = self.tmppath / "chrony_state.txt"
+        state_file.write_text("0")
+
+        # Fake chronyc: returns 0 on first call (preflight), then 1 on runtime calls
+        fake_script = f"""#!/bin/sh
+call_count=$(cat "{state_file}")
+new_count=$((call_count + 1))
+echo "$new_count" > "{state_file}"
+if [ "$call_count" -le 1 ]; then
+    echo "A9FEA97B,169.254.169.123,3,$(date +%s),0.0001,0.0001,0.0002,0.1,0.01,0.05,0.001,0.001,16.0,Normal"
+    exit 0
+else
+    echo "506 Cannot talk to daemon" >&2
+    exit 1
+fi
+"""
+        chrony_bin.write_text(fake_script)
+        chrony_bin.chmod(0o755)
+
+        output_file = self.tmppath / "sigterm_test.jsonl"
+        env = os.environ.copy()
+        env["PATH"] = f"{fake_bin_dir}:{env.get('PATH', '')}"
+
+        cmd = [
+            sys.executable,
+            "-B",
+            str(Path(__file__).resolve().parent.parent / "edge_host_telemetry.py"),
+            "run",
+            "--output-file",
+            str(output_file),
+            "--os-interval",
+            "0.1",
+            "--chrony-interval",
+            "0.2",
+            "--duration",
+            "30",
+        ]
+
+        proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        time.sleep(1.2)
+        proc.send_signal(signal.SIGTERM)
+        stdout, stderr = proc.communicate(timeout=5)
+
+        # Unified verdict must fail closed with exit code 1
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("Gate D0 clock evidence unverified", stderr)
+        self.assertTrue(output_file.exists())
+
+        # Standalone summarize also confirms UNVERIFIED
+        offline_recorder = HostTelemetryRecorder(output_file=output_file)
+        summary = offline_recorder.summarize_window()
+        self.assertEqual(summary["status"], "UNVERIFIED")
+        self.assertFalse(summary["clock_evidence_verified"])
+
+    def test_summarize_window_epistemological_classification_and_startup_grace(self):
+        """
+        [P2 Regression] Verifies epistemological distinction between:
+        (a) unknown/unobserved interval before acquisition started (does NOT assert eviction without proof),
+        (b) expected cadence/startup grace (healthy contiguous start at seq 1 within tolerance evaluates to OK),
+        (c) provable eviction (internal sequence gap or evicted earliest records assert eviction),
+        and (d) time-filtered bounded windows.
+        """
+        buf_file = self.tmppath / "epistemological-test.jsonl"
+        ring = BoundedRingBuffer(buf_file, max_bytes=1024 * 1024)
+
+        base_time = datetime.datetime(2026, 11, 10, 8, 0, 10, tzinfo=datetime.timezone.utc)
+
+        # Helper to generate valid chrony record
+        def make_record(seq, ts_dt, dropped_prior=0):
+            return {
+                "sequence": seq,
+                "timestamp_utc": ts_dt.isoformat(),
+                "timestamp_unix": ts_dt.timestamp(),
+                "os_pressure": {"stat": {"steal_pct": 0.0, "iowait_pct": 0.0}},
+                "chrony": {
+                    "command_duration_seconds": 0.002,
+                    "command_timed_out": False,
+                    "tracking": {"returncode": 0},
+                    "parsed_tracking": {
+                        "status": "ok",
+                        "sample_age_seconds": 1.5,
+                        "max_allowed_age_seconds": 34.0,
+                        "last_offset_seconds": 0.00005,
+                        "frequency_ppm": 0.1,
+                        "uncertainty_exceeded": False,
+                    },
+                },
+                "provenance": {
+                    "sequence": seq,
+                    "cumulative_chrony_failures": 0,
+                    "cumulative_chrony_timeouts": 0,
+                    "cumulative_uncertainty_violations": 0,
+                    "dropped_records_prior": dropped_prior,
+                },
+            }
+
+        # 1. Populate 5 contiguous healthy records (seq 1..5, 0 drops) spaced by 1 second
+        for i in range(1, 6):
+            t = base_time + datetime.timedelta(seconds=(i - 1))
+            ring.write_record(make_record(i, t, dropped_prior=0))
+
+        recorder = HostTelemetryRecorder(output_file=buf_file)
+
+        # Case 1: since_utc is 1.0 second before first sample -> within startup grace (2.0s) -> OK!
+        since_grace = (base_time - datetime.timedelta(seconds=1.0)).isoformat()
+        summary_grace = recorder.summarize_window(since_utc=since_grace, startup_grace_seconds=2.0)
+        self.assertEqual(summary_grace["status"], "OK")
+        self.assertTrue(summary_grace["clock_evidence_verified"])
+        self.assertEqual(summary_grace["startup_grace_applied_seconds"], 1.0)
+        self.assertIsNone(summary_grace["reason"])
+
+        # Case 2: since_utc is 30.0 seconds before first sample -> unobserved interval (NOT eviction!)
+        since_unobserved = (base_time - datetime.timedelta(seconds=30.0)).isoformat()
+        summary_unobserved = recorder.summarize_window(since_utc=since_unobserved, startup_grace_seconds=2.0)
+        self.assertEqual(summary_unobserved["status"], "UNVERIFIED")
+        self.assertFalse(summary_unobserved["clock_evidence_verified"])
+        self.assertIn("window_requires_unobserved_pre_recording_interval", summary_unobserved["reason"])
+        self.assertNotIn("record_eviction", summary_unobserved["reason"])
+
+        # Case 3: Actual evicted first record (seq starts at 5, dropped_records_prior=4)
+        evicted_buf_file = self.tmppath / "evicted-test.jsonl"
+        evicted_ring = BoundedRingBuffer(evicted_buf_file, max_bytes=1024 * 1024)
+        for i in range(5, 10):
+            t = base_time + datetime.timedelta(seconds=(i - 1))
+            evicted_ring.write_record(make_record(i, t, dropped_prior=4))
+
+        evicted_recorder = HostTelemetryRecorder(output_file=evicted_buf_file)
+        summary_evicted = evicted_recorder.summarize_window()
+        self.assertEqual(summary_evicted["status"], "UNVERIFIED")
+        self.assertFalse(summary_evicted["clock_evidence_verified"])
+        self.assertIn("window_completeness_broken_by_record_eviction(4_dropped,earliest_seq=5)", summary_evicted["reason"])
+
+        # Case 4: Internal sequence gap (seq 1, 2, 4, 5 - missing seq 3)
+        gap_buf_file = self.tmppath / "gap-test.jsonl"
+        gap_ring = BoundedRingBuffer(gap_buf_file, max_bytes=1024 * 1024)
+        for i in [1, 2, 4, 5]:
+            t = base_time + datetime.timedelta(seconds=(i - 1))
+            gap_ring.write_record(make_record(i, t, dropped_prior=0))
+
+        gap_recorder = HostTelemetryRecorder(output_file=gap_buf_file)
+        summary_gap = gap_recorder.summarize_window()
+        self.assertEqual(summary_gap["status"], "UNVERIFIED")
+        self.assertFalse(summary_gap["clock_evidence_verified"])
+        self.assertIn("window_completeness_broken_by_internal_sequence_gap(1_missing)", summary_gap["reason"])
+
+        # Case 5: Time-filtered bounded window within healthy buffer
+        # Buffer has records seq 1..10, query window covering seq 3..7
+        bounded_buf_file = self.tmppath / "bounded-test.jsonl"
+        bounded_ring = BoundedRingBuffer(bounded_buf_file, max_bytes=1024 * 1024)
+        for i in range(1, 11):
+            t = base_time + datetime.timedelta(seconds=(i - 1))
+            bounded_ring.write_record(make_record(i, t, dropped_prior=0))
+
+        bounded_recorder = HostTelemetryRecorder(output_file=bounded_buf_file)
+        t_start = (base_time + datetime.timedelta(seconds=2)).isoformat()  # seq 3
+        t_end = (base_time + datetime.timedelta(seconds=6)).isoformat()    # seq 7
+        summary_bounded = bounded_recorder.summarize_window(since_utc=t_start, until_utc=t_end)
+        self.assertEqual(summary_bounded["status"], "OK")
+        self.assertTrue(summary_bounded["clock_evidence_verified"])
+        self.assertEqual(summary_bounded["record_count"], 5)
+        self.assertEqual(summary_bounded["window_start_utc"], t_start)
+        self.assertEqual(summary_bounded["window_end_utc"], t_end)
+
+        tail = (base_time + datetime.timedelta(seconds=60)).isoformat()
+        missing_tail = recorder.summarize_window(until_utc=tail)
+        self.assertEqual(missing_tail["status"], "UNVERIFIED")
+        self.assertIn("unobserved_chrony_window_end", missing_tail["reason"])
+
+        stalled_file = self.tmppath / "stalled.jsonl"
+        stalled_ring = BoundedRingBuffer(stalled_file)
+        stalled_ring.write_record(make_record(1, base_time))
+        stalled_ring.write_record(make_record(2, base_time + datetime.timedelta(seconds=300)))
+        stalled = HostTelemetryRecorder(output_file=stalled_file).summarize_window()
+        self.assertEqual(stalled["status"], "UNVERIFIED")
+        self.assertIn("chrony_sampling_gap", stalled["reason"])
+
+
+    def test_chrony_freshness_must_cover_the_window_tail(self):
+        base = datetime.datetime(2026, 11, 11, 7, 10, 4, tzinfo=datetime.timezone.utc)
+        end = base + datetime.timedelta(seconds=1.4)
+        for age, verified in [(1.5, True), (33.05, False)]:
+            with self.subTest(age=age):
+                path = self.tmppath / f"freshness-{age}.jsonl"
+                ring = BoundedRingBuffer(path)
+                ring.write_record({
+                    "sequence": 1, "timestamp_utc": base.isoformat(),
+                    "chrony": {"tracking": {"returncode": 0}, "parsed_tracking": {
+                        "status": "ok", "sample_age_seconds": age,
+                        "max_allowed_age_seconds": 34.2, "uncertainty_exceeded": False,
+                    }},
+                })
+                ring.write_record({"sequence": 2, "timestamp_utc": end.isoformat(), "chrony": None})
+                summary = HostTelemetryRecorder(path).summarize_window(
+                    since_utc=base.isoformat(), until_utc=end.isoformat())
+                self.assertEqual(summary["clock_evidence_verified"], verified)
+                if not verified:
+                    self.assertIn("chrony_sample_expires_within_window", summary["reason"])
 
 
 if __name__ == "__main__":

@@ -39,9 +39,13 @@ func newRecoveryFixture(t *testing.T) *recoveryFixture {
 }
 func newRecoveryFixtureBase(t *testing.T, audited bool) *recoveryFixture {
 	t.Helper()
-	ctx := context.Background()
 	f := contracttest.NewFixture()
 	m, client := fixtureStore(t, f)
+	return newRecoveryFixtureWith(t, audited, f, m, client, nil)
+}
+func newRecoveryFixtureWith(t *testing.T, audited bool, f contracttest.Fixture, m *Store, client *ddb.Client, objects recovery.ImmutableStore) *recoveryFixture {
+	t.Helper()
+	ctx := context.Background()
 	utc := &r1Clock{now: f.Now}
 	m.authority = &SharedAuthority{Time: utc, Lifetime: 5 * time.Minute}
 	m.now = utc.Now
@@ -54,10 +58,13 @@ func newRecoveryFixtureBase(t *testing.T, audited bool) *recoveryFixture {
 	if err = m.InitializeR1(ctx, inc, h, 0); err != nil {
 		t.Fatal(err)
 	}
-	physical := &handoffS3{objects: map[string][]byte{}}
-	objects, err := recovery.NewS3Objects(physical, "journal-bucket", "", "kms-fixture")
-	if err != nil {
-		t.Fatal(err)
+	var physical *handoffS3
+	if objects == nil {
+		physical = &handoffS3{objects: map[string][]byte{}}
+		objects, err = recovery.NewS3Objects(physical, "journal-bucket", "", "kms-fixture")
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	base, _ := recovery.Encode(map[string]any{"r2_version": 1, "fixture": "audited seed; not a production checkpoint"})
 	sum := sha256.Sum256(base)

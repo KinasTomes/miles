@@ -70,11 +70,7 @@ func (a sharedJobAuthority) Close(ctx context.Context, f storage.WriterFence) er
 	if err == nil {
 		err = a.metadata.ReleaseR1(ctx, f)
 	}
-	if err != nil {
-		a.metadata.mu.Lock()
-		a.metadata.incomplete = true
-		a.metadata.mu.Unlock()
-	}
+	a.metadata.recordCleanup(f, err)
 	return err
 }
 func minTime(a, b time.Time) time.Time {

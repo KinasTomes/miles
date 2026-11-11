@@ -10,9 +10,12 @@ high-resolution, contemporaneous evidence distinguishing between:
 
 Strict Guardrails:
 - Zero sensitive data leakage: records numerical metrics and chrony status only.
-- Read-only to chrony: only runs allowlisted read commands (tracking, sources, sourcestats).
+- Read-only to chrony: only runs allowlisted diagnostic commands.
 - Local execution duration measurement: nanosecond monotonic timers capture true host duration.
-- Bounded private ring buffer: defaults to <= 10 MiB in /run/miles with 0600 permissions.
+- Bounded private ring buffer: strictly bounded to <= max_bytes in /run/miles with 0600 permissions.
+- Hard cap invariant: oversized records (> max_bytes) are safely dropped; file size strictly bounded.
+- Preflight validation with active daemon probe: fails closed if chronyc daemon is down or unparseable.
+- Fail-closed empty-window and chrony failure propagation: OS-only records never qualify as clock evidence.
 """
 
 import argparse
@@ -21,21 +24,33 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+# Ensure scripts directory and repo root are in sys.path regardless of execution CWD
+_this_dir = Path(__file__).resolve().parent
+_repo_root = _this_dir.parent
+for _p in [str(_repo_root), str(_this_dir)]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 try:
     from scripts.runner_diagnostics import parse_chrony_tracking
 except ImportError:
-    # Fallback for standalone execution on remote hosts
-    parse_chrony_tracking = None  # type: ignore
+    try:
+        from runner_diagnostics import parse_chrony_tracking
+    except ImportError:
+        # Fallback for standalone execution on remote hosts
+        parse_chrony_tracking = None  # type: ignore
 
 
-ALLOWLISTED_CHRONY_COMMANDS = frozenset({"tracking", "sources", "sourcestats", "serverstats"})
+ALLOWLISTED_CHRONY_COMMANDS = frozenset({"tracking", "sources", "sourcestats", "serverstats", "ntpdata"})
 
 
 def _iso_utc_now() -> str:
@@ -52,6 +67,49 @@ def _parse_iso_timestamp(ts: Optional[str]) -> Optional[datetime.datetime]:
         return datetime.datetime.fromisoformat(ts)
     except Exception:
         return None
+
+
+def preflight_check(
+    chrony_probe: Optional["ChronyProbe"] = None,
+    require_chrony: bool = True,
+) -> Tuple[bool, List[str]]:
+    """
+    Verifies that required dependencies and tools are present and functional before sampling:
+    - parse_chrony_tracking parser is loaded.
+    - chronyc executable is available on PATH (or mock runner provided).
+    - Active chronyc probe passes (daemon is running and returns valid, bounded tracking data).
+    """
+    errors: List[str] = []
+
+    if parse_chrony_tracking is None:
+        errors.append("parse_chrony_tracking parser function is unavailable (import failed)")
+
+    if require_chrony:
+        probe = chrony_probe or ChronyProbe()
+        if probe._runner == probe._default_runner:
+            if not shutil.which("chronyc"):
+                errors.append("chronyc binary not found on system PATH")
+                return (False, errors)
+
+        # Active probe to verify daemon readiness and tracking output
+        sample = probe.sample_full(sample_sources=False)
+        t_res = sample.get("tracking", {})
+        rc = t_res.get("returncode", -1)
+        if rc != 0:
+            err_msg = t_res.get("stderr", "").strip() or f"exit code {rc}"
+            errors.append(f"chrony tracking probe failed: {err_msg}")
+        elif t_res.get("timed_out", False):
+            errors.append(f"chrony tracking probe timed out after {probe.command_timeout}s")
+        else:
+            parsed = sample.get("parsed_tracking")
+            if not parsed or not isinstance(parsed, dict) or parsed.get("status") != "ok":
+                reason = parsed.get("rejection_reason") if isinstance(parsed, dict) else "unparseable_output"
+                errors.append(f"chrony tracking output rejected during preflight: {reason}")
+            elif parsed.get("uncertainty_exceeded", False):
+                reason = parsed.get("rejection_reason", "uncertainty_exceeded")
+                errors.append(f"chrony clock uncertainty exceeded during preflight: {reason}")
+
+    return (len(errors) == 0, errors)
 
 
 class ChronyProbe:
@@ -145,6 +203,10 @@ class ChronyProbe:
                 res["sourcestats"] = self.execute_chrony_subcommand("sourcestats")
             except Exception as e:
                 res["sourcestats"] = {"error": str(e)}
+            try:
+                res["ntpdata"] = self.execute_chrony_subcommand("ntpdata")
+            except Exception as e:
+                res["ntpdata"] = {"error": str(e)}
 
         return res
 
@@ -274,6 +336,7 @@ class BoundedRingBuffer:
     Thread-safe, append-only JSONL ring buffer file with strict size bounding
     and restricted private file permissions (0600).
     When file exceeds max_bytes, trims the oldest lines to maintain bounds.
+    Maintains the invariant: file.stat().st_size <= max_bytes at all times.
     """
 
     def __init__(self, file_path: Path, max_bytes: int = 10 * 1024 * 1024):
@@ -301,19 +364,33 @@ class BoundedRingBuffer:
         line = json.dumps(record, separators=(",", ":")) + "\n"
         encoded = line.encode("utf-8")
 
+        # Invariant guard: if a single record exceeds max_bytes, drop it immediately
+        if len(encoded) > self.max_bytes:
+            with self._lock:
+                self.dropped_records_count += 1
+                self.trimmed_bytes_total += len(encoded)
+            return
+
         with self._lock:
-            # Check size before appending
             current_size = self.file_path.stat().st_size if self.file_path.exists() else 0
             if current_size + len(encoded) > self.max_bytes:
-                self._trim_oldest()
+                self._trim_to_fit(len(encoded))
+
+            # Re-check size after trimming; if still insufficient, drop record
+            current_size = self.file_path.stat().st_size if self.file_path.exists() else 0
+            if current_size + len(encoded) > self.max_bytes:
+                self.dropped_records_count += 1
+                self.trimmed_bytes_total += len(encoded)
+                return
 
             with open(self.file_path, "a", encoding="utf-8") as f:
                 f.write(line)
                 f.flush()
 
-    def _trim_oldest(self) -> None:
+    def _trim_to_fit(self, needed_bytes: int) -> None:
         """
-        Trims approximately the oldest 30% of lines to stay under max_bytes.
+        Trims oldest lines until remaining_size + needed_bytes <= max_bytes,
+        freeing at least 30% headroom.
         """
         if not self.file_path.exists():
             return
@@ -322,20 +399,53 @@ class BoundedRingBuffer:
                 lines = f.readlines()
             if not lines:
                 return
-            # Keep newest 70%
-            keep_count = max(1, int(len(lines) * 0.7))
-            trimmed_count = len(lines) - keep_count
-            trimmed_lines = lines[trimmed_count:]
 
-            tmp_path = self.file_path.with_suffix(".tmp")
-            fd = os.open(str(tmp_path), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.writelines(trimmed_lines)
-                f.flush()
-            os.replace(tmp_path, self.file_path)
+            line_bytes = [len(l.encode("utf-8")) for l in lines]
+            total_size = sum(line_bytes)
 
-            self.dropped_records_count += trimmed_count
-            self.trimmed_bytes_total += sum(len(l.encode("utf-8")) for l in lines[:trimmed_count])
+            # Target size: leave 30% buffer below max_bytes or enough room for needed_bytes
+            target_size = min(int(self.max_bytes * 0.7), self.max_bytes - needed_bytes)
+            if target_size < 0:
+                target_size = 0
+
+            dropped_count = 0
+            dropped_bytes = 0
+            current_size = total_size
+
+            while dropped_count < len(lines) and current_size > target_size:
+                dropped_bytes += line_bytes[dropped_count]
+                current_size -= line_bytes[dropped_count]
+                dropped_count += 1
+
+            # Ensure at least 1 line is dropped if capacity is breached
+            if dropped_count == 0 and len(lines) > 0 and (total_size + needed_bytes > self.max_bytes):
+                dropped_count = 1
+                dropped_bytes = line_bytes[0]
+
+            keep_lines = lines[dropped_count:]
+            fd, tmp_file_path = tempfile.mkstemp(
+                prefix=f".{self.file_path.stem}_",
+                suffix=".tmp",
+                dir=str(self.file_path.parent),
+            )
+            tmp_path = Path(tmp_file_path)
+            try:
+                os.fchmod(fd, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.writelines(keep_lines)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(str(tmp_path), str(self.file_path))
+                os.chmod(str(self.file_path), 0o600)
+            finally:
+                if tmp_path.exists() or os.path.islink(str(tmp_path)):
+                    try:
+                        tmp_path.unlink()
+                    except Exception:
+                        pass
+
+            self.dropped_records_count += dropped_count
+            self.trimmed_bytes_total += dropped_bytes
         except Exception:
             pass
 
@@ -378,6 +488,8 @@ class HostTelemetryRecorder:
     """
     Orchestrates high-frequency diagnostic sampling on an Edge host.
     Combines ChronyProbe, OSPressureProbe, and BoundedRingBuffer into a coordinated recorder.
+    Tracks records_written vs valid_chrony_samples to ensure OS-only samples never masquerade
+    as clock evidence.
     """
 
     def __init__(
@@ -387,6 +499,7 @@ class HostTelemetryRecorder:
         chrony_interval: float = 2.0,
         chrony_timeout: float = 1.0,
         max_bytes: int = 10 * 1024 * 1024,
+        chrony_probe: Optional[ChronyProbe] = None,
         chrony_runner: Optional[Callable[[List[str], float], Tuple[int, str, str]]] = None,
         proc_root: Path = Path("/proc"),
     ):
@@ -394,13 +507,28 @@ class HostTelemetryRecorder:
         self.os_interval = max(0.2, os_interval)
         self.chrony_interval = max(0.5, chrony_interval)
         self.ring_buffer = BoundedRingBuffer(self.output_file, max_bytes=max_bytes)
-        self.chrony_probe = ChronyProbe(command_timeout=chrony_timeout, runner=chrony_runner)
+        self.chrony_probe = chrony_probe or ChronyProbe(command_timeout=chrony_timeout, runner=chrony_runner)
         self.os_probe = OSPressureProbe(proc_root=proc_root)
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
         self._sequence = 0
         self._last_chrony_sample_mono = 0.0
+
+        # Separate bookkeeping: raw records written vs valid verified chrony samples
+        self.records_written = 0
+        self.valid_chrony_samples = 0
+        self.consecutive_chrony_errors = 0
+        self.max_consecutive_chrony_errors = 0
+        self.sampling_errors = 0
+        self.stopped_at_utc = None
+
+        # Cumulative durability counters (survive ring buffer compaction/eviction)
+        self.cumulative_chrony_attempts = 0
+        self.cumulative_chrony_failures = 0
+        self.cumulative_chrony_timeouts = 0
+        self.cumulative_uncertainty_violations = 0
 
     def sample_now(self) -> Dict[str, Any]:
         """Takes an immediate coordinated sample and writes to the ring buffer."""
@@ -417,6 +545,34 @@ class HostTelemetryRecorder:
         if (mono_now - self._last_chrony_sample_mono) >= (self.chrony_interval * 0.95) or self._last_chrony_sample_mono == 0.0:
             chrony_data = self.chrony_probe.sample_full()
             self._last_chrony_sample_mono = mono_now
+            self.cumulative_chrony_attempts += 1
+
+            # Track validity of chrony sample
+            t_res = chrony_data.get("tracking", {})
+            pt = chrony_data.get("parsed_tracking")
+            cmd_failed = (t_res.get("returncode") != 0)
+            timed_out = t_res.get("timed_out", False)
+            if cmd_failed:
+                self.cumulative_chrony_failures += 1
+            if timed_out:
+                self.cumulative_chrony_timeouts += 1
+
+            uncertainty_violated = (
+                not isinstance(pt, dict)
+                or pt.get("status") != "ok"
+                or pt.get("uncertainty_exceeded", False)
+            )
+            if uncertainty_violated:
+                self.cumulative_uncertainty_violations += 1
+
+            sample_ok = not cmd_failed and not timed_out and not uncertainty_violated
+            if sample_ok:
+                self.valid_chrony_samples += 1
+                self.consecutive_chrony_errors = 0
+            else:
+                self.consecutive_chrony_errors += 1
+                if self.consecutive_chrony_errors > self.max_consecutive_chrony_errors:
+                    self.max_consecutive_chrony_errors = self.consecutive_chrony_errors
 
         record: Dict[str, Any] = {
             "sequence": self._sequence,
@@ -424,31 +580,41 @@ class HostTelemetryRecorder:
             "timestamp_unix": now_unix,
             "os_pressure": os_data,
             "chrony": chrony_data,
+            "provenance": {
+                "sequence": self._sequence,
+                "cumulative_chrony_failures": self.cumulative_chrony_failures,
+                "cumulative_chrony_timeouts": self.cumulative_chrony_timeouts,
+                "cumulative_uncertainty_violations": self.cumulative_uncertainty_violations,
+                "dropped_records_prior": self.ring_buffer.dropped_records_count,
+            },
         }
 
         self.ring_buffer.write_record(record)
+        self.records_written += 1
         return record
 
     def run_loop(self, duration_seconds: Optional[float] = None) -> None:
         """Runs the sampling loop in the foreground until stopped or duration expires."""
         self._running = True
+        self._stop_event.clear()
         t0 = time.perf_counter()
 
         # Prime initial os_probe delta
         self.os_probe.sample_all()
 
-        while self._running:
+        while self._running and not self._stop_event.is_set():
             if duration_seconds is not None and (time.perf_counter() - t0) >= duration_seconds:
                 break
             try:
                 self.sample_now()
-            except Exception as e:
-                # Never crash the diagnostic loop on transient sampling errors
-                pass
+            except Exception:
+                self.sampling_errors += 1
 
-            time.sleep(self.os_interval)
+            if self._stop_event.wait(self.os_interval):
+                break
 
         self._running = False
+        self.stopped_at_utc = _iso_utc_now()
 
     def start_background(self) -> None:
         """Starts the sampling loop in a daemon background thread."""
@@ -461,6 +627,7 @@ class HostTelemetryRecorder:
     def stop(self) -> None:
         """Signals the loop to stop and waits for completion."""
         self._running = False
+        self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
 
@@ -468,14 +635,22 @@ class HostTelemetryRecorder:
         self,
         since_utc: Optional[str] = None,
         until_utc: Optional[str] = None,
+        startup_grace_seconds: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Analyzes records in the ring buffer for a given window, producing key
         epistemological indicators for RCA hypothesis evaluation.
+        Fails closed on missing or unverified chrony clock evidence.
         """
+        all_retained_records = self.ring_buffer.read_records(None, None)
         records = self.ring_buffer.read_records(since_utc, until_utc)
         if not records:
-            return {"record_count": 0, "status": "no_records_in_window"}
+            return {
+                "record_count": 0,
+                "status": "UNVERIFIED",
+                "clock_evidence_verified": False,
+                "reason": "no_records_in_window",
+            }
 
         chrony_records = [r for r in records if r.get("chrony") is not None]
         durations = [r["chrony"]["command_duration_seconds"] for r in chrony_records if "command_duration_seconds" in r["chrony"]]
@@ -486,9 +661,18 @@ class HostTelemetryRecorder:
         sample_ages = []
         drifts = []
         offsets = []
+        uncertainty_violations = 0
+        failed_commands = 0
+
         for r in chrony_records:
+            t_res = r["chrony"].get("tracking", {})
+            if t_res.get("returncode") != 0 or t_res.get("timed_out", False):
+                failed_commands += 1
+
             pt = r["chrony"].get("parsed_tracking")
             if isinstance(pt, dict) and pt.get("status") == "ok":
+                if pt.get("uncertainty_exceeded", False):
+                    uncertainty_violations += 1
                 sa = pt.get("sample_age_seconds")
                 if sa is not None:
                     sample_ages.append(sa)
@@ -498,6 +682,8 @@ class HostTelemetryRecorder:
                 off = pt.get("offset_seconds")
                 if off is not None:
                     offsets.append(off)
+            else:
+                uncertainty_violations += 1
 
         # OS steal and iowait
         steal_percentages = []
@@ -509,9 +695,150 @@ class HostTelemetryRecorder:
             if "iowait_pct" in stat:
                 iowait_percentages.append(stat["iowait_pct"])
 
-        return {
+        # Sequence continuity and compaction loss checks
+        first_seq = records[0].get("sequence") or records[0].get("provenance", {}).get("sequence")
+        last_seq = records[-1].get("sequence") or records[-1].get("provenance", {}).get("sequence")
+        expected_records_in_span = (last_seq - first_seq + 1) if (first_seq is not None and last_seq is not None) else len(records)
+        internal_sequence_gap = max(0, expected_records_in_span - len(records))
+
+        # Check provenance from records themselves (survives offline restart/reading from file)
+        last_prov = records[-1].get("provenance", {})
+        prov_chrony_failures = last_prov.get("cumulative_chrony_failures", 0)
+        prov_chrony_timeouts = last_prov.get("cumulative_chrony_timeouts", 0)
+        prov_uncertainty_violations = last_prov.get("cumulative_uncertainty_violations", 0)
+        prov_dropped_records = last_prov.get("dropped_records_prior", 0)
+
+        dropped_records_in_buffer = max(self.ring_buffer.dropped_records_count, prov_dropped_records)
+
+        # Baseline buffer coverage: earliest record retained
+        earliest_buf_record = all_retained_records[0] if all_retained_records else records[0]
+        earliest_buf_seq = earliest_buf_record.get("sequence") or earliest_buf_record.get("provenance", {}).get("sequence") or 1
+        earliest_buf_ts = earliest_buf_record.get("timestamp_utc")
+        earliest_buf_dt = _parse_iso_timestamp(earliest_buf_ts)
+
+        effective_startup_grace = startup_grace_seconds if startup_grace_seconds is not None else max(2.0, self.os_interval * 2, self.chrony_interval)
+        # Permit one missed nominal sampling interval, but never an unobserved tail.
+        max_chrony_gap = 2 * self.chrony_interval + self.os_interval
+        chrony_times = [_parse_iso_timestamp(r.get("timestamp_utc")) for r in chrony_records]
+        since_dt = _parse_iso_timestamp(since_utc) if since_utc else None
+        until_dt = _parse_iso_timestamp(until_utc) if until_utc else None
+        coverage_errors = []
+        if (since_utc and since_dt is None) or (until_utc and until_dt is None):
+            coverage_errors.append("invalid_window_timestamp")
+        elif since_dt and until_dt and since_dt > until_dt:
+            coverage_errors.append("invalid_window_order")
+        if any(t is None for t in chrony_times):
+            coverage_errors.append("invalid_chrony_timestamp")
+        elif chrony_times:
+            if any((b - a).total_seconds() < 0 or (b - a).total_seconds() > max_chrony_gap
+                   for a, b in zip(chrony_times, chrony_times[1:])):
+                coverage_errors.append("chrony_sampling_gap")
+            if since_dt and (chrony_times[0] - since_dt).total_seconds() > max_chrony_gap:
+                coverage_errors.append("unobserved_chrony_window_start")
+            if until_dt and (until_dt - chrony_times[-1]).total_seconds() > max_chrony_gap:
+                coverage_errors.append("unobserved_chrony_window_end")
+
+            # A healthy observation can expire before the next sample or the
+            # final response; sampling cadence alone cannot prove freshness.
+            for index, (record, observed) in enumerate(zip(chrony_records, chrony_times)):
+                pt = record["chrony"].get("parsed_tracking") or {}
+                age, limit = pt.get("sample_age_seconds"), pt.get("max_allowed_age_seconds")
+                if not all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                           for v in (age, limit)) or limit <= 0:
+                    coverage_errors.append("unverified_chrony_freshness_span")
+                    break
+                end = chrony_times[index + 1] if index + 1 < len(chrony_times) else (
+                    until_dt or _parse_iso_timestamp(records[-1].get("timestamp_utc")))
+                if end is None:
+                    coverage_errors.append("invalid_window_timestamp")
+                    break
+                if age + max(0.0, (end - observed).total_seconds()) > limit:
+                    coverage_errors.append("chrony_sample_expires_within_window")
+                    break
+
+        # Epistemological window classification:
+        # (a) unknown/unobserved interval before acquisition started
+        # (b) expected cadence/startup grace (contiguous start at sequence 1, zero drops, within grace)
+        # (c) provable eviction (internal sequence gap, buffer dropped records, or earliest retained sequence > 1)
+        is_provable_eviction = False
+        is_sequence_gap = False
+        is_unobserved_pre_recording = False
+        unobserved_reason = None
+        startup_grace_applied_seconds = None
+
+        if internal_sequence_gap > 0:
+            is_sequence_gap = True
+
+        if since_utc is None:
+            if (earliest_buf_seq > 1) or dropped_records_in_buffer > 0:
+                is_provable_eviction = True
+        else:
+            since_dt = _parse_iso_timestamp(since_utc)
+            if since_dt and earliest_buf_dt:
+                if since_dt < earliest_buf_dt:
+                    lead_seconds = (earliest_buf_dt - since_dt).total_seconds()
+                    if (earliest_buf_seq > 1) or dropped_records_in_buffer > 0:
+                        is_provable_eviction = True
+                    elif lead_seconds <= effective_startup_grace:
+                        # Contiguous healthy recording starting at seq 1 with 0 drops within expected startup lag
+                        startup_grace_applied_seconds = round(lead_seconds, 3)
+                    else:
+                        is_unobserved_pre_recording = True
+                        unobserved_reason = (
+                            f"window_requires_unobserved_pre_recording_interval("
+                            f"requested_since={since_utc},first_sample={earliest_buf_ts},lead_seconds={round(lead_seconds, 3)})"
+                        )
+                else:
+                    # since_dt >= earliest_buf_dt: requested window starts after or at earliest retained record
+                    pass
+
+        window_intact = (not is_provable_eviction) and (not is_sequence_gap) and (not is_unobserved_pre_recording) and not coverage_errors
+
+        total_failed_commands = max(failed_commands, self.cumulative_chrony_failures, prov_chrony_failures)
+        total_timeouts = max(len(timeouts), self.cumulative_chrony_timeouts, prov_chrony_timeouts)
+        total_uncertainty_violations = max(uncertainty_violations, self.cumulative_uncertainty_violations, prov_uncertainty_violations)
+
+        # Clock evidence is verified ONLY if we have valid chrony samples, zero timeouts,
+        # zero command failures, valid non-stale sample ages, and unbroken window completeness.
+        clock_evidence_verified = (
+            len(chrony_records) > 0
+            and total_failed_commands == 0
+            and total_timeouts == 0
+            and len(sample_ages) > 0
+            and total_uncertainty_violations == 0
+            and window_intact
+        )
+
+        reason = None
+        if not clock_evidence_verified:
+            reasons = []
+            if len(chrony_records) == 0:
+                reasons.append("no_chrony_samples")
+            if total_failed_commands > 0:
+                reasons.append(f"{total_failed_commands}_failed_chrony_commands")
+            if total_timeouts > 0:
+                reasons.append(f"{total_timeouts}_chrony_timeouts")
+            if len(sample_ages) == 0:
+                reasons.append("no_valid_tracking_parsed")
+            if total_uncertainty_violations > 0:
+                reasons.append(f"{total_uncertainty_violations}_uncertainty_violations")
+            if is_provable_eviction:
+                reasons.append(f"window_completeness_broken_by_record_eviction({dropped_records_in_buffer}_dropped,earliest_seq={earliest_buf_seq})")
+            if is_sequence_gap:
+                reasons.append(f"window_completeness_broken_by_internal_sequence_gap({internal_sequence_gap}_missing)")
+            if is_unobserved_pre_recording and unobserved_reason:
+                reasons.append(unobserved_reason)
+            reasons.extend(coverage_errors)
+            reason = "; ".join(reasons)
+
+        summary_dict = {
             "record_count": len(records),
+            "status": "OK" if clock_evidence_verified else "UNVERIFIED",
+            "clock_evidence_verified": clock_evidence_verified,
+            "reason": reason,
             "chrony_sample_count": len(chrony_records),
+            "valid_tracking_samples": len(sample_ages),
+            "failed_chrony_commands": total_failed_commands,
             "window_start_utc": records[0]["timestamp_utc"],
             "window_end_utc": records[-1]["timestamp_utc"],
             "chrony_timing": {
@@ -520,7 +847,7 @@ class HostTelemetryRecorder:
                 "avg_duration_s": round(sum(durations) / len(durations), 4) if durations else None,
                 "max_duration_s": max(durations) if durations else None,
                 "slow_commands_over_1s": len(slow_chrony),
-                "timeouts": len(timeouts),
+                "timeouts": total_timeouts,
             },
             "clock_tracking": {
                 "max_sample_age_s": max(sample_ages) if sample_ages else None,
@@ -534,8 +861,11 @@ class HostTelemetryRecorder:
                 "max_iowait_pct": max(iowait_percentages) if iowait_percentages else None,
                 "avg_iowait_pct": round(sum(iowait_percentages) / len(iowait_percentages), 2) if iowait_percentages else None,
             },
-            "dropped_records_in_buffer": self.ring_buffer.dropped_records_count,
+            "dropped_records_in_buffer": dropped_records_in_buffer,
         }
+        if startup_grace_applied_seconds is not None:
+            summary_dict["startup_grace_applied_seconds"] = startup_grace_applied_seconds
+        return summary_dict
 
 
 def main():
@@ -547,6 +877,7 @@ def main():
     run_parser.add_argument("--output-file", default="/run/miles/host-telemetry.jsonl", help="Ring buffer JSONL file path.")
     run_parser.add_argument("--os-interval", type=float, default=1.0, help="OS pressure sample interval in seconds.")
     run_parser.add_argument("--chrony-interval", type=float, default=2.0, help="Chrony sample interval in seconds.")
+    run_parser.add_argument("--chrony-timeout", type=float, default=1.0, help="Chrony command timeout in seconds.")
     run_parser.add_argument("--max-bytes", type=int, default=10 * 1024 * 1024, help="Max ring buffer size in bytes (default 10MB).")
     run_parser.add_argument("--duration", type=float, default=None, help="Optional duration to run before auto-exit.")
 
@@ -563,8 +894,19 @@ def main():
 
     if args.subcommand == "probe":
         cp = ChronyProbe()
+        ok, errors = preflight_check(chrony_probe=cp, require_chrony=True)
+        if not ok:
+            for err in errors:
+                print(f"Preflight error: {err}", file=sys.stderr)
+            return 1
+
         op = OSPressureProbe()
         chrony_data = cp.sample_full()
+        pt = chrony_data.get("parsed_tracking")
+        if chrony_data.get("returncode") != 0 or not pt or pt.get("status") != "ok" or pt.get("uncertainty_exceeded"):
+            print("Error: Chrony tracking failed or uncertainty exceeded during probe", file=sys.stderr)
+            return 1
+
         os_data = op.sample_all()
         result = {
             "timestamp_utc": _iso_utc_now(),
@@ -576,21 +918,48 @@ def main():
         return 0
 
     if args.subcommand == "run":
+        cp = ChronyProbe(command_timeout=args.chrony_timeout)
+        ok, errors = preflight_check(chrony_probe=cp, require_chrony=True)
+        if not ok:
+            for err in errors:
+                print(f"Preflight error: {err}", file=sys.stderr)
+            return 1
+
         recorder = HostTelemetryRecorder(
             output_file=Path(args.output_file),
             os_interval=args.os_interval,
             chrony_interval=args.chrony_interval,
+            chrony_timeout=args.chrony_timeout,
             max_bytes=args.max_bytes,
+            chrony_probe=cp,
         )
 
         def sig_handler(sig, frame):
+            # Gracefully stop the sampling loop; unified verdict runs after loop exits
             recorder.stop()
-            sys.exit(0)
 
         signal.signal(signal.SIGINT, sig_handler)
         signal.signal(signal.SIGTERM, sig_handler)
 
         recorder.run_loop(duration_seconds=args.duration)
+
+        # Fail closed if 0 records written, 0 valid chrony samples, or clock evidence unverified
+        if recorder.records_written == 0:
+            print("Error: Telemetry run loop wrote 0 records", file=sys.stderr)
+            return 1
+        if recorder.valid_chrony_samples == 0:
+            print("Error: Gate D0 telemetry failure: 0 valid chrony clock tracking samples collected", file=sys.stderr)
+            return 1
+
+        summary = recorder.summarize_window(until_utc=recorder.stopped_at_utc)
+        if recorder.sampling_errors:
+            print(f"Error: {recorder.sampling_errors} telemetry sampling attempts failed", file=sys.stderr)
+            return 1
+        if summary.get("status") != "OK" or not summary.get("clock_evidence_verified"):
+            reason = summary.get("reason") or "clock uncertainty or timeouts in window"
+            print(f"Error: Gate D0 clock evidence unverified: {reason}", file=sys.stderr)
+            return 1
+
         return 0
 
     if args.subcommand == "summarize":
@@ -601,7 +970,7 @@ def main():
         recorder = HostTelemetryRecorder(output_file=p)
         summary = recorder.summarize_window(since_utc=args.since, until_utc=args.until)
         print(json.dumps(summary, indent=2))
-        return 0
+        return 0 if summary.get("status") == "OK" and summary.get("clock_evidence_verified") else 1
 
     return 0
 

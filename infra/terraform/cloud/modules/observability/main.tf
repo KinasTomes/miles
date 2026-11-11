@@ -29,5 +29,12 @@ resource "aws_cloudwatch_metric_alarm" "runtime" {
   ok_actions          = var.alarm_actions
 }
 output "contract" {
-  value = { for k, alarm in aws_cloudwatch_metric_alarm.runtime : k => { metric = alarm.metric_name, dimensions = alarm.dimensions, threshold = alarm.threshold, missing = alarm.treat_missing_data, statistic = alarm.statistic } }
+  value = { for k, alarm in aws_cloudwatch_metric_alarm.runtime : k => {
+    alarm_name = alarm.alarm_name
+    metric     = alarm.metric_name
+    dimensions = alarm.dimensions
+    threshold  = alarm.threshold
+    missing    = alarm.treat_missing_data
+    statistic  = alarm.statistic
+  } }
 }

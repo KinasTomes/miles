@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -22,10 +23,14 @@ func TestUnavailableDiagnosticsKeepResponseAndLogsPrivate(t *testing.T) {
 		{"fenced-put", http.MethodPut, "fenced", storage.ErrFenced},
 		{"backend-put", http.MethodPut, "backend_unavailable", storage.ErrUnavailable},
 		{"backend-get", http.MethodGet, "backend_unavailable", storage.ErrUnavailable},
+		{"conflict-put", http.MethodPut, "metadata_conflict", storage.ErrConflict},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			world := newBucketWorld(t)
-			cause := fmt.Errorf("private_backend_details=DO_NOT_LOG: %w", tc.cause)
+			var cause error = fmt.Errorf("private_backend_details=DO_NOT_LOG: %w", tc.cause)
+			if tc.cause == storage.ErrConflict {
+				cause = &object.PutStageError{Stage: "prepare", Err: cause}
+			}
 			if tc.method == http.MethodPut {
 				world.router.Handlers = NewObjectHandlers(&fakeObjectWriter{err: cause}, &fakeObjectReader{}, nil, nil)
 			} else {
@@ -46,14 +51,21 @@ func TestUnavailableDiagnosticsKeepResponseAndLogsPrivate(t *testing.T) {
 			sign(req, accessKey("owner"), "secret-owner")
 			recorder := httptest.NewRecorder()
 			world.router.ServeHTTP(recorder, req)
-			if recorder.Code != http.StatusServiceUnavailable || checkErrorBody(t, recorder) != ErrServiceUnavailable {
+			status, code, message := http.StatusServiceUnavailable, ErrServiceUnavailable, "s3 service unavailable"
+			if tc.cause == storage.ErrConflict {
+				status, code, message = http.StatusConflict, ErrOperationAborted, "s3 operation aborted"
+			}
+			if recorder.Code != status || checkErrorBody(t, recorder) != code {
 				t.Fatalf("S3 response changed: status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
 			var entry map[string]any
 			if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
 				t.Fatalf("structured S3 availability log missing: %v", err)
 			}
-			if entry["msg"] != "s3 service unavailable" || entry["failure_class"] != tc.class ||
+			if tc.cause == storage.ErrConflict && entry["stage"] != "prepare" {
+				t.Fatal("conflict lost its fixed PUT stage", entry)
+			}
+			if entry["msg"] != message || entry["failure_class"] != tc.class ||
 				entry["request_id"] != recorder.Header().Get("X-Amz-Request-Id") || entry["method"] != tc.method {
 				t.Fatalf("bad safe provenance log: %v", entry)
 			}
