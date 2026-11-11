@@ -243,7 +243,7 @@ func (w Checkpointer) rebuildImage(ctx context.Context, image Image) (Rebuilt, e
 			})
 		case "PackLifecycle":
 			var v lifecycle.Action
-			if strictJSON(value, &v) != nil || v.Version != 1 || v.ID != id || v.Revision != row.Revision {
+			if strictJSON(value, &v) != nil || v.ValidateSchema() != nil || v.ID != id || v.Revision != row.Revision {
 				return zero, s.ErrInvalid
 			}
 			// Preserve reconciliation facts as inert records, never old fences.
