@@ -256,7 +256,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 				if isDeleting {
 					alreadyCharged := false
 					if pack.Ref.ID != "" {
-						packKey := fmt.Sprintf("%s:%s", pack.Ref.ID, pack.Ref.Generation)
+						packKey := fmt.Sprintf("%s:%s:%s", pack.Ref.ID, pack.Ref.Generation, pack.Class)
 						if earlyDeletedPacks[packKey] {
 							alreadyCharged = true
 						} else {
@@ -424,7 +424,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		hasStorage := false
 		hasPutReq := false
 		hasGetReq := false
-		hasNetwork := false
+		hasPayloadTransfer := false
 		hasEC2 := false
 		hasEBS := false
 		hasALBHour := false
@@ -443,8 +443,8 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 			case strings.HasPrefix(l.RateID, "s3.get_") || strings.HasPrefix(l.RateID, "s3.retrieval_") ||
 				strings.HasPrefix(l.RateID, "s3.restore_"):
 				hasGetReq = true
-			case strings.HasPrefix(l.RateID, "transfer.") || strings.HasPrefix(l.RateID, "network."):
-				hasNetwork = true
+			case strings.HasPrefix(l.RateID, "transfer."):
+				hasPayloadTransfer = true
 			case strings.HasPrefix(l.RateID, "ec2."):
 				hasEC2 = true
 			case strings.HasPrefix(l.RateID, "ebs."):
@@ -476,21 +476,22 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 
 		// Network coverage check:
 		// A trace must provide explicit evidence of network metering according to topology and scope:
-		// 1. Priced network transfer / egress lines in report (hasNetwork == true), OR
-		// 2. Explicit zero traffic metering where traffic map is provided across events and total traffic is 0.
-		// If neither traffic map nor network transfer usage is provided, network was not measured -> fail closed (return false).
-		// If traffic map has positive traffic but no priced network lines -> fail closed (return false).
-		hasTrafficMap := false
-		var totalTrafficBytes uint64
+		// 1. Priced payload data transfer lines in report (hasPayloadTransfer == true), OR
+		// 2. Explicit zero traffic metering across all required routes for the topology and policy.
+		// If network infrastructure rates (e.g. network.nat_hour) are present without payload transfer,
+		// or if traffic map only covers a subset of routes (e.g. only client_to_gateway: 0),
+		// network metering is incomplete -> fail closed (return false).
+		observedRoutes := make(map[cost.Route]bool)
+		routeBytes := make(map[cost.Route]uint64)
 		hasClientDownloads := false
+
 		for _, event := range trace.Events {
-			if len(event.Traffic) > 0 {
-				hasTrafficMap = true
-				for _, b := range event.Traffic {
-					totalTrafficBytes += b
-				}
+			for route, b := range event.Traffic {
+				observedRoutes[route] = true
+				routeBytes[route] += b
 			}
-			if event.Traffic[cost.GatewayClient] > 0 || event.Traffic[cost.S3Gateway] > 0 {
+			if event.Traffic[cost.GatewayClient] > 0 || event.Traffic[cost.S3Gateway] > 0 ||
+				event.Traffic[cost.S3Client] > 0 {
 				hasClientDownloads = true
 			}
 		}
@@ -498,9 +499,24 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		if hasClientDownloads && !hasGetReq {
 			return false
 		}
-		if !hasNetwork {
-			if !hasTrafficMap || totalTrafficBytes > 0 {
-				return false
+
+		if !hasPayloadTransfer {
+			if polName == PolicyDirectS3 {
+				hasDirectRoutes := (observedRoutes[cost.ClientGateway] && observedRoutes[cost.GatewayClient] &&
+					routeBytes[cost.ClientGateway] == 0 && routeBytes[cost.GatewayClient] == 0) ||
+					(observedRoutes[cost.ClientS3] && observedRoutes[cost.S3Client] &&
+						routeBytes[cost.ClientS3] == 0 && routeBytes[cost.S3Client] == 0)
+				if !hasDirectRoutes {
+					return false
+				}
+			} else {
+				hasDSGRoutes := observedRoutes[cost.ClientGateway] && observedRoutes[cost.GatewayClient] &&
+					observedRoutes[cost.GatewayS3] && observedRoutes[cost.S3Gateway] &&
+					routeBytes[cost.ClientGateway] == 0 && routeBytes[cost.GatewayClient] == 0 &&
+					routeBytes[cost.GatewayS3] == 0 && routeBytes[cost.S3Gateway] == 0
+				if !hasDSGRoutes {
+					return false
+				}
 			}
 		}
 
@@ -884,13 +900,13 @@ func categorizeReport(r cost.Report, traffic map[cost.Route]uint64, earlyDeletio
 					reqByType["s3_restore"] += qInt
 				}
 			}
-		case strings.HasPrefix(l.RateID, "transfer.") || strings.HasPrefix(l.RateID, "network."):
+		case strings.HasPrefix(l.RateID, "transfer."):
 			netRat.Add(&netRat, val)
 		case strings.HasPrefix(l.RateID, "ec2.") || strings.HasPrefix(l.RateID, "ebs.") ||
 			strings.HasPrefix(l.RateID, "alb.") || strings.HasPrefix(l.RateID, "ddb.") ||
 			strings.HasPrefix(l.RateID, "kms.") || strings.HasPrefix(l.RateID, "cw.") ||
 			strings.HasPrefix(l.RateID, "secret.") || strings.HasPrefix(l.RateID, "ssm.") ||
-			strings.HasPrefix(l.RateID, "edge."):
+			strings.HasPrefix(l.RateID, "edge.") || strings.HasPrefix(l.RateID, "network."):
 			infraRat.Add(&infraRat, val)
 		}
 	}

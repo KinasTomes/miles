@@ -827,37 +827,100 @@ func TestComparePoliciesIncompleteTelemetrySuppressesCompleteTotalAndSavings(t *
 		t.Fatalf("expected nil BreakEven for trace missing network telemetry, got %v", *warmStd5.BreakEven)
 	}
 
-	// 6. Explicit zero traffic with complete coverage: same trace but with explicit traffic map of 0 bytes across routes.
-	// Since network was explicitly metered and observed to be 0, it is complete across all topology dimensions!
-	trace6 := trace5
-	trace6.Name = "explicit-zero-traffic-trace"
-	trace6.Events = []Event{
+	// 6. Finding 1 regression (Counterexample 1): trace has network.nat_hour (hourly NAT infrastructure),
+	// full cloud infra, storage and requests, but NO Traffic map and NO payload transfer (transfer.*).
+	// NAT infrastructure rate must NOT be conflated with payload transfer -> must return nil CompleteTotalUSD.
+	for i := range catalog.Rates {
+		if catalog.Rates[i].ID == "network.nat_hour" {
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.059"}}
+		}
+	}
+	traceNAT := trace5
+	traceNAT.Name = "nat-hour-only-trace"
+	traceNAT.Events = []Event{
+		{
+			AtNS:         0,
+			Snapshot:     trace5.Events[0].Snapshot,
+			StorageBytes: trace5.Events[0].StorageBytes,
+			Usage: append(trace5.Events[0].Usage, cost.Usage{
+				RateID: "network.nat_hour", Unit: "Hrs", Quantity: "10",
+			}),
+		},
+	}
+	resNAT, err := ComparePolicies(context.Background(), traceNAT, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	warmStdNAT := resNAT.Policies[1]
+	if warmStdNAT.Report.CompleteTotalUSD != nil {
+		t.Fatalf("expected nil CompleteTotalUSD for NAT-hour only trace, got %v", *warmStdNAT.Report.CompleteTotalUSD)
+	}
+	if warmStdNAT.SavingsUSD != nil {
+		t.Fatalf("expected nil SavingsUSD for NAT-hour only trace, got %v", *warmStdNAT.SavingsUSD)
+	}
+
+	// 7. Finding 1 regression (Counterexample 2): trace has Traffic = {client_to_gateway: 0}
+	// but lacks observations for egress and S3 routes, and has no transfer.* usage.
+	// Zero on one route does not prove full network coverage -> must return nil CompleteTotalUSD.
+	traceSingleRoute := trace5
+	traceSingleRoute.Name = "single-route-zero-traffic-trace"
+	traceSingleRoute.Events = []Event{
 		{
 			AtNS:         0,
 			Snapshot:     trace5.Events[0].Snapshot,
 			StorageBytes: trace5.Events[0].StorageBytes,
 			Traffic: map[cost.Route]uint64{
-				cost.GatewayClient: 0,
 				cost.ClientGateway: 0,
+			},
+			Usage: trace5.Events[0].Usage,
+		},
+	}
+	resSingle, err := ComparePolicies(context.Background(), traceSingleRoute, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	warmStdSingle := resSingle.Policies[1]
+	if warmStdSingle.Report.CompleteTotalUSD != nil {
+		t.Fatalf("expected nil CompleteTotalUSD for single-route-zero trace, got %v", *warmStdSingle.Report.CompleteTotalUSD)
+	}
+	if warmStdSingle.SavingsUSD != nil {
+		t.Fatalf("expected nil SavingsUSD for single-route-zero trace, got %v", *warmStdSingle.SavingsUSD)
+	}
+
+	// 8. Explicit zero traffic with complete coverage: trace explicitly measures ALL required routes
+	// (client_to_gateway, gateway_to_client, gateway_to_s3_upload, s3_to_gateway_download) as 0 bytes.
+	// Since all data path routes were explicitly metered and observed to be 0, network coverage is complete!
+	traceCompleteZero := trace5
+	traceCompleteZero.Name = "explicit-zero-traffic-trace"
+	traceCompleteZero.Events = []Event{
+		{
+			AtNS:         0,
+			Snapshot:     trace5.Events[0].Snapshot,
+			StorageBytes: trace5.Events[0].StorageBytes,
+			Traffic: map[cost.Route]uint64{
+				cost.ClientGateway: 0,
+				cost.GatewayClient: 0,
 				cost.GatewayS3:     0,
+				cost.S3Gateway:     0,
 			},
 			Usage: trace5.Events[0].Usage,
 		},
 	}
 
-	res6, err := ComparePolicies(context.Background(), trace6, catalog)
+	resCompleteZero, err := ComparePolicies(context.Background(), traceCompleteZero, catalog)
 	if err != nil {
 		t.Fatalf("ComparePolicies failed: %v", err)
 	}
-	warmStd6 := res6.Policies[1]
-	if warmStd6.Report.CompleteTotalUSD == nil {
-		t.Fatal("expected non-nil CompleteTotalUSD for explicit zero traffic with complete coverage")
+	warmStdCompleteZero := resCompleteZero.Policies[1]
+	if warmStdCompleteZero.Report.CompleteTotalUSD == nil {
+		t.Fatal("expected non-nil CompleteTotalUSD for explicit zero traffic with complete coverage across all routes")
 	}
-	if warmStd6.SavingsUSD == nil {
-		t.Fatal("expected non-nil SavingsUSD for explicit zero traffic with complete coverage")
+	if warmStdCompleteZero.SavingsUSD == nil {
+		t.Fatal("expected non-nil SavingsUSD for explicit zero traffic with complete coverage across all routes")
 	}
-	if warmStd6.BreakEven == nil {
-		t.Fatal("expected non-nil BreakEven for explicit zero traffic with complete coverage")
+	if warmStdCompleteZero.BreakEven == nil {
+		t.Fatal("expected non-nil BreakEven for explicit zero traffic with complete coverage across all routes")
 	}
 }
 
@@ -1055,5 +1118,68 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 	// Two packs = 2/75 USD.
 	if irTwo.Breakdown.EarlyDeletionUSD != "2/75" {
 		t.Fatalf("expected early deletion fee '2/75' for two 1GiB packs without Ref, got %q (did it collapse packs by size?)", irTwo.Breakdown.EarlyDeletionUSD)
+	}
+
+	// Finding 2 regression: A pack with the same Ref (ID:generation) changing storage class
+	// (GLACIER_IR:Retiring on day 10, then GLACIER:Deleting on day 11)
+	// must NOT have its Glacier Flexible fee swallowed due to a global ID:generation key.
+	// Both retention obligations must be charged to their respective policies.
+	traceClassChange := baseTrace
+	traceClassChange.Name = "class-change-early-deletion"
+	traceClassChange.DurationNS = 30 * dayNS
+	traceClassChange.Start = startTime
+	traceClassChange.BytesPerGB = 1024 * 1024 * 1024
+
+	traceClassChange.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  uint64(oneGiB),
+				Physical: uint64(oneGiB),
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: uint64(oneGiB),
+			},
+		},
+		{
+			AtNS: 10 * dayNS, // Pack retiring from Glacier IR at day 10
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:        storage.PackRef{ID: "shared-pack", Generation: "g1"},
+					State:      "Retiring",
+					Size:       oneGiB,
+					Class:      storage.GlacierIR,
+					LastAccess: startTime,
+				},
+				LiveBytes: oneGiB,
+			},
+		},
+		{
+			AtNS: 11 * dayNS, // Same pack deleting from Glacier Flexible at day 11
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:        storage.PackRef{ID: "shared-pack", Generation: "g1"},
+					State:      "Deleting",
+					Size:       oneGiB,
+					Class:      storage.Glacier,
+					LastAccess: startTime.Add(10 * 24 * time.Hour), // LastAccess was day 10
+				},
+				LiveBytes: oneGiB,
+			},
+		},
+	}
+
+	resChange, err := ComparePolicies(context.Background(), traceClassChange, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	irChange := resChange.Policies[2]   // WarmGlacierIR
+	flexChange := resChange.Policies[3] // WarmGlacierFlex
+
+	if irChange.Breakdown.EarlyDeletionUSD == "0" || irChange.Breakdown.EarlyDeletionUSD == "" {
+		t.Fatalf("expected Glacier IR early deletion fee to be charged, got %q", irChange.Breakdown.EarlyDeletionUSD)
+	}
+	if flexChange.Breakdown.EarlyDeletionUSD == "0" || flexChange.Breakdown.EarlyDeletionUSD == "" {
+		t.Fatalf("expected Glacier Flexible early deletion fee to be charged (did global pack identity swallow it?), got %q", flexChange.Breakdown.EarlyDeletionUSD)
 	}
 }
