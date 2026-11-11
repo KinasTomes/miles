@@ -65,6 +65,8 @@ Chỉ bắt đầu lượt tính phí sau khi hoàn tất bước 1 và ghi nh�
 
 Native fixtures có guard riêng. Đặt account/role/Region và cờ opt-in theo [runbook](edge-acceptance-aws-run-plan-draft.md). `TestAWSDevRecoveryFencedSealCheckpoint` cần bucket versioned được chỉ định. GC fixture tạo bucket riêng và đợi 15 phút sau bật versioning, cần timeout ít nhất 45 phút. Chuẩn bị đủ quyền và inventory cho các resource tạm, tối đa 20 bảng fixture tồn tại đồng thời.
 
+Trước khi chạy fixture từ client riêng tư, kiểm quyền qua đúng gateway endpoint S3/DynamoDB. Lưu policy baseline, áp dụng quyền tạm cho riêng deploy role và các prefix fixture đã duyệt, xác minh read probe từ chính client, rồi mới dispatch test. R2 cần đọc versioning và xóa versions dưới prefix journal thử. Khôi phục endpoint policy baseline sau fixture và trước cleanup. [Các bước đã kiểm chứng](../testing/edge-aws-runbook.md).
+
 Đối với alarms, chỉ bật test faults trên installation disposable. `corrupt_pack` sửa byte trong bộ nhớ, `ddb_throttle` mô phỏng lỗi SDK, `s3_5xx` chặn request trước network. Ghi rõ loại bằng chứng. Counter không phát zero có thể hồi phục theo missing-data policy, phải chứng minh exporter vẫn sống. Cut-age cần mốc seal thật và hơn một giờ chờ, kiểm tra thời gian còn lại trước khi bắt đầu.
 
 `capture_alarm_evidence.py` thu cấu hình/history/datapoint rồi gọi validator. Reader này cần bằng chứng riêng về nguồn tín hiệu runtime. Không coi alarm probe tổng hợp hoặc `SetAlarmState` là PASS.
