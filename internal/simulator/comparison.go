@@ -226,6 +226,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		PolicyWarmGlacierIR:    new(big.Rat),
 		PolicyWarmGlacierFlex:  new(big.Rat),
 	}
+	earlyDeletedPacks := make(map[string]bool)
 
 	// Replay events through timeline
 	for _, event := range trace.Events {
@@ -244,7 +245,8 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 			currentStorageBytes = event.StorageBytes
 		}
 
-		// Account early deletion if pack in a class with minimum retention is deleted or retired before minimum retention days
+		// Account early deletion if pack in a class with minimum retention is deleted or retired before minimum retention days.
+		// Deduplicate lifecycle observations by pack identity and generation so early deletion is charged exactly once.
 		if event.Tiering != nil {
 			pack := event.Tiering.Pack
 			if pack.Size > 0 {
@@ -252,29 +254,36 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 				isDeleting := pack.State == "Deleting" || pack.State == "Retiring" ||
 					pack.State == "Deleted" || pack.State == "Retired"
 				if isDeleting {
-					if rule, ok := catalog.RuleForClass(string(pack.Class)); ok && rule.MinimumDays > 0 {
-						minRetention := time.Duration(rule.MinimumDays) * 24 * time.Hour
-						var retained time.Duration
-						if !pack.MinRetentionUntil.IsZero() && pack.MinRetentionUntil.After(eventTime) {
-							retained = minRetention - pack.MinRetentionUntil.Sub(eventTime)
-						} else if !pack.LastAccess.IsZero() && eventTime.After(pack.LastAccess) {
-							retained = eventTime.Sub(pack.LastAccess)
-						}
-						if retained < minRetention {
-							u, err := cost.EarlyDeletionUsage(pack.Class, uint64(pack.Size), retained, minRetention, trace.BytesPerGB, monthDuration)
-							if err == nil && u.Quantity != "" {
-								var targetPolicy PolicyName
-								switch pack.Class {
-								case storage.GlacierIR:
-									targetPolicy = PolicyWarmGlacierIR
-								case storage.Glacier:
-									targetPolicy = PolicyWarmGlacierFlex
-								}
-								if targetPolicy != "" {
-									earlyDeletionUsageByPolicy[targetPolicy] = append(earlyDeletionUsageByPolicy[targetPolicy], u)
-									if earlyReport, err := cost.Evaluate(catalog, []cost.Usage{u}); err == nil {
-										if val, ok := new(big.Rat).SetString(earlyReport.Subtotal); ok {
-											earlyDeletionUSDByPolicy[targetPolicy].Add(earlyDeletionUSDByPolicy[targetPolicy], val)
+					packKey := fmt.Sprintf("%s:%s", pack.Ref.ID, pack.Ref.Generation)
+					if pack.Ref.ID == "" && pack.Ref.Generation == "" {
+						packKey = fmt.Sprintf("pack-%d", pack.Size)
+					}
+					if !earlyDeletedPacks[packKey] {
+						earlyDeletedPacks[packKey] = true
+						if rule, ok := catalog.RuleForClass(string(pack.Class)); ok && rule.MinimumDays > 0 {
+							minRetention := time.Duration(rule.MinimumDays) * 24 * time.Hour
+							var retained time.Duration
+							if !pack.MinRetentionUntil.IsZero() && pack.MinRetentionUntil.After(eventTime) {
+								retained = minRetention - pack.MinRetentionUntil.Sub(eventTime)
+							} else if !pack.LastAccess.IsZero() && eventTime.After(pack.LastAccess) {
+								retained = eventTime.Sub(pack.LastAccess)
+							}
+							if retained < minRetention {
+								u, err := cost.EarlyDeletionUsage(pack.Class, uint64(pack.Size), retained, minRetention, trace.BytesPerGB, monthDuration)
+								if err == nil && u.Quantity != "" {
+									var targetPolicy PolicyName
+									switch pack.Class {
+									case storage.GlacierIR:
+										targetPolicy = PolicyWarmGlacierIR
+									case storage.Glacier:
+										targetPolicy = PolicyWarmGlacierFlex
+									}
+									if targetPolicy != "" {
+										earlyDeletionUsageByPolicy[targetPolicy] = append(earlyDeletionUsageByPolicy[targetPolicy], u)
+										if earlyReport, err := cost.Evaluate(catalog, []cost.Usage{u}); err == nil {
+											if val, ok := new(big.Rat).SetString(earlyReport.Subtotal); ok {
+												earlyDeletionUSDByPolicy[targetPolicy].Add(earlyDeletionUSDByPolicy[targetPolicy], val)
+											}
 										}
 									}
 								}
@@ -401,41 +410,106 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 				strings.Contains(lower, "not modeled") || strings.Contains(lower, "not modelled") ||
 				strings.Contains(lower, "require additional observations") ||
 				strings.Contains(lower, "unmeasured") || strings.Contains(lower, "unobserved") ||
-				strings.Contains(lower, "incomplete") || strings.Contains(lower, "partial") {
+				strings.Contains(lower, "incomplete") || strings.Contains(lower, "partial") ||
+				strings.Contains(lower, "missing") || strings.Contains(lower, "not accounted") ||
+				strings.Contains(lower, "not included") {
 				return false
 			}
 		}
 
 		hasStorage := false
-		hasRequests := false
+		hasPutReq := false
+		hasGetReq := false
 		hasNetwork := false
-		hasInfra := false
+		hasEC2 := false
+		hasEBS := false
+		hasALBHour := false
+		hasALBLCU := false
+		hasDDBStorage := false
+		hasDDBWrite := false
+		hasEdgeCompute := false
+		hasEdgeDisk := false
 
 		for _, l := range r.Lines {
 			switch {
 			case strings.HasPrefix(l.RateID, "s3.storage."):
 				hasStorage = true
-			case strings.HasPrefix(l.RateID, "s3.put_") || strings.HasPrefix(l.RateID, "s3.get_") ||
-				strings.HasPrefix(l.RateID, "s3.transition_") || strings.HasPrefix(l.RateID, "s3.retrieval_") ||
+			case strings.HasPrefix(l.RateID, "s3.put_"):
+				hasPutReq = true
+			case strings.HasPrefix(l.RateID, "s3.get_") || strings.HasPrefix(l.RateID, "s3.retrieval_") ||
 				strings.HasPrefix(l.RateID, "s3.restore_"):
-				hasRequests = true
+				hasGetReq = true
 			case strings.HasPrefix(l.RateID, "transfer.") || strings.HasPrefix(l.RateID, "network."):
 				hasNetwork = true
-			case strings.HasPrefix(l.RateID, "ec2.") || strings.HasPrefix(l.RateID, "alb.") ||
-				strings.HasPrefix(l.RateID, "ddb.") || strings.HasPrefix(l.RateID, "ebs.") ||
-				strings.HasPrefix(l.RateID, "kms.") || strings.HasPrefix(l.RateID, "cw.") ||
-				strings.HasPrefix(l.RateID, "secret.") || strings.HasPrefix(l.RateID, "ssm.") ||
-				strings.HasPrefix(l.RateID, "edge."):
-				hasInfra = true
+			case strings.HasPrefix(l.RateID, "ec2."):
+				hasEC2 = true
+			case strings.HasPrefix(l.RateID, "ebs."):
+				hasEBS = true
+			case l.RateID == "alb.hour":
+				hasALBHour = true
+			case l.RateID == "alb.lcu":
+				hasALBLCU = true
+			case l.RateID == "ddb.storage":
+				hasDDBStorage = true
+			case l.RateID == "ddb.write":
+				hasDDBWrite = true
+			case strings.HasPrefix(l.RateID, "edge.compute"):
+				hasEdgeCompute = true
+			case strings.HasPrefix(l.RateID, "edge.disk"):
+				hasEdgeDisk = true
 			}
 		}
 
-		if !hasStorage || !hasRequests || !hasNetwork {
+		// Storage is always required
+		if !hasStorage {
 			return false
 		}
-		if polName != PolicyDirectS3 && !hasInfra {
+
+		// S3 PUT requests required if writes or storage exist
+		if currentLogical > 0 && !hasPutReq {
 			return false
 		}
+
+		// Check if trace has traffic observations
+		hasClientTraffic := false
+		hasClientDownloads := false
+		for _, event := range trace.Events {
+			if len(event.Traffic) > 0 {
+				hasClientTraffic = true
+			}
+			if event.Traffic[cost.GatewayClient] > 0 || event.Traffic[cost.S3Gateway] > 0 {
+				hasClientDownloads = true
+			}
+		}
+
+		if hasClientDownloads && !hasGetReq {
+			return false
+		}
+		if hasClientTraffic && !hasNetwork {
+			return false
+		}
+
+		// Topology & Infrastructure requirements for candidate DSG policies
+		if polName != PolicyDirectS3 {
+			if trace.Profile == "cloud" {
+				// Cloud DSG requires Compute (EC2), Disk (EBS), and Load Balancer (ALB hour + LCU)
+				if !hasEC2 || !hasEBS || !hasALBHour || !hasALBLCU {
+					return false
+				}
+				// Cloud metadata backend requires DynamoDB storage and write accounting
+				if trace.Metadata == "dynamodb" || trace.Metadata == "dynamodb-local" {
+					if !hasDDBStorage || !hasDDBWrite {
+						return false
+					}
+				}
+			} else if trace.Profile == "edge" {
+				// Edge DSG requires Edge Compute and Edge Disk/Network
+				if !hasEdgeCompute || !hasEdgeDisk {
+					return false
+				}
+			}
+		}
+
 		return true
 	}
 

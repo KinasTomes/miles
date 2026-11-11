@@ -326,17 +326,74 @@ func (s *server) costReport(c *call) error {
 			trafficBytes = candidatePol.Breakdown.TrafficBytes
 		}
 
+		var ec2Rat, ebsRat, albRat, ddbRat, kmsRat, natRat big.Rat
+		var hasEC2, hasEBS, hasALB, hasDDB, hasKMS, hasNAT bool
+
+		for _, l := range candidatePol.Report.Lines {
+			val, _ := new(big.Rat).SetString(l.USD)
+			if val == nil {
+				continue
+			}
+			switch {
+			case strings.HasPrefix(l.RateID, "ec2.") || strings.HasPrefix(l.RateID, "edge.compute"):
+				ec2Rat.Add(&ec2Rat, val)
+				hasEC2 = true
+			case strings.HasPrefix(l.RateID, "ebs.") || strings.HasPrefix(l.RateID, "edge.disk"):
+				ebsRat.Add(&ebsRat, val)
+				hasEBS = true
+			case strings.HasPrefix(l.RateID, "alb."):
+				albRat.Add(&albRat, val)
+				hasALB = true
+			case strings.HasPrefix(l.RateID, "ddb."):
+				ddbRat.Add(&ddbRat, val)
+				hasDDB = true
+			case strings.HasPrefix(l.RateID, "kms.") || strings.HasPrefix(l.RateID, "cw.") ||
+				strings.HasPrefix(l.RateID, "secret.") || strings.HasPrefix(l.RateID, "ssm."):
+				kmsRat.Add(&kmsRat, val)
+				hasKMS = true
+			case strings.HasPrefix(l.RateID, "network.nat_") || strings.HasPrefix(l.RateID, "network.endpoint_") ||
+				strings.HasPrefix(l.RateID, "network.public_ipv4"):
+				natRat.Add(&natRat, val)
+				hasNAT = true
+			}
+		}
+
 		computeCost := "omitted"
-		albCost := "omitted"
-		if scenario == "A" {
+		if hasEC2 {
+			computeCost = ec2Rat.RatString()
+		} else if scenario == "A" {
 			computeCost = "omitted (cloud ec2)"
-			albCost = "omitted (cloud alb)"
 		} else {
 			computeCost = "omitted (edge hardware)"
+		}
+
+		diskCost := "omitted"
+		if hasEBS {
+			diskCost = ebsRat.RatString()
+		}
+
+		albCost := "omitted"
+		if hasALB {
+			albCost = albRat.RatString()
+		} else if scenario == "A" {
+			albCost = "omitted (cloud alb)"
+		} else {
 			albCost = "not_applicable (edge deployment has no ALB)"
 		}
-		if candidatePol.Breakdown != nil && candidatePol.Breakdown.InfrastructureUSD != "0" {
-			computeCost = candidatePol.Breakdown.InfrastructureUSD
+
+		ddbCost := "omitted"
+		if hasDDB {
+			ddbCost = ddbRat.RatString()
+		}
+
+		kmsCost := "omitted"
+		if hasKMS {
+			kmsCost = kmsRat.RatString()
+		}
+
+		natCost := "omitted"
+		if hasNAT {
+			natCost = natRat.RatString()
 		}
 
 		response := CostReportResponse{
@@ -386,11 +443,11 @@ func (s *server) costReport(c *call) error {
 			},
 			Infrastructure: InfrastructureReport{
 				ComputeOrEdgeVM:       computeCost,
-				DiskEBS:               "omitted",
+				DiskEBS:               diskCost,
 				ALBLCU:                albCost,
-				DynamoDB:              "omitted",
-				KMSCloudWatch:         "omitted",
-				NATInterfaceEndpoints: "omitted",
+				DynamoDB:              ddbCost,
+				KMSCloudWatch:         kmsCost,
+				NATInterfaceEndpoints: natCost,
 			},
 			RevivalCopy: RevivalCopyReport{
 				RevivedChunks:              nil,

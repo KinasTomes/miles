@@ -441,21 +441,26 @@ func TestComparePoliciesCompleteMatchedSavingsAndBreakEven(t *testing.T) {
 	dayNS := int64(24 * time.Hour)
 	baseTrace, catalog := fixture(t, "cloud-boundary")
 
-	// Set transfer.internet_egress to verified with a valid rate tier
+	// Set verified rate tiers for all required dimensions
 	for i := range catalog.Rates {
-		if catalog.Rates[i].ID == "transfer.internet_egress" {
+		switch catalog.Rates[i].ID {
+		case "transfer.internet_egress":
 			catalog.Rates[i].Status = "verified"
-			catalog.Rates[i].Tiers = []pricing.Tier{
-				{Begin: "0", End: nil, USD: "0.09"},
-			}
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.09"}}
+		case "ec2.compute":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.0416"}}
+		case "ebs.gp3":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.08"}}
 		}
 	}
 
-	// Build a complete matched trace with only verified prices (S3 standard, requests, network, and infrastructure)
+	// Build a complete matched trace with only verified prices (S3 standard, requests, network, and infrastructure: EC2, EBS, ALB, DDB)
 	trace := baseTrace
 	trace.Name = "complete-matched-model"
 	trace.DurationNS = 30 * dayNS
-	trace.Omissions = []string{"Full matched model without missing telemetry"}
+	trace.Omissions = []string{"Full verified observation run across all topology dimensions"}
 	trace.Events = []Event{
 		{
 			AtNS: 0,
@@ -471,7 +476,12 @@ func TestComparePoliciesCompleteMatchedSavingsAndBreakEven(t *testing.T) {
 			Usage: []cost.Usage{
 				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
 				{RateID: "transfer.internet_egress", Unit: "GB", Quantity: "2"},
-				{RateID: "alb.hour", Unit: "Hrs", Quantity: "10"}, // $0.0275/hr * 10 = $0.275
+				{RateID: "ec2.compute", Unit: "Hrs", Quantity: "10"},
+				{RateID: "ebs.gp3", Unit: "GB-Mo", Quantity: "10"},
+				{RateID: "alb.hour", Unit: "Hrs", Quantity: "10"},
+				{RateID: "alb.lcu", Unit: "LCU-Hrs", Quantity: "10"},
+				{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1"},
+				{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "10"},
 			},
 		},
 	}
@@ -725,6 +735,43 @@ func TestComparePoliciesIncompleteTelemetrySuppressesCompleteTotalAndSavings(t *
 	if res3.Policies[1].BreakEven != nil {
 		t.Fatal("expected warm_standard_only BreakEven to be nil when candidate infra is missing")
 	}
+
+	// 4. Finding 1 regression: trace with alb.hour only (missing EC2, EBS, DDB) must NOT return CompleteTotalUSD or savings
+	trace4 := trace1
+	trace4.Name = "partial-cloud-infra-trace"
+	trace4.Omissions = []string{"Full observation run"} // Neutral omissions without omission keywords
+	trace4.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  2000 * 1024 * 1024,
+				Physical: 500 * 1024 * 1024,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: 500 * 1024 * 1024,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "1"},
+				{RateID: "transfer.internet_egress", Unit: "GB", Quantity: "1"},
+				{RateID: "alb.hour", Unit: "Hrs", Quantity: "1"},
+			},
+		},
+	}
+
+	res4, err := ComparePolicies(context.Background(), trace4, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	warmStd4 := res4.Policies[1]
+	if warmStd4.Report.CompleteTotalUSD != nil {
+		t.Fatalf("expected nil CompleteTotalUSD for partial cloud infra trace (missing EC2/EBS/DDB), got %v", *warmStd4.Report.CompleteTotalUSD)
+	}
+	if warmStd4.SavingsUSD != nil {
+		t.Fatalf("expected nil SavingsUSD for partial cloud infra trace, got %v", *warmStd4.SavingsUSD)
+	}
+	if warmStd4.BreakEven != nil {
+		t.Fatalf("expected nil BreakEven for partial cloud infra trace, got %v", *warmStd4.BreakEven)
+	}
 }
 
 func TestComparePoliciesRestoreCappedToRemainingTraceDuration(t *testing.T) {
@@ -810,10 +857,24 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 			},
 		},
 		{
-			AtNS: 10 * dayNS, // Deleted after 10 days (GLACIER_IR has 90-day minimum retention)
+			AtNS: 10 * dayNS, // Observed as Deleting at day 10 (GLACIER_IR has 90-day minimum retention)
 			Tiering: &Tiering{
 				Pack: storage.PackInfo{
+					Ref:        storage.PackRef{ID: "same-pack", Generation: "g1"},
 					State:      "Deleting",
+					Size:       packBytes,
+					Class:      storage.GlacierIR,
+					LastAccess: startTime,
+				},
+				LiveBytes: packBytes,
+			},
+		},
+		{
+			AtNS: 10 * dayNS, // Second observation as Retiring for the same pack identity and generation
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:        storage.PackRef{ID: "same-pack", Generation: "g1"},
+					State:      "Retiring",
 					Size:       packBytes,
 					Class:      storage.GlacierIR,
 					LastAccess: startTime,
@@ -834,5 +895,21 @@ func TestComparePoliciesEarlyDeletionAccrued(t *testing.T) {
 	}
 	if irPol.Breakdown.EarlyDeletionUSD == "0" || irPol.Breakdown.EarlyDeletionUSD == "" {
 		t.Fatalf("expected early deletion fees to be accrued, got %q", irPol.Breakdown.EarlyDeletionUSD)
+	}
+
+	// Verify deduplication: single charge for 100 MiB deleted at day 10 (80 days unexpired out of 90)
+	minRetention := 90 * 24 * time.Hour
+	monthDuration := 30 * 24 * time.Hour
+	uSingle, err := cost.EarlyDeletionUsage(storage.GlacierIR, uint64(packBytes), 10*24*time.Hour, minRetention, trace.BytesPerGB, monthDuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	singleReport, err := cost.Evaluate(catalog, []cost.Usage{uSingle})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if irPol.Breakdown.EarlyDeletionUSD != singleReport.Subtotal {
+		t.Fatalf("expected single early deletion charge (%s), got %s (did it charge duplicate lifecycle observations?)", singleReport.Subtotal, irPol.Breakdown.EarlyDeletionUSD)
 	}
 }

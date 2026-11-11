@@ -1329,4 +1329,34 @@ func TestCostReportModeledWorkloadSimulation(t *testing.T) {
 	if edgeReport.DSGRequestsNetwork.TransitionFees == "" {
 		t.Fatal("expected populated TransitionFees")
 	}
+
+	// 6. Finding 3: Workload cloud-tiering-boundary only has ddb.write (no EC2).
+	// Infrastructure must properly allocate ddb.write to DynamoDB, and keep Compute as omitted!
+	cloudReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=cloud-tiering-boundary&scenario=A&profile=cloud", nil)
+	cloudReq.Header.Set("Authorization", "Bearer "+w.root)
+	cloudResp, err := server.Client().Do(cloudReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cloudResp.Body.Close()
+	if cloudResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 OK for cloud-tiering-boundary, got %d", cloudResp.StatusCode)
+	}
+
+	var cloudReport CostReportResponse
+	if err := json.NewDecoder(cloudResp.Body).Decode(&cloudReport); err != nil {
+		t.Fatal(err)
+	}
+	if cloudReport.Infrastructure.ComputeOrEdgeVM != "omitted (cloud ec2)" {
+		t.Fatalf("expected 'omitted (cloud ec2)' for ComputeOrEdgeVM when no ec2 lines exist, got %q", cloudReport.Infrastructure.ComputeOrEdgeVM)
+	}
+	if cloudReport.Infrastructure.DynamoDB != "71/12500000" {
+		t.Fatalf("expected DynamoDB cost '71/12500000' from ddb.write, got %q", cloudReport.Infrastructure.DynamoDB)
+	}
+	if cloudReport.Infrastructure.ALBLCU != "omitted (cloud alb)" {
+		t.Fatalf("expected 'omitted (cloud alb)' for ALBLCU, got %q", cloudReport.Infrastructure.ALBLCU)
+	}
+	if cloudReport.Infrastructure.DiskEBS != "omitted" {
+		t.Fatalf("expected 'omitted' for DiskEBS, got %q", cloudReport.Infrastructure.DiskEBS)
+	}
 }
