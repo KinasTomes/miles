@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/observability"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -55,6 +56,7 @@ type Handler func(w http.ResponseWriter, r *Request) error
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := NewRequestID()
+	r = r.WithContext(observability.WithRequestID(r.Context(), id))
 	setCommonHeaders(w.Header(), id)
 	diagnostic := failureDiagnostic{stage: "resolve"}
 	defer func() {
