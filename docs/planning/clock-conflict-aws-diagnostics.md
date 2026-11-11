@@ -4,6 +4,34 @@ Goal: identify why Chrony stops accepting fresh measurements under load, verify 
 host correction with the existing clock bounds, and correlate any PUT 409 with
 its actual backend cause. A successful replay alone does not close either finding.
 
+## Status after the live comparison
+
+Read the [live report](../testing/aws-clock-recovery-validation.md) before another
+run. Native delay-filter rejections are now observed. The first burst candidate
+recovered isolated bad measurements but exhausted its two attempts on consecutive
+rejections; a real stale span and failed GET followed. The revised packaged
+candidate permits four attempts and is **not live-validated**. Do not reuse the
+three earlier passing trials as final-profile acceptance.
+
+A CreateBucket 500 during the scheduled recovery cut was fixed using the existing
+metadata error mapper; the busy admission remains fenced and returns retryable
+503. Native bucket outcome was absent. The historical PUT 409 remains unresolved,
+although real-AWS request/AWS-ID/cancellation-reason logging is now verified.
+
+Before spending on another run, reproduce/classify the eight-minute shutdown
+journal flush timeout with concurrent native shared-runtime supervisors/jobs and
+a quiesced request workload. Preserve the original deadline, worker authority,
+export cursor and failure behavior. Identify whether time is spent acquiring
+recovery authority, discovering/exporting a page, publishing a seal or closing
+the worker; use bounded stage/result diagnostics through the existing worker
+observer if needed, without entity keys or raw backend errors. A released-lease
+snapshot alone cannot prove that journal export completed. Require the exact
+invocation's clean-stop proof before any subsequent profile rollout.
+
+Only after that gate and focused regression tests pass, prepare a fresh reviewed
+AWS package for two complete C1→C4 cycles on one final source/profile. The
+previous paid window does not authorize a new run or a deadline extension.
+
 ## Offline prerequisites
 
 - Merge current main and verify the affected Go/race/native shared-runtime and
