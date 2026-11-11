@@ -64,7 +64,8 @@ def validate_alarm(item, profile, kind, installation, start, end):
     if kind in ("integrity", "throttling"):
         # Zero counter deltas are intentionally not exported; notBreaching
         # recovery may therefore have no datapoints instead of a fake zero.
-        pairs = [(at, recovery) for at, recovery in pairs if (recovery - at).total_seconds() >= 120 and not any(at < t <= recovery and value > threshold for t, value in samples)]
+        # Repeated breaches may sustain ALARM before its final quiet window.
+        pairs = [(at, recovery) for at, recovery in pairs if (recovery - at).total_seconds() >= 120 and not any(recovery - datetime.timedelta(seconds=120) < t <= recovery and value > threshold for t, value in samples)]
     else:
         pairs = [(at, recovery) for at, recovery in pairs if any(at <= t <= recovery and value <= threshold for t, value in samples)]
     if not pairs:

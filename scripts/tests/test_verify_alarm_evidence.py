@@ -52,6 +52,22 @@ class AlarmEvidenceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate(document)
 
+    def test_counter_can_keep_breaching_before_a_quiet_recovery_window(self):
+        document = self.fixture()
+        counter = document["alarms"]["edge/throttling"]
+        recovery = counter["history"][1]
+        recovery["Timestamp"] = "2026-11-10T00:05:00Z"
+        counter["metric_result"]["Timestamps"] = ["2026-11-10T00:00:00Z", "2026-11-10T00:02:00Z"]
+        counter["metric_result"]["Values"] = [1, 2]
+        telemetry = document["alarms"]["edge/telemetry_age"]["metric_result"]
+        telemetry["Timestamps"].append("2026-11-10T00:04:00Z")
+        telemetry["Values"].append(0)
+        validate(document)
+        counter["metric_result"]["Timestamps"].append("2026-11-10T00:04:00Z")
+        counter["metric_result"]["Values"].append(1)
+        with self.assertRaisesRegex(ValueError, "recovery window"):
+            validate(document)
+
     def test_native_capture_collects_eight_matched_alarms(self):
         fixture = self.fixture()
         by_name = {item["alarm"]["AlarmName"]: item for item in fixture["alarms"].values()}
