@@ -14,6 +14,8 @@ Cập nhật sau lượt chạy ngày 10/11/2026. Mục tiêu là nghiệm thu l
 
 [Báo cáo lượt trước](../testing/edge-private-aws-validation.md) ghi kết quả và giới hạn bằng chứng. Các dữ kiện trên là lịch sử, cần kiểm tra lại hiện trạng lúc thực hiện.
 
+Dùng [runbook và mẫu nhật ký từng bước](../testing/edge-aws-runbook.md) để lặp lại cách dựng đã xác minh. Cập nhật nhật ký ngay sau mỗi bước, ghi rõ lý do nếu thay đổi trình tự hoặc cấu hình.
+
 ## 1. Chuẩn bị offline trước khi tính phí
 
 - [ ] Dùng đúng worktree/branch và xác nhận GitHub CLI đang ở account `KinasTomes`. Nếu chạy trên máy khác, checkout branch của PR trong worktree riêng và đọc hướng dẫn implement của repo hiện tại.
@@ -55,7 +57,7 @@ Chỉ bắt đầu lượt tính phí sau khi hoàn tất bước 1 và ghi nh�
 
 | Thứ tự | Bài | Tiêu chí đạt và evidence |
 |---|---|---|
-| 1 | Edge C1 | `warmbench --fail-fast --concurrency 1 --read-repeats 3 --drain-timeout 120s`. 90/90 PUT, 90/90 HEAD, 360/360 GET đúng SHA-256, không 500/503/404 ngoài dự kiến, không outcome chưa xác định. Dùng bucket chưa có Admin policy edit để kiểm bản sửa mặc định |
+| 1 | Edge C1 | `warmbench --fail-fast --concurrency 1 --read-repeats 3 --drain-timeout 120s`. 90/90 PUT, 90/90 HEAD, 360/360 GET đúng SHA-256, không 500/503/404 ngoài dự kiến, không outcome chưa xác định. Dùng bucket mới và thực hiện PUT đầu tiên trước mọi Admin GET/PUT policy để kiểm bản sửa mặc định |
 | 2 | Edge C4 | Chỉ sau C1 đạt, chạy trial riêng với concurrency 4 và cùng dữ liệu/release/policy. Cùng tiêu chí số lượng và checksum |
 | 3 | Native R1/R2 | Admission, renewal, fencing, takeover, closed producer, journal export/seal, independent cut verification và checkpoint. Lưu trạng thái lease/cut và log. Phân biệt clock mô hình trong fixture với runtime nhiều process |
 | 4 | Native GC | `TestAWSDevWarmGCObjectFlows`, verify phiên deploy và isolated resources. Kiểm real S3 versions, pins, compaction/checkpoint và GC. Dọn fixture xong trước bộ kế tiếp |

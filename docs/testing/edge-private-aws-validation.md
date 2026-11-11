@@ -10,6 +10,8 @@ The deployment window began at 15:31 UTC. Foundation provisioned successfully af
 
 Frozen metadata contained the new bucket, a quota reservation and no ObjectHead or pack. There was no persisted bucket policy. The shared runtime's bucket-policy callback returned the missing-row error, while the Admin API defines an unedited bucket's policy as revision 1 with `DefaultCachePolicy`.
 
+The November 8 runner fetched the Admin bucket policy after CreateBucket and before the benchmark. That GET persisted default revision 1 and allowed the write path to find it. The November 10 runner performed CreateBucket, LIST and PUT without the Admin policy call. The two releases used the same policy lookup in the shared runtime. [Repeatable sequence and evidence log](edge-aws-runbook.md).
+
 The runtime now uses that same virtual default for a missing policy, while preserving bucket-not-found and other errors. Regression coverage performs a PUT before any Admin policy edit and verifies that the write does not materialize a policy. The regression passed under Go's race detector with DynamoDB Local and Moto. This correction has not yet been validated in another AWS workload.
 
 ## Host telemetry packaging
