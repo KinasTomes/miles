@@ -63,6 +63,30 @@ run "private_acceptance_fleet" {
     error_message = "Private acceptance requires the internal ALB, both nodes and Roles Anywhere endpoint."
   }
 }
+run "reuse_baseline_autoscaling_role" {
+  command = plan
+  variables {
+    existing_autoscaling_role_arn = "arn:aws:iam::123456789012:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_miles-dev"
+  }
+  assert {
+    condition     = length(aws_iam_service_linked_role.autoscaling) == 0 && local.autoscaling_role_arn == var.existing_autoscaling_role_arn
+    error_message = "An existing service-linked role must be referenced outside managed state."
+  }
+}
+run "reject_foreign_autoscaling_role" {
+  command = plan
+  variables {
+    existing_autoscaling_role_arn = "arn:aws:iam::999999999999:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+  }
+  expect_failures = [var.existing_autoscaling_role_arn]
+}
+run "reject_non_service_autoscaling_role" {
+  command = plan
+  variables {
+    existing_autoscaling_role_arn = "arn:aws:iam::123456789012:role/Admin"
+  }
+  expect_failures = [var.existing_autoscaling_role_arn]
+}
 run "private_bootstrap_before_fleet" {
   command = plan
   variables {

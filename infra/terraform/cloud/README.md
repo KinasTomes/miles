@@ -36,6 +36,9 @@ Nguồn: kiến trúc §10.1/11/19, API §1/8/13 và
 - `modules/fleet`: opt-in `enable_asg`, hai private AZ/node với launch template,
   release version/hash pin, lifecycle drain; không dùng retained dev EBS. Mutually
   exclusive với `enable_compute`. [Runbook và giới hạn](../../../deploy/cloud/README.md).
+  Khi account đã có Auto Scaling service-linked role, đặt `existing_autoscaling_role_arn`
+  bằng ARN đã xác minh để dùng chung và giữ role ngoài state. Mặc định Terraform
+  tạo custom role cho fleet khi chưa truyền ARN.
 
 `paused=true` là mặc định an toàn cho **phiên compute/network**, giữ datastore và
 keys; vẫn có phí lưu trữ/key nếu apply. `enable_compute=false` mặc định dành cho

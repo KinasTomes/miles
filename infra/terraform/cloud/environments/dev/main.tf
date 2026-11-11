@@ -2,6 +2,9 @@ locals {
   name             = "miles-dev"
   data_bucket_name = "miles-dev-data-${var.account_id}-${var.region}"
   egress_mode      = var.paused ? "isolated" : var.egress_mode
+  autoscaling_role_arn = var.enable_asg ? (
+    var.existing_autoscaling_role_arn != null ? var.existing_autoscaling_role_arn : aws_iam_service_linked_role.autoscaling[0].arn
+  ) : null
 }
 module "network" {
   source          = "../../modules/network"
@@ -33,7 +36,7 @@ module "security" {
   name                 = local.name
   region               = var.region
   account_id           = var.account_id
-  autoscaling_role_arn = try(aws_iam_service_linked_role.autoscaling[0].arn, null)
+  autoscaling_role_arn = local.autoscaling_role_arn
   runtime_secret_name  = var.runtime_secret_name
 }
 module "data" {
@@ -88,7 +91,7 @@ module "alb" {
 
 # The retained single-node data disk never belongs to an interchangeable fleet.
 resource "aws_iam_service_linked_role" "autoscaling" {
-  count            = var.enable_asg ? 1 : 0
+  count            = var.enable_asg && var.existing_autoscaling_role_arn == null ? 1 : 0
   aws_service_name = "autoscaling.amazonaws.com"
   custom_suffix    = local.name
   description      = "Miles ASG role for encrypted disposable node disks"
@@ -106,7 +109,7 @@ module "fleet" {
   subnet_ids                  = values(module.network.private_subnets)
   security_group_id           = module.network.security_groups.gateway
   instance_profile            = module.iam.instance_profile_names.gateway
-  service_linked_role_arn     = try(aws_iam_service_linked_role.autoscaling[0].arn, null)
+  service_linked_role_arn     = local.autoscaling_role_arn
   kms_key_arn                 = module.security.kms_key_arn
   target_group_arn            = module.alb.target_group_arn
   data_bucket_name            = local.data_bucket_name

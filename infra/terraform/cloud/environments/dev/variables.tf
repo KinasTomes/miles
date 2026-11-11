@@ -96,6 +96,18 @@ variable "enable_asg" {
     error_message = "Fleet needs ALB/TLS, reviewed boundary/AMI/type/versioned release and two-AZ API egress; it cannot share single-node dev compute."
   }
 }
+variable "existing_autoscaling_role_arn" {
+  type        = string
+  default     = null
+  description = "Pre-existing Auto Scaling service-linked role to retain outside this Terraform state."
+  validation {
+    condition = var.existing_autoscaling_role_arn == null ? true : can(regex(
+      "^arn:aws:iam::${var.account_id}:role/aws-service-role/autoscaling\\.amazonaws\\.com/AWSServiceRoleForAutoScaling(_[A-Za-z0-9+=,.@_-]+)?$",
+      var.existing_autoscaling_role_arn
+    ))
+    error_message = "The existing role must be an Auto Scaling service-linked role in this account."
+  }
+}
 variable "fleet_instance_type" {
   type        = string
   default     = null

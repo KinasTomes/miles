@@ -33,7 +33,7 @@ The operating-cost estimate is approximately 1.25 USD before tax, using rounded 
 ## Conditions for the next run
 
 - Build the release containing the virtual bucket-policy default and telemetry parser fixes. Confirm the recorder probe and a recorded window before dispatch.
-- Query the custom Auto Scaling service-linked role before planning. If it already exists, reconcile/import it with the matching active variables before the saved fleet plan, record it as a baseline exclusion, and preserve it during teardown.
+- Query the custom Auto Scaling service-linked role before planning. If it already exists, pass its verified ARN as `existing_autoscaling_role_arn` and keep it outside managed state. Back up and remove any earlier import binding before the saved fleet plan.
 - Prepare cleanup grants against the frozen resource identifiers before starting workload. Include deleted-table readback, both key and alias resources for alias deletion, and the Edge role’s instance-profile readback.
 - Include certificate key usage `keyCertSign` in the test CA. Create and verify the complete chain before attempting the trust anchor.
 - Preserve original failed evidence and use a fresh trial identity for the next workload. Re-run C1 before C4 and keep later gates conditional on successful C1/C4.
