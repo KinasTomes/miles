@@ -210,3 +210,15 @@ func TestCopyObjectErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestCopyObjectCrossDomainHandler(t *testing.T) {
+	w, writer := newCopyWorld(t)
+	w.store.SetBucket(storage.Bucket{Name: "src-bucket", ID: "bkt-src-0001", OwnerID: "user-owner", Domain: "domain-src", Revision: 1, Active: true})
+	rec, e := w.sendHeaders(t, http.MethodPut, "/demo/dst", "owner", "", map[string]string{"X-Amz-Copy-Source": "src-bucket/file"})
+	if e != nil || rec.Code != http.StatusOK {
+		t.Fatalf("cross-domain handler err=%v, code=%d", e, rec.Code)
+	}
+	if writer.copied.Source.Domain != "domain-src" || writer.copied.Bucket.Domain != "alpha" {
+		t.Fatalf("cross-domain domains not preserved: source domain %q, dst domain %q", writer.copied.Source.Domain, writer.copied.Bucket.Domain)
+	}
+}

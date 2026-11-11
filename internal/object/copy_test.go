@@ -6,10 +6,14 @@ import (
 	"crypto/rand"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/KinasTomes/miles/internal/coordination"
 	"github.com/KinasTomes/miles/internal/metadata/badger"
 	"github.com/KinasTomes/miles/internal/storage"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
 func (f *serviceFixture) copy(ctx context.Context, src, dst string, metadata map[string]string) (CopyResult, error) {
@@ -228,7 +232,6 @@ func TestCopyRejectsBeforeAdmission(t *testing.T) {
 		{"source tombstone", func(h *storage.ObjectHead, _ *CopyRequest) { h.Deleted = true }, ErrNoSuchCopySource, false},
 		{"5 GiB + 1", func(h *storage.ObjectHead, _ *CopyRequest) { h.Size = MaxCopyBytes + 1 }, ErrCopySourceTooLarge, false},
 		{"exactly 5 GiB passes the cap; the owner quota decides", func(h *storage.ObjectHead, _ *CopyRequest) { h.Size = MaxCopyBytes }, storage.ErrQuotaExceeded, true},
-		{"other dedup domain", func(h *storage.ObjectHead, _ *CopyRequest) { h.Domain = "tenant-b" }, ErrCrossDomainCopy, false},
 		{"checksum algorithm change", func(_ *storage.ObjectHead, r *CopyRequest) { r.ChecksumAlgorithm = "SHA256" }, ErrCopyChecksumChange, false},
 		{"same checksum algorithm", func(_ *storage.ObjectHead, r *CopyRequest) { r.ChecksumAlgorithm = "CRC64NVME" }, nil, true},
 	}
@@ -261,5 +264,216 @@ func TestCopyRejectsBeforeAdmission(t *testing.T) {
 	}
 	if _, err := f.copy(ctx, "missing", "dst", nil); !errors.Is(err, ErrNoSuchCopySource) {
 		t.Fatal("missing source", err)
+	}
+}
+
+func TestCopyCrossDomain(t *testing.T) {
+	f := newServiceFixture(t)
+	ctx := context.Background()
+	b2, created, err := f.metadata.CreateBucket(ctx, storage.BucketCreate{
+		CredentialID: "writer-key", UserID: "writer", Name: "dst-bucket",
+	})
+	if err != nil || !created {
+		t.Fatalf("create second bucket %v %v", b2, err)
+	}
+
+	data := bytes.Repeat([]byte("cross domain chunk data\n"), 4096)
+	f.put(t, ctx, "src", data)
+	srcHead := f.head(t, "src")
+
+	f.physical.mu.Lock()
+	packsBefore := len(f.physical.objects)
+	f.physical.mu.Unlock()
+
+	// 1. Missing chunks in destination domain: loads from source, publishes into other-domain
+	out, err := f.service.CopyObject(ctx, CopyRequest{
+		Source: f.bucket, SourceKey: "src", Bucket: b2, Key: "dst1",
+		UserID: "writer", CredentialID: "writer-key",
+	})
+	if err != nil {
+		t.Fatalf("cross-domain copy: %v", err)
+	}
+	if out.ETag != srcHead.ETag || out.LastModified.IsZero() {
+		t.Fatalf("result %+v, src %+v", out, srcHead)
+	}
+
+	h1, err := f.metadata.GetObject(ctx, storage.ObjectKey{Bucket: b2.Name, BucketID: b2.ID, Key: "dst1"})
+	if err != nil {
+		t.Fatalf("get dst1 head: %v", err)
+	}
+	if h1.Domain != "other-domain" || h1.ManifestID == srcHead.ManifestID || h1.Size != srcHead.Size || h1.ETag != srcHead.ETag || h1.Checksum != srcHead.Checksum {
+		t.Fatalf("h1 %+v, srcHead %+v", h1, srcHead)
+	}
+
+	// Verify no cross-domain references in destination manifest
+	pages1, err := f.metadata.GetManifest(ctx, h1.ManifestID)
+	if err != nil {
+		t.Fatalf("get manifest: %v", err)
+	}
+	for _, p := range pages1 {
+		if p.Domain != "other-domain" {
+			t.Fatalf("page domain %q, want other-domain", p.Domain)
+		}
+		for _, c := range p.Chunks {
+			if c.Key.Domain != "other-domain" {
+				t.Fatalf("chunk ref domain %q, want other-domain", c.Key.Domain)
+			}
+		}
+	}
+
+	// Read back through GetObject on destination bucket
+	var readBack []byte
+	_, err = f.service.GetObject(ctx, GetRequest{
+		Bucket: b2.Name, BucketID: b2.ID, Key: "dst1", CredentialID: "writer-key",
+		Emit: func(_ context.Context, b []byte) error { readBack = append(readBack, b...); return nil },
+	})
+	if err != nil || !bytes.Equal(readBack, data) {
+		t.Fatalf("read back cross-domain copy len=%d, err=%v", len(readBack), err)
+	}
+
+	f.physical.mu.Lock()
+	packsAfterFirst := len(f.physical.objects)
+	f.physical.mu.Unlock()
+	if packsAfterFirst <= packsBefore {
+		t.Fatalf("expected new packs in destination domain, got %d <= %d", packsAfterFirst, packsBefore)
+	}
+
+	// 2. Destination domain already has the chunks: reuse without writing new packs
+	out2, err := f.service.CopyObject(ctx, CopyRequest{
+		Source: f.bucket, SourceKey: "src", Bucket: b2, Key: "dst2",
+		UserID: "writer", CredentialID: "writer-key",
+	})
+	if err != nil {
+		t.Fatalf("second cross-domain copy: %v", err)
+	}
+	if out2.ETag != srcHead.ETag {
+		t.Fatalf("out2 ETag %q != %q", out2.ETag, srcHead.ETag)
+	}
+
+	f.physical.mu.Lock()
+	packsAfterSecond := len(f.physical.objects)
+	f.physical.mu.Unlock()
+	if packsAfterSecond != packsAfterFirst {
+		t.Fatalf("expected 0 new packs for existing chunks in destination, wrote %d", packsAfterSecond-packsAfterFirst)
+	}
+
+	// 3. Metadata REPLACE
+	replaced := map[string]string{"content-type": "application/json", "x-amz-meta-custom": "tested"}
+	out3, err := f.service.CopyObject(ctx, CopyRequest{
+		Source: f.bucket, SourceKey: "src", Bucket: b2, Key: "dst3", Metadata: replaced,
+		UserID: "writer", CredentialID: "writer-key",
+	})
+	if err != nil {
+		t.Fatalf("cross-domain REPLACE copy: %v", err)
+	}
+	if out3.ETag != srcHead.ETag {
+		t.Fatalf("out3 ETag %q", out3.ETag)
+	}
+	h3, err := f.metadata.GetObject(ctx, storage.ObjectKey{Bucket: b2.Name, BucketID: b2.ID, Key: "dst3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info(h3).Metadata; !reflect.DeepEqual(got, replaced) {
+		t.Fatalf("REPLACE metadata %v, want %v", got, replaced)
+	}
+}
+
+func TestCopyColdSource(t *testing.T) {
+	f := newServiceFixture(t)
+	ctx := context.Background()
+
+	data := bytes.Repeat([]byte("cold pack data\n"), 2048)
+	f.put(t, ctx, "cold-src", data)
+	srcHead := f.head(t, "cold-src")
+	packRef := f.chunkPack(t, srcHead)
+
+	// Find pack key in physical backend
+	var packKey string
+	f.physical.mu.Lock()
+	for k := range f.physical.objects {
+		if strings.HasPrefix(k, "packs/") && strings.Contains(k, packRef.ID) {
+			packKey = k
+			break
+		}
+	}
+	packSize := int64(len(f.physical.objects[packKey]))
+	f.physical.classes[packKey] = types.StorageClassGlacier
+	f.physical.mu.Unlock()
+
+	// Mark the source pack as Cold Glacier in metadata
+	pInfo := storage.PackInfo{
+		Version: storage.ModelVersion, Ref: packRef, Size: packSize,
+		Class: storage.Glacier, State: "Cold", StateRevision: 2,
+	}
+	if err := f.metadata.SetPackForTest(pInfo); err != nil {
+		t.Fatalf("set pack cold: %v", err)
+	}
+
+	// 1. Same-domain copy of Cold source succeeds without reading payload (Architecture 5.3)
+	sameResult, err := f.service.CopyObject(ctx, CopyRequest{
+		Source: f.bucket, SourceKey: "cold-src", Bucket: f.bucket, Key: "cold-same-domain-dst",
+		UserID: "owner", CredentialID: "owner-key",
+	})
+	if err != nil {
+		t.Fatalf("same-domain Cold copy failed: %v", err)
+	}
+	if sameResult.ETag != srcHead.ETag {
+		t.Fatalf("sameResult ETag %q != %q", sameResult.ETag, srcHead.ETag)
+	}
+
+	b2, created, err := f.metadata.CreateBucket(ctx, storage.BucketCreate{
+		CredentialID: "writer-key", UserID: "writer", Name: "dst-bkt-cold",
+	})
+	if err != nil || !created {
+		t.Fatalf("create second bucket %v %v", b2, err)
+	}
+
+	// 2. Cross-domain copy when destination is MISSING the chunks and source is Cold:
+	// must fail with ErrCold and trigger auto-restore if configured
+	restoredPacks := []storage.PackRef{}
+	f.options.Restore = func(ctx context.Context, view *coordination.WarmView, head storage.ObjectHead, ref storage.PackRef, revision uint64, required time.Time, explicit *storage.RestoreRequest) (bool, error) {
+		restoredPacks = append(restoredPacks, ref)
+		return true, nil
+	}
+	sWithRestore, err := New(f.options)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = sWithRestore.CopyObject(ctx, CopyRequest{
+		Source: f.bucket, SourceKey: "cold-src", Bucket: b2, Key: "cold-cross-dst-fail",
+		UserID: "writer", CredentialID: "writer-key",
+	})
+	if !errors.Is(err, storage.ErrCold) {
+		t.Fatalf("expected ErrCold, got %v", err)
+	}
+	if len(restoredPacks) != 1 || restoredPacks[0] != packRef {
+		t.Fatalf("expected restore triggered for %v, got %v", packRef, restoredPacks)
+	}
+
+	// 3. Put same data into destination domain so destination already has all chunks
+	_, err = sWithRestore.PutObject(ctx, PutRequest{
+		Bucket: b2, Key: "existing", Body: body(data), ContentLength: int64(len(data)),
+		UserID: "writer", CredentialID: "writer-key",
+	})
+	if err != nil {
+		t.Fatalf("put existing: %v", err)
+	}
+
+	restoredPacks = nil
+
+	// Cross-domain copy of cold-src into b2 succeeds without restoring because destination already has chunks!
+	outSuccess, err := sWithRestore.CopyObject(ctx, CopyRequest{
+		Source: f.bucket, SourceKey: "cold-src", Bucket: b2, Key: "cold-cross-dst-ok",
+		UserID: "writer", CredentialID: "writer-key",
+	})
+	if err != nil {
+		t.Fatalf("cross-domain copy of cold source with existing chunks failed: %v", err)
+	}
+	if outSuccess.ETag != srcHead.ETag {
+		t.Fatalf("outSuccess ETag %q != %q", outSuccess.ETag, srcHead.ETag)
+	}
+	if len(restoredPacks) != 0 {
+		t.Fatalf("expected 0 restores triggered, got %d", len(restoredPacks))
 	}
 }
