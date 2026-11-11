@@ -268,10 +268,14 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 		}
 
 		if hasColdReadForPolicy {
-			clientTraffic := event.ClientTrafficBytes()
+			// For candidate Glacier policies (WarmGlacierIR, WarmGlacierFlex), client reads
+			// are served strictly through the Dedup Storage Gateway via gateway_to_client.
+			// Direct route s3_to_client belongs to the Direct S3 baseline topology and is
+			// never evidence of gateway-delivered cold reads.
+			clientTraffic := event.Traffic[cost.GatewayClient]
 
-			// Consistency check 1: Measured client traffic in this scope must be positive.
-			// When gateway_to_client + s3_to_client == 0, no data reached the client in this scope;
+			// Consistency check 1: Measured gateway-to-client traffic must be positive.
+			// When gateway_to_client == 0, no data reached the client via the gateway in this scope;
 			// any claimed cold delivery contradicts measured traffic (or lacks client delivery evidence).
 			if clientTraffic == 0 {
 				hasUnprovenColdDelivery = true
@@ -279,9 +283,10 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 			}
 
 			// Consistency check 2: The sum of cold deliveries across all classes in this event
-			// must not exceed measured client traffic (e.g. IR 64 MiB + Flex 64 MiB = 128 MiB > 64 MiB client traffic).
-			totalColdDelivered := event.TotalColdDeliveredBytes()
-			if totalColdDelivered > clientTraffic {
+			// must not exceed measured client traffic (e.g. IR 64 MiB + Flex 64 MiB = 128 MiB > 64 MiB client traffic),
+			// and must not overflow uint64.
+			totalColdDelivered, ok := event.TotalColdDeliveredBytes()
+			if !ok || totalColdDelivered > clientTraffic {
 				hasUnprovenColdDelivery = true
 				continue
 			}
@@ -323,12 +328,6 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 
 			// Consistency check 3: Cold delivery for this class must not exceed measured client traffic.
 			if delivered > clientTraffic {
-				hasUnprovenColdDelivery = true
-				continue
-			}
-
-			// Consistency check 4: Cold delivery cannot exceed physical bytes retrieved for this class in this event.
-			if coldBytesInThisEvent > 0 && delivered > coldBytesInThisEvent {
 				hasUnprovenColdDelivery = true
 				continue
 			}

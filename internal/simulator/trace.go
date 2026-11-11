@@ -49,33 +49,40 @@ type Event struct {
 	ColdLogicalDeliveredByClass map[storage.StorageClass]uint64 `json:"cold_logical_delivered_by_class,omitempty"`
 }
 
-// ClientTrafficBytes returns total outbound traffic delivered to client measured in this event
-// (sum of gateway_to_client and s3_to_client routes).
-func (e *Event) ClientTrafficBytes() uint64 {
+// ClientTrafficBytes returns total outbound traffic delivered to client measured in this event.
+// Uses checked addition to prevent uint64 wrap-around on invalid telemetry.
+// Returns (traffic, ok) where ok is false if uint64 overflow occurs.
+func (e *Event) ClientTrafficBytes() (uint64, bool) {
 	if e == nil || e.Traffic == nil {
-		return 0
+		return 0, true
 	}
-	return e.Traffic[cost.GatewayClient] + e.Traffic[cost.S3Client]
+	gw := e.Traffic[cost.GatewayClient]
+	s3 := e.Traffic[cost.S3Client]
+	if s3 > ^uint64(0)-gw {
+		return 0, false // overflow detected
+	}
+	return gw + s3, true
 }
 
 // TotalColdDeliveredBytes returns the total claimed cold delivered bytes across all cold classes in this event.
-// When class-specific telemetry is provided, it sums the bytes across all classes in the map.
+// When class-specific telemetry is provided, it sums the bytes across all classes in the map with checked addition.
 // Otherwise, it falls back to the scalar ColdLogicalDeliveredBytes.
-func (e *Event) TotalColdDeliveredBytes() uint64 {
+// Returns (total, ok) where ok is false if uint64 overflow occurs.
+func (e *Event) TotalColdDeliveredBytes() (uint64, bool) {
 	if e == nil {
-		return 0
+		return 0, true
 	}
 	if len(e.ColdLogicalDeliveredByClass) > 0 {
 		var total uint64
 		for _, b := range e.ColdLogicalDeliveredByClass {
 			if b > ^uint64(0)-total {
-				return ^uint64(0)
+				return 0, false // overflow detected
 			}
 			total += b
 		}
-		return total
+		return total, true
 	}
-	return e.ColdLogicalDeliveredBytes
+	return e.ColdLogicalDeliveredBytes, true
 }
 
 // ColdDeliveredForClass retrieves the proven logical delivered bytes for a specific cold storage class.

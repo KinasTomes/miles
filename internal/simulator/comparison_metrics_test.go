@@ -2,6 +2,7 @@ package simulator
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -797,5 +798,178 @@ func TestComparePoliciesRestoreAmplificationScalarFallbackRules(t *testing.T) {
 	// Flex has no entry in class map -> must NOT fall back to scalar -> nil
 	if resClass.Policies[3].RestoreAmplification != nil {
 		t.Fatalf("expected Flex amplification nil (must not fall back to scalar when class-specific map is present), got %v", *resClass.Policies[3].RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationCumulativeLogicalDeliveryCanExceedSingleRestore(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "cumulative-logical-delivery-reuse"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	twoGiB := uint64(2 * 1024 * 1024 * 1024)
+
+	// Regression [P2]:
+	// - 1 GiB pack restored once from Glacier Flexible
+	// - 2 × 1 GiB client logical reads against that restored copy
+	// - gateway_to_client = 2 GiB
+	// - ColdLogicalDeliveredByClass[GLACIER] = 2 GiB
+	// Contract ratio = backend_pack_bytes_restored / logical_range_bytes_requested = 1 GiB / 2 GiB = 0.5x.
+	// Simulator must NOT reject delivered > coldBytesInThisEvent when client traffic is proven.
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: twoGiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: twoGiB,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3]
+	if flexPol.RestoreAmplification == nil {
+		t.Fatal("expected non-nil RestoreAmplification for reused restored pack")
+	}
+	if *flexPol.RestoreAmplification != 0.5 {
+		t.Fatalf("expected 0.5x amplification (1 GiB / 2 GiB), got %v", *flexPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationDirectS3RouteDoesNotProveGatewayTraffic(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "s3-client-does-not-prove-gateway-traffic"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Regression [P2]:
+	// - IR cold retrieval: 1 GiB
+	// - cold-delivered: 64 MiB
+	// - gateway_to_client: 0
+	// - s3_to_client: 64 MiB
+	// For Glacier policies, client reads are served through the DSG gateway (gateway_to_client).
+	// Route s3_to_client belongs to the Direct S3 baseline and is NOT evidence of gateway traffic.
+	// Simulator must return nil (null).
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+			},
+			ColdLogicalDeliveredBytes: sixtyFourMiB,
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: 0,
+				cost.S3Client:      sixtyFourMiB,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2]
+	if irPol.RestoreAmplification != nil {
+		t.Fatalf("expected nil amplification when gateway_to_client is 0 even if s3_to_client has traffic, got %v", *irPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationClientTrafficOverflowDetection(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "client-traffic-overflow-detection"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Regression [P3]:
+	// Verify ClientTrafficBytes checked addition prevents uint64 wrap-around:
+	eventOverflow := Event{
+		Traffic: map[cost.Route]uint64{
+			cost.GatewayClient: math.MaxUint64,
+			cost.S3Client:      sixtyFourMiB + 1,
+		},
+	}
+	traffic, ok := eventOverflow.ClientTrafficBytes()
+	if ok {
+		t.Fatalf("expected ClientTrafficBytes to detect overflow and return ok=false, got ok=true traffic=%d", traffic)
+	}
+
+	// Verify TotalColdDeliveredBytes checked addition prevents uint64 wrap-around:
+	eventColdOverflow := Event{
+		ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+			storage.GlacierIR: math.MaxUint64,
+			storage.Glacier:   1,
+		},
+	}
+	totalCold, okCold := eventColdOverflow.TotalColdDeliveredBytes()
+	if okCold {
+		t.Fatalf("expected TotalColdDeliveredBytes to detect overflow and return ok=false, got ok=true totalCold=%d", totalCold)
+	}
+
+	// Trace with overflow telemetry must fail closed and return nil:
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.GlacierIR: math.MaxUint64,
+				storage.Glacier:   1,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+			},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2]
+	if irPol.RestoreAmplification != nil {
+		t.Fatalf("expected nil amplification on overflow telemetry, got %v", *irPol.RestoreAmplification)
 	}
 }
