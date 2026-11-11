@@ -973,3 +973,303 @@ func TestComparePoliciesRestoreAmplificationClientTrafficOverflowDetection(t *te
 		t.Fatalf("expected nil amplification on overflow telemetry, got %v", *irPol.RestoreAmplification)
 	}
 }
+
+func TestComparePoliciesRestoreAmplificationGlacierFlexReadsAcrossEvents(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "flex-reads-across-events"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Reviewer Regression [P2]:
+	// - Event 1: 1 GiB physical restore, 64 MiB logical delivered, gateway_to_client = 64 MiB
+	// - Event 2: 0 GiB physical restore, 1 GiB logical delivered, gateway_to_client = 1 GiB (within 24h)
+	// - Total physical restore = 1 GiB (1024 MiB)
+	// - Total logical delivered = 64 MiB + 1024 MiB = 1088 MiB (1.0625 GiB)
+	// Expected amplification: 1024 / 1088 ≈ 0.941176... (0.9412x).
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: sixtyFourMiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+		{
+			AtNS: int64(time.Hour),
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: oneGiB,
+			},
+			Usage: []cost.Usage{},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3]
+	if flexPol.RestoreAmplification == nil {
+		t.Fatal("expected non-nil RestoreAmplification for Glacier Flex across events")
+	}
+
+	expectedRatio := float64(oneGiB) / float64(sixtyFourMiB+oneGiB) // ~0.941176...
+	diff := math.Abs(*flexPol.RestoreAmplification - expectedRatio)
+	if diff > 1e-4 {
+		t.Fatalf("expected amplification ~%.4f (0.9412x), got %v", expectedRatio, *flexPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationGlacierFlexReadsAcrossEventsWithScalarTelemetry(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "flex-reads-across-events-scalar"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Verify scalar telemetry works across events when Glacier Flexible is the only cold class in trace:
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredBytes: sixtyFourMiB,
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+		{
+			AtNS: int64(2 * time.Hour),
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredBytes: oneGiB,
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: oneGiB,
+			},
+			Usage: []cost.Usage{},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3]
+	if flexPol.RestoreAmplification == nil {
+		t.Fatal("expected non-nil RestoreAmplification for Glacier Flex with scalar telemetry across events")
+	}
+
+	expectedRatio := float64(oneGiB) / float64(sixtyFourMiB+oneGiB)
+	diff := math.Abs(*flexPol.RestoreAmplification - expectedRatio)
+	if diff > 1e-4 {
+		t.Fatalf("expected amplification ~%.4f (0.9412x), got %v", expectedRatio, *flexPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationGlacierFlexDeliveryWithoutPriorRestoreReturnsNil(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "flex-delivery-without-prior-restore"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+
+	// Event claims cold delivery from Glacier Flexible, but NO physical restore was ever performed:
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: oneGiB,
+			},
+			Usage: []cost.Usage{},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3]
+	if flexPol.RestoreAmplification != nil {
+		t.Fatalf("expected nil amplification when delivery is claimed without prior restore, got %v", *flexPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationGlacierFlexDeliveryAfterRestoreExpiredReturnsNil(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "flex-delivery-after-restore-expired"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Event 1 restores at t=0 (active for 24 hours).
+	// Event 2 claims cold delivery at t=48 hours (after 24-hour restore window expired).
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: sixtyFourMiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+		{
+			AtNS: int64(48 * time.Hour), // 48h > 24h -> expired
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: oneGiB,
+			},
+			Usage: []cost.Usage{},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3]
+	if flexPol.RestoreAmplification != nil {
+		t.Fatalf("expected nil amplification when delivery occurs after restore expired, got %v", *flexPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationGlacierIRDeliveryWithoutRetrievalUsageInEventReturnsNil(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "ir-delivery-without-retrieval-usage"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Glacier IR is instant retrieval (no temporary restored copy).
+	// A cold read in Event 2 cannot be attributed without an s3.retrieval_ir in Event 2.
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.GlacierIR: sixtyFourMiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB,
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1"},
+			},
+		},
+		{
+			AtNS: int64(time.Hour),
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.GlacierIR: oneGiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: oneGiB,
+			},
+			Usage: []cost.Usage{}, // No s3.retrieval_ir in this event
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	irPol := res.Policies[2]
+	if irPol.RestoreAmplification != nil {
+		t.Fatalf("expected nil amplification when Glacier IR delivery has no retrieval usage in event, got %v", *irPol.RestoreAmplification)
+	}
+}

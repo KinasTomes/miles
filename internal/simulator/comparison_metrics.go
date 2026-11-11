@@ -217,6 +217,7 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 	var coldBytesRetrieved uint64
 	var coldDeliveredBytes uint64
 	hasUnprovenColdDelivery := false
+	var activeRestoreUntilNS int64
 
 	var targetClass storage.StorageClass
 	switch polName {
@@ -226,9 +227,33 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 		targetClass = storage.Glacier
 	}
 
+	// Count distinct cold classes that had retrieval/restore usage in the entire trace.
+	hasIRInTrace := false
+	hasFlexInTrace := false
+	for _, ev := range trace.Events {
+		for _, u := range ev.Usage {
+			switch {
+			case u.RateID == "s3.retrieval_ir":
+				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+					hasIRInTrace = true
+				}
+			case u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb":
+				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+					hasFlexInTrace = true
+				}
+			}
+		}
+	}
+	coldClassesInTrace := 0
+	if hasIRInTrace {
+		coldClassesInTrace++
+	}
+	if hasFlexInTrace {
+		coldClassesInTrace++
+	}
+
 	for _, event := range trace.Events {
-		hasColdReadForPolicy := false
-		var coldBytesInThisEvent uint64
+		hasColdUsageForPolicy := false
 		hasIRInEvent := false
 		hasFlexInEvent := false
 
@@ -241,8 +266,7 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 						gbFloat, _ := q.Float64()
 						b := uint64(gbFloat * float64(trace.BytesPerGB))
 						coldBytesRetrieved += b
-						coldBytesInThisEvent += b
-						hasColdReadForPolicy = true
+						hasColdUsageForPolicy = true
 					}
 				}
 			case u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb":
@@ -252,76 +276,88 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 						gbFloat, _ := q.Float64()
 						b := uint64(gbFloat * float64(trace.BytesPerGB))
 						coldBytesRetrieved += b
-						coldBytesInThisEvent += b
-						hasColdReadForPolicy = true
+						hasColdUsageForPolicy = true
+						expiry := event.AtNS + int64(24*time.Hour)
+						if expiry > activeRestoreUntilNS {
+							activeRestoreUntilNS = expiry
+						}
 					}
 				}
 			}
 		}
 
-		coldClassesWithRetrieval := 0
+		coldClassesWithRetrievalInEvent := 0
 		if hasIRInEvent {
-			coldClassesWithRetrieval++
+			coldClassesWithRetrievalInEvent++
 		}
 		if hasFlexInEvent {
-			coldClassesWithRetrieval++
+			coldClassesWithRetrievalInEvent++
 		}
 
-		if hasColdReadForPolicy {
-			// For candidate Glacier policies (WarmGlacierIR, WarmGlacierFlex), client reads
-			// are served strictly through the Dedup Storage Gateway via gateway_to_client.
-			// Direct route s3_to_client belongs to the Direct S3 baseline topology and is
-			// never evidence of gateway-delivered cold reads.
-			clientTraffic := event.Traffic[cost.GatewayClient]
+		// Check if this event claims cold delivery for targetClass.
+		var delivered uint64
+		hasDeliveryClaim := false
+
+		if len(event.ColdLogicalDeliveredByClass) > 0 {
+			if b, ok := event.ColdLogicalDeliveredByClass[targetClass]; ok && b > 0 {
+				delivered = b
+				hasDeliveryClaim = true
+			}
+			// When class-specific telemetry is present, NEVER fall back to scalar for missing class.
+		} else if event.ColdLogicalDeliveredBytes > 0 {
+			// Scalar telemetry fallback is only permitted when:
+			// 1. In this event, targetClass is the only cold class retrieved (if retrieval occurred in this event), OR
+			// 2. In this trace, targetClass is the only cold class retrieved anywhere (if delivery occurs after restore).
+			if hasColdUsageForPolicy && coldClassesWithRetrievalInEvent == 1 {
+				delivered = event.ColdLogicalDeliveredBytes
+				hasDeliveryClaim = true
+			} else if !hasColdUsageForPolicy && coldClassesInTrace == 1 {
+				delivered = event.ColdLogicalDeliveredBytes
+				hasDeliveryClaim = true
+			}
+		}
+
+		// For candidate Glacier policies (WarmGlacierIR, WarmGlacierFlex), client reads
+		// are served strictly through the Dedup Storage Gateway via gateway_to_client.
+		// Direct route s3_to_client belongs to the Direct S3 baseline topology and is
+		// never evidence of gateway-delivered cold reads.
+		clientTraffic := event.Traffic[cost.GatewayClient]
+
+		// If this event has a physical cold retrieval for this policy:
+		if hasColdUsageForPolicy {
+			// If the event has client traffic (gateway_to_client > 0) but lacks proven delivery telemetry:
+			if clientTraffic > 0 && !hasDeliveryClaim {
+				hasUnprovenColdDelivery = true
+				continue
+			}
+		}
+
+		if hasDeliveryClaim {
+			// Provenance check: verify the delivery can be linked to an active retrieval or restore.
+			if polName == PolicyWarmGlacierFlex {
+				// For Glacier Flexible, delivery must be linked to a prior/current restore that has not expired.
+				if coldBytesRetrieved == 0 || event.AtNS > activeRestoreUntilNS {
+					hasUnprovenColdDelivery = true
+					continue
+				}
+			} else if polName == PolicyWarmGlacierIR {
+				// For Glacier IR, reads are instant retrievals; delivery must occur in an event with s3.retrieval_ir.
+				if !hasColdUsageForPolicy {
+					hasUnprovenColdDelivery = true
+					continue
+				}
+			}
 
 			// Consistency check 1: Measured gateway-to-client traffic must be positive.
-			// When gateway_to_client == 0, no data reached the client via the gateway in this scope;
-			// any claimed cold delivery contradicts measured traffic (or lacks client delivery evidence).
 			if clientTraffic == 0 {
 				hasUnprovenColdDelivery = true
 				continue
 			}
 
 			// Consistency check 2: The sum of cold deliveries across all classes in this event
-			// must not exceed measured client traffic (e.g. IR 64 MiB + Flex 64 MiB = 128 MiB > 64 MiB client traffic),
-			// and must not overflow uint64.
+			// must not exceed measured client traffic, and must not overflow uint64.
 			totalColdDelivered, ok := event.TotalColdDeliveredBytes()
 			if !ok || totalColdDelivered > clientTraffic {
-				hasUnprovenColdDelivery = true
-				continue
-			}
-
-			// Precedence and fallback rule:
-			// If class-specific telemetry is provided, look up targetClass directly.
-			// If class-specific telemetry is missing, scalar fallback is ONLY allowed if
-			// exactly ONE cold storage class had retrieval operations in this event.
-			var delivered uint64
-			var hasProvenDelivery bool
-
-			if len(event.ColdLogicalDeliveredByClass) > 0 {
-				if b, ok := event.ColdLogicalDeliveredByClass[targetClass]; ok && b > 0 {
-					delivered = b
-					hasProvenDelivery = true
-				}
-				// When class-specific telemetry is present, never fall back to scalar.
-			} else if event.ColdLogicalDeliveredBytes > 0 {
-				if coldClassesWithRetrieval == 1 {
-					delivered = event.ColdLogicalDeliveredBytes
-					hasProvenDelivery = true
-				} else {
-					// Multiple cold classes were retrieved in the same event, but only scalar
-					// telemetry was provided. Scalar telemetry cannot disambiguate delivered
-					// bytes between classes.
-					hasProvenDelivery = false
-				}
-			}
-
-			if !hasProvenDelivery || delivered == 0 {
-				// Trace contains cold retrieval usage for this policy, but lacks explicit,
-				// provenance-verified cold logical delivered bytes telemetry linked to this operation.
-				// Aggregate client traffic (which may include warm cache hits) and unrelated
-				// lifecycle/tiering state cannot prove the cold delivery denominator.
-				// Fail closed by returning nil for unproven denominator.
 				hasUnprovenColdDelivery = true
 				continue
 			}
@@ -333,6 +369,14 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 			}
 
 			coldDeliveredBytes += delivered
+		} else {
+			// Even if this event does not claim delivery for targetClass, if it claims cold delivery
+			// for other classes, verify that total claimed cold delivery does not exceed measured traffic.
+			totalColdDelivered, ok := event.TotalColdDeliveredBytes()
+			if !ok || (totalColdDelivered > 0 && totalColdDelivered > clientTraffic) {
+				hasUnprovenColdDelivery = true
+				continue
+			}
 		}
 	}
 
