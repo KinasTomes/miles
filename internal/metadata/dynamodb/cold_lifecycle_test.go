@@ -1,13 +1,10 @@
 package dynamodb
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"math/big"
-	"testing"
-	"time"
-
 	"github.com/KinasTomes/miles/internal/cache"
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
@@ -16,8 +13,12 @@ import (
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/object"
+	"github.com/KinasTomes/miles/internal/pack"
 	"github.com/KinasTomes/miles/internal/readpath"
 	s "github.com/KinasTomes/miles/internal/storage"
+	"math/big"
+	"testing"
+	"time"
 )
 
 func restoreReader(t *testing.T, m *Store, utc *r1Clock, ref s.PackRef) (s.WriterFence, s.ObjectHead) {
@@ -520,10 +521,25 @@ func TestCrossDomainCopyColdSourceAutoRestoreDynamoDB(t *testing.T) {
 	}
 
 	// 5. Case 2: Destination domain already has the chunk: CopyObject does NOT enqueue a restore job
-	destChunk := chunk
-	destChunk.Key.Domain = "other-domain"
-	destFence := s.WriterFence{LeaseID: "seed-other", Epoch: 1, ServiceIncarnation: "shared-service"}
-	if _, _, e = m.PutChunkIfAbsent(ctx, destChunk, destFence); e != nil {
+	warmRef := s.PackRef{ID: "dest-warm-pack", Generation: "generation-1"}
+	warmBuilder, _ := pack.NewBuilder(warmRef)
+	destKey := s.ChunkKey{Domain: "other-domain", Hash: chunk.Key.Hash}
+	_ = warmBuilder.Add(pack.Blob{Key: destKey, RawLength: 4, Codec: "raw", Stored: []byte("data")})
+	warmData, warmIndex, warmEntries, _ := warmBuilder.Finish()
+	warmInfo := s.PackInfo{Version: s.ModelVersion, Ref: warmRef, Size: int64(len(warmData)), State: "Warm", Class: s.Standard, StateRevision: 1}
+	if e = physical.Packs.PutPack(ctx, warmInfo, bytes.NewReader(warmData)); e != nil {
+		t.Fatal(e)
+	}
+	if e = physical.Packs.PutSidecar(ctx, warmRef, int64(len(warmIndex)), bytes.NewReader(warmIndex)); e != nil {
+		t.Fatal(e)
+	}
+	destChunk := s.Chunk{Version: 1, Key: destKey, RawBytes: 4, Location: warmEntries[0].Location(warmRef), LocationRevision: 1}
+	if e = m.update(ctx, func(tx *transaction) error {
+		if e := put(tx, packKey(warmRef), warmInfo); e != nil {
+			return e
+		}
+		return put(tx, chunkKey(destKey), destChunk)
+	}); e != nil {
 		t.Fatal(e)
 	}
 
