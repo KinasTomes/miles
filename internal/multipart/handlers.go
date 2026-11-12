@@ -123,6 +123,9 @@ func (h *Handlers) UploadPart(w http.ResponseWriter, r *s3.Request) error {
 	}
 	w.Header().Set("ETag", `"`+res.ETag+`"`)
 	w.Header().Set("x-amz-checksum-"+strings.ToLower(res.ChecksumAlgorithm), res.ChecksumValue)
+	if r.Caller.Debug {
+		s3.WriteDebugHeaders(w.Header(), res.Debug)
+	}
 	w.WriteHeader(http.StatusOK)
 	return nil
 }

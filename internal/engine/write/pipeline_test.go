@@ -194,3 +194,33 @@ func TestPipelineRetriesUnavailableLookupWithoutAssumingAbsence(t *testing.T) {
 		t.Fatalf("failed lookup published data: err=%v rows=%d", err, len(m.rows))
 	}
 }
+
+func TestPipelineReportsDebugWriteCounters(t *testing.T) {
+	ctx := context.Background()
+	m := newMemoryPublisher()
+	p := Pipeline{Lookup: m, Publisher: m, Chunking: engine.ChunkingParams{Min: 16 << 10, Avg: 16 << 10, Max: 16 << 10},
+		Compression: engine.CompressionPolicy{Enabled: true, Codec: "zstd", Level: 3, MinSavingRatio: big.NewRat(1, 10)}}
+	block := bytes.Repeat([]byte("dup-chunk-content"), (16<<10)/len("dup-chunk-content")+1)[:16<<10]
+	body := bytes.Repeat(block, 5)
+	first, err := p.Run(ctx, bytes.NewReader(body), "default", func(storage.ChunkRef) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ChunkCount != 5 || first.DupChunks != 4 || first.Size != int64(len(body)) || first.StoredBytes == 0 {
+		t.Fatalf("first run counters: %+v", first)
+	}
+	second, err := p.Run(ctx, bytes.NewReader(body), "default", func(storage.ChunkRef) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ChunkCount != 5 || second.DupChunks != 5 || second.Size != int64(len(body)) || second.StoredBytes != 0 {
+		t.Fatalf("dedup run counters: %+v", second)
+	}
+	empty, err := p.Run(ctx, bytes.NewReader(nil), "default", func(storage.ChunkRef) error { return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.ChunkCount != 0 || empty.DupChunks != 0 || empty.Size != 0 || empty.StoredBytes != 0 {
+		t.Fatalf("empty run counters: %+v", empty)
+	}
+}

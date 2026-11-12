@@ -246,9 +246,15 @@ func (s *Service) CopyObject(ctx context.Context, r CopyRequest) (CopyResult, er
 							return nil, err
 						}
 						policyRev := s.o.Reader.PolicyRevision()
-						if _, err := s.o.Restore(ctx, sourceView, src, chunk.Location.Pack, policyRev, requiredUntil, nil); err != nil {
+						created, err := s.o.Restore(ctx, sourceView, src, chunk.Location.Pack, policyRev, requiredUntil, nil)
+						if err != nil {
 							return nil, err
 						}
+						state := "in-progress"
+						if created {
+							state = "requested"
+						}
+						return nil, &readpath.ColdRestoreError{State: state}
 					}
 					return nil, storage.ErrCold
 				}

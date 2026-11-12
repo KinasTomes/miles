@@ -272,6 +272,15 @@ func (c *MemoryCache) Get(ctx context.Context, key s.CacheKey) ([]byte, bool, er
 	v, ok := c.data[key]
 	return bytes.Clone(v), ok, nil
 }
+func (c *MemoryCache) Has(ctx context.Context, key s.CacheKey) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ctx.Err() != nil || validCacheKey(key) != nil {
+		return false
+	}
+	_, ok := c.data[key]
+	return ok
+}
 func (c *MemoryCache) Put(ctx context.Context, key s.CacheKey, data []byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

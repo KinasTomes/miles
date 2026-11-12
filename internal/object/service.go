@@ -57,6 +57,17 @@ type PutResult struct {
 	ETag              string
 	ChecksumAlgorithm string
 	ChecksumValue     string
+	Debug             WriteDebug
+}
+
+// WriteDebug holds physical write/dedup counts exposed only under the S3
+// debug gate (API v2 5).
+type WriteDebug struct {
+	ChunksTotal   uint64
+	ChunksDup     uint64
+	ChunksRevived uint64
+	BytesLogical  int64
+	BytesStored   uint64
 }
 
 type GetRequest struct {
@@ -86,8 +97,9 @@ type Info struct {
 }
 
 type GetResult struct {
-	Info  Info
-	Range storage.ByteRange
+	Info        Info
+	Range       storage.ByteRange
+	CacheStatus string
 }
 
 type ReadyFunc func(GetResult) error
@@ -334,7 +346,7 @@ func (s *Service) PutObject(ctx context.Context, r PutRequest) (out PutResult, e
 	if err != nil {
 		return PutResult{}, err
 	}
-	return putResult(result.Head), nil
+	return putResult(result.Head, prepared), nil
 }
 
 // DeleteObject publishes a tombstone revision (API v2 4.2): one R2 commit
@@ -517,8 +529,19 @@ func (s *Service) publish(ctx context.Context, session *admittedSession, commit 
 	return storage.CommitResult{}, err
 }
 
-func putResult(head storage.ObjectHead) PutResult {
-	return PutResult{ETag: head.ETag, ChecksumAlgorithm: head.Checksum.Algorithm, ChecksumValue: head.Checksum.Value}
+func putResult(head storage.ObjectHead, prepared write.PreparedObject) PutResult {
+	return PutResult{
+		ETag:              head.ETag,
+		ChecksumAlgorithm: head.Checksum.Algorithm,
+		ChecksumValue:     head.Checksum.Value,
+		Debug: WriteDebug{
+			ChunksTotal:   prepared.ChunkCount,
+			ChunksDup:     prepared.DupChunks,
+			ChunksRevived: prepared.RevivedChunks,
+			BytesLogical:  prepared.Size,
+			BytesStored:   prepared.StoredBytes,
+		},
+	}
 }
 
 func putETag(body Body) (string, error) {
@@ -552,7 +575,7 @@ func (s *Service) GetObject(ctx context.Context, r GetRequest) (GetResult, error
 		CredentialID: r.CredentialID, Bucket: r.Bucket, Key: r.Key, Range: r.Range, SelectRange: selectRange,
 		Deadline: deadline, BucketPolicy: policy, Budget: s.o.Budget, MaxOutstanding: s.o.MaxOutstanding,
 		Ready: func(w readpath.WarmResult) error {
-			result = GetResult{Info: info(w.Head), Range: w.Range}
+			result = GetResult{Info: info(w.Head), Range: w.Range, CacheStatus: w.CacheStatus}
 			if r.Ready != nil {
 				return r.Ready(result)
 			}

@@ -134,7 +134,7 @@ func (rt *Router) authenticate(r *http.Request, query url.Values) (Caller, *sign
 		AccessKeyID: s.accessKeyID,
 		UserID:      cred.UserID,
 		SystemAdmin: cred.SystemAdmin,
-		Debug:       r.Header.Get("X-Dsg-Debug") == "1" && slices.Contains(s.signedHeaders, "x-dsg-debug") && cred.SystemAdmin && cred.DebugAllowed,
+		Debug:       slices.Equal(r.Header.Values("X-Dsg-Debug"), []string{"1"}) && slices.Contains(s.signedHeaders, "x-dsg-debug") && cred.SystemAdmin && cred.DebugAllowed,
 	}, sg, nil
 }
 

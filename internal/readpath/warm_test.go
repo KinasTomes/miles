@@ -463,3 +463,35 @@ func TestWarmReaderRejectsDecoderCostBeforePayload(t *testing.T) {
 	}
 	drained(t, f.reader.options.Admission)
 }
+func TestWarmReaderPreflightCacheStatus(t *testing.T) {
+	f := newWarmFixture(t, 0)
+	ctx := context.Background()
+	r1, _, err := f.read(ctx, f.request)
+	if err != nil || r1.CacheStatus != "miss" {
+		t.Fatalf("first read CacheStatus = %q, err = %v", r1.CacheStatus, err)
+	}
+	r2, _, err := f.read(ctx, f.request)
+	if err != nil || r2.CacheStatus != "hit" {
+		t.Fatalf("second read CacheStatus = %q, err = %v", r2.CacheStatus, err)
+	}
+	// Remove one of the two distinct chunks via a fresh LRU retaining only one entry.
+	partialCache, err := cache.NewLRU(cache.Limits{CapacityBytes: 64 << 20, MaxEntries: 10, MaxCopyBytes: 4 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e0 := f.entries[0]
+	k0 := storage.CacheKey{Pack: f.ref, Range: storage.ByteRange{Offset: int64(e0.Offset), Length: int64(e0.StoredLen)}}
+	raw0, hit, err := f.reader.options.Cache.Get(ctx, k0)
+	if err != nil || !hit {
+		t.Fatal("missing first entry in warm cache", hit, err)
+	}
+	if err := partialCache.Put(ctx, k0, raw0); err != nil {
+		t.Fatal(err)
+	}
+	f.reader.options.Cache = partialCache
+	r3, _, err := f.read(ctx, f.request)
+	if err != nil || r3.CacheStatus != "partial" {
+		t.Fatalf("partial read CacheStatus = %q, err = %v", r3.CacheStatus, err)
+	}
+	drained(t, f.reader.options.Admission)
+}

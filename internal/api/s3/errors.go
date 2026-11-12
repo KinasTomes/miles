@@ -99,6 +99,7 @@ type Error struct {
 	// failureClass is a fixed, server-only diagnostic enum. Do not expose
 	// raw backend errors, object keys or credentials to operator logs.
 	failureClass string
+	debugRestore string
 }
 
 func availabilityFailureClass(err error) string {
