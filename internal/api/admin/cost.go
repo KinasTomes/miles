@@ -20,6 +20,39 @@ import (
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
+func costEntry(amountRat *big.Rat, hasMeasurement bool, omittedReason string, notApplicableReason string) (string, TypedCostItem) {
+	if notApplicableReason != "" {
+		return notApplicableReason, TypedCostItem{
+			AmountUSD: nil,
+			Status:    CostItemNotApplicable,
+			Reason:    notApplicableReason,
+		}
+	}
+	if !hasMeasurement {
+		msg := omittedReason
+		if msg == "" {
+			msg = "omitted"
+		}
+		return msg, TypedCostItem{
+			AmountUSD: nil,
+			Status:    CostItemOmitted,
+			Reason:    msg,
+		}
+	}
+	if amountRat == nil || amountRat.Sign() == 0 {
+		zeroStr := "0"
+		return "0", TypedCostItem{
+			AmountUSD: &zeroStr,
+			Status:    CostItemTrueZero,
+		}
+	}
+	s := amountRat.RatString()
+	return s, TypedCostItem{
+		AmountUSD: &s,
+		Status:    CostItemMeasured,
+	}
+}
+
 type CostReportInputs struct {
 	Region                string                    `json:"region"`
 	AsOf                  string                    `json:"as_of"`
@@ -35,14 +68,30 @@ type CostReportInputs struct {
 	Assumptions           []string                  `json:"assumptions"`
 }
 
+type CostItemStatus string
+
+const (
+	CostItemMeasured      CostItemStatus = "measured"
+	CostItemTrueZero      CostItemStatus = "true_zero"
+	CostItemOmitted       CostItemStatus = "omitted"
+	CostItemNotApplicable CostItemStatus = "not_applicable"
+)
+
+type TypedCostItem struct {
+	AmountUSD *string        `json:"amount_usd"`
+	Status    CostItemStatus `json:"status"`
+	Reason    string         `json:"reason,omitempty"`
+}
+
 type DirectS3Breakdown struct {
-	LogicalBytes     uint64 `json:"logical_bytes"`
-	StorageCostUSD   string `json:"storage_cost_usd"`
-	RequestsCostUSD  string `json:"requests_cost_usd"`
-	RetrievalCostUSD string `json:"retrieval_cost_usd,omitempty"`
-	RestoreCostUSD   string `json:"restore_cost_usd,omitempty"`
-	NetworkCostUSD   string `json:"network_cost_usd"`
-	TotalCostUSD     string `json:"total_cost_usd"`
+	LogicalBytes     uint64                   `json:"logical_bytes"`
+	StorageCostUSD   string                   `json:"storage_cost_usd"`
+	RequestsCostUSD  string                   `json:"requests_cost_usd"`
+	RetrievalCostUSD string                   `json:"retrieval_cost_usd,omitempty"`
+	RestoreCostUSD   string                   `json:"restore_cost_usd,omitempty"`
+	NetworkCostUSD   string                   `json:"network_cost_usd"`
+	TotalCostUSD     string                   `json:"total_cost_usd"`
+	TypedItems       map[string]TypedCostItem `json:"typed_items,omitempty"`
 }
 
 type BaselineReport struct {
@@ -59,22 +108,24 @@ type DSGStorageReport struct {
 }
 
 type DSGRequestsNetworkReport struct {
-	RequestsByType    map[string]uint64 `json:"requests_by_type"`
-	RetrievalFees     string            `json:"retrieval_fees"`
-	TransitionFees    string            `json:"transition_fees"`
-	RestoreFees       string            `json:"restore_fees"`
-	EarlyDeletionFees string            `json:"early_deletion_fees"`
-	TrafficBytes      map[string]uint64 `json:"traffic_bytes,omitempty"`
-	TrafficUSD        map[string]string `json:"traffic_usd,omitempty"`
+	RequestsByType    map[string]uint64        `json:"requests_by_type"`
+	RetrievalFees     string                   `json:"retrieval_fees"`
+	TransitionFees    string                   `json:"transition_fees"`
+	RestoreFees       string                   `json:"restore_fees"`
+	EarlyDeletionFees string                   `json:"early_deletion_fees"`
+	TrafficBytes      map[string]uint64        `json:"traffic_bytes,omitempty"`
+	TrafficUSD        map[string]string        `json:"traffic_usd,omitempty"`
+	TypedFees         map[string]TypedCostItem `json:"typed_fees,omitempty"`
 }
 
 type InfrastructureReport struct {
-	ComputeOrEdgeVM       string `json:"compute_or_edge_vm"`
-	DiskEBS               string `json:"disk_ebs"`
-	ALBLCU                string `json:"alb_lcu"`
-	DynamoDB              string `json:"dynamodb"`
-	KMSCloudWatch         string `json:"kms_cloudwatch"`
-	NATInterfaceEndpoints string `json:"nat_interface_endpoints"`
+	ComputeOrEdgeVM       string                   `json:"compute_or_edge_vm"`
+	DiskEBS               string                   `json:"disk_ebs"`
+	ALBLCU                string                   `json:"alb_lcu"`
+	DynamoDB              string                   `json:"dynamodb"`
+	KMSCloudWatch         string                   `json:"kms_cloudwatch"`
+	NATInterfaceEndpoints string                   `json:"nat_interface_endpoints"`
+	TypedItems            map[string]TypedCostItem `json:"typed_items,omitempty"`
 }
 
 type RevivalCopyReport struct {
@@ -396,42 +447,66 @@ func (s *server) costReport(c *call) error {
 			}
 		}
 
-		computeCost := "omitted"
-		if hasEC2 {
-			computeCost = ec2Rat.RatString()
-		} else if scenario == "A" {
-			computeCost = "omitted (cloud ec2)"
-		} else {
-			computeCost = "omitted (edge hardware)"
+		computeCost, computeItem := costEntry(&ec2Rat, hasEC2, "omitted (cloud ec2)", "")
+		if scenario != "A" && !hasEC2 {
+			computeCost, computeItem = costEntry(nil, false, "omitted (edge hardware)", "")
 		}
 
-		diskCost := "omitted"
-		if hasEBS {
-			diskCost = ebsRat.RatString()
+		diskCost, diskItem := costEntry(&ebsRat, hasEBS, "omitted", "")
+
+		albCost, albItem := costEntry(&albRat, hasALB, "omitted (cloud alb)", "")
+		if scenario != "A" && !hasALB {
+			albCost, albItem = costEntry(nil, false, "", "not_applicable (edge deployment has no ALB)")
 		}
 
-		albCost := "omitted"
-		if hasALB {
-			albCost = albRat.RatString()
-		} else if scenario == "A" {
-			albCost = "omitted (cloud alb)"
-		} else {
-			albCost = "not_applicable (edge deployment has no ALB)"
+		ddbCost, ddbItem := costEntry(&ddbRat, hasDDB, "omitted", "")
+		kmsCost, kmsItem := costEntry(&kmsRat, hasKMS, "omitted", "")
+		natCost, natItem := costEntry(&natRat, hasNAT, "omitted", "")
+
+		typedInfra := map[string]TypedCostItem{
+			"compute_or_edge_vm":      computeItem,
+			"disk_ebs":                diskItem,
+			"alb_lcu":                 albItem,
+			"dynamodb":                ddbItem,
+			"kms_cloudwatch":          kmsItem,
+			"nat_interface_endpoints": natItem,
 		}
 
-		ddbCost := "omitted"
-		if hasDDB {
-			ddbCost = ddbRat.RatString()
+		directStorageRat, _ := new(big.Rat).SetString(directStorage)
+		directReqRat, _ := new(big.Rat).SetString(directReq)
+		directRetRat, _ := new(big.Rat).SetString(directRet)
+		directRestRat, _ := new(big.Rat).SetString(directRest)
+		directNetRat, _ := new(big.Rat).SetString(directNet)
+
+		_, directStorageItem := costEntry(directStorageRat, directStorage != "" && directStorage != "omitted", "omitted", "")
+		_, directReqItem := costEntry(directReqRat, directReq != "" && directReq != "omitted", "omitted", "")
+		_, directRetItem := costEntry(directRetRat, directRet != "" && directRet != "omitted", "omitted", "")
+		_, directRestItem := costEntry(directRestRat, directRest != "" && directRest != "omitted", "omitted", "")
+		_, directNetItem := costEntry(directNetRat, directNet != "" && directNet != "omitted", "omitted", "")
+
+		typedDirect := map[string]TypedCostItem{
+			"storage_cost_usd":   directStorageItem,
+			"requests_cost_usd":  directReqItem,
+			"retrieval_cost_usd": directRetItem,
+			"restore_cost_usd":   directRestItem,
+			"network_cost_usd":   directNetItem,
 		}
 
-		kmsCost := "omitted"
-		if hasKMS {
-			kmsCost = kmsRat.RatString()
-		}
+		retRat, _ := new(big.Rat).SetString(retFees)
+		transRat, _ := new(big.Rat).SetString(transFees)
+		restRat, _ := new(big.Rat).SetString(restFees)
+		earlyRat, _ := new(big.Rat).SetString(earlyFees)
 
-		natCost := "omitted"
-		if hasNAT {
-			natCost = natRat.RatString()
+		_, retItem := costEntry(retRat, retFees != "" && retFees != "omitted", "omitted", "")
+		_, transItem := costEntry(transRat, transFees != "" && transFees != "omitted", "omitted", "")
+		_, restItem := costEntry(restRat, restFees != "" && restFees != "omitted", "omitted", "")
+		_, earlyItem := costEntry(earlyRat, earlyFees != "" && earlyFees != "omitted", "omitted", "")
+
+		typedFees := map[string]TypedCostItem{
+			"retrieval_fees":      retItem,
+			"transition_fees":     transItem,
+			"restore_fees":        restItem,
+			"early_deletion_fees": earlyItem,
 		}
 
 		response := CostReportResponse{
@@ -461,6 +536,7 @@ func (s *server) costReport(c *call) error {
 					RestoreCostUSD:   directRest,
 					NetworkCostUSD:   directNet,
 					TotalCostUSD:     directPol.TotalCostUSD,
+					TypedItems:       typedDirect,
 				},
 				CostReport: directPol.Report,
 			},
@@ -478,6 +554,7 @@ func (s *server) costReport(c *call) error {
 				RestoreFees:       restFees,
 				EarlyDeletionFees: earlyFees,
 				TrafficBytes:      trafficBytes,
+				TypedFees:         typedFees,
 			},
 			Infrastructure: InfrastructureReport{
 				ComputeOrEdgeVM:       computeCost,
@@ -486,6 +563,7 @@ func (s *server) costReport(c *call) error {
 				DynamoDB:              ddbCost,
 				KMSCloudWatch:         kmsCost,
 				NATInterfaceEndpoints: natCost,
+				TypedItems:            typedInfra,
 			},
 			RevivalCopy: RevivalCopyReport{
 				RevivedChunks:              nil,
@@ -706,17 +784,56 @@ func (s *server) costReport(c *call) error {
 		temporaryRestored = summary.PhysicalLifecycle["Restored"]
 	}
 
-	computeCost := "omitted"
-	albCost := "omitted"
+	computeCost, computeItem := costEntry(nil, false, "omitted (cloud ec2)", "")
+	albCost, albItem := costEntry(nil, false, "omitted (cloud alb)", "")
 	scenarioAssumption := ""
 	if scenario == "A" {
-		computeCost = "omitted (cloud ec2)"
-		albCost = "omitted (cloud alb)"
 		scenarioAssumption = "Scenario A (Cloud DSG): evaluates S3 storage snapshot; cloud compute/ALB/NAT infrastructure omitted."
 	} else {
-		computeCost = "omitted (edge hardware)"
-		albCost = "not_applicable (edge deployment has no ALB)"
+		computeCost, computeItem = costEntry(nil, false, "omitted (edge hardware)", "")
+		albCost, albItem = costEntry(nil, false, "", "not_applicable (edge deployment has no ALB)")
 		scenarioAssumption = "Scenario B (Edge DSG): evaluates S3 storage snapshot; edge compute/WAN egress omitted, ALB not applicable."
+	}
+
+	_, diskItem := costEntry(nil, false, "omitted", "")
+	_, ddbItem := costEntry(nil, false, "omitted", "")
+	_, kmsItem := costEntry(nil, false, "omitted", "")
+	_, natItem := costEntry(nil, false, "omitted", "")
+
+	typedLiveInfra := map[string]TypedCostItem{
+		"compute_or_edge_vm":      computeItem,
+		"disk_ebs":                diskItem,
+		"alb_lcu":                 albItem,
+		"dynamodb":                ddbItem,
+		"kms_cloudwatch":          kmsItem,
+		"nat_interface_endpoints": natItem,
+	}
+
+	directStorageRat, _ := new(big.Rat).SetString(directReport.Subtotal)
+	_, liveStorageItem := costEntry(directStorageRat, true, "omitted", "")
+	_, liveOmittedReqItem := costEntry(nil, false, "omitted", "")
+	_, liveOmittedRetItem := costEntry(nil, false, "omitted", "")
+	_, liveOmittedRestItem := costEntry(nil, false, "omitted", "")
+	_, liveOmittedNetItem := costEntry(nil, false, "omitted", "")
+
+	typedLiveDirect := map[string]TypedCostItem{
+		"storage_cost_usd":   liveStorageItem,
+		"requests_cost_usd":  liveOmittedReqItem,
+		"retrieval_cost_usd": liveOmittedRetItem,
+		"restore_cost_usd":   liveOmittedRestItem,
+		"network_cost_usd":   liveOmittedNetItem,
+	}
+
+	_, liveOmittedFeesRet := costEntry(nil, false, "omitted", "")
+	_, liveOmittedFeesTrans := costEntry(nil, false, "omitted", "")
+	_, liveOmittedFeesRest := costEntry(nil, false, "omitted", "")
+	_, liveOmittedFeesEarly := costEntry(nil, false, "omitted", "")
+
+	typedLiveFees := map[string]TypedCostItem{
+		"retrieval_fees":      liveOmittedFeesRet,
+		"transition_fees":     liveOmittedFeesTrans,
+		"restore_fees":        liveOmittedFeesRest,
+		"early_deletion_fees": liveOmittedFeesEarly,
 	}
 
 	omissions := []string{
@@ -761,6 +878,7 @@ func (s *server) costReport(c *call) error {
 				RestoreCostUSD:   "omitted",
 				NetworkCostUSD:   "omitted",
 				TotalCostUSD:     directReport.Subtotal,
+				TypedItems:       typedLiveDirect,
 			},
 			CostReport: directReport,
 		},
@@ -777,6 +895,7 @@ func (s *server) costReport(c *call) error {
 			TransitionFees:    "omitted",
 			RestoreFees:       "omitted",
 			EarlyDeletionFees: "omitted",
+			TypedFees:         typedLiveFees,
 		},
 		Infrastructure: InfrastructureReport{
 			ComputeOrEdgeVM:       computeCost,
@@ -785,6 +904,7 @@ func (s *server) costReport(c *call) error {
 			DynamoDB:              "omitted",
 			KMSCloudWatch:         "omitted",
 			NATInterfaceEndpoints: "omitted",
+			TypedItems:            typedLiveInfra,
 		},
 		RevivalCopy: RevivalCopyReport{
 			RevivedChunks:              summary.RevivedChunks,

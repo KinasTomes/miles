@@ -1,44 +1,56 @@
 package simulator
 
 import (
+	"math/big"
 	"strings"
 
 	"github.com/KinasTomes/miles/internal/cost"
+	"github.com/KinasTomes/miles/internal/storage"
 )
 
-// isIncompleteOmission identifies declarations in trace omissions indicating that the trace
-// has partial infrastructure, missing network routes, or unpriced components.
-func isIncompleteOmission(om string) bool {
-	knownIncompletePhrases := []string{
-		"unpriced items present",
-		"without complete matched totals",
-		"partial prototype",
-		"infrastructure compute/disk/alb/dynamodb/kms costs omitted",
-		"infrastructure and account-wide tier aggregation omitted",
-		"full ec2/ebs/alb/kms/cloudwatch infrastructure and account-wide tier aggregation",
-		"minimum duration/size, archive metadata, restore and retries not exercised",
-		"missing ec2, ebs",
-		"missing network telemetry",
-		"trace contains no observed cold inventory",
-		"storage inventory inconsistent",
-		"glacier accounting unproven",
-		"glacier retention fee unproven",
-		"glacier storage unproven",
-		"glacier restore storage unproven",
-		"glacier restore unproven",
-		"baseline direct s3 client request telemetry not independently observed",
-		"candidate policy cold read pricing unproven",
-	}
+// isProvenCompleteOmission checks whether an omission entry is an explicit proof of completeness
+// or a benign modeling assumption that does not represent unmeasured trace telemetry.
+// Fail-closed rule: ANY omission that is not explicitly proven complete causes completeness to fail.
+func isProvenCompleteOmission(om string) bool {
 	lower := strings.ToLower(strings.TrimSpace(om))
-	for _, phrase := range knownIncompletePhrases {
-		if strings.Contains(lower, phrase) {
+	if lower == "" {
+		return false
+	}
+
+	// Typed schema / explicit severity
+	if strings.HasPrefix(lower, "severity:info") ||
+		strings.HasPrefix(lower, "omission:info:") ||
+		strings.HasPrefix(lower, "note:") ||
+		strings.HasPrefix(lower, "modelling_assumption:") ||
+		strings.HasPrefix(lower, "verified_complete:") {
+		return true
+	}
+
+	// Explicit benign modeling notes & verified complete declarations
+	provenCompletePhrases := []string{
+		"storage month and gb divisor are explicit modelling assumptions",
+		"full verified observation run across all topology dimensions",
+		"full verified observation",
+		"full observation run",
+		"deterministic simulation note",
+		"omissions resolved by full measurement",
+		"trace inventory snapshot verified against manifest",
+	}
+
+	for _, phrase := range provenCompletePhrases {
+		if lower == phrase || strings.HasPrefix(lower, phrase) {
 			return true
 		}
 	}
-	if strings.HasPrefix(lower, "omission:incomplete_") || strings.HasPrefix(lower, "omission:unproven_") {
-		return true
-	}
+
 	return false
+}
+
+// isIncompleteOmission identifies declarations in trace omissions indicating that the trace
+// has partial infrastructure, missing network routes, unpriced components, or unproven observations.
+// Operates fail-closed: anything not proven complete is treated as incomplete.
+func isIncompleteOmission(om string) bool {
+	return !isProvenCompleteOmission(om)
 }
 
 func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLogical uint64, hasStorageInconsistency bool, unprovenColdReasons map[UnprovenColdReason]bool) bool {
@@ -52,7 +64,7 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 		return false
 	}
 	for _, om := range trace.Omissions {
-		if isIncompleteOmission(om) {
+		if !isProvenCompleteOmission(om) {
 			return false
 		}
 	}
@@ -115,18 +127,51 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 		return false
 	}
 
-	// Invariant: Direct S3 baseline requires independent client request telemetry (DirectUsage).
+	// Invariant: Direct S3 baseline requires event-scoped independent client request telemetry (DirectUsage).
 	// Baseline must not conflate DSG backend pack + sidecar upload requests with client logical operations.
+	// Every event exercising client writes or downloads must have explicit DirectUsage covering the operation.
 	if polName == PolicyDirectS3 {
-		hasExplicitDirectUsage := false
 		for _, ev := range trace.Events {
-			if len(ev.DirectUsage) > 0 {
-				hasExplicitDirectUsage = true
-				break
+			hasWrites := ev.Counters.ChunkOccurrences > 0 || ev.Counters.RevivedBytes > 0 ||
+				ev.Traffic[cost.ClientGateway] > 0 || ev.Traffic[cost.ClientS3] > 0
+			if !hasWrites {
+				for _, u := range ev.Usage {
+					if u.RateID == "s3.put_standard" {
+						hasWrites = true
+						break
+					}
+				}
 			}
-		}
-		if !hasExplicitDirectUsage {
-			return false
+			if hasWrites {
+				hasDirectPUT := false
+				for _, du := range ev.DirectUsage {
+					if du.RateID == "s3.put_standard" {
+						if q, ok := new(big.Rat).SetString(du.Quantity); ok && q.Sign() > 0 {
+							hasDirectPUT = true
+							break
+						}
+					}
+				}
+				if !hasDirectPUT {
+					return false
+				}
+			}
+
+			hasDownloads := ev.Traffic[cost.GatewayClient] > 0 || ev.Traffic[cost.S3Client] > 0
+			if hasDownloads {
+				hasDirectGET := false
+				for _, du := range ev.DirectUsage {
+					if du.RateID == "s3.get_standard" {
+						if q, ok := new(big.Rat).SetString(du.Quantity); ok && q.Sign() > 0 {
+							hasDirectGET = true
+							break
+						}
+					}
+				}
+				if !hasDirectGET {
+					return false
+				}
+			}
 		}
 	}
 
@@ -152,27 +197,78 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 
 	// Invariant: Per-policy cold coverage check.
 	// If the workload exercised cold reads (retrieval usage, restore usage, or cold delivery telemetry),
-	// candidate policies with cold storage obligations must provide proven cold pricing lines.
-	hasColdReadActivity := false
-	for _, event := range trace.Events {
-		for _, u := range event.Usage {
-			if u.RateID == "s3.retrieval_ir" || strings.HasPrefix(u.RateID, "s3.restore_") {
-				hasColdReadActivity = true
-				break
+	// candidate policies with cold storage obligations must match event-by-event physical delivery/restore.
+	// We cannot assume cold coverage merely because an unrelated restore occurred in another event.
+	if polName == PolicyWarmGlacierIR || polName == PolicyWarmGlacierFlex {
+		tracker := NewRestoreTracker()
+		for evIdx, event := range trace.Events {
+			tracker.ExpirePastDeadlines(event.AtNS)
+			restoredInThisEvent := make(map[storage.PackRef]bool)
+			for _, u := range event.Usage {
+				if u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
+					if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+						if b, ok := ratGBToBytes(q, trace.BytesPerGB); ok && b > 0 {
+							var packBytes uint64
+							if event.Tiering != nil {
+								if event.Tiering.Pack.Size > 0 {
+									packBytes = uint64(event.Tiering.Pack.Size)
+								} else if event.Tiering.TotalBytes > 0 {
+									packBytes = uint64(event.Tiering.TotalBytes)
+								}
+							}
+							if packBytes == 0 {
+								packBytes = b
+							}
+							pInfo, ok := tracker.RegisterRestore(evIdx, event, trace, b, packBytes)
+							if ok && pInfo != nil {
+								restoredInThisEvent[pInfo.PackRef] = true
+							}
+						}
+					}
+				}
 			}
-		}
-		if event.ColdLogicalDeliveredBytes > 0 || len(event.ColdLogicalDeliveredByClass) > 0 {
-			hasColdReadActivity = true
-			break
-		}
-	}
+			tracker.ApplyAuthoritativeMetadata(event, trace, restoredInThisEvent)
 
-	if hasColdReadActivity {
-		if polName == PolicyWarmGlacierIR && !hasIRRetrieval {
-			return false
-		}
-		if polName == PolicyWarmGlacierFlex && !hasFlexRestore {
-			return false
+			hasColdReadInEvent := event.ColdLogicalDeliveredBytes > 0 || len(event.ColdLogicalDeliveredByClass) > 0
+			if !hasColdReadInEvent {
+				for _, u := range event.Usage {
+					if u.RateID == "s3.retrieval_ir" || u.RateID == "s3.get_ir" {
+						hasColdReadInEvent = true
+						break
+					}
+				}
+			}
+
+			if hasColdReadInEvent {
+				if polName == PolicyWarmGlacierIR {
+					if !hasIRRetrieval {
+						return false
+					}
+					hasEventIR := false
+					for _, u := range event.Usage {
+						if u.RateID == "s3.retrieval_ir" || u.RateID == "s3.get_ir" {
+							if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+								hasEventIR = true
+								break
+							}
+						}
+					}
+					if !hasEventIR {
+						unprovenColdReasons[UnprovenColdReadObligation] = true
+						return false
+					}
+				} else if polName == PolicyWarmGlacierFlex {
+					if !hasFlexRestore {
+						return false
+					}
+					packInfo, resolved := tracker.ResolvePackForDelivery(event)
+					if !resolved || packInfo == nil || packInfo.RetrievedBytes == 0 ||
+						packInfo.Expired || event.AtNS >= packInfo.DeadlineNS {
+						unprovenColdReasons[UnprovenColdReadObligation] = true
+						return false
+					}
+				}
+			}
 		}
 	}
 

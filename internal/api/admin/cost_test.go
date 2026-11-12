@@ -1588,3 +1588,105 @@ func TestCostReportAuditItem12_14_RevivalCopyReportNullableJSON(t *testing.T) {
 		t.Fatalf("expected note to reflect unmeasured/omitted copy bytes, got %q", note)
 	}
 }
+
+func TestCostReportAuditItem14_TypedAmountStatusContractAndBackwardCompatibility(t *testing.T) {
+	// Item 14 [P3]: API report provides typed amount/status contract distinguishing unknown/omitted
+	// from true zero and measured amounts, while maintaining 100% backward compatibility.
+	w, server := newCostTestWorld(t, &fakeStats{})
+
+	// 1. Live snapshot endpoint
+	liveReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?scenario=B&profile=edge", nil)
+	liveReq.Header.Set("Authorization", "Bearer "+w.root)
+	liveResp, err := server.Client().Do(liveReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer liveResp.Body.Close()
+	if liveResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", liveResp.StatusCode)
+	}
+
+	var liveRaw map[string]any
+	if err := json.NewDecoder(liveResp.Body).Decode(&liveRaw); err != nil {
+		t.Fatal(err)
+	}
+
+	baselineRaw := liveRaw["baseline"].(map[string]any)
+	directRaw := baselineRaw["direct_s3"].(map[string]any)
+	// Backward compatibility: string fields preserved
+	if directRaw["requests_cost_usd"] != "omitted" {
+		t.Fatalf("expected legacy requests_cost_usd to be 'omitted', got %v", directRaw["requests_cost_usd"])
+	}
+	// Typed contract: requests unmeasured -> null amount_usd, status omitted
+	directTyped := directRaw["typed_items"].(map[string]any)
+	reqItem := directTyped["requests_cost_usd"].(map[string]any)
+	if reqItem["amount_usd"] != nil {
+		t.Fatalf("expected null amount_usd for unmeasured requests, got %v", reqItem["amount_usd"])
+	}
+	if reqItem["status"] != string(CostItemOmitted) {
+		t.Fatalf("expected status 'omitted', got %v", reqItem["status"])
+	}
+	// Measured storage has non-null amount_usd
+	storageItem := directTyped["storage_cost_usd"].(map[string]any)
+	if storageItem["amount_usd"] == nil || storageItem["amount_usd"] != directRaw["storage_cost_usd"] {
+		t.Fatalf("expected non-null amount_usd matching storage_cost_usd, got %v", storageItem["amount_usd"])
+	}
+	if storageItem["status"] != string(CostItemMeasured) {
+		t.Fatalf("expected status 'measured', got %v", storageItem["status"])
+	}
+
+	// 2. Modeled simulation endpoint
+	simReq, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=cloud-tiering-boundary&scenario=A&profile=cloud", nil)
+	simReq.Header.Set("Authorization", "Bearer "+w.root)
+	simResp, err := server.Client().Do(simReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer simResp.Body.Close()
+	if simResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", simResp.StatusCode)
+	}
+
+	var simRaw map[string]any
+	if err := json.NewDecoder(simResp.Body).Decode(&simRaw); err != nil {
+		t.Fatal(err)
+	}
+
+	infraRaw := simRaw["infrastructure"].(map[string]any)
+	// Legacy strings preserved:
+	if infraRaw["compute_or_edge_vm"] != "omitted (cloud ec2)" {
+		t.Fatalf("expected legacy compute note, got %v", infraRaw["compute_or_edge_vm"])
+	}
+	if infraRaw["dynamodb"] != "71/12500000" {
+		t.Fatalf("expected legacy dynamodb exact string, got %v", infraRaw["dynamodb"])
+	}
+
+	// Typed contract:
+	infraTyped := infraRaw["typed_items"].(map[string]any)
+	computeItem := infraTyped["compute_or_edge_vm"].(map[string]any)
+	if computeItem["amount_usd"] != nil {
+		t.Fatalf("expected null amount_usd for omitted EC2 compute, got %v", computeItem["amount_usd"])
+	}
+	if computeItem["status"] != string(CostItemOmitted) {
+		t.Fatalf("expected status 'omitted' for compute, got %v", computeItem["status"])
+	}
+
+	ddbItem := infraTyped["dynamodb"].(map[string]any)
+	if ddbItem["amount_usd"] != "71/12500000" {
+		t.Fatalf("expected amount_usd '71/12500000' for DynamoDB, got %v", ddbItem["amount_usd"])
+	}
+	if ddbItem["status"] != string(CostItemMeasured) {
+		t.Fatalf("expected status 'measured' for DynamoDB, got %v", ddbItem["status"])
+	}
+
+	// Fees: true zero vs omitted
+	dsgReqNet := simRaw["dsg_requests_network"].(map[string]any)
+	typedFees := dsgReqNet["typed_fees"].(map[string]any)
+	earlyItem := typedFees["early_deletion_fees"].(map[string]any)
+	if earlyItem["amount_usd"] != "0" {
+		t.Fatalf("expected '0' for true-zero early deletion fees, got %v", earlyItem["amount_usd"])
+	}
+	if earlyItem["status"] != string(CostItemTrueZero) {
+		t.Fatalf("expected status 'true_zero', got %v", earlyItem["status"])
+	}
+}

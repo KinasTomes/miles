@@ -49,7 +49,7 @@ type timelineReplayState struct {
 	warmStdTotals              map[string]*big.Rat
 	glacierIRTotals            map[string]*big.Rat
 	glacierFlexTotals          map[string]*big.Rat
-	restoreCopies              []*PackRestoreLifecycle
+	restoreTracker             *RestoreTracker
 	temporaryRestoredBytes     uint64
 	monthDuration              time.Duration
 }
@@ -90,7 +90,8 @@ func initReplayState(baseResult Result, trace Trace) *timelineReplayState {
 			PolicyWarmGlacierIR:    new(big.Rat),
 			PolicyWarmGlacierFlex:  new(big.Rat),
 		},
-		monthDuration: monthDuration,
+		restoreTracker: NewRestoreTracker(),
+		monthDuration:  monthDuration,
 	}
 }
 
@@ -328,119 +329,49 @@ func applyEventTieringTransitions(state *timelineReplayState, event Event, trace
 	return nil
 }
 
-func applyEventRestores(state *timelineReplayState, event Event, trace Trace) error {
-	// 1. Mark expiration for existing restore copies if current time reached deadline
-	for _, c := range state.restoreCopies {
-		if event.AtNS >= c.DeadlineNS {
-			c.Expired = true
-		}
-	}
+func applyEventRestores(state *timelineReplayState, event Event, trace Trace, eventIdx int) error {
+	state.restoreTracker.ExpirePastDeadlines(event.AtNS)
 
-	// 2. Identify new restore usage in this event
+	restoredInThisEvent := make(map[storage.PackRef]bool)
 	for _, u := range event.Usage {
 		if u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
 			if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
 				restoredBytes, ok := ratGBToBytes(q, trace.BytesPerGB)
 				if !ok {
-					state.unprovenColdReasons[UnprovenColdRestoreDuration] = true
+					state.restoreTracker.MarkUnproven(UnprovenColdRestoreDuration)
 					continue
 				}
 				if restoredBytes > 0 {
-					restoreDur, ok := trace.RestoreDuration(event)
-					if !ok {
-						state.unprovenColdReasons[UnprovenColdRestoreDuration] = true
-						continue
-					}
-					durNS := restoreDur.Nanoseconds()
-					if durNS <= 0 {
-						continue
-					}
-					expiryNS := event.AtNS + durNS
-
-					var packRef storage.PackRef
+					var packBytes uint64
 					if event.Tiering != nil {
-						packRef = event.Tiering.Pack.Ref
-						if !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
-							eventTime := trace.Start.Add(time.Duration(event.AtNS))
-							if !event.Tiering.Pack.RestoredUntil.After(eventTime) {
-								expiryNS = event.AtNS
-							} else {
-								expiryNS = event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
-							}
+						if event.Tiering.Pack.Size > 0 {
+							packBytes = uint64(event.Tiering.Pack.Size)
+						} else if event.Tiering.TotalBytes > 0 {
+							packBytes = uint64(event.Tiering.TotalBytes)
 						}
 					}
-
-					var sameEventCopy *PackRestoreLifecycle
-					if packRef.ID != "" {
-						for _, c := range state.restoreCopies {
-							if c.PackRef == packRef && c.StartNS == event.AtNS && !c.Expired {
-								sameEventCopy = c
-								break
-							}
-						}
+					if packBytes == 0 {
+						packBytes = restoredBytes
 					}
-					if sameEventCopy != nil {
-						sameEventCopy.Bytes += restoredBytes
-						if expiryNS > sameEventCopy.DeadlineNS {
-							sameEventCopy.DeadlineNS = expiryNS
-						}
-					} else {
-						if packRef.ID != "" {
-							for _, prev := range state.restoreCopies {
-								if prev.PackRef == packRef && !prev.Expired {
-									prev.DeadlineNS = event.AtNS
-									prev.Expired = true
-								}
-							}
-						}
-						state.restoreCopies = append(state.restoreCopies, &PackRestoreLifecycle{
-							PackRef:    packRef,
-							StartNS:    event.AtNS,
-							DeadlineNS: expiryNS,
-							Bytes:      restoredBytes,
-							Expired:    (event.AtNS >= expiryNS),
-						})
+					pInfo, regOk := state.restoreTracker.RegisterRestore(eventIdx, event, trace, restoredBytes, packBytes)
+					if regOk && pInfo != nil {
+						restoredInThisEvent[pInfo.PackRef] = true
 					}
 				}
 			}
 		}
 	}
 
-	// 3. Authoritative pack metadata observation
-	if event.Tiering != nil {
-		packRef := event.Tiering.Pack.Ref
-		var activeCopy *PackRestoreLifecycle
-		if packRef.ID != "" {
-			for _, c := range state.restoreCopies {
-				if c.PackRef == packRef && !c.Expired {
-					activeCopy = c
-					break
-				}
-			}
-		}
-		if activeCopy != nil {
-			eventTime := trace.Start.Add(time.Duration(event.AtNS))
-			if event.Tiering.Pack.State != "" && event.Tiering.Pack.State != "Restored" && event.Tiering.Pack.State != "Restoring" {
-				activeCopy.DeadlineNS = event.AtNS
-				activeCopy.Expired = true
-			}
-			if !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
-				isFuture := event.Tiering.Pack.RestoredUntil.After(eventTime)
-				packExpiryNS := event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
-				if !isFuture {
-					activeCopy.DeadlineNS = event.AtNS
-					activeCopy.Expired = true
-				} else {
-					activeCopy.DeadlineNS = packExpiryNS
-				}
-			}
-		}
+	state.restoreTracker.ApplyAuthoritativeMetadata(event, trace, restoredInThisEvent)
+
+	for r := range state.restoreTracker.UnprovenReasons {
+		state.unprovenColdReasons[r] = true
 	}
 	return nil
 }
 
 func finalizeTemporaryRestores(state *timelineReplayState, trace Trace) error {
-	for _, c := range state.restoreCopies {
+	for _, c := range state.restoreTracker.AllLifecycles {
 		if c.Bytes == 0 {
 			continue
 		}
@@ -560,8 +491,8 @@ func replayTimeline(ctx context.Context, trace Trace, catalog *pricing.Catalog, 
 		return timelineReplayResult{}, err
 	}
 
-	for _, event := range trace.Events {
-		if err := applyEventRestores(state, event, trace); err != nil {
+	for eventIdx, event := range trace.Events {
+		if err := applyEventRestores(state, event, trace, eventIdx); err != nil {
 			return timelineReplayResult{}, err
 		}
 	}

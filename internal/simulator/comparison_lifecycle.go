@@ -33,6 +33,7 @@ const (
 	UnprovenColdStorageEvidence UnprovenColdReason = "unproven_cold_storage_evidence"
 	UnprovenColdRestoreDuration UnprovenColdReason = "unproven_cold_restore_duration"
 	UnprovenColdReactivation    UnprovenColdReason = "unproven_cold_reactivation"
+	UnprovenColdReadObligation  UnprovenColdReason = "unproven_cold_read_obligation"
 )
 
 func (r UnprovenColdReason) OmissionText() string {
@@ -47,6 +48,8 @@ func (r UnprovenColdReason) OmissionText() string {
 		return "Glacier restore storage unproven: restore usage without authoritative duration or expiry observation"
 	case UnprovenColdReactivation:
 		return "Glacier restore unproven: expired restore window cannot be reactivated by metadata without physical restore usage"
+	case UnprovenColdReadObligation:
+		return "candidate policy cold read pricing unproven: missing matched cold retrieval/restore for event cold reads"
 	default:
 		return fmt.Sprintf("Glacier accounting unproven: %s", string(r))
 	}
@@ -120,6 +123,7 @@ func (l *PackRestoreLifecycle) ApplyAuthoritativeMetadata(atNS int64, packRestor
 // and replay (temporary restored Standard GB-Mo calculation), ensuring complete semantic parity.
 type RestoreTracker struct {
 	Packs           map[storage.PackRef]*PackRestoreLifecycle
+	AllLifecycles   []*PackRestoreLifecycle
 	anonCounter     int
 	HasUnprovenCold bool
 	UnprovenReasons map[UnprovenColdReason]bool
@@ -128,6 +132,7 @@ type RestoreTracker struct {
 func NewRestoreTracker() *RestoreTracker {
 	return &RestoreTracker{
 		Packs:           make(map[storage.PackRef]*PackRestoreLifecycle),
+		AllLifecycles:   make([]*PackRestoreLifecycle, 0),
 		UnprovenReasons: make(map[UnprovenColdReason]bool),
 	}
 }
@@ -138,7 +143,7 @@ func (t *RestoreTracker) MarkUnproven(reason UnprovenColdReason) {
 }
 
 func (t *RestoreTracker) ExpirePastDeadlines(atNS int64) {
-	for _, p := range t.Packs {
+	for _, p := range t.AllLifecycles {
 		if atNS >= p.DeadlineNS {
 			p.Expired = true
 		}
@@ -176,30 +181,44 @@ func (t *RestoreTracker) RegisterRestore(eventIdx int, event Event, trace Trace,
 	}
 
 	pInfo := t.Packs[packRef]
-	if pInfo == nil {
+	if pInfo == nil || pInfo.Expired || event.AtNS >= pInfo.DeadlineNS {
+		// New restore window or re-restore after previous restore expired.
+		if pInfo != nil {
+			pInfo.Expired = true
+			if pInfo.DeadlineNS > event.AtNS {
+				pInfo.DeadlineNS = event.AtNS
+			}
+		}
 		pInfo = &PackRestoreLifecycle{
-			PackRef:    packRef,
-			StartNS:    event.AtNS,
-			DeadlineNS: expiry,
-			Bytes:      packBytes,
-			Expired:    (event.AtNS >= expiry),
+			PackRef:        packRef,
+			StartNS:        event.AtNS,
+			DeadlineNS:     expiry,
+			Bytes:          packBytes,
+			RetrievedBytes: retrievedBytes,
+			Expired:        (event.AtNS >= expiry),
 		}
 		t.Packs[packRef] = pInfo
+		t.AllLifecycles = append(t.AllLifecycles, pInfo)
 	} else {
+		// Currently active restore: same-event addition or active extension
 		if packBytes > 0 {
-			pInfo.Bytes = packBytes
+			if pInfo.StartNS == event.AtNS {
+				pInfo.Bytes += packBytes
+			} else {
+				pInfo.Bytes = packBytes
+			}
 		}
 		if expiry > pInfo.DeadlineNS {
 			pInfo.DeadlineNS = expiry
 			pInfo.Expired = (event.AtNS >= expiry)
 		}
+		if retrievedBytes > math.MaxUint64-pInfo.RetrievedBytes {
+			t.MarkUnproven(UnprovenColdRestoreDuration)
+			return nil, false
+		}
+		pInfo.RetrievedBytes += retrievedBytes
 	}
 
-	if retrievedBytes > math.MaxUint64-pInfo.RetrievedBytes {
-		t.MarkUnproven(UnprovenColdRestoreDuration)
-		return nil, false
-	}
-	pInfo.RetrievedBytes += retrievedBytes
 	return pInfo, true
 }
 
@@ -331,4 +350,33 @@ func (t *RestoreTracker) CheckDeliveryProvenance(event Event, polName PolicyName
 		return 0, false
 	}
 	return 0, true
+}
+
+// ValidateColdReadCoverage checks if an event with cold read activity is proven and covered
+// by the candidate policy's physical retrieval/restore operations.
+// For PolicyWarmGlacierFlex: requires an active, unexpired physical restore covering the read at event.AtNS.
+// For PolicyWarmGlacierIR: requires matched s3.retrieval_ir or s3.get_ir usage in this event.
+func (t *RestoreTracker) ValidateColdReadCoverage(event Event, polName PolicyName) bool {
+	switch polName {
+	case PolicyWarmGlacierFlex:
+		packInfo, resolved := t.ResolvePackForDelivery(event)
+		if !resolved || packInfo == nil || packInfo.RetrievedBytes == 0 {
+			return false
+		}
+		if packInfo.Expired || event.AtNS >= packInfo.DeadlineNS {
+			return false
+		}
+		return true
+	case PolicyWarmGlacierIR:
+		for _, u := range event.Usage {
+			if u.RateID == "s3.retrieval_ir" || u.RateID == "s3.get_ir" {
+				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+					return true
+				}
+			}
+		}
+		return false
+	default:
+		return true
+	}
 }
