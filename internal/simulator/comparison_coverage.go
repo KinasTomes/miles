@@ -53,19 +53,44 @@ func isIncompleteOmission(om string) bool {
 	return !isProvenCompleteOmission(om)
 }
 
-func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLogical uint64, hasStorageInconsistency bool, unprovenColdReasons map[UnprovenColdReason]bool) bool {
-	if hasStorageInconsistency {
-		return false
+// PolicyCompleteness holds the evaluation result and policy-local unproven reasons
+// ensuring candidate policy completeness checks remain isolated and order-invariant.
+type PolicyCompleteness struct {
+	IsComplete      bool
+	UnprovenReasons map[UnprovenColdReason]bool
+}
+
+// checkPolicyCompleteness evaluates whether a specific candidate policy meets all coverage,
+// infrastructure, and cold read evidence obligations.
+// Operates fail-closed and strictly policy-local: does not mutate baseReasons.
+func checkPolicyCompleteness(polName PolicyName, r cost.Report, trace Trace, currentLogical uint64, hasStorageInconsistency bool, baseReasons map[UnprovenColdReason]bool) PolicyCompleteness {
+	localReasons := make(map[UnprovenColdReason]bool)
+	for k, v := range baseReasons {
+		if v {
+			localReasons[k] = true
+		}
 	}
-	if len(unprovenColdReasons) > 0 && (polName == PolicyWarmGlacierIR || polName == PolicyWarmGlacierFlex) {
-		return false
+
+	fail := func() PolicyCompleteness {
+		return PolicyCompleteness{IsComplete: false, UnprovenReasons: localReasons}
+	}
+	failReason := func(reason UnprovenColdReason) PolicyCompleteness {
+		localReasons[reason] = true
+		return PolicyCompleteness{IsComplete: false, UnprovenReasons: localReasons}
+	}
+
+	if hasStorageInconsistency {
+		return fail()
+	}
+	if len(localReasons) > 0 && (polName == PolicyWarmGlacierIR || polName == PolicyWarmGlacierFlex) {
+		return fail()
 	}
 	if len(r.Unpriced) > 0 {
-		return false
+		return fail()
 	}
 	for _, om := range trace.Omissions {
 		if !isProvenCompleteOmission(om) {
-			return false
+			return fail()
 		}
 	}
 
@@ -119,12 +144,12 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 
 	// Storage is always required
 	if !hasStorage {
-		return false
+		return fail()
 	}
 
 	// S3 PUT requests required if writes or storage exist
 	if currentLogical > 0 && !hasPutReq {
-		return false
+		return fail()
 	}
 
 	// Invariant: Direct S3 baseline requires event-scoped independent client request telemetry (DirectUsage).
@@ -153,7 +178,7 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 					}
 				}
 				if !hasDirectPUT {
-					return false
+					return fail()
 				}
 			}
 
@@ -169,7 +194,7 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 					}
 				}
 				if !hasDirectGET {
-					return false
+					return fail()
 				}
 			}
 		}
@@ -192,7 +217,7 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 	}
 
 	if hasClientDownloads && !hasStdGetReq {
-		return false
+		return fail()
 	}
 
 	// Invariant: Per-policy cold coverage check.
@@ -202,39 +227,68 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 	if polName == PolicyWarmGlacierIR || polName == PolicyWarmGlacierFlex {
 		tracker := NewRestoreTracker()
 		for evIdx, event := range trace.Events {
-			tracker.ExpirePastDeadlines(event.AtNS)
-			restoredInThisEvent := make(map[storage.PackRef]bool)
-			for _, u := range event.Usage {
-				if u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
-					if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
-						if b, ok := ratGBToBytes(q, trace.BytesPerGB); ok && b > 0 {
-							var packBytes uint64
-							if event.Tiering != nil {
-								if event.Tiering.Pack.Size > 0 {
-									packBytes = uint64(event.Tiering.Pack.Size)
-								} else if event.Tiering.TotalBytes > 0 {
-									packBytes = uint64(event.Tiering.TotalBytes)
+			// Bounded checked sum of cold delivery telemetry in this event
+			totalColdDelivered, validColdTotal := event.TotalColdDeliveredBytes()
+			if !validColdTotal {
+				return failReason(UnprovenColdIdentity)
+			}
+
+			// Restore tracking for Glacier Flexible
+			if polName == PolicyWarmGlacierFlex {
+				tracker.ExpirePastDeadlines(event.AtNS)
+				restoredInThisEvent := make(map[storage.PackRef]bool)
+				for _, u := range event.Usage {
+					if u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
+						if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+							if b, ok := ratGBToBytes(q, trace.BytesPerGB); ok && b > 0 {
+								// Invariant (P1): S3 restore on a pack explicitly typed as Glacier IR (or non-Glacier)
+								// cannot be treated as a valid Glacier Flexible restore.
+								if event.Tiering != nil && event.Tiering.Pack.Class != "" && event.Tiering.Pack.Class != storage.Glacier {
+									return failReason(UnprovenColdReadObligation)
 								}
-							}
-							if packBytes == 0 {
-								packBytes = b
-							}
-							pInfo, ok := tracker.RegisterRestore(evIdx, event, trace, b, packBytes)
-							if ok && pInfo != nil {
-								restoredInThisEvent[pInfo.PackRef] = true
+
+								var packBytes uint64
+								if event.Tiering != nil {
+									if event.Tiering.Pack.Size > 0 {
+										packBytes = uint64(event.Tiering.Pack.Size)
+									} else if event.Tiering.TotalBytes > 0 {
+										packBytes = uint64(event.Tiering.TotalBytes)
+									}
+								}
+								if packBytes == 0 {
+									packBytes = b
+								}
+								pInfo, ok := tracker.RegisterRestore(evIdx, event, trace, b, packBytes)
+								if ok && pInfo != nil {
+									restoredInThisEvent[pInfo.PackRef] = true
+								}
 							}
 						}
 					}
 				}
+				if event.Tiering == nil || event.Tiering.Pack.Class == "" || event.Tiering.Pack.Class == storage.Glacier {
+					tracker.ApplyAuthoritativeMetadata(event, trace, restoredInThisEvent)
+				}
 			}
-			tracker.ApplyAuthoritativeMetadata(event, trace, restoredInThisEvent)
 
-			hasColdReadInEvent := event.ColdLogicalDeliveredBytes > 0 || len(event.ColdLogicalDeliveredByClass) > 0
+			// Invariant (P3): Only positive bytes (b > 0) constitute a delivery claim.
+			// Explicit measured 0 bytes (e.g. ColdLogicalDeliveredByClass={GLACIER_IR:0} or scalar 0)
+			// is equivalent to no cold delivery and must not trigger an unproven read obligation.
+			hasColdReadInEvent := totalColdDelivered > 0 || event.ColdLogicalDeliveredBytes > 0
 			if !hasColdReadInEvent {
-				for _, u := range event.Usage {
-					if u.RateID == "s3.retrieval_ir" || u.RateID == "s3.get_ir" {
-						hasColdReadInEvent = true
-						break
+				if polName == PolicyWarmGlacierIR {
+					for _, u := range event.Usage {
+						if u.RateID == "s3.retrieval_ir" || u.RateID == "s3.get_ir" {
+							hasColdReadInEvent = true
+							break
+						}
+					}
+				} else if polName == PolicyWarmGlacierFlex {
+					for _, u := range event.Usage {
+						if u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
+							hasColdReadInEvent = true
+							break
+						}
 					}
 				}
 			}
@@ -242,7 +296,21 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 			if hasColdReadInEvent {
 				if polName == PolicyWarmGlacierIR {
 					if !hasIRRetrieval {
-						return false
+						return failReason(UnprovenColdReadObligation)
+					}
+					// (P1): IR retrieval cannot match a pack explicitly typed as non-IR (e.g. Glacier Flexible)
+					if event.Tiering != nil && event.Tiering.Pack.Class != "" && event.Tiering.Pack.Class != storage.GlacierIR {
+						return failReason(UnprovenColdReadObligation)
+					}
+					// (P1): If cold delivery is exclusively for another class, IR cannot claim it
+					if len(event.ColdLogicalDeliveredByClass) > 0 {
+						if b, ok := event.ColdLogicalDeliveredByClass[storage.GlacierIR]; !ok || b == 0 {
+							for otherCls, otherB := range event.ColdLogicalDeliveredByClass {
+								if otherCls != storage.GlacierIR && otherB > 0 {
+									return failReason(UnprovenColdReadObligation)
+								}
+							}
+						}
 					}
 					hasEventIR := false
 					for _, u := range event.Usage {
@@ -254,18 +322,30 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 						}
 					}
 					if !hasEventIR {
-						unprovenColdReasons[UnprovenColdReadObligation] = true
-						return false
+						return failReason(UnprovenColdReadObligation)
 					}
 				} else if polName == PolicyWarmGlacierFlex {
 					if !hasFlexRestore {
-						return false
+						return failReason(UnprovenColdReadObligation)
+					}
+					// (P1): S3 restore cannot match a pack explicitly typed as non-Glacier (e.g. Glacier IR)
+					if event.Tiering != nil && event.Tiering.Pack.Class != "" && event.Tiering.Pack.Class != storage.Glacier {
+						return failReason(UnprovenColdReadObligation)
+					}
+					// (P1): If cold delivery is exclusively for another class, Flex cannot claim it
+					if len(event.ColdLogicalDeliveredByClass) > 0 {
+						if b, ok := event.ColdLogicalDeliveredByClass[storage.Glacier]; !ok || b == 0 {
+							for otherCls, otherB := range event.ColdLogicalDeliveredByClass {
+								if otherCls != storage.Glacier && otherB > 0 {
+									return failReason(UnprovenColdReadObligation)
+								}
+							}
+						}
 					}
 					packInfo, resolved := tracker.ResolvePackForDelivery(event)
 					if !resolved || packInfo == nil || packInfo.RetrievedBytes == 0 ||
 						packInfo.Expired || event.AtNS >= packInfo.DeadlineNS {
-						unprovenColdReasons[UnprovenColdReadObligation] = true
-						return false
+						return failReason(UnprovenColdReadObligation)
 					}
 				}
 			}
@@ -279,7 +359,7 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 				(observedRoutes[cost.ClientS3] && observedRoutes[cost.S3Client] &&
 					routeBytes[cost.ClientS3] == 0 && routeBytes[cost.S3Client] == 0)
 			if !hasDirectRoutes {
-				return false
+				return fail()
 			}
 		} else {
 			hasDSGRoutes := observedRoutes[cost.ClientGateway] && observedRoutes[cost.GatewayClient] &&
@@ -287,7 +367,7 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 				routeBytes[cost.ClientGateway] == 0 && routeBytes[cost.GatewayClient] == 0 &&
 				routeBytes[cost.GatewayS3] == 0 && routeBytes[cost.S3Gateway] == 0
 			if !hasDSGRoutes {
-				return false
+				return fail()
 			}
 		}
 	}
@@ -297,41 +377,65 @@ func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLog
 		if trace.Profile == "cloud" {
 			// Cloud DSG requires Compute (EC2), Disk (EBS), and Load Balancer (ALB hour + LCU)
 			if !hasEC2 || !hasEBS || !hasALBHour || !hasALBLCU {
-				return false
+				return fail()
 			}
 			// Cloud metadata backend requires DynamoDB storage and write accounting
 			if trace.Metadata == "dynamodb" || trace.Metadata == "dynamodb-local" {
 				if !hasDDBStorage || !hasDDBWrite {
-					return false
+					return fail()
 				}
 			}
 		} else if trace.Profile == "edge" {
 			// Edge DSG requires Edge Compute and Edge Disk/Network
 			if !hasEdgeCompute || !hasEdgeDisk {
-				return false
+				return fail()
 			}
 		}
 	}
 
-	return true
+	return PolicyCompleteness{IsComplete: true, UnprovenReasons: localReasons}
 }
 
+// isPolicyComplete returns true if candidate policy polName is proven complete.
+// Preserves caller's unprovenColdReasons without in-place mutation.
+func isPolicyComplete(polName PolicyName, r cost.Report, trace Trace, currentLogical uint64, hasStorageInconsistency bool, unprovenColdReasons map[UnprovenColdReason]bool) bool {
+	return checkPolicyCompleteness(polName, r, trace, currentLogical, hasStorageInconsistency, unprovenColdReasons).IsComplete
+}
+
+// applyCompletenessTotals evaluates candidate policies independently with policy-local reasons,
+// ensuring order-invariance. Diagnostics are merged into unprovenColdReasons only after all policies are evaluated.
 func applyCompletenessTotals(reports *policyReports, trace Trace, currentLogical uint64, hasStorageInconsistency bool, unprovenColdReasons map[UnprovenColdReason]bool) {
-	if isPolicyComplete(PolicyDirectS3, reports.directReport, trace, currentLogical, hasStorageInconsistency, unprovenColdReasons) {
+	directComp := checkPolicyCompleteness(PolicyDirectS3, reports.directReport, trace, currentLogical, hasStorageInconsistency, unprovenColdReasons)
+	if directComp.IsComplete {
 		sub := reports.directReport.Subtotal
 		reports.directReport.CompleteTotalUSD = &sub
 	}
-	if isPolicyComplete(PolicyWarmStandardOnly, reports.warmStdReport, trace, currentLogical, hasStorageInconsistency, unprovenColdReasons) {
+
+	warmStdComp := checkPolicyCompleteness(PolicyWarmStandardOnly, reports.warmStdReport, trace, currentLogical, hasStorageInconsistency, unprovenColdReasons)
+	if warmStdComp.IsComplete {
 		sub := reports.warmStdReport.Subtotal
 		reports.warmStdReport.CompleteTotalUSD = &sub
 	}
-	if isPolicyComplete(PolicyWarmGlacierIR, reports.glacierIRReport, trace, currentLogical, hasStorageInconsistency, unprovenColdReasons) {
+
+	glacierIRComp := checkPolicyCompleteness(PolicyWarmGlacierIR, reports.glacierIRReport, trace, currentLogical, hasStorageInconsistency, unprovenColdReasons)
+	if glacierIRComp.IsComplete {
 		sub := reports.glacierIRReport.Subtotal
 		reports.glacierIRReport.CompleteTotalUSD = &sub
 	}
-	if isPolicyComplete(PolicyWarmGlacierFlex, reports.glacierFlexReport, trace, currentLogical, hasStorageInconsistency, unprovenColdReasons) {
+
+	glacierFlexComp := checkPolicyCompleteness(PolicyWarmGlacierFlex, reports.glacierFlexReport, trace, currentLogical, hasStorageInconsistency, unprovenColdReasons)
+	if glacierFlexComp.IsComplete {
 		sub := reports.glacierFlexReport.Subtotal
 		reports.glacierFlexReport.CompleteTotalUSD = &sub
+	}
+
+	if unprovenColdReasons != nil {
+		for r := range glacierIRComp.UnprovenReasons {
+			unprovenColdReasons[r] = true
+		}
+		for r := range glacierFlexComp.UnprovenReasons {
+			unprovenColdReasons[r] = true
+		}
 	}
 }
 

@@ -825,6 +825,7 @@ func TestAuditItem2_DirectS3BaselineEventScopedDirectUsage(t *testing.T) {
 	oneGiB := uint64(1024 * 1024 * 1024)
 	baseUsage := []cost.Usage{
 		{RateID: "s3.put_standard", Unit: "Requests", Quantity: "100"},
+		{RateID: "s3.get_standard", Unit: "Requests", Quantity: "50"},
 		{RateID: "transfer.internet_egress", Unit: "GB", Quantity: "1"},
 		{RateID: "ec2.compute", Unit: "Hrs", Quantity: "10"},
 		{RateID: "ebs.gp3", Unit: "GB-Mo", Quantity: "10"},
@@ -920,6 +921,7 @@ func TestAuditItem3_TraceOmissionsFailClosedEndToEnd(t *testing.T) {
 	oneGiB := uint64(1024 * 1024 * 1024)
 	baseUsage := []cost.Usage{
 		{RateID: "s3.put_standard", Unit: "Requests", Quantity: "100"},
+		{RateID: "s3.get_standard", Unit: "Requests", Quantity: "50"},
 		{RateID: "transfer.internet_egress", Unit: "GB", Quantity: "1"},
 		{RateID: "ec2.compute", Unit: "Hrs", Quantity: "10"},
 		{RateID: "ebs.gp3", Unit: "GB-Mo", Quantity: "10"},
@@ -1087,4 +1089,562 @@ func TestAuditItem5_RestoreStateMachineUnifiedParity(t *testing.T) {
 	if !tracker.HasUnprovenCold || !tracker.UnprovenReasons[UnprovenColdReactivation] {
 		t.Fatal("expected UnprovenColdReactivation on expired restore reactivation attempt")
 	}
+}
+
+// Review Finding [P1]: Candidate-specific class & PackRef/operation-window matching.
+// (a) GLACIER_IR delivery + pack Class=GLACIER_IR + concurrent s3.restore_standard_gb:
+//
+//	warm_glacier_flexible must NOT treat IR pack as Flex-restored (CompleteTotalUSD == nil).
+//
+// (b) Reverse: GLACIER delivery + pack Class=GLACIER + concurrent s3.retrieval_ir:
+//
+//	warm_glacier_ir must NOT treat GLACIER pack read as IR-retrieved (CompleteTotalUSD == nil).
+//
+// (c) Positive matched cases for both policies.
+func TestAuditReview_P1_ColdReadStorageClassMatching(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+	for i := range catalog.Rates {
+		switch catalog.Rates[i].ID {
+		case "transfer.internet_egress":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.09"}}
+		case "ec2.compute":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.0416"}}
+		case "ebs.gp3":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.08"}}
+		}
+	}
+
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+	baseUsage := []cost.Usage{
+		{RateID: "s3.put_standard", Unit: "Requests", Quantity: "100"},
+		{RateID: "s3.get_standard", Unit: "Requests", Quantity: "50"},
+		{RateID: "transfer.internet_egress", Unit: "GB", Quantity: "1"},
+		{RateID: "ec2.compute", Unit: "Hrs", Quantity: "10"},
+		{RateID: "ebs.gp3", Unit: "GB-Mo", Quantity: "10"},
+		{RateID: "alb.hour", Unit: "Hrs", Quantity: "10"},
+		{RateID: "alb.lcu", Unit: "LCU-Hrs", Quantity: "10"},
+		{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1"},
+		{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "10"},
+	}
+
+	t.Run("PartA_IRDeliveryWithConcurrentRestore_FlexMustFail", func(t *testing.T) {
+		tr := baseTrace
+		tr.Name = "p1-part-a-ir-delivery-concurrent-restore"
+		tr.DurationNS = 30 * dayNS
+		tr.Omissions = []string{"Full verified observation run across all topology dimensions"}
+		tr.Events = []Event{
+			{
+				AtNS: 0,
+				Snapshot: &cost.Snapshot{
+					Logical:  oneGiB,
+					Physical: oneGiB,
+				},
+				StorageBytes: map[storage.StorageClass]uint64{
+					storage.Standard:  oneGiB - sixtyFourMiB,
+					storage.GlacierIR: sixtyFourMiB,
+				},
+				Tiering: &Tiering{
+					Pack: storage.PackInfo{
+						Ref:   storage.PackRef{ID: "pack-ir-only", Generation: "g1"},
+						Size:  int64(sixtyFourMiB),
+						Class: storage.GlacierIR,
+						State: "Cold",
+					},
+				},
+				Usage: append([]cost.Usage{
+					{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1/16"},
+					{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+				}, baseUsage...),
+				DirectUsage: []cost.Usage{
+					{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+					{RateID: "s3.get_standard", Unit: "Requests", Quantity: "10"},
+				},
+				Traffic: map[cost.Route]uint64{
+					cost.GatewayClient: sixtyFourMiB,
+				},
+				ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+					storage.GlacierIR: sixtyFourMiB,
+				},
+			},
+		}
+
+		res, err := ComparePolicies(context.Background(), tr, catalog)
+		if err != nil {
+			t.Fatalf("ComparePolicies failed: %v", err)
+		}
+
+		// warm_glacier_ir has matched IR pack, delivery, and retrieval rate
+		if res.Policies[2].Report.CompleteTotalUSD == nil {
+			t.Fatalf("expected warm_glacier_ir to be complete, got nil (omissions=%v)", res.Omissions)
+		}
+		// warm_glacier_flexible must NOT treat IR pack as Flex-restored
+		if res.Policies[3].Report.CompleteTotalUSD != nil {
+			t.Fatalf("expected warm_glacier_flexible to fail closed on IR pack restore, got: %s", *res.Policies[3].Report.CompleteTotalUSD)
+		}
+	})
+
+	t.Run("PartB_GlacierDeliveryWithConcurrentIRRetrieval_IRMustFail", func(t *testing.T) {
+		tr := baseTrace
+		tr.Name = "p1-part-b-glacier-delivery-concurrent-ir"
+		tr.DurationNS = 30 * dayNS
+		tr.Omissions = []string{"Full verified observation run across all topology dimensions"}
+		tr.Events = []Event{
+			{
+				AtNS: 0,
+				Snapshot: &cost.Snapshot{
+					Logical:  oneGiB,
+					Physical: oneGiB,
+				},
+				StorageBytes: map[storage.StorageClass]uint64{
+					storage.Standard: oneGiB - sixtyFourMiB,
+					storage.Glacier:  sixtyFourMiB,
+				},
+				Tiering: &Tiering{
+					Pack: storage.PackInfo{
+						Ref:           storage.PackRef{ID: "pack-flex-only", Generation: "g1"},
+						Size:          int64(sixtyFourMiB),
+						Class:         storage.Glacier,
+						State:         "Cold",
+						RestoredUntil: baseTrace.Start.Add(24 * time.Hour),
+					},
+				},
+				Usage: append([]cost.Usage{
+					{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+					{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1/16"},
+				}, baseUsage...),
+				DirectUsage: []cost.Usage{
+					{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+					{RateID: "s3.get_standard", Unit: "Requests", Quantity: "10"},
+				},
+				Traffic: map[cost.Route]uint64{
+					cost.GatewayClient: sixtyFourMiB,
+				},
+				ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+					storage.Glacier: sixtyFourMiB,
+				},
+			},
+		}
+
+		res, err := ComparePolicies(context.Background(), tr, catalog)
+		if err != nil {
+			t.Fatalf("ComparePolicies failed: %v", err)
+		}
+
+		// warm_glacier_flexible has matched Glacier pack, active restore, and delivery
+		if res.Policies[3].Report.CompleteTotalUSD == nil {
+			t.Fatalf("expected warm_glacier_flexible to be complete, got nil (omissions=%v)", res.Omissions)
+		}
+		// warm_glacier_ir must NOT treat GLACIER pack read as satisfied by IR retrieval
+		if res.Policies[2].Report.CompleteTotalUSD != nil {
+			t.Fatalf("expected warm_glacier_ir to fail closed on Glacier pack read, got: %s", *res.Policies[2].Report.CompleteTotalUSD)
+		}
+	})
+}
+
+// Review Finding [P2]: Policy-local completeness and evaluation order-invariance.
+// Evaluating IR with an unproven cold read must not mutate the shared reasons map or poison Flex completeness.
+func TestAuditReview_P2_PolicyLocalCompletenessOrderInvariance(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+	for i := range catalog.Rates {
+		switch catalog.Rates[i].ID {
+		case "transfer.internet_egress":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.09"}}
+		case "ec2.compute":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.0416"}}
+		case "ebs.gp3":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.08"}}
+		}
+	}
+
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+	baseUsage := []cost.Usage{
+		{RateID: "s3.put_standard", Unit: "Requests", Quantity: "100"},
+		{RateID: "s3.get_standard", Unit: "Requests", Quantity: "50"},
+		{RateID: "transfer.internet_egress", Unit: "GB", Quantity: "1"},
+		{RateID: "ec2.compute", Unit: "Hrs", Quantity: "10"},
+		{RateID: "ebs.gp3", Unit: "GB-Mo", Quantity: "10"},
+		{RateID: "alb.hour", Unit: "Hrs", Quantity: "10"},
+		{RateID: "alb.lcu", Unit: "LCU-Hrs", Quantity: "10"},
+		{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1"},
+		{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "10"},
+	}
+
+	// Trace with correct Flex restore/delivery covering all cold reads, and no IR retrieval
+	tr := baseTrace
+	tr.Name = "p2-order-invariance"
+	tr.DurationNS = 30 * dayNS
+	tr.Omissions = []string{"Full verified observation run across all topology dimensions"}
+	tr.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Standard: oneGiB,
+			},
+			Usage: append([]cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			}, baseUsage...),
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+				{RateID: "s3.get_standard", Unit: "Requests", Quantity: "10"},
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:           storage.PackRef{ID: "pack-flex-order", Generation: "g1"},
+					Class:         storage.Glacier,
+					RestoredUntil: baseTrace.Start.Add(24 * time.Hour),
+				},
+			},
+		},
+		{
+			AtNS: 10 * int64(time.Hour),
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:           storage.PackRef{ID: "pack-flex-order", Generation: "g1"},
+					Class:         storage.Glacier,
+					RestoredUntil: baseTrace.Start.Add(24 * time.Hour),
+				},
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB,
+			},
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.get_standard", Unit: "Requests", Quantity: "5"},
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: sixtyFourMiB,
+			},
+			// Notice: No s3.retrieval_ir in usage: for IR this read is completely unproven/unmatched!
+		},
+	}
+
+	// 1. End-to-end evaluation
+	res, err := ComparePolicies(context.Background(), tr, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	// Flex had matched restore and delivery -> MUST be complete
+	if res.Policies[3].Report.CompleteTotalUSD == nil {
+		t.Fatalf("expected warm_glacier_flexible to be complete, got nil (omissions=%v)", res.Omissions)
+	}
+	// IR had unmatched read -> MUST fail
+	if res.Policies[2].Report.CompleteTotalUSD != nil {
+		t.Fatalf("expected warm_glacier_ir to fail closed, got: %s", *res.Policies[2].Report.CompleteTotalUSD)
+	}
+
+	// 2. Unit level: verify isPolicyComplete does NOT mutate shared reasons map
+	freshMap := make(map[UnprovenColdReason]bool)
+	flexCompleteFresh := isPolicyComplete(PolicyWarmGlacierFlex, res.Policies[3].Report, tr, oneGiB, false, freshMap)
+	if !flexCompleteFresh {
+		t.Fatal("expected isPolicyComplete(Flex, freshMap) == true")
+	}
+
+	sharedMap := make(map[UnprovenColdReason]bool)
+	irCompleteShared := isPolicyComplete(PolicyWarmGlacierIR, res.Policies[2].Report, tr, oneGiB, false, sharedMap)
+	if irCompleteShared {
+		t.Fatal("expected isPolicyComplete(IR, sharedMap) == false on unmatched read")
+	}
+
+	// Evaluate Flex with shared map after IR: MUST STILL BE TRUE
+	flexCompleteAfterIR := isPolicyComplete(PolicyWarmGlacierFlex, res.Policies[3].Report, tr, oneGiB, false, sharedMap)
+	if !flexCompleteAfterIR {
+		t.Fatal("isPolicyComplete(Flex, sharedMap) failed after IR evaluation: shared state poisoned!")
+	}
+
+	// 3. Evaluation order independence: compare IR-first vs Flex-first
+	reportsA := policyReports{
+		directReport:      res.Policies[0].Report,
+		warmStdReport:     res.Policies[1].Report,
+		glacierIRReport:   res.Policies[2].Report,
+		glacierFlexReport: res.Policies[3].Report,
+	}
+	reasonsA := make(map[UnprovenColdReason]bool)
+	applyCompletenessTotals(&reportsA, tr, oneGiB, false, reasonsA)
+
+	reportsB := policyReports{
+		directReport:      res.Policies[0].Report,
+		warmStdReport:     res.Policies[1].Report,
+		glacierIRReport:   res.Policies[2].Report,
+		glacierFlexReport: res.Policies[3].Report,
+	}
+	reasonsB := make(map[UnprovenColdReason]bool)
+	// Evaluate reverse order by checking policy completeness directly
+	fc := checkPolicyCompleteness(PolicyWarmGlacierFlex, reportsB.glacierFlexReport, tr, oneGiB, false, reasonsB)
+	if fc.IsComplete {
+		sub := reportsB.glacierFlexReport.Subtotal
+		reportsB.glacierFlexReport.CompleteTotalUSD = &sub
+	}
+	ic := checkPolicyCompleteness(PolicyWarmGlacierIR, reportsB.glacierIRReport, tr, oneGiB, false, reasonsB)
+	if ic.IsComplete {
+		sub := reportsB.glacierIRReport.Subtotal
+		reportsB.glacierIRReport.CompleteTotalUSD = &sub
+	}
+
+	if (reportsA.glacierFlexReport.CompleteTotalUSD == nil) != (reportsB.glacierFlexReport.CompleteTotalUSD == nil) {
+		t.Fatalf("order disparity for Flex: A=%v, B=%v", reportsA.glacierFlexReport.CompleteTotalUSD, reportsB.glacierFlexReport.CompleteTotalUSD)
+	}
+	if (reportsA.glacierIRReport.CompleteTotalUSD == nil) != (reportsB.glacierIRReport.CompleteTotalUSD == nil) {
+		t.Fatalf("order disparity for IR: A=%v, B=%v", reportsA.glacierIRReport.CompleteTotalUSD, reportsB.glacierIRReport.CompleteTotalUSD)
+	}
+}
+
+// Review Finding [P3]: Telemetry with explicitly measured 0 bytes must not be treated as cold reads.
+// Preserves explicit-zero semantics and checked sum.
+func TestAuditReview_P3_ExplicitZeroTelemetryNotTreatedAsColdRead(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+	for i := range catalog.Rates {
+		switch catalog.Rates[i].ID {
+		case "transfer.internet_egress":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.09"}}
+		case "ec2.compute":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.0416"}}
+		case "ebs.gp3":
+			catalog.Rates[i].Status = "verified"
+			catalog.Rates[i].Tiers = []pricing.Tier{{Begin: "0", End: nil, USD: "0.08"}}
+		}
+	}
+
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+	baseUsage := []cost.Usage{
+		{RateID: "s3.put_standard", Unit: "Requests", Quantity: "100"},
+		{RateID: "s3.get_standard", Unit: "Requests", Quantity: "50"},
+		{RateID: "transfer.internet_egress", Unit: "GB", Quantity: "1"},
+		{RateID: "ec2.compute", Unit: "Hrs", Quantity: "10"},
+		{RateID: "ebs.gp3", Unit: "GB-Mo", Quantity: "10"},
+		{RateID: "alb.hour", Unit: "Hrs", Quantity: "10"},
+		{RateID: "alb.lcu", Unit: "LCU-Hrs", Quantity: "10"},
+		{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1"},
+		{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "10"},
+	}
+
+	t.Run("MapExplicitZero_NoRetrieval_BothColdPoliciesComplete", func(t *testing.T) {
+		tr := baseTrace
+		tr.Name = "p3-map-explicit-zero"
+		tr.DurationNS = 30 * dayNS
+		tr.Omissions = []string{"Full verified observation run across all topology dimensions"}
+		tr.Events = []Event{
+			{
+				AtNS: 0,
+				Snapshot: &cost.Snapshot{
+					Logical:  oneGiB,
+					Physical: oneGiB,
+				},
+				StorageBytes: map[storage.StorageClass]uint64{
+					storage.Standard: oneGiB,
+				},
+				Usage: baseUsage,
+				DirectUsage: []cost.Usage{
+					{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+					{RateID: "s3.get_standard", Unit: "Requests", Quantity: "10"},
+				},
+				Traffic: map[cost.Route]uint64{
+					cost.GatewayClient: sixtyFourMiB,
+				},
+				// Explicitly measured 0 bytes in class map
+				ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+					storage.GlacierIR: 0,
+				},
+			},
+		}
+
+		res, err := ComparePolicies(context.Background(), tr, catalog)
+		if err != nil {
+			t.Fatalf("ComparePolicies failed: %v", err)
+		}
+
+		if res.Policies[2].Report.CompleteTotalUSD == nil {
+			t.Fatalf("warm_glacier_ir unexpectedly null on ColdLogicalDeliveredByClass={GLACIER_IR:0}; unpriced=%v, omissions=%v",
+				res.Policies[2].Report.Unpriced, res.Omissions)
+		}
+		if res.Policies[3].Report.CompleteTotalUSD == nil {
+			t.Fatalf("warm_glacier_flexible unexpectedly null on ColdLogicalDeliveredByClass={GLACIER_IR:0}; unpriced=%v, omissions=%v",
+				res.Policies[3].Report.Unpriced, res.Omissions)
+		}
+	})
+
+	t.Run("MixedZeroAndNonzero_ZeroBytePreserved", func(t *testing.T) {
+		// Mixed case 1: Glacier has positive delivery with matched restore; GlacierIR has explicit 0.
+		// GlacierIR must NOT fail due to Glacier read, and GlacierIR 0 bytes must NOT require retrieval.
+		tr1 := baseTrace
+		tr1.Name = "p3-mixed-flex-read-ir-zero"
+		tr1.DurationNS = 30 * dayNS
+		tr1.Omissions = []string{"Full verified observation run across all topology dimensions"}
+		tr1.Events = []Event{
+			{
+				AtNS: 0,
+				Snapshot: &cost.Snapshot{
+					Logical:  oneGiB,
+					Physical: oneGiB,
+				},
+				StorageBytes: map[storage.StorageClass]uint64{
+					storage.Standard: oneGiB,
+				},
+				Usage: append([]cost.Usage{
+					{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+				}, baseUsage...),
+				DirectUsage: []cost.Usage{
+					{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+					{RateID: "s3.get_standard", Unit: "Requests", Quantity: "10"},
+				},
+				Tiering: &Tiering{
+					Pack: storage.PackInfo{
+						Ref:           storage.PackRef{ID: "pack-flex-mixed", Generation: "g1"},
+						Class:         storage.Glacier,
+						RestoredUntil: baseTrace.Start.Add(24 * time.Hour),
+					},
+				},
+			},
+			{
+				AtNS: 10 * int64(time.Hour),
+				Tiering: &Tiering{
+					Pack: storage.PackInfo{
+						Ref:           storage.PackRef{ID: "pack-flex-mixed", Generation: "g1"},
+						Class:         storage.Glacier,
+						RestoredUntil: baseTrace.Start.Add(24 * time.Hour),
+					},
+				},
+				Traffic: map[cost.Route]uint64{
+					cost.GatewayClient: sixtyFourMiB,
+				},
+				DirectUsage: []cost.Usage{
+					{RateID: "s3.get_standard", Unit: "Requests", Quantity: "5"},
+				},
+				// Mixed: explicit 0 bytes for GlacierIR, 64 MiB for Glacier
+				ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+					storage.GlacierIR: 0,
+					storage.Glacier:   sixtyFourMiB,
+				},
+			},
+		}
+
+		res1, err := ComparePolicies(context.Background(), tr1, catalog)
+		if err != nil {
+			t.Fatalf("ComparePolicies failed: %v", err)
+		}
+
+		// Flex has matching restore and delivery
+		if res1.Policies[3].Report.CompleteTotalUSD == nil {
+			t.Fatalf("expected warm_glacier_flexible to be complete, got nil (omissions=%v)", res1.Omissions)
+		}
+		// IR had no retrieval for the cold read -> MUST fail closed
+		if res1.Policies[2].Report.CompleteTotalUSD != nil {
+			t.Fatalf("expected warm_glacier_ir to fail closed on cold read lacking IR retrieval, got %s", *res1.Policies[2].Report.CompleteTotalUSD)
+		}
+
+		// Mixed case 2: GlacierIR has positive delivery with matched retrieval; Glacier has explicit 0 without restore.
+		// GlacierIR must be complete; Glacier must fail closed on missing restore.
+		tr2 := baseTrace
+		tr2.Name = "p3-mixed-ir-read-flex-zero"
+		tr2.DurationNS = 30 * dayNS
+		tr2.Omissions = []string{"Full verified observation run across all topology dimensions"}
+		tr2.Events = []Event{
+			{
+				AtNS: 0,
+				Snapshot: &cost.Snapshot{
+					Logical:  oneGiB,
+					Physical: oneGiB,
+				},
+				StorageBytes: map[storage.StorageClass]uint64{
+					storage.Standard:  oneGiB - sixtyFourMiB,
+					storage.GlacierIR: sixtyFourMiB,
+				},
+				Usage: append([]cost.Usage{
+					{RateID: "s3.retrieval_ir", Unit: "GB", Quantity: "1/16"},
+				}, baseUsage...),
+				DirectUsage: []cost.Usage{
+					{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+					{RateID: "s3.get_standard", Unit: "Requests", Quantity: "10"},
+				},
+				Traffic: map[cost.Route]uint64{
+					cost.GatewayClient: sixtyFourMiB,
+				},
+				Tiering: &Tiering{
+					Pack: storage.PackInfo{
+						Ref:   storage.PackRef{ID: "pack-ir-mixed-2", Generation: "g1"},
+						Size:  int64(sixtyFourMiB),
+						Class: storage.GlacierIR,
+						State: "Cold",
+					},
+				},
+				// Mixed: 64 MiB for GlacierIR, explicit 0 for Glacier
+				ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+					storage.GlacierIR: sixtyFourMiB,
+					storage.Glacier:   0,
+				},
+			},
+		}
+
+		res2, err := ComparePolicies(context.Background(), tr2, catalog)
+		if err != nil {
+			t.Fatalf("ComparePolicies failed: %v", err)
+		}
+
+		// IR had matched 64 MiB delivery with s3.retrieval_ir -> MUST be complete
+		if res2.Policies[2].Report.CompleteTotalUSD == nil {
+			t.Fatalf("expected warm_glacier_ir to be complete, got nil (omissions=%v)", res2.Omissions)
+		}
+		// Flex had cold read in trace but no restore -> MUST fail closed
+		if res2.Policies[3].Report.CompleteTotalUSD != nil {
+			t.Fatalf("expected warm_glacier_flexible to fail closed on cold read lacking restore, got %s", *res2.Policies[3].Report.CompleteTotalUSD)
+		}
+	})
+
+	t.Run("ScalarZero_NoRetrieval_BothColdPoliciesComplete", func(t *testing.T) {
+		tr := baseTrace
+		tr.Name = "p3-scalar-zero"
+		tr.DurationNS = 30 * dayNS
+		tr.Omissions = []string{"Full verified observation run across all topology dimensions"}
+		tr.Events = []Event{
+			{
+				AtNS: 0,
+				Snapshot: &cost.Snapshot{
+					Logical:  oneGiB,
+					Physical: oneGiB,
+				},
+				StorageBytes: map[storage.StorageClass]uint64{
+					storage.Standard: oneGiB,
+				},
+				Usage: baseUsage,
+				DirectUsage: []cost.Usage{
+					{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+					{RateID: "s3.get_standard", Unit: "Requests", Quantity: "10"},
+				},
+				Traffic: map[cost.Route]uint64{
+					cost.GatewayClient: sixtyFourMiB,
+				},
+				// Explicit scalar 0
+				ColdLogicalDeliveredBytes: 0,
+			},
+		}
+
+		res, err := ComparePolicies(context.Background(), tr, catalog)
+		if err != nil {
+			t.Fatalf("ComparePolicies failed: %v", err)
+		}
+
+		if res.Policies[2].Report.CompleteTotalUSD == nil {
+			t.Fatalf("warm_glacier_ir unexpectedly null on ColdLogicalDeliveredBytes=0; omissions=%v", res.Omissions)
+		}
+		if res.Policies[3].Report.CompleteTotalUSD == nil {
+			t.Fatalf("warm_glacier_flexible unexpectedly null on ColdLogicalDeliveredBytes=0; omissions=%v", res.Omissions)
+		}
+	})
 }
