@@ -218,7 +218,12 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 	var coldBytesRetrieved uint64
 	var coldDeliveredBytes uint64
 	hasUnprovenColdDelivery := false
-	var activeRestoreUntilNS int64
+
+	type packRestoreInfo struct {
+		retrievedBytes  uint64
+		restoredUntilNS int64
+	}
+	restoredPacks := make(map[storage.PackRef]*packRestoreInfo)
 
 	var targetClass storage.StorageClass
 	switch polName {
@@ -276,6 +281,10 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 					if polName == PolicyWarmGlacierFlex {
 						gbFloat, _ := q.Float64()
 						b := uint64(gbFloat * float64(trace.BytesPerGB))
+						if b > math.MaxUint64-coldBytesRetrieved {
+							hasUnprovenColdDelivery = true
+							continue
+						}
 						coldBytesRetrieved += b
 						hasColdUsageForPolicy = true
 						restoreDur, ok := trace.RestoreDuration(event)
@@ -289,9 +298,47 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 							continue
 						}
 						expiry := event.AtNS + durNS
-						if expiry > activeRestoreUntilNS {
-							activeRestoreUntilNS = expiry
+
+						var packRef storage.PackRef
+						if event.Tiering != nil {
+							packRef = event.Tiering.Pack.Ref
+							if !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
+								expiry = event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
+							}
 						}
+
+						pInfo := restoredPacks[packRef]
+						if pInfo == nil {
+							pInfo = &packRestoreInfo{}
+							restoredPacks[packRef] = pInfo
+						}
+						if b > math.MaxUint64-pInfo.retrievedBytes {
+							hasUnprovenColdDelivery = true
+							continue
+						}
+						pInfo.retrievedBytes += b
+						if expiry > pInfo.restoredUntilNS {
+							pInfo.restoredUntilNS = expiry
+						}
+					}
+				}
+			}
+		}
+
+		// If this event carries authoritative pack metadata with RestoredUntil for an already restored pack,
+		// update that pack's active restore window or detect expiry.
+		// Never allow an unrestored pack's metadata to extend or create a restore window (Finding 1 [P2]).
+		if polName == PolicyWarmGlacierFlex && event.Tiering != nil && !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
+			packRef := event.Tiering.Pack.Ref
+			pInfo := restoredPacks[packRef]
+			if pInfo != nil && pInfo.retrievedBytes > 0 {
+				eventTime := trace.Start.Add(time.Duration(event.AtNS))
+				if !event.Tiering.Pack.RestoredUntil.After(eventTime) {
+					pInfo.restoredUntilNS = event.AtNS
+				} else {
+					packExpiryNS := event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
+					if packExpiryNS > pInfo.restoredUntilNS {
+						pInfo.restoredUntilNS = packExpiryNS
 					}
 				}
 			}
@@ -346,20 +393,52 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 		if hasDeliveryClaim {
 			// Provenance check: verify the delivery can be linked to an active retrieval or restore.
 			if polName == PolicyWarmGlacierFlex {
-				// If this event carries authoritative pack metadata with RestoredUntil, update active restore window or detect expiry.
+				if coldBytesRetrieved == 0 {
+					hasUnprovenColdDelivery = true
+					continue
+				}
+
+				// If event metadata carries RestoredUntil that is already expired at or before event time, fail closed.
 				if event.Tiering != nil && !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
 					eventTime := trace.Start.Add(time.Duration(event.AtNS))
 					if !event.Tiering.Pack.RestoredUntil.After(eventTime) {
 						hasUnprovenColdDelivery = true
 						continue
 					}
-					packExpiryNS := event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
-					if packExpiryNS > activeRestoreUntilNS {
-						activeRestoreUntilNS = packExpiryNS
+				}
+
+				var packInfo *packRestoreInfo
+				if event.Tiering != nil && event.Tiering.Pack.Ref.ID != "" {
+					// Event explicitly references a specific pack by PackRef.ID + Generation.
+					packInfo = restoredPacks[event.Tiering.Pack.Ref]
+				} else {
+					// Event does not identify a specific pack by Ref.ID.
+					// Attribution is only sound when exactly one distinct pack was restored in the trace.
+					numRestored := 0
+					var solePack *packRestoreInfo
+					for _, p := range restoredPacks {
+						if p.retrievedBytes > 0 {
+							numRestored++
+							solePack = p
+						}
+					}
+					if numRestored == 1 {
+						packInfo = solePack
+					} else {
+						// Ambiguous (multiple packs restored) or no packs restored.
+						hasUnprovenColdDelivery = true
+						continue
 					}
 				}
-				// For Glacier Flexible, delivery must be linked to a prior/current restore that has not expired.
-				if coldBytesRetrieved == 0 || event.AtNS > activeRestoreUntilNS {
+
+				// Finding 1 [P2]: The pack being read must have been restored (proven in numerator).
+				if packInfo == nil || packInfo.retrievedBytes == 0 {
+					hasUnprovenColdDelivery = true
+					continue
+				}
+
+				// Finding 2 [P3]: Check expiration at or after restoredUntilNS (event.AtNS >= restoredUntilNS).
+				if event.AtNS >= packInfo.restoredUntilNS {
 					hasUnprovenColdDelivery = true
 					continue
 				}

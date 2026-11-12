@@ -1569,3 +1569,265 @@ func TestComparePoliciesRestoreAmplificationPackRestoredUntilAlreadyExpiredRetur
 		t.Fatalf("expected nil amplification when pack RestoredUntil proves pack was expired, got %v", *flexPol.RestoreAmplification)
 	}
 }
+
+func TestComparePoliciesRestoreAmplificationOtherPackMetadataCannotExtendRestoreWindow(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "flex-other-pack-cannot-extend-restore"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Reviewer Regression [P2]:
+	// - Pack A restore 1 GiB, expires at hour 1.
+	// - Hour 2: metadata of pack B appears, with RestoredUntil at hour 4.
+	// - Client reads 64 MiB at hour 2.
+	// - Pack B's metadata must NOT extend restore window for Pack A.
+	// - Pack B was never restored in the numerator.
+	// - Expected result: RestoreAmplification == nil (null).
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:           storage.PackRef{ID: "pack-a", Generation: "gen-1"},
+					State:         "Restored",
+					Class:         storage.Glacier,
+					RestoredUntil: trace.Start.Add(time.Hour), // expires at hour 1
+				},
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+		{
+			AtNS: int64(2 * time.Hour), // hour 2 > hour 1 (Pack A is expired!)
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:           storage.PackRef{ID: "pack-b", Generation: "gen-1"},
+					State:         "Restored",
+					Class:         storage.Glacier,
+					RestoredUntil: trace.Start.Add(4 * time.Hour), // Pack B has expiry at hour 4, but Pack B was never restored!
+				},
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: sixtyFourMiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB,
+			},
+			Usage: []cost.Usage{},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3]
+	if flexPol.RestoreAmplification != nil {
+		t.Fatalf("expected nil amplification when Pack B metadata does not belong to restored Pack A, got %v", *flexPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationIntermediateUnrelatedPackCannotExtendSoleRestoredPack(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "flex-intermediate-unrelated-pack"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Pack A restored at t=0, expiring at hour 1.
+	// At hour 1.5, metadata of Pack B appears (with RestoredUntil at hour 4), but Pack B was never restored.
+	// At hour 2, client read occurs without Tiering metadata.
+	// Pack A expired at hour 1, so read at hour 2 must be rejected (return nil).
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:           storage.PackRef{ID: "pack-a", Generation: "gen-1"},
+					State:         "Restored",
+					Class:         storage.Glacier,
+					RestoredUntil: trace.Start.Add(time.Hour), // expires at hour 1
+				},
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+		{
+			AtNS: int64(90 * time.Minute), // hour 1.5: Pack B observation
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:           storage.PackRef{ID: "pack-b", Generation: "gen-1"},
+					State:         "Restored",
+					Class:         storage.Glacier,
+					RestoredUntil: trace.Start.Add(4 * time.Hour),
+				},
+			},
+			Usage: []cost.Usage{},
+		},
+		{
+			AtNS: int64(2 * time.Hour), // hour 2: client read without Tiering
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: sixtyFourMiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB,
+			},
+			Usage: []cost.Usage{},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3]
+	if flexPol.RestoreAmplification != nil {
+		t.Fatalf("expected nil amplification when read at hour 2 follows expired pack A, got %v", *flexPol.RestoreAmplification)
+	}
+}
+
+func TestComparePoliciesRestoreAmplificationExactBoundaryExpiryCondition(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+
+	trace := baseTrace
+	trace.Name = "flex-exact-boundary-expiry"
+	trace.DurationNS = 30 * dayNS
+	oneGiB := uint64(1024 * 1024 * 1024)
+	sixtyFourMiB := uint64(64 * 1024 * 1024)
+
+	// Reviewer Finding 2 [P3]:
+	// Boundary test:
+	// - Restore 1 GiB at hour 0, expiring at hour 1 (1h = 3600s).
+	// - At exactly hour 1 (AtNS == 1*time.Hour), restore has reached its expiration deadline.
+	// - Simulator must return nil (event.AtNS >= restoredUntilNS).
+	traceExact := trace
+	traceExact.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:           storage.PackRef{ID: "pack-a", Generation: "gen-1"},
+					State:         "Restored",
+					Class:         storage.Glacier,
+					RestoredUntil: trace.Start.Add(time.Hour),
+				},
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+		{
+			AtNS: int64(time.Hour), // EXACTLY at expiry deadline
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: sixtyFourMiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB,
+			},
+			Usage: []cost.Usage{},
+		},
+	}
+
+	resExact, err := ComparePolicies(context.Background(), traceExact, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	if resExact.Policies[3].RestoreAmplification != nil {
+		t.Fatalf("expected nil amplification at exact expiry boundary (AtNS == restoredUntilNS), got %v", *resExact.Policies[3].RestoreAmplification)
+	}
+
+	// Conversely, reading 1 millisecond BEFORE the boundary must PASS and return 16.0x:
+	traceBefore := trace
+	traceBefore.Events = []Event{
+		traceExact.Events[0],
+		{
+			AtNS: int64(time.Hour - time.Millisecond), // 1 ms before deadline -> active
+			Snapshot: &cost.Snapshot{
+				Logical:  oneGiB,
+				Physical: oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			ColdLogicalDeliveredByClass: map[storage.StorageClass]uint64{
+				storage.Glacier: sixtyFourMiB,
+			},
+			Traffic: map[cost.Route]uint64{
+				cost.GatewayClient: sixtyFourMiB,
+			},
+			Usage: []cost.Usage{},
+		},
+	}
+
+	resBefore, err := ComparePolicies(context.Background(), traceBefore, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+	if resBefore.Policies[3].RestoreAmplification == nil {
+		t.Fatal("expected non-nil amplification 1ms before expiry boundary")
+	}
+	if *resBefore.Policies[3].RestoreAmplification != 16.0 {
+		t.Fatalf("expected 16.0x amplification 1ms before expiry boundary, got %v", *resBefore.Policies[3].RestoreAmplification)
+	}
+}
