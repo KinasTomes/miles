@@ -90,7 +90,14 @@ classify its failed attempts or establish that shutdown is fixed.
 
 Offline validation includes mutation-identity boundaries, plan/manifest tampering,
 archive traversal, cleanup reserve, source-payload snapshots, lost IAM-version
-responses and rollback preserving concurrent changes. `make check` and focused
-shutdown race tests pass. The packaged orchestration still needs a fresh live
+responses and rollback preserving concurrent changes, remaining-identity destroy plans,
+cleanup resumption after purge, and waiting for a matching durable cut schedule.
+The current offline suite passes 205 Python tests (21 acceptance-kit tests),
+plus `make check` and focused shutdown race tests. A real cold `init`, frozen
+runner `status`, and cached immutable `assets` preparation passed at source
+`11bc23e` with an AWS CLI shim that fails any invocation; no AWS API was called.
+The smoke run built the ARM64 release/tools, generated fresh PKI and verified
+source/config/asset hashes. Both disposable offline smoke directories were
+removed after retaining their proof. The packaged orchestration still needs a fresh live
 plan/IAM review and AWS execution; no new paid environment was started while
 building the kit.
