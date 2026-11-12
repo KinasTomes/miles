@@ -216,3 +216,49 @@ func TestRestoredReadRechecksBeforeOrderedEmit(t *testing.T) {
 	}
 	drained(t, f.reader.options.Admission)
 }
+
+func TestColdRestoreErrorStateForDebugHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		autoRestore bool
+		created     bool
+		restoreErr  error
+		wantState   string
+	}{
+		{name: "requested", autoRestore: true, created: true, wantState: "requested"},
+		{name: "in-progress", autoRestore: true, created: false, wantState: "in-progress"},
+		{name: "auto_restore disabled", autoRestore: false, created: true, wantState: ""},
+		{name: "restore failed", autoRestore: true, restoreErr: storage.ErrUnavailable, wantState: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := coldFixture(t, storage.Glacier, "Cold", time.Time{})
+			v, err := config.NewPolicyValidator(config.DSGPolicyLimits())
+			if err != nil {
+				t.Fatal(err)
+			}
+			gp := config.DefaultGlobalPolicy()
+			gp.Tiering.AutoRestore = tc.autoRestore
+			gs, err := v.NewGlobalSnapshot(2, gp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.reader.options.Global = gs
+			f.reader.options.Restore = func(context.Context, *coordination.WarmView, storage.ObjectHead, storage.PackRef, uint64, time.Time, *storage.RestoreRequest) (bool, error) {
+				return tc.created, tc.restoreErr
+			}
+			_, _, err = f.read(t.Context(), f.request)
+			if !errors.Is(err, storage.ErrCold) {
+				t.Fatalf("got err=%v, want storage.ErrCold", err)
+			}
+			var cold *ColdRestoreError
+			if tc.wantState == "" {
+				if errors.As(err, &cold) {
+					t.Fatalf("unexpected ColdRestoreError %+v", cold)
+				}
+			} else if !errors.As(err, &cold) || cold.State != tc.wantState {
+				t.Fatalf("got cold=%+v (err=%v), want state %q", cold, err, tc.wantState)
+			}
+			drained(t, f.reader.options.Admission)
+		})
+	}
+}

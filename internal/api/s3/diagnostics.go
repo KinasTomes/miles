@@ -15,6 +15,7 @@ type failureDiagnostic struct {
 	class     string
 	operation Operation
 	logged    bool
+	debug     bool
 }
 
 // RecordFailure records a constant stage name and a safe error class from the

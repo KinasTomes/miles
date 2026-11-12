@@ -5,7 +5,7 @@
 
 **Trạng thái v2:** đồng bộ kiến trúc v4, đã chốt hướng triển khai theo quyền lựa chọn người dùng giao sau review. Giữ R1/R2 đầy đủ, multipart, GLACIER_IR/GLACIER và Cloud/Edge. R1–R4/defaults ở mục 13 và kiến trúc 19; khác biệt S3 và thông số cần đo được ghi rõ. Giữ số phiên bản v2; chưa có kết quả test hệ thống.
 
-**Ngôn ngữ triển khai (chốt 2026-10-12):** gateway và `dsgctl` dùng Go, module `github.com/KinasTomes/miles`, toolchain ban đầu Go 1.27.2. Skeleton/CI đọc `go.mod`; chưa có implementation endpoint. Xem kiến trúc mục 1.7 và README của repository.
+**Ngôn ngữ triển khai (chốt 2026-10-12):** gateway và `dsgctl` dùng Go, module `github.com/KinasTomes/miles`, toolchain pin Go 1.27.2. Xem kiến trúc mục 1.7, README của repository và [Hướng dẫn sử dụng & đối chiếu API đầy đủ](api-usage-guide.md).
 
 ---
 
@@ -766,7 +766,7 @@ Không yêu cầu total=dup+revived+unique vì dup đếm occurrences còn reviv
 | P1 | GET / DELETE | /jobs/{id} | System admin; status hoặc yêu cầu cancellation |
 | P1 | GET | /cache/stats | System admin, scope=node/cluster, số liệu từng node và tổng có định nghĩa |
 | P1 | POST | /cache/purge | System admin, body scope/node_id; cluster fan-out job, kết quả từng node |
-| P1 | GET | /cost/report | System admin; profile/workload, baseline và DSG; không user billing |
+| P1 | GET | /cost/report | System admin; profile/workload, baseline và DSG; không user billing *(hỗ trợ `cloud-tiering-boundary`/`edge-revival` và live snapshot; `domain` filter trả 400)* |
 | P1 | POST / GET | /credentials | System admin tạo/list DSG SigV4 keys gắn user; list không trả secret |
 | P1 | DELETE | /credentials/{access_key_id} | System admin thu hồi; audit, request mới bị từ chối trong 5 giây |
 | P1 | POST / GET | /admin-tokens | System admin cấp/list bearer gắn user_id/scope/lifetime; list không trả secret/hash |
@@ -1043,13 +1043,13 @@ Counters tích lũy theo boot, purge không reset; đây là các heartbeat samp
 thời điểm, không phải atomic cluster snapshot hoặc ratio trong một time window.
 Legacy/local runtime chưa có shared cache service trả503, không giả lập cluster.
 
-**POST /admin/v1/faults** (chỉ enabled + system admin):
+**POST /admin/v1/faults** (chỉ `enable_fault_injection=true` + system admin, `node_id` khớp gateway đang gọi):
 
 ```json
-{ "scope": "node", "node_id": "edge-1", "type": "fail_s3_put", "match": { "operation": "PutPack" }, "probability": 0.2, "duration_s": 60 }
+{ "type": "s3_5xx", "scope": "node", "node_id": "edge-1", "rate": 0.2, "duration_seconds": 60 }
 ```
 
-Fault types: fail_s3_put/get, ddb_throttle, delay, kill_after_n_chunks, corrupt_byte, kill_after_head_commit, pause_before_chunk_publish, pause_reader_after_resolve. Phải audit scope/duration và TTL business; faults không tồn tại vĩnh viễn chỉ vì TTL vật lý chậm.
+Fault types hiện thực (`internal/faults`): `s3_5xx`, `ddb_throttle`, `kill_node`, `corrupt_pack`; chỉ hỗ trợ `scope="node"` (`cluster` bị từ chối `400 invalid_request`), `rate` trong `(0, 1]`, `duration_seconds` trong `1..86400`. Response `201` trả `FaultRule` (`fault_id`, `created_at`, `expires_at`); `GET /admin/v1/faults` trả mảng `FaultRule[]`; `DELETE /admin/v1/faults/{id}` trả `204` hoặc `404 fault_not_found`.
 
 ---
 
@@ -1079,13 +1079,15 @@ Body lỗi `{"error":{"code","message","request_id"}}`; message nêu tên field/
 |---|---|---|
 | `invalid_request` | 400 | Body không là JSON object hoặc lỗi cú pháp; member trùng; giá trị null; member không biết (kể cả privilege elevation: `owner`, `system_admin` ở grants; tiering/compression/chunking/dedup_domain ở bucket policy); sai kiểu (integer phải là JSON number không phần thập phân/số mũ); ngoài miền/pattern; thiếu field bắt buộc; thiếu hoặc lệch precondition (mục 6.5.2); query param sai hoặc không biết (ví dụ `limit`) |
 | `invalid_cursor` | 400 | Mọi lỗi cursor: format, kid không biết, MAC, hết hạn, binding; một code, không oracle |
+| `too_many_targets` | 400 | Cluster fan-out (`POST /jobs`, `POST /cache/purge`) vượt 64 active nodes |
 | `unauthorized` | 401 | Bearer thiếu/sai format/không biết/secret sai/revoked/hết hạn hoặc user disabled; kèm `WWW-Authenticate: Bearer`, một message |
 | `forbidden` | 403 | Thiếu vai trò theo bảng Admin mục 2.2.3 |
-| `bucket_not_found`, `user_not_found`, `grant_not_found`, `credential_not_found`, `token_not_found` | 404 | Resource không có (cùng kiểu `pack_not_found`) |
+| `bucket_not_found`, `user_not_found`, `grant_not_found`, `credential_not_found`, `token_not_found`, `pack_not_found`, `job_not_found`, `node_not_found`, `object_not_found`, `fault_not_found` | 404 | Resource không tồn tại |
 | `revision_conflict` | 409 | Revision hiện tại khác precondition (kể cả 0 khi đã tồn tại, N > 0 khi chưa có) |
 | `bucket_id_mismatch` | 409 | expected_bucket_id khác `bucket_id` hiện tại của tên bucket |
 | `revision_exhausted` | 409 | Cần đổi nội dung khi revision đã là 2^53−1 |
 | `user_exists` | 409 | POST /users với user_id đã có |
+| `job_type_unavailable` | 501 | Executor của job/pack/cache chưa được cài đặt trên runtime đang chạy |
 | `unavailable` | 503 | Metadata không đọc được hoặc outcome không biết; không nhả gì đã giữ |
 | `internal_error` | 500 | Lỗi khác |
 
@@ -1177,24 +1179,25 @@ Kiểu: `string`, `bool`, `int` (JSON integer 0..2^53−1); thời gian RFC 3339
 | Lệnh trong hợp đồng CLI | API |
 |---|---|
 | stats [--bucket b] | /stats hoặc /buckets/b/stats (system admin) |
-| user create/ls/set, usage | /users và logical usage |
-| grant ls/set/rm <bucket> <user> | /buckets/b/grants/user (owner/admin) |
+| user create/ls/show/set, usage | /users và logical usage |
+| bucket show, grant ls/set/rm <bucket> <user> | /buckets/b và /buckets/b/grants/user (owner/admin) |
 | policy get/set | /policy toàn hệ thống (system admin) |
 | bucket-policy get/set <bucket> | /buckets/b/policy, cache only |
 | layout <bucket> <key> | /objects/layout với query encode đúng |
 | pack ls, show <pack_id>, restore/promote <pack_id> <generation> | /packs, /packs/{id}, /packs/{id}/{generation}/restore\|promote |
 | job run <type> [--dry-run], ls/show/cancel | /jobs/... |
 | cache stats/purge --scope node\|cluster [--node id] | /cache/... có scope rõ |
-| cost report --scenario B --profile edge | /cost/report |
+| cost report --scenario B --profile edge | /cost/report (`--region --as-of --scenario --profile --from --to --bucket --domain --workload`) |
 | credentials create/ls/rm | /credentials/... |
 | admin-token create/ls/revoke | /admin-tokens/... (system admin cấp; owner revoke của mình) |
-| admin-token bootstrap [--recover] | Offline provisioning role, không bypass bearer trên HTTP |
+| admin-token bootstrap [--recover] | Offline provisioning role (`--local-data-path` \| `--ddb-table-prefix` \| `--runtime-config`) |
+| lifecycle-upgrade-gate | Offline read-only kiểm tra legacy V1 lifecycle trước nâng cấp V2 |
 | node ls/drain | /cluster/nodes/... |
-| fault inject/ls/clear --scope ... | /faults/... |
-| rebuild-index [--dry-run] | Offline với S3/DDB/KMS; không qua gateway khi metadata mất |
-| sim run --trace ... --policies A,B,C,D | Offline, package policy/Clock/pricing chung |
+| fault ls \| add --type ... --scope node --node id \| rm <id> | /faults/... |
+| rebuild-index [--dry-run] | Offline guarded workflow trong `internal/recovery`; chưa lộ trên `dsgctl` |
+| sim run --trace ... --policies A,B,C,D | Offline simulator binary riêng `cmd/costsim` |
 
-dsgctl phân biệt bearer Admin API và SigV4 key để debug S3; không chuyển bearer thành header Authorization S3. Token/log không in secret. CLI đã nối bearer transport cho `stats [--bucket b]`, `layout <bucket> <key>` (bucket/key là query encode một lần), `pack ls [--state --storage-class --live-ratio-lt]/show/restore [--days --tier]/promote`, `cache stats/purge --scope cluster|node --node id`, `user create/ls/show/set`, `usage`, `bucket show`, `grant ls/set/rm`, `policy get/set`, `bucket-policy get/set`, `credentials create/ls/rm`, `admin-token create/ls/revoke`, `job ls/show/run/cancel`, `node ls/drain`; mọi list (`ls`, `pack show`) nhận `--limit 1..1000 --cursor <next_cursor>`. Scope cache sai (thiếu `--scope`, `node` thiếu `--node`, `cluster` kèm `--node`) và tham số không hợp lệ bị từ chối cục bộ, không gửi request. Scope token không đủ là 403 từ gateway; CLI chỉ in status, `error.code` đã kiểm và `request_id` (để tra audit log), không in `message` vì có thể echo input. 404/501 có envelope là lỗi gateway (vd. 501 `job_type_unavailable` khi executor chưa cài); router 404/405 và 501 không envelope là unsupported. Endpoint và token file có thể đặt bằng env `DSGCTL_ENDPOINT` / `DSGCTL_TOKEN_FILE` (flag thắng), hợp với SSH tunnel cố định `127.0.0.1:<port>`; help không in giá trị env. Secret/token của create chỉ ghi vào file `--out` mới (O_EXCL, 0600) và bị che trên stdout. `admin-token bootstrap` chạy offline trên Badger (`--local-data-path`, gateway phải dừng) hoặc DynamoDB (`--ddb-table-prefix --region`, credential provisioning từ env `AWS_*`), ghi token vào `--token-file` mới, chạy lần hai bị từ chối; `--recover` báo lỗi (R2 chưa có). `cost report`, `fault`, `rebuild-index`, `sim run` chưa hiện thực thì báo unsupported, không giả success. Schema endpoint vẫn theo hợp đồng R4. Token file đọc cục bộ permission 0600; không nhận raw bearer làm argument hay biến môi trường in history. [Jobs/Nodes backend và handoff](contracts/jobs-and-nodes.md), [kiểm thử CLI theo vai trò](testing/admin-cli-validation.md).
+dsgctl phân biệt bearer Admin API và SigV4 key để debug S3; không chuyển bearer thành header Authorization S3. Token/log không in secret. CLI đã nối bearer transport cho `stats [--bucket b]`, `layout <bucket> <key>` (bucket/key là query encode một lần), `cost report [--region --as-of --scenario --profile --from --to --bucket --domain --workload]`, `pack ls [--state --storage-class --live-ratio-lt]/show/restore [--days --tier]/promote`, `cache stats/purge --scope cluster|node --node id`, `user create/ls/show/set`, `usage`, `bucket show`, `grant ls/set/rm`, `policy get/set`, `bucket-policy get/set`, `credentials create/ls/rm`, `admin-token create/ls/revoke`, `job ls/show/run/cancel`, `node ls/drain`, `fault ls/add/rm`; mọi list (`ls`, `pack show`) nhận `--limit 1..1000 --cursor <next_cursor>`. Scope cache sai (thiếu `--scope`, `node` thiếu `--node`, `cluster` kèm `--node`) và tham số không hợp lệ bị từ chối cục bộ, không gửi request. Scope token không đủ là 403 từ gateway; CLI chỉ in status, `error.code` đã kiểm và `request_id` (để tra audit log), không in `message` vì có thể echo input. 404/501 có envelope là lỗi gateway (vd. 501 `job_type_unavailable` khi executor chưa cài); router 404/405 và 501 không envelope là unsupported. Endpoint và token file có thể đặt bằng env `DSGCTL_ENDPOINT` / `DSGCTL_TOKEN_FILE` (flag thắng), hợp với SSH tunnel cố định `127.0.0.1:<port>`; help không in giá trị env. Secret/token của create chỉ ghi vào file `--out` mới (O_EXCL, 0600) và bị che trên stdout. `admin-token bootstrap` chạy offline trên Badger (`--local-data-path`, gateway phải dừng), DynamoDB (`--ddb-table-prefix --region`, credential provisioning từ env `AWS_*`) hoặc `--runtime-config`, ghi token vào `--token-file` mới, chạy lần hai bị từ chối; `--recover` báo lỗi vì recovery gate chưa mở qua CLI. `rebuild-index`, `sim run` chưa nối trên `dsgctl` nên báo unsupported (dùng `cmd/costsim` và workflow `internal/recovery` tương ứng). Token file đọc cục bộ permission 0600; không nhận raw bearer làm argument hay biến môi trường in history. Chi tiết lỗi và bảng đối chiếu đầy đủ ở [Hướng dẫn sử dụng & đối chiếu API](api-usage-guide.md), [Jobs/Nodes backend và handoff](contracts/jobs-and-nodes.md), [kiểm thử CLI theo vai trò](testing/admin-cli-validation.md).
 
 ---
 

@@ -52,6 +52,8 @@ type Result struct {
 	RevivedBytes   uint64
 	OrphanedChunks uint64
 	OrphanedBytes  uint64
+	DupChunks      uint64
+	StoredBytes    uint64
 }
 
 const defaultBatchBytes = 32 << 20
@@ -108,6 +110,7 @@ func (p Pipeline) run(ctx context.Context, domain string, next func(context.Cont
 	var builder *pack.Builder
 	var ref storage.PackRef
 	prior := make(map[storage.ChunkKey]storage.Chunk)
+	var blobsWritten uint64
 	pendingKeys := make(map[storage.ChunkKey]int64)
 	var publishedSeq uint64
 	flush := func() error {
@@ -129,6 +132,7 @@ func (p Pipeline) run(ctx context.Context, domain string, next func(context.Cont
 			}
 		}
 		result.PackCount++
+		result.StoredBytes += uint64(len(packBytes) + len(sidecar))
 		publishedSeq++
 		builder = nil
 		prior = make(map[storage.ChunkKey]storage.Chunk)
@@ -176,6 +180,9 @@ func (p Pipeline) run(ctx context.Context, domain string, next func(context.Cont
 			}
 			if !refs.Empty() {
 				return result, fmt.Errorf("%w: pending refs after final pack", storage.ErrUnavailable)
+			}
+			if result.ChunkCount >= blobsWritten {
+				result.DupChunks = result.ChunkCount - blobsWritten
 			}
 			return result, nil
 		}
@@ -263,6 +270,7 @@ func (p Pipeline) run(ctx context.Context, domain string, next func(context.Cont
 			} else if err != nil {
 				return result, err
 			}
+			blobsWritten++
 			if row, found := rows[key]; found {
 				prior[key] = row
 			}
@@ -294,6 +302,9 @@ func (p Pipeline) run(ctx context.Context, domain string, next func(context.Cont
 			}
 			if !refs.Empty() {
 				return result, fmt.Errorf("%w: pending refs after final pack", storage.ErrUnavailable)
+			}
+			if result.ChunkCount >= blobsWritten {
+				result.DupChunks = result.ChunkCount - blobsWritten
 			}
 			return result, nil
 		}

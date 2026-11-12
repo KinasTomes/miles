@@ -188,6 +188,25 @@ func (d *Disk) Get(ctx context.Context, k storage.CacheKey) ([]byte, bool, error
 	d.order.MoveToFront(e)
 	return b, true, nil
 }
+
+// Has reports whether key is resident on disk without reading bytes or altering stats.
+func (d *Disk) Has(ctx context.Context, k storage.CacheKey) bool {
+	if ctx.Err() != nil || validKey(k) != nil {
+		return false
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed || ctx.Err() != nil {
+		return false
+	}
+	e := d.entries[k]
+	if e == nil {
+		return false
+	}
+	v := e.Value.(diskEntry)
+	info, err := os.Lstat(d.path(k))
+	return err == nil && info.Mode().IsRegular() && info.Size() == v.size
+}
 func (d *Disk) Put(ctx context.Context, k storage.CacheKey, b []byte) error {
 	if err := validKey(k); err != nil {
 		return err

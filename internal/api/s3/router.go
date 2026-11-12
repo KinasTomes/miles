@@ -107,6 +107,9 @@ func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"node_id", rt.NodeID, "method", r.Method, "operation", diagnostic.operation,
 			"stage", diagnostic.stage, "failure_class", class)
 	}
+	if diagnostic.debug && e.Code == ErrInvalidObjectState && e.debugRestore != "" {
+		w.Header().Set("X-Dsg-Restore", e.debugRestore)
+	}
 	if err := WriteError(w, r, e, id); err != nil {
 		slog.WarnContext(r.Context(), "s3 error response not delivered", "request_id", id, "code", e.Code, "failure_class", safeFailureClass(err))
 	}
@@ -156,6 +159,7 @@ func (rt *Router) serveWithDiagnostics(w http.ResponseWriter, r *http.Request, i
 	if err != nil {
 		return err
 	}
+	diagnostic.debug = caller.Debug
 	diagnostic.stage = "handler"
 	h, ok := rt.Handlers[route.Op]
 	if !ok {

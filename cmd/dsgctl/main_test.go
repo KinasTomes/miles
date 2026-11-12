@@ -71,7 +71,7 @@ func TestCLIRequiresTokenOnlyForSupportedReadCommands(t *testing.T) {
 			t.Fatal("help/version must not require a token", err)
 		}
 	}
-	for _, args := range [][]string{{"rebuild-index"}} {
+	for _, args := range [][]string{{"rebuild-index"}, {"sim", "run"}} {
 		if err := run(context.Background(), args, &bytes.Buffer{}, &bytes.Buffer{}); !errors.Is(err, adminclient.ErrUnsupported) {
 			t.Fatal("unsupported commands must remain explicit", args, err)
 		}

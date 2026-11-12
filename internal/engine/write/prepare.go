@@ -19,13 +19,16 @@ type PageStore interface {
 }
 
 type PreparedObject struct {
-	ManifestID string
-	Domain     string
-	Size       int64
-	ChunkCount uint64
-	PageCount  uint32
-	PageIndex  []uint64
-	PackCount  uint64
+	ManifestID    string
+	Domain        string
+	Size          int64
+	ChunkCount    uint64
+	PageCount     uint32
+	PageIndex     []uint64
+	PackCount     uint64
+	DupChunks     uint64
+	RevivedChunks uint64
+	StoredBytes   uint64
 }
 
 // BindHead copies the complete prepared descriptor onto a candidate head. It
@@ -84,7 +87,8 @@ func prepare(ctx context.Context, kind byte, pipeline Pipeline, pages PageStore,
 		return PreparedObject{}, fmt.Errorf("%w: incomplete manifest", storage.ErrUnavailable)
 	}
 	return PreparedObject{ManifestID: manifestID, Domain: domain, Size: size, ChunkCount: chunks,
-		PageCount: pageCount, PageIndex: index, PackCount: result.PackCount}, nil
+		PageCount: pageCount, PageIndex: index, PackCount: result.PackCount,
+		DupChunks: result.DupChunks, RevivedChunks: result.RevivedChunks, StoredBytes: result.StoredBytes}, nil
 }
 
 // CopyManifest writes manifestID as a same-domain copy of the committed source
