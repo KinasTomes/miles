@@ -13,6 +13,7 @@ import (
 
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/storage"
+	"github.com/aws/smithy-go"
 )
 
 type rejectedRecoveryAuthority struct {
@@ -104,6 +105,8 @@ func TestShutdownAttemptLogsClassifyWithoutRawErrors(t *testing.T) {
 		want string
 	}{
 		{nil, "none"}, {storage.ErrR1Busy, "r1_gate_busy"}, {storage.ErrUnavailable, "backend_unavailable"},
+		{fmt.Errorf("%w: %w", storage.ErrUnavailable, &smithy.GenericAPIError{Code: "ThrottlingException", Message: private}), "backend_throttled"},
+		{fmt.Errorf("%w: %w", storage.ErrUnavailable, &smithy.GenericAPIError{Code: private, Message: private}), "backend_unavailable"},
 		{storage.ErrClockUncertain, "clock_uncertainty_exceeded"}, {context.Canceled, "canceled"},
 		{context.DeadlineExceeded, "deadline_exceeded"}, {errors.New(private), "unknown"},
 	} {

@@ -12,6 +12,7 @@ import (
 	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
 	"github.com/KinasTomes/miles/internal/recovery"
 	"github.com/KinasTomes/miles/internal/storage"
+	"github.com/aws/smithy-go"
 )
 
 // One supervisor per gateway; immutable writes and shared CAS arbitrate peers.
@@ -39,6 +40,17 @@ func journalFailure(err error) string {
 	case errors.Is(err, storage.ErrClockUncertain):
 		return "clock_uncertainty_exceeded"
 	case errors.Is(err, storage.ErrUnavailable):
+		var service smithy.APIError
+		if errors.As(err, &service) {
+			switch service.ErrorCode() {
+			case "ThrottlingException", "ProvisionedThroughputExceededException", "RequestLimitExceeded":
+				return "backend_throttled"
+			case "InternalServerError":
+				return "backend_internal_error"
+			case "TransactionConflictException":
+				return "backend_transaction_conflict"
+			}
+		}
 		return "backend_unavailable"
 	case errors.Is(err, context.Canceled):
 		return "canceled"
