@@ -1,0 +1,13 @@
+{
+  "account_id": "123456789012",
+  "region": "ap-southeast-1",
+  "deploy_role_arn": "arn:aws:iam::123456789012:role/miles/bootstrap/miles-dev-deploy",
+  "runtime_boundary_arn": "arn:aws:iam::123456789012:policy/miles/bootstrap/MilesDevRuntimeBoundary",
+  "backend_bucket": "miles-dev-tfstate-123456789012-ap-southeast-1",
+  "backend_key": "cloud/dev/terraform.tfstate",
+  "deploy_profile": "miles-dev",
+  "iam_profile": "miles-iam-bootstrap",
+  "ami_id": "ami-REPLACE_WITH_REVIEWED_AL2023_ARM64",
+  "hours": 4,
+  "max_usd": 10
+}
