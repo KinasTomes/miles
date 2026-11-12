@@ -156,3 +156,40 @@ func TestChronyTypedErrors(t *testing.T) {
 		t.Fatalf("expected ErrClockUncertain on clock step, got: %v", err)
 	}
 }
+
+func TestChronyRecordedConsecutiveRejectionsAndFreshRecovery(t *testing.T) {
+	// Replay tracking freshness from the live incident. Rejected NTP replies
+	// leave the accepted reference unchanged; this does not simulate Chrony's
+	// packet filters or prove that a different polling profile will recover.
+	ref := time.Date(2026, 11, 11, 13, 41, 54, 530157800, time.UTC)
+	for _, sample := range []struct {
+		age   time.Duration
+		fresh bool
+	}{
+		{17 * time.Second, true},
+		{19 * time.Second, true},
+		{34199 * time.Millisecond, true},
+		{34252023 * time.Microsecond, false},
+		{347999 * time.Millisecond / 10, false},
+		{368087 * time.Millisecond / 10, false},
+	} {
+		t.Run(sample.age.String(), func(t *testing.T) {
+			clk, err := clock.NewVirtual(ref.Add(sample.age), 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			accepted := ref
+			c := Chrony{Clock: clk, Reference: "169.254.169.123", RestartID: "replay", read: func(context.Context) ([]byte, error) {
+				return []byte(fmt.Sprintf("A9FEA97B,169.254.169.123,3,%.7f,0.001,0.001,0.001,0.1,0.01,0.1,0.001,0.001,16.1,Normal\n", float64(accepted.UnixNano())/1e9)), nil
+			}}
+			_, err = c.Bounds(t.Context())
+			if sample.fresh && err != nil || !sample.fresh && !errors.Is(err, storage.ErrClockUncertain) {
+				t.Fatal("recorded freshness disagrees with the unchanged 34.2s guard", sample, err)
+			}
+			accepted = clk.Now().WallUTC.Add(-500 * time.Millisecond)
+			if _, err = c.Bounds(t.Context()); err != nil {
+				t.Fatal("new accepted reference failed to restore bounded time", err)
+			}
+		})
+	}
+}
