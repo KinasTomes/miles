@@ -33,6 +33,57 @@ func operationCommand(args []string) (command, error) {
 			return command{method: http.MethodGet, path: "/admin/v1/buckets/" + *bucket + "/stats"}, nil
 		}
 		return command{method: http.MethodGet, path: "/admin/v1/stats"}, nil
+	case "cost":
+		if len(args) < 2 || args[1] != "report" {
+			return command{}, invalid
+		}
+		f := newFlags("cost report")
+		region := f.String("region", "", "pricing region")
+		asOf := f.String("as-of", "", "date YYYY-MM-DD")
+		scenario := f.String("scenario", "", "scenario: A|B")
+		profile := f.String("profile", "", "profile: cloud|edge")
+		from := f.String("from", "", "from timestamp")
+		to := f.String("to", "", "to timestamp")
+		bucket := f.String("bucket", "", "filter bucket")
+		domain := f.String("domain", "", "filter domain")
+		workload := f.String("workload", "", "modeled workload trace: cloud-tiering-boundary|edge-revival")
+		set, ok := parse(f, args[2:])
+		if !ok {
+			return command{}, invalid
+		}
+		q := url.Values{}
+		if set["region"] {
+			q.Set("region", *region)
+		}
+		if set["as-of"] {
+			q.Set("as_of", *asOf)
+		}
+		if set["scenario"] {
+			q.Set("scenario", *scenario)
+		}
+		if set["profile"] {
+			q.Set("profile", *profile)
+		}
+		if set["from"] {
+			q.Set("from", *from)
+		}
+		if set["to"] {
+			q.Set("to", *to)
+		}
+		if set["bucket"] {
+			q.Set("bucket", *bucket)
+		}
+		if set["domain"] {
+			q.Set("domain", *domain)
+		}
+		if set["workload"] {
+			q.Set("workload", *workload)
+		}
+		path := "/admin/v1/cost/report"
+		if len(q) > 0 {
+			path += "?" + q.Encode()
+		}
+		return command{method: http.MethodGet, path: path}, nil
 	case "layout":
 		// No flags: a key may start with "-".
 		if len(args) != 3 || !validBucket(args[1]) || args[2] == "" || len(args[2]) > 1024 || !utf8.ValidString(args[2]) {
