@@ -119,6 +119,15 @@ def config(value):
         re.fullmatch(r"ami-[0-9a-f]{8,17}", c.get("ami_id", "")),
         "Pin an Amazon Linux 2023 ARM64 AMI",
     )
+    if c.get("existing_autoscaling_role_arn"):
+        require(
+            c["existing_autoscaling_role_arn"].startswith(
+                "arn:aws:iam::"
+                + c["account_id"]
+                + ":role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+            ),
+            "ASG service role must belong to this account and service",
+        )
     zones = c.get("zones", [c["region"] + "a", c["region"] + "b"])
     require(
         len(zones) == 2
@@ -176,6 +185,8 @@ class Run:
         )
 
     def command(self, argv, *, env=None, input=None, timeout=120, log=None):
+        if env is None and Path(str(argv[0])).name in ("ssh", "scp"):
+            env = self.environment()
         p = subprocess.run(
             [str(x) for x in argv],
             input=input,

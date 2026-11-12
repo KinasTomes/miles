@@ -11,7 +11,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from deploy.acceptance.common import Run, now, require
+from deploy.acceptance.common import Run, now, require, digest
 from deploy.acceptance import prepare
 from deploy.acceptance import deployment as deploy
 from deploy.acceptance import hosts
@@ -240,6 +240,12 @@ def main(argv=None):
         )
         r.identity(iam=args.iam)
         return
+    prepared = r.read("init-complete.json")
+    require(
+        prepared["source"] == r.meta["source"]
+        and prepared["config_sha256"] == digest(r.file("config.json")),
+        "Prepared config/source changed; reconcile instead of switching account/backend mid-run",
+    )
     # Prevent cleanup/rollout and a trial from racing. Read-only collection can accompany a diagnosis.
     lock = r.file("operator.lock").open("a")
     if args.command != "collect":

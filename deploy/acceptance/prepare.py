@@ -162,7 +162,7 @@ def init(directory, config_path):
         "region": c["region"],
         "availability_zones": c["zones"],
         "runtime_permissions_boundary_arn": c["runtime_boundary_arn"],
-        "runtime_secret_name": "miles-dev/runtime-" + rid,
+        "runtime_secret_name": "miles-dev/runtime-secrets-" + rid,
         "paused": True,
         "enable_compute": False,
         "enable_asg": False,
@@ -190,6 +190,22 @@ def init(directory, config_path):
             "inline": "MilesAcceptance-" + rid,
             "secret": variables["runtime_secret_name"],
         },
+    )
+    require(
+        r.read("release.json")["source_commit"] == revision
+        and subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+        ).strip()
+        == revision
+        and not subprocess.check_output(
+            ["git", "status", "--porcelain"], cwd=ROOT
+        ).strip(),
+        "Source changed during prepare; retain failed inputs and initialize a new run",
+    )
+    r.write(
+        "init-complete.json",
+        {"source": revision, "config_sha256": digest(r.file("config.json"))},
+        new=True,
     )
     r.event("init", "source and fresh PKI prepared; no AWS calls")
     print(str(p))

@@ -467,7 +467,12 @@ class IAMWorkflowTests(unittest.TestCase):
             )
             policies[arn] = {"key": key, "default": "v1", "versions": ["v1"]}
         inline = {}
-        roles = {}
+        roles = {
+            "AWSServiceRoleForElasticLoadBalancing": {
+                "RoleName": "AWSServiceRoleForElasticLoadBalancing",
+                "RoleId": "created-by-another-actor",
+            }
+        }
         lost = [False]
         mutations = []
 
@@ -558,6 +563,9 @@ class IAMWorkflowTests(unittest.TestCase):
             iam.activate(self.r)
             self.assertEqual(len(mutations), len(iam.MANAGED))
             self.assertEqual(self.r.read("iam-activation.json")["status"], "active")
+            self.assertFalse(
+                self.r.read("iam/AWSServiceRoleForElasticLoadBalancing.json")["created"]
+            )
             iam.restore(self.r)
         self.assertTrue(
             all(
@@ -567,6 +575,77 @@ class IAMWorkflowTests(unittest.TestCase):
         )
         self.assertFalse(inline)
         self.assertEqual(self.r.read("iam-activation.json")["status"], "restored")
+
+
+class ColdPrepareTests(unittest.TestCase):
+    setUp = KitTests.setUp
+
+    def test_generated_secret_name_matches_existing_boundary_scope(self):
+        import fnmatch
+
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w"):
+            pass
+
+        def command(run, argv, **kwargs):
+            if argv[0] == "git":
+                return archive.getvalue()
+            if argv[0] == "python3":
+                target = Path(argv[argv.index("--out") + 1])
+                target.write_bytes(b"fixture-release")
+                return json.dumps(
+                    {
+                        "sha256": common.digest(target),
+                        "source_commit": "a" * 40,
+                        "arch": "arm64",
+                    }
+                ).encode()
+            if argv[0] == "go":
+                Path(argv[argv.index("-o") + 1]).write_bytes(b"fixture-binary")
+                return b""
+            self.fail("Unexpected external command")
+
+        def pki(run):
+            common.private(run.file("operator-key.pub"), "ssh-ed25519 AAAA fixture")
+            common.private(run.file("identity-ca.pem"), "fixture-public-ca")
+
+        def git(argv, **kwargs):
+            return "a" * 40 if "rev-parse" in argv else b""
+
+        dest = self.path / "cold"
+        with (
+            mock.patch.object(common.Run, "command", command),
+            mock.patch.object(prepare, "pki", pki),
+            mock.patch("subprocess.check_output", side_effect=git),
+            mock.patch("shutil.which", return_value="/fixture/aws"),
+            mock.patch("sys.stdout", new=io.StringIO()),
+        ):
+            prepare.init(dest, self.path / "config.json")
+        secret = common.load(dest / "foundation.tfvars.json")["runtime_secret_name"]
+        arn = (
+            "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:"
+            + secret
+            + "-abcdef"
+        )
+        policy = (
+            (ROOT / "deploy/acceptance/policies/runtime-boundary.json.tmpl")
+            .read_text()
+            .replace("${ACCOUNT_ID}", "123456789012")
+            .replace("${REGION}", "ap-southeast-1")
+        )
+        document = json.loads(policy)
+        allowed = [
+            resource
+            for statement in document["Statement"]
+            for resource in (
+                statement["Resource"]
+                if isinstance(statement["Resource"], list)
+                else [statement["Resource"]]
+            )
+            if ":secret:" in resource
+        ]
+        self.assertTrue(any(fnmatch.fnmatchcase(arn, resource) for resource in allowed))
+        self.assertEqual((dest / "identity-ca.pem").stat().st_mode & 0o777, 0o600)
 
 
 if __name__ == "__main__":

@@ -311,7 +311,11 @@ def activate(r):
             continue
         roles = r.aws("iam", "list-roles", iam=True)["Roles"]
         found = [x for x in roles if x["RoleName"] == name]
-        created = name not in baseline_roles
+        require(
+            name not in baseline_roles or bool(found),
+            "Baseline service role disappeared; reconcile concurrent account changes",
+        )
+        created = not found
         if not found:
             found = [
                 r.aws(

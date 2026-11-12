@@ -506,7 +506,7 @@ def execute(r):
             == b"0"
         )
 
-    r.wait("natural Cloud drain and Edge stopped before purge", quiescent, 2250)
+    r.wait("natural Cloud drain and Edge stopped before purge", quiescent, 2700)
     # A failed/interrupted SSH trial must not continue writing during purge.
     check = r.ssh(
         "client",

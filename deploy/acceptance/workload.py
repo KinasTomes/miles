@@ -50,6 +50,7 @@ def tunnel(r):
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=r.environment(),
         )
     r.write("tunnel-pid.json", {"pid": p.pid})
     r.wait(
