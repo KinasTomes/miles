@@ -69,3 +69,28 @@ relaxed by this follow-up.
 The original PUT 409 remains unclassified. Retain request/stage/AWS transaction
 correlation and reconcile authoritative outcomes if it occurs. A passing replay
 or unrelated internally retried CAS conflict cannot close that finding.
+
+
+## Repository-owned operator runner
+
+The next run uses [the packaged runner](../../deploy/acceptance/README.md) and
+[its command guide](focused-aws-operator-guide.md), rather than historical private
+helpers. It generates fresh PKI/SSH identities, source-pinned artifacts, regional
+pricing and parameterized IAM proposals; saved plans and ownership snapshots
+bind deployment and cleanup. Config discovery and preflight are read-only;
+activation/apply remain explicit after review. Bootstrap and uncertain stage
+outcomes cannot silently replay mutations. Final native audit retains the
+existing verifier and independent account baseline.
+
+The new runtime logs each shutdown attempt's work stage, allowlisted work and
+cleanup error classes, elapsed time and remaining budget. Native DynamoDB
+throttling is distinguished when its retained typed cause is available. The
+recorded AWS source above predates these fields: these logs do not retroactively
+classify its failed attempts or establish that shutdown is fixed.
+
+Offline validation includes mutation-identity boundaries, plan/manifest tampering,
+archive traversal, cleanup reserve, source-payload snapshots, lost IAM-version
+responses and rollback preserving concurrent changes. `make check` and focused
+shutdown race tests pass. The packaged orchestration still needs a fresh live
+plan/IAM review and AWS execution; no new paid environment was started while
+building the kit.
