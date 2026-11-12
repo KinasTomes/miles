@@ -1,5 +1,7 @@
 # Pricing, dataset và baseline
 
+Ma trận benchmark để review: [workloads, coverage, gap](benchmark-matrix.md), [ngưỡng và verdict](thresholds.md); kiểm offline `python3 -B scripts/validate_benchmark_matrix.py benchmarks/workload-matrix.json`. Chưa có full benchmark AWS hoặc phê duyệt ngưỡng cuối.
+
 Harness Warm benchmark: [runner, artifact và lệnh chạy](warm-harness.md),
 [validation](warm-harness-validation.md),
 [số sơ bộ AWS thật và cleanup](warm-aws-results.md).
