@@ -293,6 +293,9 @@ export DSGCTL_TOKEN_FILE=/private/system-admin-token
 ./bin/dsgctl layout demo dir/small.txt
 ./bin/dsgctl policy get
 ./bin/dsgctl policy set --file policy-patch.json --expected-revision 1
+./bin/dsgctl cost report --scenario A --profile cloud --workload cloud-tiering-boundary
+./bin/dsgctl cost report --scenario B --profile edge --workload edge-revival
+./bin/dsgctl cost report --scenario A --profile cloud   # đánh giá snapshot stats live
 
 ./bin/dsgctl pack ls --state Cold --storage-class GLACIER_IR --limit 50
 ./bin/dsgctl pack show <pack_id>
@@ -564,7 +567,7 @@ Mọi response Admin mang `X-Request-Id: <32 lowercase hex>`. Mọi lỗi do han
 ```
 
 - Lỗi `401 unauthorized` kèm header `WWW-Authenticate: Bearer`.
-- Route chưa đăng ký trên `ServeMux` (như `/admin/v1/cost/report`) trả HTTP `404` trần của router **không có** JSON envelope; sai HTTP method trả `405` trần. `dsgctl` / `adminclient` ánh xạ cả hai thành `ErrUnsupported`.
+- Route chưa đăng ký trên `ServeMux` (như `/admin/v1/nonexistent`) trả HTTP `404` trần của router **không có** JSON envelope; sai HTTP method trả `405` trần. `dsgctl` / `adminclient` ánh xạ cả hai thành `ErrUnsupported`.
 - Thứ tự đánh giá lỗi (§6.5.1): `(1) Bearer 401` → `(2) Bucket {b} 404` → `(3) Role 403` → `(4) Query/JSON/Precondition schema 400` → `(5) Target resource 404` → `(6) expected_bucket_id 409` → `(7) Revision CAS 409`.
 
 **Bảng đầy đủ mã lỗi JSON Admin thực tế:**
@@ -606,6 +609,7 @@ Mọi response Admin mang `X-Request-Id: <32 lowercase hex>`. Mọi lỗi do han
 - **`GET /admin/v1/packs` & `GET /admin/v1/packs/{id}`**: `200` `{"items":[Pack...],"next_cursor":"..."}` với `Pack` gồm `pack_id`, `generation`, `state`, `storage_class`, `state_revision`, `bytes`, `live_bytes`, `live_ratio`, `protected_until`, `min_retention_until`, `restored_until`, `readable`, `as_of`, `consistency`.
 - **`GET /admin/v1/cache/stats?scope=node&node_id=...` | `?scope=cluster`**: `200` `{"scope","complete","observed_at","nodes":[...],"included_nodes","hits","misses","denominator","hit_ratio"}`.
 - **`GET /admin/v1/cluster/nodes`**: `200` `{"items":[Node...],"next_cursor":"..."}` với `Node` gồm `node_id`, `incarnation`, `service_incarnation`, `profile`, `address`, `ready`, `draining`, `drain_applied`, `drain_state`, `active_requests`, `applied_policy_revision`, `heartbeat_at`, `cache`.
+- **`GET /admin/v1/cost/report`**: query tùy chọn `region`, `as_of`, `scenario` (`A|B`), `profile` (`cloud|edge`, `A` đi với `cloud`, `B` đi với `edge`), `from`, `to` (RFC 3339), `bucket`, `domain` (từ chối `400`), `workload` (`cloud-tiering-boundary|edge-revival|live_gateway_snapshot`), `policy`/`candidate_policy` (`warm_standard_only|warm_glacier_ir|warm_glacier_flexible`). Response `200` `CostReportResponse` (`report_type`, `schema_version`, `inputs`, `baseline`, `dsg_storage`, `dsg_requests_network`, `infrastructure`, `revival_copy`, `results`, `omissions`, `limitations`).
 
 ---
 
@@ -659,7 +663,7 @@ Mọi response Admin mang `X-Request-Id: <32 lowercase hex>`. Mọi lỗi do han
 | 17 | `GET /jobs/{id}`, `DELETE /jobs/{id}` | System admin | `getJob`, `cancelJob` | **Implemented** (local mode 503) |
 | 18 | `GET /cache/stats` | System admin | `cacheStats` | **Implemented** (local mode 503) |
 | 19 | `POST /cache/purge` | System admin | `purgeCache` | **Implemented** (local mode 503) |
-| 20 | `GET /cost/report` | System admin | Chưa gắn route trên `admin.NewServer` | **Unsupported HTTP (`404` trần / `ErrUnsupported`)**; công cụ đánh giá chi phí offline nằm tại `cmd/costsim` (`bin/costsim`) |
+| 20 | `GET /cost/report` | System admin | `costReport` | **Implemented** |
 | 21 | `POST /credentials`, `GET /credentials` | System admin | `createCredential`, `listCredentials` | **Implemented** |
 | 22 | `DELETE /credentials/{access_key_id}` | System admin | `deleteCredential` | **Implemented** |
 | 23 | `POST /admin-tokens`, `GET /admin-tokens` | System admin | `createToken`, `listTokens` | **Implemented** |
@@ -694,7 +698,7 @@ Mọi response Admin mang `X-Request-Id: <32 lowercase hex>`. Mọi lỗi do han
 | `job ls\|show\|run\|cancel` | `/admin/v1/jobs...` | **Implemented** |
 | `node ls\|drain` | `/admin/v1/cluster/nodes...` | **Implemented** |
 | `fault ls\|add\|rm` | `/admin/v1/faults...` | **Implemented** (`scope=node`) |
-| `cost report` | Không có route `/admin/v1/cost/report` | **Unsupported (`ErrUnsupported`)**; dùng `bin/costsim` (`cmd/costsim`) |
+| `cost report` | `GET /admin/v1/cost/report` | **Implemented** (`--region --as-of --scenario --profile --from --to --bucket --domain --workload`) |
 | `rebuild-index` | Offline guarded library workflow (`internal/recovery`) | **Unsupported trong `dsgctl` (`ErrUnsupported`)**; xem [runbook](runbooks/lifecycle-recovery-operations.md) |
 | `sim run` | Offline simulator binary riêng (`cmd/costsim`) | **Unsupported trong `dsgctl` (`ErrUnsupported`)**; dùng `bin/costsim` |
 

@@ -3,12 +3,16 @@ package integration_test
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/api/admin"
 	"github.com/KinasTomes/miles/internal/api/s3"
@@ -112,23 +116,54 @@ func TestMandatoryS3AndAdminCoverageChecklist(t *testing.T) {
 	}
 
 	// 3. Admin API error envelope schema + bare 404/405 for unregistered/wrong-method routes.
-	store, err := badger.Open(badger.Options{Path: t.TempDir()})
+	store, err := badger.Open(badger.Options{Path: t.TempDir(), RequireProducers: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
+	validator, err := config.NewPolicyValidator(config.DSGPolicyLimits())
+	if err != nil {
+		t.Fatal(err)
+	}
+	global, err := validator.NewGlobalSnapshot(1, config.DefaultGlobalPolicy())
+	if err != nil {
+		t.Fatal(err)
+	}
+	polSnap, err := global.StorageSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	polSnap.Revision = 0
+	sysID, sysSecret, sysToken, err := admin.NewToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sysHash := sha256.Sum256([]byte(sysSecret))
+	now := time.Now().UTC()
+	if err := store.BootstrapAdmin(context.Background(), storage.AdminBootstrap{
+		Token:      storage.AdminToken{ID: sysID, UserID: "ops", Scope: storage.TokenScopeSystem, Hash: sysHash[:], Active: true, IssuedAt: now, ExpiresAt: now.Add(time.Hour)},
+		QuotaLimit: 1 << 30,
+		Policy:     polSnap,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	authority, err := store.StartLocalRuntime(context.Background(), "ops", 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
 	sealer, _ := admin.NewAESSealer("k", bytes.Repeat([]byte{9}, 32))
 	srv, err := admin.NewServer(admin.Options{
 		Store: store,
-		Admit: func(context.Context, string) (storage.MutationContext, error) {
-			return storage.MutationContext{}, storage.ErrUnavailable
+		Admit: func(ctx context.Context, tokenID string) (storage.MutationContext, error) {
+			var op [16]byte
+			_, _ = rand.Read(op[:])
+			return authority.AdmitAdmin(ctx, tokenID, hex.EncodeToString(op[:]), time.Now().Add(30*time.Second))
 		},
 		Sealer:  sealer,
 		Cursors: admin.Keyring{Current: "k", Keys: map[string][]byte{"k": bytes.Repeat([]byte{1}, 32)}},
 		Clock:   clock.NewReal(),
 	})
 	if err != nil {
-		// Use explicit Admit func signature.
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
@@ -147,11 +182,65 @@ func TestMandatoryS3AndAdminCoverageChecklist(t *testing.T) {
 		t.Fatalf("Admin JSON error schema mismatch: %s (%v)", rec.Body.String(), err)
 	}
 
-	// Unwired /admin/v1/cost/report returns bare router 404 without JSON error envelope.
-	costRec := httptest.NewRecorder()
-	srv.ServeHTTP(costRec, httptest.NewRequest(http.MethodGet, "/admin/v1/cost/report", nil))
-	if costRec.Code != http.StatusNotFound || strings.Contains(costRec.Body.String(), `"error"`) {
-		t.Fatalf("unwired cost/report expected bare 404, got %d %s", costRec.Code, costRec.Body.String())
+	// Unregistered route returns bare router 404; wrong method on registered route returns bare 405.
+	notFoundRec := httptest.NewRecorder()
+	srv.ServeHTTP(notFoundRec, httptest.NewRequest(http.MethodGet, "/admin/v1/nonexistent", nil))
+	if notFoundRec.Code != http.StatusNotFound || strings.Contains(notFoundRec.Body.String(), `"error"`) {
+		t.Fatalf("unregistered route expected bare 404, got %d %s", notFoundRec.Code, notFoundRec.Body.String())
+	}
+	methodRec := httptest.NewRecorder()
+	srv.ServeHTTP(methodRec, httptest.NewRequest(http.MethodPost, "/admin/v1/cost/report", nil))
+	if methodRec.Code != http.StatusMethodNotAllowed || strings.Contains(methodRec.Body.String(), `"error"`) {
+		t.Fatalf("wrong method expected bare 405, got %d %s", methodRec.Code, methodRec.Body.String())
+	}
+
+	// GET /admin/v1/cost/report is registered: unauthenticated -> 401, non-admin -> 403, admin -> 200 / 400.
+	costUnauth := httptest.NewRecorder()
+	srv.ServeHTTP(costUnauth, httptest.NewRequest(http.MethodGet, "/admin/v1/cost/report", nil))
+	if costUnauth.Code != http.StatusUnauthorized || !strings.Contains(costUnauth.Body.String(), `"unauthorized"`) {
+		t.Fatalf("unauthenticated cost/report: %d %s", costUnauth.Code, costUnauth.Body.String())
+	}
+	createUserReq := httptest.NewRequest(http.MethodPost, "/admin/v1/users", strings.NewReader(`{"user_id":"regular"}`))
+	createUserReq.Header.Set("Authorization", "Bearer "+sysToken)
+	createUserRec := httptest.NewRecorder()
+	srv.ServeHTTP(createUserRec, createUserReq)
+	if createUserRec.Code != http.StatusCreated {
+		t.Fatalf("create regular user: %d %s", createUserRec.Code, createUserRec.Body.String())
+	}
+	createTokReq := httptest.NewRequest(http.MethodPost, "/admin/v1/admin-tokens", strings.NewReader(`{"user_id":"regular","system_admin":false}`))
+	createTokReq.Header.Set("Authorization", "Bearer "+sysToken)
+	createTokRec := httptest.NewRecorder()
+	srv.ServeHTTP(createTokRec, createTokReq)
+	if createTokRec.Code != http.StatusCreated {
+		t.Fatalf("create regular token: %d %s", createTokRec.Code, createTokRec.Body.String())
+	}
+	var minted struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(createTokRec.Body.Bytes(), &minted); err != nil || minted.Token == "" {
+		t.Fatalf("decode token: %s (%v)", createTokRec.Body.String(), err)
+	}
+	usrToken := minted.Token
+	costUserReq := httptest.NewRequest(http.MethodGet, "/admin/v1/cost/report?scenario=A&profile=cloud&workload=cloud-tiering-boundary", nil)
+	costUserReq.Header.Set("Authorization", "Bearer "+usrToken)
+	costUserRec := httptest.NewRecorder()
+	srv.ServeHTTP(costUserRec, costUserReq)
+	if costUserRec.Code != http.StatusForbidden || !strings.Contains(costUserRec.Body.String(), `"forbidden"`) {
+		t.Fatalf("non-admin cost/report: %d %s", costUserRec.Code, costUserRec.Body.String())
+	}
+	costAdminReq := httptest.NewRequest(http.MethodGet, "/admin/v1/cost/report?scenario=A&profile=cloud&workload=cloud-tiering-boundary", nil)
+	costAdminReq.Header.Set("Authorization", "Bearer "+sysToken)
+	costAdminRec := httptest.NewRecorder()
+	srv.ServeHTTP(costAdminRec, costAdminReq)
+	if costAdminRec.Code != http.StatusOK || !strings.Contains(costAdminRec.Body.String(), `"report_type"`) {
+		t.Fatalf("admin cost/report: %d %s", costAdminRec.Code, costAdminRec.Body.String())
+	}
+	costBadReq := httptest.NewRequest(http.MethodGet, "/admin/v1/cost/report?scenario=A&profile=edge", nil)
+	costBadReq.Header.Set("Authorization", "Bearer "+sysToken)
+	costBadRec := httptest.NewRecorder()
+	srv.ServeHTTP(costBadRec, costBadReq)
+	if costBadRec.Code != http.StatusBadRequest || !strings.Contains(costBadRec.Body.String(), `"invalid_request"`) {
+		t.Fatalf("incompatible cost/report: %d %s", costBadRec.Code, costBadRec.Body.String())
 	}
 }
 

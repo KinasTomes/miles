@@ -195,7 +195,7 @@ func (o *Objects) GetObject(w http.ResponseWriter, r *Request) error {
 		return nil
 	}
 	_, err := o.Reader.GetObject(ctx, object.GetRequest{
-		Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID,
+		Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID, Debug: r.Caller.Debug,
 		SelectRange: func(info object.Info) (*storage.ByteRange, error) {
 			start, length, selected, ok := parseObjectRange(r.HTTP.Header.Get("Range"), info.Size)
 			if selected && !ok {

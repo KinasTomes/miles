@@ -83,6 +83,7 @@ type GetRequest struct {
 	// byte; an error aborts the read before any header is committed.
 	Ready ReadyFunc
 	Emit  func(context.Context, []byte) error
+	Debug bool
 }
 
 // Info is the committed object state GET and HEAD report.
@@ -572,7 +573,7 @@ func (s *Service) GetObject(ctx context.Context, r GetRequest) (GetResult, error
 	}
 	var result GetResult
 	_, err = s.o.Reader.Read(ctx, readpath.WarmRequest{
-		CredentialID: r.CredentialID, Bucket: r.Bucket, Key: r.Key, Range: r.Range, SelectRange: selectRange,
+		CredentialID: r.CredentialID, Bucket: r.Bucket, Key: r.Key, Range: r.Range, SelectRange: selectRange, Debug: r.Debug,
 		Deadline: deadline, BucketPolicy: policy, Budget: s.o.Budget, MaxOutstanding: s.o.MaxOutstanding,
 		Ready: func(w readpath.WarmResult) error {
 			result = GetResult{Info: info(w.Head), Range: w.Range, CacheStatus: w.CacheStatus}

@@ -62,6 +62,9 @@ type WarmRequest struct {
 	Ready func(WarmResult) error
 	// restore turns Read into RestoreObject: same admission, binding and pins,
 	// then restore requests instead of payload.
+	// Debug enables diagnostic pre-flight cache residency probing (x-dsg-cache).
+	// Only set for authorized debug requests; ordinary GETs skip the scan.
+	Debug   bool
 	restore *restoreCall
 }
 type WarmResult struct {
@@ -237,21 +240,24 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 	if err = ex.preflight(ctx, plan, ticket); err != nil {
 		return result, err
 	}
-	cacheStatus := "miss"
-	if prober, ok := o.Cache.(interface {
-		Has(context.Context, storage.CacheKey) bool
-	}); ok && len(ex.bindings) > 0 {
-		hits := 0
-		for _, b := range ex.bindings {
-			if prober.Has(ctx, b.key) {
-				hits++
+	cacheStatus := ""
+	if q.Debug {
+		cacheStatus = "miss"
+		if prober, ok := o.Cache.(interface {
+			Has(context.Context, storage.CacheKey) bool
+		}); ok && len(ex.bindings) > 0 {
+			hits := 0
+			for _, b := range ex.bindings {
+				if prober.Has(ctx, b.key) {
+					hits++
+				}
 			}
-		}
-		switch {
-		case hits == len(ex.bindings):
-			cacheStatus = "hit"
-		case hits > 0:
-			cacheStatus = "partial"
+			switch {
+			case hits == len(ex.bindings):
+				cacheStatus = "hit"
+			case hits > 0:
+				cacheStatus = "partial"
+			}
 		}
 	}
 	result = WarmResult{Head: head, Range: plan.Range, CacheStatus: cacheStatus}

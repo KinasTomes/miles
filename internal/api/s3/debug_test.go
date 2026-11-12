@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,11 +47,21 @@ func (debugEvents) ObjectCommit(_ context.Context, e object.CommitEvent) (storag
 	}, nil
 }
 
+type spyCache struct {
+	*fake.MemoryCache
+	hasCalls atomic.Int64
+}
+
+func (s *spyCache) Has(ctx context.Context, k storage.CacheKey) bool {
+	s.hasCalls.Add(1)
+	return s.MemoryCache.Has(ctx, k)
+}
+
 type debugTestEnv struct {
 	router      *Router
 	db          *badger.Store
 	packs       *fake.Packs
-	cache       *fake.MemoryCache
+	cache       *spyCache
 	clock       *clock.Virtual
 	creds       map[string]Credential
 	restoreMu   sync.Mutex
@@ -127,7 +138,7 @@ func newDebugTestEnv(t *testing.T) *debugTestEnv {
 	}
 
 	packs := fake.NewPacks(func() time.Time { return c.Now().WallUTC })
-	memCache := fake.NewCache()
+	memCache := &spyCache{MemoryCache: fake.NewCache()}
 	limits := coordination.LeaseLimits{Lifetime: time.Minute, Heartbeat: 15 * time.Second}
 	gate, err := coordination.NewR1Gate(c, f.Lease.Fence.ServiceIncarnation, limits)
 	if err != nil {
@@ -503,11 +514,15 @@ func TestDebugHeadersDeniedAndNeverLeakedToRegularUsers(t *testing.T) {
 			}
 			assertNoDSGHeaders(t, putRec.Header())
 
+			beforeHas := e.cache.hasCalls.Load()
 			getRec := e.send(t, tc.cred, http.MethodGet, "/demo/warm.bin", nil, tc.signedDebug, tc.unsignedDebug)
 			if getRec.Code != http.StatusOK {
 				t.Fatalf("GET: %d %s", getRec.Code, getRec.Body.String())
 			}
 			assertNoDSGHeaders(t, getRec.Header())
+			if afterHas := e.cache.hasCalls.Load(); afterHas != beforeHas {
+				t.Fatalf("non-debug GET invoked Cache.Has %d times", afterHas-beforeHas)
+			}
 
 			coldRec := e.send(t, tc.cred, http.MethodGet, "/demo/cold.bin", nil, tc.signedDebug, tc.unsignedDebug)
 			if coldRec.Code != http.StatusForbidden || errorCode(coldRec) != ErrInvalidObjectState {

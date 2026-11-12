@@ -149,6 +149,7 @@ func NewServer(o Options) (http.Handler, error) {
 		{"GET /admin/v1/cluster/nodes", false, s.listNodes},
 		{"POST /admin/v1/cluster/nodes/{id}/drain", true, s.drainNode},
 		{"GET /admin/v1/stats", false, s.stats},
+		{"GET /admin/v1/cost/report", false, s.costReport},
 		{"GET /admin/v1/buckets/{b}/stats", false, s.bucketStats},
 		{"GET /admin/v1/objects/layout", false, s.layout},
 		{"POST /admin/v1/users", true, s.createUser},

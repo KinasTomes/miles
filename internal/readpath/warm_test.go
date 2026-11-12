@@ -463,16 +463,57 @@ func TestWarmReaderRejectsDecoderCostBeforePayload(t *testing.T) {
 	}
 	drained(t, f.reader.options.Admission)
 }
+
+type spyHasCache struct {
+	storage.Cache
+	mu       sync.Mutex
+	hasCalls int
+}
+
+func (s *spyHasCache) Has(ctx context.Context, k storage.CacheKey) bool {
+	s.mu.Lock()
+	s.hasCalls++
+	s.mu.Unlock()
+	return s.Cache.(interface {
+		Has(context.Context, storage.CacheKey) bool
+	}).Has(ctx, k)
+}
+
+func (s *spyHasCache) count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.hasCalls
+}
+
 func TestWarmReaderPreflightCacheStatus(t *testing.T) {
 	f := newWarmFixture(t, 0)
 	ctx := context.Background()
-	r1, _, err := f.read(ctx, f.request)
-	if err != nil || r1.CacheStatus != "miss" {
-		t.Fatalf("first read CacheStatus = %q, err = %v", r1.CacheStatus, err)
+	spy := &spyHasCache{Cache: f.reader.options.Cache}
+	f.reader.options.Cache = spy
+
+	// Non-debug GETs must NOT invoke Cache.Has probes on the regular read path.
+	rPlain, _, err := f.read(ctx, f.request)
+	if err != nil || rPlain.CacheStatus != "" || spy.count() != 0 {
+		t.Fatalf("non-debug read: CacheStatus=%q hasCalls=%d err=%v", rPlain.CacheStatus, spy.count(), err)
 	}
-	r2, _, err := f.read(ctx, f.request)
+
+	// Reset cache for debug miss -> hit -> partial verification.
+	fresh, err := cache.NewLRU(cache.Limits{CapacityBytes: 64 << 20, MaxEntries: 10, MaxCopyBytes: 4 << 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	spy = &spyHasCache{Cache: fresh}
+	f.reader.options.Cache = spy
+	dbgReq := f.request
+	dbgReq.Debug = true
+
+	r1, _, err := f.read(ctx, dbgReq)
+	if err != nil || r1.CacheStatus != "miss" || spy.count() == 0 {
+		t.Fatalf("first debug read CacheStatus = %q, hasCalls = %d, err = %v", r1.CacheStatus, spy.count(), err)
+	}
+	r2, _, err := f.read(ctx, dbgReq)
 	if err != nil || r2.CacheStatus != "hit" {
-		t.Fatalf("second read CacheStatus = %q, err = %v", r2.CacheStatus, err)
+		t.Fatalf("second debug read CacheStatus = %q, err = %v", r2.CacheStatus, err)
 	}
 	// Remove one of the two distinct chunks via a fresh LRU retaining only one entry.
 	partialCache, err := cache.NewLRU(cache.Limits{CapacityBytes: 64 << 20, MaxEntries: 10, MaxCopyBytes: 4 << 20})
@@ -481,7 +522,7 @@ func TestWarmReaderPreflightCacheStatus(t *testing.T) {
 	}
 	e0 := f.entries[0]
 	k0 := storage.CacheKey{Pack: f.ref, Range: storage.ByteRange{Offset: int64(e0.Offset), Length: int64(e0.StoredLen)}}
-	raw0, hit, err := f.reader.options.Cache.Get(ctx, k0)
+	raw0, hit, err := fresh.Get(ctx, k0)
 	if err != nil || !hit {
 		t.Fatal("missing first entry in warm cache", hit, err)
 	}
@@ -489,9 +530,9 @@ func TestWarmReaderPreflightCacheStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.reader.options.Cache = partialCache
-	r3, _, err := f.read(ctx, f.request)
+	r3, _, err := f.read(ctx, dbgReq)
 	if err != nil || r3.CacheStatus != "partial" {
-		t.Fatalf("partial read CacheStatus = %q, err = %v", r3.CacheStatus, err)
+		t.Fatalf("partial debug read CacheStatus = %q, err = %v", r3.CacheStatus, err)
 	}
 	drained(t, f.reader.options.Admission)
 }

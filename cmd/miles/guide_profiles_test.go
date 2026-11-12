@@ -510,12 +510,22 @@ func TestGuideEndToEndBothProfilesAndCredentialSeparation(t *testing.T) {
 			if _, err := adminCli.Get(ctx, "/admin/v1/objects/layout?bucket="+bucket+"&key=obj.bin"); err != nil {
 				t.Fatal(err)
 			}
-			// Unsupported route returns ErrUnsupported.
-			if _, err := adminCli.Get(ctx, "/admin/v1/cost/report"); !errors.Is(err, adminclient.ErrUnsupported) {
-				t.Fatalf("cost/report error: %v", err)
+			// Cost report is implemented on /admin/v1/cost/report for both profiles.
+			costQuery := "/admin/v1/cost/report?scenario=A&profile=cloud&workload=cloud-tiering-boundary"
+			if profile == "edge" {
+				costQuery = "/admin/v1/cost/report?scenario=B&profile=edge&workload=edge-revival"
 			}
-
-			// DeleteObjects & DeleteBucket.
+			costBody, err := adminCli.Get(ctx, costQuery)
+			if err != nil {
+				t.Fatalf("cost/report (%s): %v", profile, err)
+			}
+			if !strings.Contains(string(costBody), `"report_type"`) || !strings.Contains(string(costBody), `"results"`) {
+				t.Fatalf("unexpected cost/report body: %s", costBody)
+			}
+			// Unregistered route returns ErrUnsupported.
+			if _, err := adminCli.Get(ctx, "/admin/v1/nonexistent"); !errors.Is(err, adminclient.ErrUnsupported) {
+				t.Fatalf("unregistered route error: %v", err)
+			}
 			if _, err := devClient.DeleteObjects(ctx, &sdk.DeleteObjectsInput{
 				Bucket: aws.String(bucket),
 				Delete: &types.Delete{Objects: []types.ObjectIdentifier{{Key: aws.String("obj.bin")}, {Key: aws.String("mp.bin")}}},
