@@ -141,9 +141,9 @@ Lần tạo resource tính phí đầu tiên ghi T0/deadline trong `paid-window.
 Runner giữ90phút cuối cho cleanup; trial cần thêm25phút trước reserve. Theo dõi
 `kit status` và nhật ký trong lúc chạy. Không để lệnh lỗi rồi sang bước kế.
 
-`material` yêu cầu chờ15phút từ lúc quan sát S3 versioning. Trong khoảng này
-`install` cài RPM/Chrony/TLS và dataset trên AWS. Nếu chưa đủ15phút, chờ đúng mốc
-`versioning.json` rồi chạy material; nó không tạo secret mới khi retry cùng token.
+`install` cài RPM/Chrony/TLS và dataset trên AWS trong khoảng chờ S3 versioning.
+`material` tự đợi đủ15phút theo mốc `versioning.json` trước lần ghi đầu; không
+tạo secret mới khi retry cùng token.
 
 Bootstrap chỉ một lần trên installation rỗng. Operator AWS credentials đi stdin
 vào memfd trên client; runtime Edge sau đó dùng Roles Anywhere. Source/backend
@@ -298,6 +298,13 @@ secret mới đã duyệt; `UNVERIFIED` không phải PASS. `logout` chặn nế
 Nếu phiên đang trả ExpiredToken thì login mới; không xin thêm mã chỉ vì một lần
 export credential sắp hết hạn. Giữ90phút reserve, tránh thử thêm bài khi deadline
 không còn đủ test+cleanup.
+
+Nếu Terraform destroy bị gián đoạn sau khi purge đã hoàn tất, đăng nhập lại rồi
+chạy `kit cleanup-plan`, xem plan delete-only còn lại, sau đó chạy lại
+`kit cleanup --confirm-run "$RUN_ID"`. Runner dùng receipt purge đã bind với
+manifest để không SSH vào host đã xóa. Plan mới chỉ được xóa đúng identity còn
+sống trong graph đã freeze; audit cuối vẫn kiểm tra toàn bộ IDs ban đầu.
+
 
 ## 9. Bàn giao để review
 

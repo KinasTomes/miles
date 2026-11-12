@@ -85,11 +85,54 @@ def admin(r, path, body):
         return json.load(response)
 
 
+def admission(r):
+    """Read the durable schedule; never open a closing gate or change its cadence."""
+    expected = r.read("bootstrap-gate.json")["Item"]["history_id"]["S"]
+
+    def safe():
+        r.live_window(needed=25)
+
+        def item(key):
+            return r.aws(
+                "dynamodb",
+                "get-item",
+                "--table-name",
+                "miles-dev-SystemConfig",
+                "--key",
+                json.dumps({"config_id": {"S": key}}),
+                "--consistent-read",
+            )["Item"]
+
+        gate = item("coordination/r1/current")
+        require(
+            gate["history_id"]["S"] == expected,
+            "Installation history changed; stop before dispatch",
+        )
+        state = item("recovery/state/" + expected)
+        due = dt.datetime.fromisoformat(
+            state["next_cut_at"]["S"].replace("Z", "+00:00")
+        )
+        if (
+            gate["state"]["S"] == "Open"
+            and gate["epoch"]["N"] == state["next_cut_epoch"]["N"]
+            and due - now() > dt.timedelta(minutes=10)
+        ):
+            r.write(
+                "admission-proof.json",
+                {"at": now().isoformat(), "gate": gate, "recovery_state": state},
+            )
+            return True
+        return False
+
+    r.wait("open admission away from scheduled cut", safe, 1500)
+
+
 def trial(r, concurrency):
     r.identity()
     r.live_window(needed=25)
     require(concurrency in (1, 4), "Concurrency must be one or four")
     require(r.file("active-outputs.json").exists(), "Apply active stage first")
+    admission(r)
     name = "get-c" + str(concurrency) + "-" + secrets.token_hex(4)
     prefix = "trials/" + name
     r.file(prefix).mkdir(parents=True, mode=0o700)

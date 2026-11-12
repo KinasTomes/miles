@@ -2,7 +2,7 @@
 
 Bắt đầu từ [plan tiếp tục nghiệm thu](../planning/edge-aws-acceptance-continuation.md) để lấy scope, thứ tự apply và tiêu chí từng bài. Dùng lại các bước đã chạy được bên dưới, giữ thứ tự và chỉ thay đầu vào riêng của lượt mới. Toàn bộ Cloud, Edge và client chạy trên AWS. Máy Oracle chỉ dùng để điều phối qua CLI.
 
-Để tự vận hành lượt GET/shutdown tiếp theo, dùng [hướng dẫn có lệnh theo từng máy](focused-aws-operator-guide.md). Tài liệu ghi rõ nơi `cd`, bộ chạy chuẩn bị cấu hình mới, logging, kịch bản tải, thu evidence, cleanup và lỗi thường gặp.
+Để tự vận hành lượt GET/shutdown tiếp theo, dùng [hướng dẫn bộ chạy AWS](focused-aws-operator-guide.md). Tài liệu ghi rõ nơi `cd`, bộ chạy chuẩn bị cấu hình mới, logging, kịch bản tải, thu evidence, cleanup và lỗi thường gặp.
 
 ## Các bước đã chạy được
 

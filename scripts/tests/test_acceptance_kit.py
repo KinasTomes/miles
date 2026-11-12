@@ -401,6 +401,111 @@ class WorkflowTests(unittest.TestCase):
             cleanup.plan(self.r)
         self.assertFalse(self.r.file("destroy-reviewed.json").exists())
 
+    def test_trial_admission_waits_for_matching_durable_cut_schedule(self):
+        import datetime as dt
+
+        workload = importlib.import_module("deploy.acceptance.workload")
+        gate = {
+            "history_id": {"S": "installation"},
+            "epoch": {"N": "3"},
+            "state": {"S": "Open"},
+        }
+        self.r.write("bootstrap-gate.json", {"Item": gate})
+        due = (common.now() + dt.timedelta(minutes=20)).isoformat()
+        recovery = {"next_cut_at": {"S": due}, "next_cut_epoch": {"N": "2"}}
+        calls = []
+
+        def get(*args, **kwargs):
+            calls.append(args[1])
+            key = json.loads(args[args.index("--key") + 1])["config_id"]["S"]
+            return {"Item": gate if key == "coordination/r1/current" else recovery}
+
+        def wait(label, check, timeout):
+            self.assertFalse(check())
+            recovery["next_cut_epoch"]["N"] = "3"
+            self.assertTrue(check())
+
+        with (
+            mock.patch.object(self.r, "aws", side_effect=get),
+            mock.patch.object(self.r, "live_window"),
+            mock.patch.object(self.r, "wait", side_effect=wait),
+        ):
+            workload.admission(self.r)
+        self.assertEqual(set(calls), {"get-item"})
+        self.assertTrue(self.r.file("admission-proof.json").exists())
+
+    def test_partial_destroy_retries_only_remaining_frozen_identities(self):
+        cleanup = importlib.import_module("deploy.acceptance.cleanup")
+
+        def state(*names):
+            return {
+                "values": {
+                    "root_module": {
+                        "resources": [
+                            {
+                                "mode": "managed",
+                                "address": "aws_s3_bucket." + name,
+                                "type": "aws_s3_bucket",
+                                "values": {"id": name},
+                            }
+                            for name in names
+                        ]
+                    }
+                }
+            }
+
+        frozen = state("first", "remaining")
+        plan = {
+            "prior_state": state("remaining"),
+            "resource_changes": [
+                {
+                    "mode": "managed",
+                    "address": "aws_s3_bucket.remaining",
+                    "type": "aws_s3_bucket",
+                    "change": {"actions": ["delete"], "before": {"id": "remaining"}},
+                }
+            ],
+        }
+        cleanup.validate_destroy(plan, frozen)
+        cleanup.validate_destroy({"prior_state": state()}, frozen)
+        plan["prior_state"]["values"]["root_module"]["resources"][0]["values"]["id"] = (
+            "replacement"
+        )
+        with self.assertRaises(ValueError):
+            cleanup.validate_destroy(plan, frozen)
+        plan["prior_state"] = state("remaining")
+        plan["resource_changes"][0]["change"]["before"]["id"] = "replacement"
+        with self.assertRaises(ValueError):
+            cleanup.validate_destroy(plan, frozen)
+
+    def test_cleanup_resumes_after_purge_without_reaching_deleted_hosts(self):
+        cleanup = importlib.import_module("deploy.acceptance.cleanup")
+        common.private(self.r.file("destroy.tfplan"), "reviewed")
+        self.r.write("frozen/manifest.json", {})
+        review = {
+            "plan_sha256": common.digest(self.r.file("destroy.tfplan")),
+            "manifest_sha256": common.digest(self.r.file("frozen/manifest.json")),
+        }
+        self.r.write("destroy-reviewed.json", review)
+        self.r.write("frozen/inventory.json", {"acm_certificates": ["owned"]})
+        self.r.write("iam/cleanup-created.json", {})
+        self.r.write("data-purged.json", {"manifest_sha256": review["manifest_sha256"]})
+        with (
+            mock.patch.object(self.r, "identity"),
+            mock.patch.object(self.r, "ssh") as ssh,
+            mock.patch.object(self.r, "tf") as tf,
+            mock.patch.object(
+                self.r, "aws", return_value={"CertificateSummaryList": []}
+            ) as aws,
+        ):
+            cleanup.execute(self.r)
+            ssh.assert_not_called()
+            self.assertEqual(tf.call_args.args[0], "apply")
+            self.assertEqual(aws.call_args.args, ("acm", "list-certificates"))
+            self.assertTrue(self.r.file("destroy-complete.json").exists())
+            cleanup.execute(self.r)
+            self.assertEqual(tf.call_count, 1)
+
     def test_cleanup_grant_rejects_changed_manifest_before_iam_write(self):
         cleanup = importlib.import_module("deploy.acceptance.cleanup")
         self.r.write("iam/cleanup.json", {})

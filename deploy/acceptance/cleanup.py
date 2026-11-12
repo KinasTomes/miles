@@ -373,6 +373,33 @@ def unprotect(r):
     )
 
 
+def validate_destroy(plan, frozen):
+    """A retry may delete only surviving identities from the original frozen graph."""
+    original = {x["address"]: x for x in extract_resources(frozen)}
+    prior = plan.get("prior_state", {"values": {"root_module": {}}})
+    remaining = {x["address"]: x for x in extract_resources(prior, allow_empty=True)}
+    require(
+        all(original.get(address) == entry for address, entry in remaining.items()),
+        "Destroy state contains a new or changed resource identity",
+    )
+    changes = [
+        x
+        for x in plan.get("resource_changes", [])
+        if x.get("mode", "managed") == "managed" and x["change"]["actions"] != ["no-op"]
+    ]
+    require(
+        {x["address"] for x in changes} == set(remaining)
+        and len(changes) == len(remaining)
+        and all(
+            x["change"]["actions"] == ["delete"]
+            and x.get("type") == remaining[x["address"]]["type"]
+            and x["change"].get("before", {}).get("id") == remaining[x["address"]]["id"]
+            for x in changes
+        ),
+        "Destroy plan differs from surviving frozen managed graph",
+    )
+
+
 def plan(r):
     r.identity()
     require(
@@ -431,17 +458,7 @@ def plan(r):
     )
     value = json.loads(r.tf("show", "-json", r.file("destroy.tfplan"), stack=stack))
     r.write("destroy-plan.json", value)
-    changes = [
-        x
-        for x in value.get("resource_changes", [])
-        if x.get("mode", "managed") == "managed" and x["change"]["actions"] != ["no-op"]
-    ]
-    expected = {x["address"] for x in extract_resources(r.read("frozen/state.json"))}
-    require(
-        {x["address"] for x in changes} == expected
-        and all(x["change"]["actions"] == ["delete"] for x in changes),
-        "Destroy plan differs from frozen managed graph",
-    )
+    validate_destroy(value, r.read("frozen/state.json"))
     r.write(
         "destroy-reviewed.json",
         {
@@ -454,6 +471,9 @@ def plan(r):
 
 def execute(r):
     r.identity()
+    if r.file("destroy-complete.json").exists():
+        r.event("cleanup", "already destroyed; finish IAM restore and native audit")
+        return
     review = r.read("destroy-reviewed.json")
     i = r.read("frozen/inventory.json")
     require(
@@ -467,118 +487,132 @@ def execute(r):
     )
     if not r.file("cleanup-intent.json").exists():
         r.write("cleanup-intent.json", {"at": now().isoformat()}, new=True)
-    # Freeze records every root/instance, including superseded nodes. Scaling cannot replace drained nodes.
-    for name in i.get("asg_names", []):
-        r.aws(
-            "autoscaling",
-            "update-auto-scaling-group",
-            "--auto-scaling-group-name",
-            name,
-            "--min-size",
-            "0",
-            "--desired-capacity",
-            "0",
-        )
-    r.ssh("edge", "sudo", "-n", "systemctl", "stop", "--no-block", "miles.service")
-
-    def quiescent():
-        for name in i.get("asg_names", []):
-            groups = r.aws(
-                "autoscaling",
-                "describe-auto-scaling-groups",
-                "--auto-scaling-group-names",
-                name,
-            )["AutoScalingGroups"]
-            if groups and groups[0]["Instances"]:
-                return False
-        return (
-            r.ssh(
-                "edge",
-                "sudo",
-                "-n",
-                "systemctl",
-                "show",
-                "miles.service",
-                "-p",
-                "MainPID",
-                "--value",
-            ).strip()
-            == b"0"
-        )
-
-    r.wait("natural Cloud drain and Edge stopped before purge", quiescent, 2700)
-    # A failed/interrupted SSH trial must not continue writing during purge.
-    check = r.ssh(
-        "client",
-        "bash",
-        "-c",
-        "if pgrep -x warmbench >/dev/null; then echo running; else echo stopped; fi",
-    ).strip()
-    require(
-        check == b"stopped",
-        "Client still writing; stop/drain workload and retain outcome first",
-    )
-    from deploy.acceptance.workload import collect
-
-    collect(r)
-    directory = snapshot(r)
-    proof = r.read("latest-snapshot.json")["payload_proof"]
-    require(
-        proof["missing_payloads"] == 0 and proof["sha_mismatch"] == 0,
-        "Pending source evidence incomplete: retain data and reconcile before purge",
-    )
-    for bucket in i.get("s3_buckets", []):
-        versions = r.read(directory + "/" + bucket + "-versions.json")
-        uploads = r.read(directory + "/" + bucket + "-uploads.json")
-        for upload in uploads.get("Uploads", []):
-            r.aws(
-                "s3api",
-                "abort-multipart-upload",
-                "--bucket",
-                bucket,
-                "--key",
-                upload["Key"],
-                "--upload-id",
-                upload["UploadId"],
-                "--expected-bucket-owner",
-                r.c["account_id"],
-            )
-        objects = [
-            {"Key": x["Key"], "VersionId": x["VersionId"]}
-            for kind in ["Versions", "DeleteMarkers"]
-            for x in versions.get(kind, [])
-        ]
-        require(len(objects) < 100000, "Synthetic version count exceeded review; stop")
-        for n in range(0, len(objects), 1000):
-            path = r.write(
-                "purge/request-" + str(n) + ".json",
-                {"Objects": objects[n : n + 1000], "Quiet": True},
-            )
-            result = r.aws(
-                "s3api",
-                "delete-objects",
-                "--bucket",
-                bucket,
-                "--delete",
-                "file://" + str(path),
-                "--expected-bucket-owner",
-                r.c["account_id"],
-            )
-            r.write("purge/result-" + str(n) + ".json", result)
-            require(
-                not result.get("Errors"), "Some version deletions failed; retain errors"
-            )
-        remaining = r.aws(
-            "s3api",
-            "list-object-versions",
-            "--bucket",
-            bucket,
-            "--expected-bucket-owner",
-            r.c["account_id"],
-        )
+    if r.file("data-purged.json").exists():
         require(
-            not remaining.get("Versions") and not remaining.get("DeleteMarkers"),
-            "Bucket not empty after purge",
+            r.read("data-purged.json")["manifest_sha256"] == review["manifest_sha256"],
+            "Purged data proof differs from frozen ownership",
+        )
+    else:
+        # Freeze records every root/instance, including superseded nodes. Scaling cannot replace drained nodes.
+        for name in i.get("asg_names", []):
+            r.aws(
+                "autoscaling",
+                "update-auto-scaling-group",
+                "--auto-scaling-group-name",
+                name,
+                "--min-size",
+                "0",
+                "--desired-capacity",
+                "0",
+            )
+        r.ssh("edge", "sudo", "-n", "systemctl", "stop", "--no-block", "miles.service")
+
+        def quiescent():
+            for name in i.get("asg_names", []):
+                groups = r.aws(
+                    "autoscaling",
+                    "describe-auto-scaling-groups",
+                    "--auto-scaling-group-names",
+                    name,
+                )["AutoScalingGroups"]
+                if groups and groups[0]["Instances"]:
+                    return False
+            return (
+                r.ssh(
+                    "edge",
+                    "sudo",
+                    "-n",
+                    "systemctl",
+                    "show",
+                    "miles.service",
+                    "-p",
+                    "MainPID",
+                    "--value",
+                ).strip()
+                == b"0"
+            )
+
+        r.wait("natural Cloud drain and Edge stopped before purge", quiescent, 2700)
+        # A failed/interrupted SSH trial must not continue writing during purge.
+        check = r.ssh(
+            "client",
+            "bash",
+            "-c",
+            "if pgrep -x warmbench >/dev/null; then echo running; else echo stopped; fi",
+        ).strip()
+        require(
+            check == b"stopped",
+            "Client still writing; stop/drain workload and retain outcome first",
+        )
+        r.write("runtime-quiescent.json", {"at": now().isoformat()})
+        from deploy.acceptance.workload import collect
+
+        collect(r)
+        directory = snapshot(r)
+        proof = r.read("latest-snapshot.json")["payload_proof"]
+        require(
+            proof["missing_payloads"] == 0 and proof["sha_mismatch"] == 0,
+            "Pending source evidence incomplete: retain data and reconcile before purge",
+        )
+        for bucket in i.get("s3_buckets", []):
+            versions = r.read(directory + "/" + bucket + "-versions.json")
+            uploads = r.read(directory + "/" + bucket + "-uploads.json")
+            for upload in uploads.get("Uploads", []):
+                r.aws(
+                    "s3api",
+                    "abort-multipart-upload",
+                    "--bucket",
+                    bucket,
+                    "--key",
+                    upload["Key"],
+                    "--upload-id",
+                    upload["UploadId"],
+                    "--expected-bucket-owner",
+                    r.c["account_id"],
+                )
+            objects = [
+                {"Key": x["Key"], "VersionId": x["VersionId"]}
+                for kind in ["Versions", "DeleteMarkers"]
+                for x in versions.get(kind, [])
+            ]
+            require(
+                len(objects) < 100000, "Synthetic version count exceeded review; stop"
+            )
+            for n in range(0, len(objects), 1000):
+                path = r.write(
+                    "purge/request-" + str(n) + ".json",
+                    {"Objects": objects[n : n + 1000], "Quiet": True},
+                )
+                result = r.aws(
+                    "s3api",
+                    "delete-objects",
+                    "--bucket",
+                    bucket,
+                    "--delete",
+                    "file://" + str(path),
+                    "--expected-bucket-owner",
+                    r.c["account_id"],
+                )
+                r.write("purge/result-" + str(n) + ".json", result)
+                require(
+                    not result.get("Errors"),
+                    "Some version deletions failed; retain errors",
+                )
+            remaining = r.aws(
+                "s3api",
+                "list-object-versions",
+                "--bucket",
+                bucket,
+                "--expected-bucket-owner",
+                r.c["account_id"],
+            )
+            require(
+                not remaining.get("Versions") and not remaining.get("DeleteMarkers"),
+                "Bucket not empty after purge",
+            )
+        r.write(
+            "data-purged.json",
+            {"at": now().isoformat(), "manifest_sha256": review["manifest_sha256"]},
         )
     r.tf(
         "apply",
@@ -588,8 +622,13 @@ def execute(r):
         stack=r.file("cleanup-source/environments/dev"),
         log="destroy-apply.log",
     )
+    existing = {
+        x["CertificateArn"]
+        for x in r.aws("acm", "list-certificates", iam=True)["CertificateSummaryList"]
+    }
     for arn in i.get("acm_certificates", []):
-        r.aws("acm", "delete-certificate", "--certificate-arn", arn)
+        if arn in existing:
+            r.aws("acm", "delete-certificate", "--certificate-arn", arn)
     r.write("destroy-complete.json", {"at": now().isoformat()})
     r.event(
         "cleanup",

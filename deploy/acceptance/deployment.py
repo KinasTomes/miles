@@ -336,9 +336,18 @@ def provision_material(r):
     r.live_window()
     inventory = r.outputs("foundation")["runtime_inventory"]
     after = dt.datetime.fromisoformat(r.read("versioning.json")["write_after"])
-    require(
-        now() >= after, "Wait for recorded S3 versioning propagation before first write"
-    )
+    if now() < after:
+        print(
+            "Waiting for first-write versioning propagation until",
+            after.isoformat(),
+            flush=True,
+        )
+
+        def propagated():
+            r.live_window(needed=20)
+            return now() >= after
+
+        r.wait("S3 versioning propagation", propagated, 910)
     if not r.file("secret-provision.json").exists():
         metadata = r.aws(
             "secretsmanager",

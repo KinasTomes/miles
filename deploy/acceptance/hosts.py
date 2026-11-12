@@ -1,5 +1,6 @@
 """Pin SSH through authenticated console output, stage and bootstrap AWS hosts."""
 
+import datetime as dt
 import base64
 import json
 import re
@@ -245,6 +246,14 @@ def bootstrap(r):
             "process",
         ],
         env=r.environment(),
+    )
+    exported = json.loads(credentials)
+    require(
+        exported.get("Version") == 1
+        and exported["AccessKeyId"].startswith("ASIA")
+        and dt.datetime.fromisoformat(exported["Expiration"].replace("Z", "+00:00"))
+        > now() + dt.timedelta(minutes=3),
+        "Bootstrap needs three minutes of temporary credentials; refresh the role before dispatch",
     )
     r.write("bootstrap-intent.json", {"at": now().isoformat()}, new=True)
     r.ssh(
