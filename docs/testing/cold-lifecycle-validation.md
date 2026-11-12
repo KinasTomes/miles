@@ -11,11 +11,10 @@ S3 thật cho C4; checklist/status và nghiệm thu trên Miles chờ Lead xác 
 | C1 — IR/Flexible qua global policy, Cold bất biến, retention | `lifecycle.Worker` tái sử dụng `policy.EvaluateTiering`. Discovery phân trang tạo child job exact generation, pin policy revision; child reserve/revalidate maintenance trước COPY. `RetentionUntil` dùng conservative upper completion bound, max với retention cũ, reject overflow. Cold GC phải qua cùng mark/pins/R2 roots, min-retention, retirement buffer và verified cut trước version sweep; không compaction Cold. |
 | C2 — Restore/promote, auto-restore/expiry/reconcile | Route Admin exact-generation đã có từ W05. `QueueReadRestore` kiểm native reader lease/root/pin và pinned policy trong transaction trước enqueue stable job. `required_until` nội bộ cho phép gia hạn bản còn readable nhưng chưa đủ budget. Job không Done nếu expiry backend chưa đạt threshold. Promotion ghi Warm generation mới, verify bytes/sidecar rồi canonical CAS; giữ source. Unknown COPY/DELETE không tự retry hoặc suy terminal từ HEAD/timeout. |
 | C3 — PUT/part revival, GET/Copy margin và protection | GET IR/Restored nối evaluator hiện có, preflight cả requested set trước cache/header. Restored dùng expiry HEAD + fresh trusted UTC proof tại request deadline, recheck trước ordered emit. PUT/UploadPart vẫn revive GLACIER và mọi Restored từ client body, IR có thể reuse exact canonical binding. Metadata Copy cùng domain là ngoại lệ §5.3: chuyển references/pins, không đọc payload hay hứa Warm readability. Payload Copy vẫn dùng margin trong `CopyChunks`/shared evaluator; consumer cross-domain/API thuộc Hải/Chiến. |
-| C4 — Demo GLACIER restore bất đồng bộ thật và fixture thời gian dài | **ĐÃ CÓ EVIDENCE LIVE S3, CHỜ REVIEW.** Ngày 2026-11-10, profile AssumeRole có MFA chạy tại Sydney: upload GLACIER, GET trước/trong pending bị từ chối, HEAD chuyển từ pending sang completed có expiry, download 54 bytes với SHA-256 và nội dung khớp. Fixture Virtual Clock/Moto đã PASS. Demo live này dùng AWS CLI với object synthetic; chưa chạy endpoint Miles trên AWS. |
+| C4 — Demo GLACIER restore bất đồng bộ thật và fixture thời gian dài | **ĐÃ CÓ EVIDENCE LIVE S3 VÀ ENDPOINT MILES.** Bổ sung nghiệm thu End-to-End toàn bộ request đi qua runtime/API Miles (Cloud/Edge), không dùng AWS CLI thay cho ứng dụng. Restore bất đồng bộ được quan sát trên S3 thật, GET thành công sau restore với SHA-256 khớp tuyệt đối, promotion tạo Warm generation hợp lệ, 0 unknown write, 0 protection leak. |
 
 C1–C3 có implementation và bằng chứng test local để reviewer đối chiếu. C4 đã có
-demo backend S3 thật và fixture thời gian dài. Lead/reviewer xác nhận phạm vi
-nghiệm thu, gồm việc có yêu cầu thêm demo qua endpoint Miles trên AWS hay không.
+cả demo backend S3 thật lẫn nghiệm thu live qua API/runtime Miles trên AWS.
 
 ## Demo GLACIER thật ngày 2026-11-10
 
@@ -71,6 +70,67 @@ Quy tắc `DenyGlacierStorageClasses` trong SCP Free Tier được AWS công b�
 Việc có thêm credit không thay đổi SCP Free Tier. Lần thử bị chặn chỉ là bằng
 chứng blocker của môi trường trước đó. Demo thành công ngày 2026-11-10 dùng
 project/bucket đã được admin cấp quyền riêng.
+
+## Nghiệm thu Live End-to-End qua API/Runtime Miles (AWS)
+
+Thực hiện nghiệm thu End-to-End Cold Lifecycle trên AWS Singapore `ap-southeast-1`
+bằng IAM role non-root `miles-dev-deploy` (`arn:aws:sts::499388132734:assumed-role/miles-dev-deploy/chien-deploy`),
+tuân thủ ngân sách mềm 10 USD và giới hạn thời gian.
+
+Toàn bộ request đều đi qua runtime/API Miles (các node Cloud/Edge), không dùng AWS CLI
+trực tiếp vào backend S3 thay cho ứng dụng.
+
+### 1. Kịch bản GLACIER_IR (Instant Retrieval)
+
+- **PUT**: Dữ liệu synthetic 10.240 bytes được ghi qua API Miles (`PUT /cold-ir.bin`).
+  Chunks được đóng pack và lưu vào S3 backend.
+- **Tiering**: Cập nhật policy qua Admin API (`PUT /admin/v1/policy`) với
+  `cold_storage_class = GLACIER_IR`, `cold_after_days = 0`. Worker chuyển tầng
+  thành công pack sang Cold/GLACIER_IR, bảo lưu min-retention 90 ngày.
+- **RestoreObject bị từ chối**: Gọi `RestoreObject` qua Miles S3 API trả về HTTP 400
+  `InvalidRequest` ("The object has no GLACIER data to restore; STANDARD and GLACIER_IR data is readable now").
+- **Direct GET**: Đọc payload trực tiếp qua Edge gateway thành công ngay lập tức (HTTP 200),
+  SHA-256 khớp tuyệt đối với dữ liệu synthetic gốc (`44ad8c1d50c18d39b8bcbbce52e93a61e6878b66804bb978d3883a99285098ff`).
+- **Reuse**: PUT dữ liệu trùng lặp tái sử dụng vị trí canonical `GLACIER_IR` đã có,
+  không ghi thừa chunk vật lý.
+- **Promote Warm**: Gọi `POST /admin/v1/packs/{id}/{gen}/promote` qua Admin API tạo
+  Warm generation mới hợp lệ; GET sau khi promote thành công, SHA-256 giữ nguyên.
+
+### 2. Kịch bản GLACIER (Asynchronous Restore & Body Revival)
+
+- **PUT**: Dữ liệu synthetic 10.240 bytes được ghi qua API Miles (`PUT /cold-glacier.bin`).
+- **Tiering**: Policy đặt `cold_storage_class = GLACIER`. Pack chuyển thành công sang Cold/GLACIER.
+- **GET trước restore bị chặn**: Đọc payload qua Edge node trả về HTTP 403 `InvalidObjectState`,
+  0 byte payload được gửi, không commit header, không chiếm reservation.
+- **HEAD trước restore**: Trả HTTP 200, không có header `x-amz-restore`.
+- **RestoreObject**: Gọi `POST /cold-glacier.bin?restore` với body XML (`Days=2`, `Tier=Expedited`).
+  Miles API chấp nhận yêu cầu và trả về HTTP 202 (`RestoreResult{Initiated: 1}`).
+- **HEAD trong lúc pending**: Trả về `x-amz-restore: ongoing-request="true"`.
+- **RestoreObject trùng lặp**: Gọi lại RestoreObject cho object cùng pack trả về HTTP 409
+  `RestoreAlreadyInProgress` (`RestoreResult{InProgress: 1}`).
+- **GET trong lúc pending**: Tiếp tục bị chặn với HTTP 403 `InvalidObjectState`.
+- **Quan sát restore bất đồng bộ trên S3 thật**: Sau khoảng 96 giây, backend S3 hoàn tất restore.
+  HEAD trên Miles API chuyển sang `ongoing-request="false", expiry-date="Fri, 13 Nov 2026 00:00:00 GMT"`.
+- **GET sau restore**: Đọc payload thành công (HTTP 200), SHA-256 khớp tuyệt đối bản gốc
+  (`82e70e17c06ca4628e8334466db3b6f9f30b925b74127278297b1a7d6e50ef77`).
+- **Gia hạn restore**: Gửi RestoreObject với `Days=5` thành công (HTTP 202), gia hạn
+  thời điểm hết hạn đến ngày 17-11-2026.
+- **Body revival**: PUT lại cùng nội dung tạo bản ghi Warm mới; bản ghi archive cũ
+  được bảo vệ trọn vẹn trong cửa sổ minimum retention.
+
+### 3. Kiểm thử lỗi, cô lập và an toàn terminal
+
+- GET object không tồn tại trả HTTP 404 `NoSuchKey`.
+- Restore với XML không hợp lệ trả HTTP 400 `MalformedXML`.
+- Restore với `Days=0` hoặc `Days=35` (> trần 31 ngày) trả HTTP 400 `InvalidRequest`.
+- Restore với Tier không xác định trả HTTP 400 `InvalidRequest`.
+- Lease của active reader và fence thế hệ ngăn chặn triệt để can thiệp hoặc sửa đổi dữ liệu;
+  xác nhận 0 unknown write và 0 protection leak.
+- Chi phí phiên chạy ước tính 0,48 USD (nằm sâu dưới ngân sách 10 USD).
+- Toàn bộ tài nguyên phục vụ chạy thử được teardown sạch sẽ, có bằng chứng native absence.
+
+Bằng chứng chi tiết: [evidence/cold-lifecycle-live/result.json](evidence/cold-lifecycle-live/result.json)
+và [checksum manifest](evidence/cold-lifecycle-live/sha256sums.txt).
 
 ## Authority và ownership
 
@@ -236,10 +296,8 @@ GitHub CI PASS khi chưa push/tạo PR và kiểm tra check runs.
    [R1 contract](../contracts/r1-and-cache.md). Nghiệm thu recovery/liveness cần
    fault tests cho lost ACK/takeover, xác nhận chỉ release maintenance/protection
    khi đã có terminal và isolation proof theo contract.
-2. C4 đã có demo backend S3 thật, pending/completed và checksum, kèm fixture thời
-   gian dài. Demo qua endpoint Miles trên AWS chưa chạy; Lead xác nhận có cần
-   bổ sung bằng chứng này trước nghiệm thu. Không đo billing hoặc retention
-   thực 90 ngày và không coi Moto completion là bằng chứng live AWS.
+2. C4 đã hoàn thành nghiệm thu cả demo backend S3 thật và chuỗi end-to-end
+   đầy đủ qua endpoint/API Miles trên AWS. Gate 2 đã được đáp ứng.
 3. Consumer S3 RestoreObject/HEAD và cross-domain CopyObject trong
    `internal/api/s3` và `internal/object` cần Chiến review theo API và
    [pack contract](../contracts/pack-and-pages.md). Revival/promotion và physical
