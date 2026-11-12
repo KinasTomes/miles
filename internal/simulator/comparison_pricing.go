@@ -22,6 +22,63 @@ type policyReports struct {
 	glacierFlexBreakdown PolicyCostBreakdown
 }
 
+// isAllowedUsageForPolicy implements the authoritative rate ID matrix across all four simulated policies:
+// Direct S3, Warm Standard Only, Warm Glacier Instant Retrieval, and Warm Glacier Flexible.
+// Each policy strictly admits only its own valid storage, request, retrieval, restore, and transfer operations.
+func isAllowedUsageForPolicy(polName PolicyName, u cost.Usage) bool {
+	// Storage usage (s3.storage.*) is calculated during timeline replay and added via replay totals;
+	// never admit raw storage usage from event trace.
+	if strings.HasPrefix(u.RateID, "s3.storage.") {
+		return false
+	}
+
+	// 1. Direct S3 Baseline: Pure S3 Standard direct topology (no gateway infra, no Glacier/IR/IA).
+	if polName == PolicyDirectS3 {
+		return u.RateID == "s3.put_standard" || u.RateID == "s3.get_standard" ||
+			strings.HasPrefix(u.RateID, "transfer.")
+	}
+
+	// For candidate policies (all using Dedup Storage Gateway), shared non-S3 operational usage
+	// (network transfer and gateway infrastructure) is admitted:
+	if strings.HasPrefix(u.RateID, "transfer.") ||
+		strings.HasPrefix(u.RateID, "ec2.") || strings.HasPrefix(u.RateID, "ebs.") ||
+		strings.HasPrefix(u.RateID, "alb.") || strings.HasPrefix(u.RateID, "ddb.") ||
+		strings.HasPrefix(u.RateID, "kms.") || strings.HasPrefix(u.RateID, "cw.") ||
+		strings.HasPrefix(u.RateID, "secret.") || strings.HasPrefix(u.RateID, "ssm.") ||
+		strings.HasPrefix(u.RateID, "edge.") || strings.HasPrefix(u.RateID, "network.") {
+		return true
+	}
+
+	// S3 Standard operational requests are common to all 3 candidate DSG policies (for warm packs):
+	if u.RateID == "s3.put_standard" || u.RateID == "s3.get_standard" {
+		return true
+	}
+
+	switch polName {
+	case PolicyWarmStandardOnly:
+		// Warm Standard Only keeps ALL packs on Standard.
+		// Excludes all Glacier IR, Glacier Flexible, and IA operations.
+		return false
+
+	case PolicyWarmGlacierIR:
+		// Warm Glacier Instant Retrieval admits only Glacier IR operational rates:
+		// s3.put_ir, s3.get_ir, s3.retrieval_ir, s3.transition_ir.
+		// Excludes all Glacier Flexible rates (s3.put_glacier, s3.transition_glacier, s3.restore_*).
+		return u.RateID == "s3.put_ir" || u.RateID == "s3.get_ir" ||
+			u.RateID == "s3.retrieval_ir" || u.RateID == "s3.transition_ir"
+
+	case PolicyWarmGlacierFlex:
+		// Warm Glacier Flexible admits only Glacier Flexible operational rates:
+		// s3.put_glacier, s3.transition_glacier, and restore rates (s3.restore_*).
+		// Excludes all Glacier IR rates (s3.put_ir, s3.get_ir, s3.retrieval_ir, s3.transition_ir).
+		return u.RateID == "s3.put_glacier" || u.RateID == "s3.transition_glacier" ||
+			strings.HasPrefix(u.RateID, "s3.restore_")
+
+	default:
+		return false
+	}
+}
+
 func evaluatePolicyReports(trace Trace, catalog *pricing.Catalog, replayRes timelineReplayResult, baseResult Result) (policyReports, error) {
 	buildUsage := func(totals map[string]*big.Rat, filter func(cost.Usage) bool) []cost.Usage {
 		usage := []cost.Usage{}
@@ -45,7 +102,7 @@ func evaluatePolicyReports(trace Trace, catalog *pricing.Catalog, replayRes time
 
 	// 1. Direct S3 Usage
 	directUsage := buildUsage(replayRes.directTotals, func(u cost.Usage) bool {
-		return u.RateID == "s3.put_standard" || u.RateID == "s3.get_standard" || u.RateID == "transfer.internet_egress"
+		return isAllowedUsageForPolicy(PolicyDirectS3, u)
 	})
 	directReport, err := cost.Evaluate(catalog, directUsage)
 	if err != nil {
@@ -54,9 +111,7 @@ func evaluatePolicyReports(trace Trace, catalog *pricing.Catalog, replayRes time
 
 	// 2. WarmStandardOnly Usage
 	warmStdUsage := buildUsage(replayRes.warmStdTotals, func(u cost.Usage) bool {
-		return u.RateID != "s3.transition_ir" && u.RateID != "s3.transition_glacier" &&
-			u.RateID != "s3.retrieval_ir" && u.RateID != "s3.restore_standard_requests" &&
-			u.RateID != "s3.restore_standard_gb"
+		return isAllowedUsageForPolicy(PolicyWarmStandardOnly, u)
 	})
 	warmStdReport, err := cost.Evaluate(catalog, warmStdUsage)
 	if err != nil {
@@ -65,8 +120,7 @@ func evaluatePolicyReports(trace Trace, catalog *pricing.Catalog, replayRes time
 
 	// 3. WarmGlacierIR Usage
 	glacierIRUsage := buildUsage(replayRes.glacierIRTotals, func(u cost.Usage) bool {
-		return u.RateID != "s3.transition_glacier" && u.RateID != "s3.restore_standard_requests" &&
-			u.RateID != "s3.restore_standard_gb"
+		return isAllowedUsageForPolicy(PolicyWarmGlacierIR, u)
 	})
 	for _, u := range replayRes.earlyDeletionUsageByPolicy[PolicyWarmGlacierIR] {
 		glacierIRUsage = append(glacierIRUsage, u)
@@ -78,7 +132,7 @@ func evaluatePolicyReports(trace Trace, catalog *pricing.Catalog, replayRes time
 
 	// 4. WarmGlacierFlexible Usage
 	glacierFlexUsage := buildUsage(replayRes.glacierFlexTotals, func(u cost.Usage) bool {
-		return u.RateID != "s3.transition_ir" && u.RateID != "s3.retrieval_ir"
+		return isAllowedUsageForPolicy(PolicyWarmGlacierFlex, u)
 	})
 	for _, u := range replayRes.earlyDeletionUsageByPolicy[PolicyWarmGlacierFlex] {
 		glacierFlexUsage = append(glacierFlexUsage, u)

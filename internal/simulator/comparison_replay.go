@@ -339,39 +339,144 @@ func replayTimeline(ctx context.Context, trace Trace, catalog *pricing.Catalog, 
 	}
 
 	var temporaryRestoredBytes uint64
-	// Track temporary restored Standard storage byte-time during restores in Glacier Flexible
+
+	// Track temporary restored Standard storage byte-time during restores in Glacier Flexible.
+	// Accrues storage for the actual authoritative duration of each temporary copy,
+	// updating when subsequent pack observations provide earlier/shorter expiration or state transition to Cold.
+	type activeRestore struct {
+		packRef    storage.PackRef
+		startNS    int64
+		deadlineNS int64
+		bytes      uint64
+		expired    bool
+	}
+	var restoreCopies []*activeRestore
+
 	for _, event := range trace.Events {
+		// 1. Mark expiration for existing restore copies if current time reached deadline
+		for _, c := range restoreCopies {
+			if event.AtNS >= c.deadlineNS {
+				c.expired = true
+			}
+		}
+
+		// 2. Identify new restore usage in this event
 		for _, u := range event.Usage {
 			if u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb" {
 				if q, ok := new(big.Rat).SetString(u.Quantity); ok {
 					gbFloat, _ := q.Float64()
 					restoredBytes := uint64(gbFloat * float64(trace.BytesPerGB))
 					if restoredBytes > 0 {
-						remainingTraceDur := time.Duration(trace.DurationNS - event.AtNS)
-						if remainingTraceDur <= 0 {
-							continue
-						}
 						restoreDur, ok := trace.RestoreDuration(event)
 						if !ok {
 							hasUnprovenColdPacks = true
 							continue
 						}
-						tempRestoreDur := restoreDur
-						if tempRestoreDur > remainingTraceDur {
-							tempRestoreDur = remainingTraceDur
+						durNS := restoreDur.Nanoseconds()
+						if durNS <= 0 {
+							continue
 						}
-						tempU, err := cost.TemporaryRestoredUsage(restoredBytes, tempRestoreDur, trace.BytesPerGB, monthDuration)
-						if err == nil {
-							temporaryRestoredBytes += restoredBytes
-							if qRat, ok := new(big.Rat).SetString(tempU.Quantity); ok {
-								if glacierFlexTotals[tempU.RateID] == nil {
-									glacierFlexTotals[tempU.RateID] = new(big.Rat)
+						expiryNS := event.AtNS + durNS
+
+						var packRef storage.PackRef
+						if event.Tiering != nil {
+							packRef = event.Tiering.Pack.Ref
+							if !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
+								eventTime := trace.Start.Add(time.Duration(event.AtNS))
+								if !event.Tiering.Pack.RestoredUntil.After(eventTime) {
+									expiryNS = event.AtNS
+								} else {
+									expiryNS = event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
 								}
-								glacierFlexTotals[tempU.RateID].Add(glacierFlexTotals[tempU.RateID], qRat)
 							}
+						}
+
+						// Check if there is an active copy for this packRef in the same event
+						var sameEventCopy *activeRestore
+						for _, c := range restoreCopies {
+							if c.packRef == packRef && c.startNS == event.AtNS && !c.expired {
+								sameEventCopy = c
+								break
+							}
+						}
+						if sameEventCopy != nil {
+							sameEventCopy.bytes += restoredBytes
+							if expiryNS > sameEventCopy.deadlineNS {
+								sameEventCopy.deadlineNS = expiryNS
+							}
+						} else {
+							// If there was an earlier copy for this packRef that is still marked active,
+							// finalize it at event.AtNS as it is being re-restored
+							for _, prev := range restoreCopies {
+								if prev.packRef == packRef && !prev.expired {
+									prev.deadlineNS = event.AtNS
+									prev.expired = true
+								}
+							}
+							restoreCopies = append(restoreCopies, &activeRestore{
+								packRef:    packRef,
+								startNS:    event.AtNS,
+								deadlineNS: expiryNS,
+								bytes:      restoredBytes,
+								expired:    (event.AtNS >= expiryNS),
+							})
 						}
 					}
 				}
+			}
+		}
+
+		// 3. Authoritative pack metadata observation
+		if event.Tiering != nil {
+			packRef := event.Tiering.Pack.Ref
+			var activeCopy *activeRestore
+			for _, c := range restoreCopies {
+				if c.packRef == packRef && !c.expired {
+					activeCopy = c
+				}
+			}
+			if activeCopy != nil {
+				eventTime := trace.Start.Add(time.Duration(event.AtNS))
+				if event.Tiering.Pack.State != "" && event.Tiering.Pack.State != "Restored" && event.Tiering.Pack.State != "Restoring" {
+					activeCopy.deadlineNS = event.AtNS
+					activeCopy.expired = true
+				}
+				if !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
+					isFuture := event.Tiering.Pack.RestoredUntil.After(eventTime)
+					packExpiryNS := event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
+					if !isFuture {
+						activeCopy.deadlineNS = event.AtNS
+						activeCopy.expired = true
+					} else {
+						// Update deadline according to authoritative observation (even if shorter)!
+						activeCopy.deadlineNS = packExpiryNS
+					}
+				}
+			}
+		}
+	}
+
+	for _, c := range restoreCopies {
+		if c.bytes == 0 {
+			continue
+		}
+		endNS := c.deadlineNS
+		if endNS > trace.DurationNS {
+			endNS = trace.DurationNS
+		}
+		durNS := endNS - c.startNS
+		if durNS <= 0 {
+			continue
+		}
+		tempRestoreDur := time.Duration(durNS)
+		tempU, err := cost.TemporaryRestoredUsage(c.bytes, tempRestoreDur, trace.BytesPerGB, monthDuration)
+		if err == nil {
+			temporaryRestoredBytes += c.bytes
+			if qRat, ok := new(big.Rat).SetString(tempU.Quantity); ok {
+				if glacierFlexTotals[tempU.RateID] == nil {
+					glacierFlexTotals[tempU.RateID] = new(big.Rat)
+				}
+				glacierFlexTotals[tempU.RateID].Add(glacierFlexTotals[tempU.RateID], qRat)
 			}
 		}
 	}

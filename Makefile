@@ -14,10 +14,10 @@ build:
 	$(GO) build -trimpath -o bin/costsim ./cmd/costsim
 
 fmt:
-	$(GOFMT) -w cmd internal configs/pricing deploy/edge
+	$(GOFMT) -w cmd internal configs/pricing deploy/edge benchmarks/traces
 
 check-fmt:
-	@test -z "$$($(GOFMT) -l cmd internal configs/pricing deploy/edge)" || { echo "Chạy make fmt trước khi commit."; exit 1; }
+	@test -z "$$($(GOFMT) -l cmd internal configs/pricing deploy/edge benchmarks/traces)" || { echo "Chạy make fmt trước khi commit."; exit 1; }
 
 vet:
 	$(GO) vet ./...

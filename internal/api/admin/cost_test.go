@@ -1451,3 +1451,51 @@ func TestCostReportWorkloadSecurityAndTimeline(t *testing.T) {
 		t.Fatalf("expected Inputs.To to match trace end '2026-01-31T00:00:00Z', got %q", rep.Inputs.To)
 	}
 }
+
+func TestCostReportModeledWorkloadOutsideSourceTree(t *testing.T) {
+	// Reviewer Finding [P2] (HEAD e834d29 audit):
+	// When running outside the source tree, GET /admin/v1/cost/report?workload=cloud-tiering-boundary
+	// must succeed via embedded trace fixtures and return HTTP 200, rather than failing with 400.
+	w, server := newCostTestWorld(t, &fakeStats{})
+
+	// Switch working directory to an isolated empty directory outside source tree
+	t.Chdir(t.TempDir())
+
+	// 1. cloud-tiering-boundary
+	reqCloud, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=cloud-tiering-boundary&scenario=A&profile=cloud", nil)
+	reqCloud.Header.Set("Authorization", "Bearer "+w.root)
+	respCloud, err := server.Client().Do(reqCloud)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respCloud.Body.Close()
+	if respCloud.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200 for cloud-tiering-boundary outside source tree, got %d", respCloud.StatusCode)
+	}
+	var repCloud CostReportResponse
+	if err := json.NewDecoder(respCloud.Body).Decode(&repCloud); err != nil {
+		t.Fatal(err)
+	}
+	if repCloud.Inputs.Workload != "cloud-tiering-boundary" {
+		t.Fatalf("expected workload 'cloud-tiering-boundary', got %q", repCloud.Inputs.Workload)
+	}
+
+	// 2. edge-revival-accounting
+	reqEdge, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=edge-revival-accounting&scenario=B&profile=edge", nil)
+	reqEdge.Header.Set("Authorization", "Bearer "+w.root)
+	respEdge, err := server.Client().Do(reqEdge)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer respEdge.Body.Close()
+	if respEdge.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200 for edge-revival-accounting outside source tree, got %d", respEdge.StatusCode)
+	}
+	var repEdge CostReportResponse
+	if err := json.NewDecoder(respEdge.Body).Decode(&repEdge); err != nil {
+		t.Fatal(err)
+	}
+	if repEdge.Inputs.Workload != "edge-revival-accounting" {
+		t.Fatalf("expected workload 'edge-revival-accounting', got %q", repEdge.Inputs.Workload)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/KinasTomes/miles/benchmarks/traces"
 	pricingschema "github.com/KinasTomes/miles/configs/pricing"
 	"github.com/KinasTomes/miles/internal/cost"
 	"github.com/KinasTomes/miles/internal/pricing"
@@ -242,11 +243,15 @@ func (s *server) costReport(c *call) error {
 		}
 
 		var traceData []byte
-		for _, dir := range []string{"benchmarks/traces", "../../benchmarks/traces", "../../../benchmarks/traces"} {
-			p := filepath.Join(dir, traceFileName)
-			if b, readErr := os.ReadFile(p); readErr == nil {
-				traceData = b
-				break
+		if embedded := traces.Get(traceFileName); len(embedded) > 0 {
+			traceData = embedded
+		} else {
+			for _, dir := range []string{"benchmarks/traces", "../../benchmarks/traces", "../../../benchmarks/traces"} {
+				p := filepath.Join(dir, traceFileName)
+				if b, readErr := os.ReadFile(p); readErr == nil {
+					traceData = b
+					break
+				}
 			}
 		}
 		if traceData == nil {

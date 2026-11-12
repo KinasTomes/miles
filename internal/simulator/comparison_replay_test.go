@@ -1188,3 +1188,182 @@ func TestComparePoliciesEarlyDeletionAccruedAcrossLifecycleProgression(t *testin
 		t.Fatalf("expected CompleteTotalUSD to be nil when cold pack retention deadline is never resolved, got %v", *resUnresolved.Policies[2].Report.CompleteTotalUSD)
 	}
 }
+
+func TestComparePoliciesTemporaryRestoredStandardHonorsAuthoritativeShorterExpiry(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+	oneGiB := uint64(1024 * 1024 * 1024)
+
+	// Reviewer Finding [P2] (HEAD e834d29 audit):
+	// Restore initial expiry: 4 hours.
+	// Observation confirms: 2 hours.
+	// Standard GB-Mo must reflect 2 hours (not 4 hours).
+	trace := baseTrace
+	trace.Name = "temp-restore-shorter-expiry"
+	trace.DurationNS = 30 * dayNS
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:      oneGiB,
+				UniqueRaw:    oneGiB,
+				UniqueStored: oneGiB,
+				Physical:     oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:           storage.PackRef{ID: "pack-a", Generation: "gen-1"},
+					State:         "Restored",
+					Class:         storage.Glacier,
+					RestoredUntil: trace.Start.Add(4 * time.Hour), // initial: 4 hours
+				},
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+		{
+			AtNS: int64(time.Hour), // hour 1: observation confirms shorter expiry of 2 hours
+			Snapshot: &cost.Snapshot{
+				Logical:      oneGiB,
+				UniqueRaw:    oneGiB,
+				UniqueStored: oneGiB,
+				Physical:     oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:           storage.PackRef{ID: "pack-a", Generation: "gen-1"},
+					State:         "Restored",
+					Class:         storage.Glacier,
+					RestoredUntil: trace.Start.Add(2 * time.Hour), // updated: 2 hours
+				},
+			},
+			Usage: []cost.Usage{},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3]
+	var stdLine *cost.Line
+	for i := range flexPol.Report.Lines {
+		if flexPol.Report.Lines[i].RateID == "s3.storage.standard" {
+			stdLine = &flexPol.Report.Lines[i]
+			break
+		}
+	}
+	if stdLine == nil {
+		t.Fatal("expected s3.storage.standard line in WarmGlacierFlex")
+	}
+
+	qRat, ok := new(big.Rat).SetString(stdLine.Quantity)
+	if !ok {
+		t.Fatalf("invalid quantity: %s", stdLine.Quantity)
+	}
+
+	// 2 hours of 1 GiB in 720 hours = 2/720 = 1/360 GB-Mo
+	// Plus standard storage metadata overhead 1/131072 GB-Mo = 16429/5898240 GB-Mo
+	expected2hRat := new(big.Rat).Add(big.NewRat(2, 720), big.NewRat(1, 131072))
+	if qRat.Cmp(expected2hRat) != 0 {
+		t.Fatalf("expected 2-hour standard storage quantity %s, got %s", expected2hRat.RatString(), qRat.RatString())
+	}
+
+	// Make sure it did NOT charge 4 hours (which would be 4/720 + 1/131072)
+	wrong4hRat := new(big.Rat).Add(big.NewRat(4, 720), big.NewRat(1, 131072))
+	if qRat.Cmp(wrong4hRat) == 0 {
+		t.Fatalf("standard storage wrongly retained 4-hour duration %s", wrong4hRat.RatString())
+	}
+}
+
+func TestComparePoliciesTemporaryRestoredStandardColdTransitionEndsStorage(t *testing.T) {
+	dayNS := int64(24 * time.Hour)
+	baseTrace, catalog := fixture(t, "cloud-boundary")
+	oneGiB := uint64(1024 * 1024 * 1024)
+
+	trace := baseTrace
+	trace.Name = "temp-restore-cold-transition"
+	trace.DurationNS = 30 * dayNS
+	trace.Events = []Event{
+		{
+			AtNS: 0,
+			Snapshot: &cost.Snapshot{
+				Logical:      oneGiB,
+				UniqueRaw:    oneGiB,
+				UniqueStored: oneGiB,
+				Physical:     oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:           storage.PackRef{ID: "pack-a", Generation: "gen-1"},
+					State:         "Restored",
+					Class:         storage.Glacier,
+					RestoredUntil: trace.Start.Add(4 * time.Hour),
+				},
+			},
+			Usage: []cost.Usage{
+				{RateID: "s3.restore_standard_gb", Unit: "GB", Quantity: "1"},
+			},
+		},
+		{
+			AtNS: int64(time.Hour), // hour 1: observed in Cold state (restore ended)
+			Snapshot: &cost.Snapshot{
+				Logical:      oneGiB,
+				UniqueRaw:    oneGiB,
+				UniqueStored: oneGiB,
+				Physical:     oneGiB,
+			},
+			StorageBytes: map[storage.StorageClass]uint64{
+				storage.Glacier: oneGiB,
+			},
+			Tiering: &Tiering{
+				Pack: storage.PackInfo{
+					Ref:   storage.PackRef{ID: "pack-a", Generation: "gen-1"},
+					State: "Cold",
+					Class: storage.Glacier,
+				},
+			},
+			Usage: []cost.Usage{},
+		},
+	}
+
+	res, err := ComparePolicies(context.Background(), trace, catalog)
+	if err != nil {
+		t.Fatalf("ComparePolicies failed: %v", err)
+	}
+
+	flexPol := res.Policies[3]
+	var stdLine *cost.Line
+	for i := range flexPol.Report.Lines {
+		if flexPol.Report.Lines[i].RateID == "s3.storage.standard" {
+			stdLine = &flexPol.Report.Lines[i]
+			break
+		}
+	}
+	if stdLine == nil {
+		t.Fatal("expected s3.storage.standard line in WarmGlacierFlex")
+	}
+
+	qRat, ok := new(big.Rat).SetString(stdLine.Quantity)
+	if !ok {
+		t.Fatalf("invalid quantity: %s", stdLine.Quantity)
+	}
+
+	// 1 hour of 1 GiB in 720 hours = 1/720 GB-Mo
+	// Plus standard storage metadata overhead 1/131072 GB-Mo
+	expected1hRat := new(big.Rat).Add(big.NewRat(1, 720), big.NewRat(1, 131072))
+	if qRat.Cmp(expected1hRat) != 0 {
+		t.Fatalf("expected 1-hour standard storage quantity %s, got %s", expected1hRat.RatString(), qRat.RatString())
+	}
+}
