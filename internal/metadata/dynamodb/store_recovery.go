@@ -63,7 +63,7 @@ func (m *Store) ListOutbox(ctx context.Context, q s.OutboxQuery) (s.OutboxPage, 
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		page, err := m.api.Scan(ctx, &ddb.ScanInput{TableName: aws.String(m.tables["Outbox"]), ConsistentRead: aws.Bool(true), Limit: aws.Int32(128), ExclusiveStartKey: cursor})
+		page, err := m.scanOutboxPage(ctx, &ddb.ScanInput{TableName: aws.String(m.tables["Outbox"]), ConsistentRead: aws.Bool(true), Limit: aws.Int32(128), ExclusiveStartKey: cursor})
 		if err != nil {
 			return out, backend(err)
 		}
@@ -88,6 +88,9 @@ func (m *Store) ListOutbox(ctx context.Context, q s.OutboxQuery) (s.OutboxPage, 
 				}
 				delete(candidates, largest)
 			}
+		}
+		if len(page.LastEvaluatedKey) != 0 && reflect.DeepEqual(page.LastEvaluatedKey, cursor) {
+			return out, s.ErrUnavailable
 		}
 		cursor = page.LastEvaluatedKey
 		if len(cursor) == 0 {
