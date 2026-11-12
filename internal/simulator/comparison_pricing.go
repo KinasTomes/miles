@@ -100,10 +100,54 @@ func evaluatePolicyReports(trace Trace, catalog *pricing.Catalog, replayRes time
 		return usage
 	}
 
+	// Check if the trace provides explicit independent client request telemetry for Direct S3 baseline.
+	hasExplicitDirectUsage := false
+	for _, ev := range trace.Events {
+		if len(ev.DirectUsage) > 0 {
+			hasExplicitDirectUsage = true
+			break
+		}
+	}
+
 	// 1. Direct S3 Usage
-	directUsage := buildUsage(replayRes.directTotals, func(u cost.Usage) bool {
-		return isAllowedUsageForPolicy(PolicyDirectS3, u)
-	})
+	// Baseline Direct S3 represents direct client writes to S3 Standard without Dedup Storage Gateway.
+	// Dedicated client request telemetry (DirectUsage) must be supplied independently;
+	// Direct S3 must never conflate DSG backend pack + sidecar upload requests with client logical operations.
+	directUsage := []cost.Usage{}
+	directIDs := make([]string, 0, len(replayRes.directTotals))
+	for id := range replayRes.directTotals {
+		directIDs = append(directIDs, id)
+	}
+	sort.Strings(directIDs)
+	for _, id := range directIDs {
+		directUsage = append(directUsage, cost.Usage{RateID: id, Unit: "GB-Mo", Quantity: replayRes.directTotals[id].RatString()})
+	}
+	if hasExplicitDirectUsage {
+		for _, ev := range trace.Events {
+			for _, u := range ev.DirectUsage {
+				if isAllowedUsageForPolicy(PolicyDirectS3, u) {
+					directUsage = append(directUsage, u)
+				}
+			}
+		}
+	}
+	// Include payload transfer for Direct S3 if present in trace events (unless already supplied in DirectUsage)
+	for _, ev := range trace.Events {
+		for _, u := range ev.Usage {
+			if strings.HasPrefix(u.RateID, "transfer.") {
+				already := false
+				for _, du := range ev.DirectUsage {
+					if du.RateID == u.RateID {
+						already = true
+						break
+					}
+				}
+				if !already {
+					directUsage = append(directUsage, u)
+				}
+			}
+		}
+	}
 	directReport, err := cost.Evaluate(catalog, directUsage)
 	if err != nil {
 		return policyReports{}, fmt.Errorf("evaluating direct_s3: %w", err)
@@ -199,7 +243,6 @@ func categorizeReport(r cost.Report, traffic map[cost.Route]uint64, earlyDeletio
 			}
 		case strings.HasPrefix(l.RateID, "s3.transition_"):
 			transRat.Add(&transRat, val)
-			reqRat.Add(&reqRat, val)
 			if q, ok := new(big.Rat).SetString(l.Quantity); ok {
 				qInt := new(big.Int).Quo(q.Num(), q.Denom()).Uint64()
 				reqByType["s3_transition"] += qInt

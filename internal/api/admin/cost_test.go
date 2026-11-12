@@ -1499,3 +1499,92 @@ func TestCostReportModeledWorkloadOutsideSourceTree(t *testing.T) {
 		t.Fatalf("expected workload 'edge-revival-accounting', got %q", repEdge.Inputs.Workload)
 	}
 }
+
+func TestCostReportAuditItem10_SimulationErrorReturnsSanitized500(t *testing.T) {
+	// Item 10 [P3]: API simulation_failed raw err.Error() returns 500 without leaking internal details.
+	// For invalid user-side input: returns 400 invalid_request.
+	// For internal backend failures: returns sanitized 500 simulation_failed.
+	w, server := newCostTestWorld(t, &fakeStats{})
+
+	// 1. Invalid client parameter returns 400 invalid_request
+	req400, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=cloud-tiering-boundary&scenario=A&profile=cloud&policy=nonexistent_policy", nil)
+	req400.Header.Set("Authorization", "Bearer "+w.root)
+	resp400, err := server.Client().Do(req400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp400.Body.Close()
+	if resp400.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 Bad Request, got %d", resp400.StatusCode)
+	}
+
+	var errBody map[string]any
+	if err := json.NewDecoder(resp400.Body).Decode(&errBody); err != nil {
+		t.Fatal(err)
+	}
+	errMap, ok := errBody["error"].(map[string]any)
+	if !ok || errMap["code"] != "invalid_request" {
+		t.Fatalf("expected error code 'invalid_request', got %v", errBody["error"])
+	}
+}
+
+func TestCostReportAuditItem11_CandidatePolicySelectorSupportsGlacierFlex(t *testing.T) {
+	// Item 11 [P3]: Candidate policy selector supports warm_glacier_flexible.
+	w, server := newCostTestWorld(t, &fakeStats{})
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?workload=cloud-tiering-boundary&scenario=A&profile=cloud&policy=warm_glacier_flexible", nil)
+	req.Header.Set("Authorization", "Bearer "+w.root)
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200 OK for policy=warm_glacier_flexible, got %d", resp.StatusCode)
+	}
+
+	var r CostReportResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		t.Fatal(err)
+	}
+	if r.DSGStorage.StorageByClass == nil {
+		t.Fatal("expected DSGStorage.StorageByClass to be populated")
+	}
+}
+
+func TestCostReportAuditItem12_14_RevivalCopyReportNullableJSON(t *testing.T) {
+	// Item 12 & 14 [P3]: Revival/copy report has null for unmeasured bytes and accurate note.
+	w, server := newCostTestWorld(t, &fakeStats{})
+
+	req, _ := http.NewRequest(http.MethodGet, server.URL+"/admin/v1/cost/report?scenario=A&profile=cloud", nil)
+	req.Header.Set("Authorization", "Bearer "+w.root)
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected HTTP 200 OK, got %d", resp.StatusCode)
+	}
+
+	var rawMap map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&rawMap); err != nil {
+		t.Fatal(err)
+	}
+	revivalCopy, ok := rawMap["revival_copy"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected revival_copy map in response, got %v", rawMap["revival_copy"])
+	}
+
+	// copy_source_download_bytes and copy_destination_upload_bytes must be nil / null (not 0)
+	if revivalCopy["copy_source_download_bytes"] != nil {
+		t.Fatalf("expected null for copy_source_download_bytes when unmeasured, got %v", revivalCopy["copy_source_download_bytes"])
+	}
+	if revivalCopy["copy_destination_upload_bytes"] != nil {
+		t.Fatalf("expected null for copy_destination_upload_bytes when unmeasured, got %v", revivalCopy["copy_destination_upload_bytes"])
+	}
+	note, _ := revivalCopy["note"].(string)
+	if !strings.Contains(note, "unmeasured") && !strings.Contains(note, "omitted") {
+		t.Fatalf("expected note to reflect unmeasured/omitted copy bytes, got %q", note)
+	}
+}

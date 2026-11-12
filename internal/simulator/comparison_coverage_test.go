@@ -217,6 +217,9 @@ func TestComparePoliciesIncompleteTelemetrySuppressesCompleteTotalAndSavings(t *
 				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
 				{RateID: "transfer.internet_egress", Unit: "GB", Quantity: "2"},
 			},
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+			},
 		},
 	}
 
@@ -408,6 +411,9 @@ func TestComparePoliciesIncompleteTelemetrySuppressesCompleteTotalAndSavings(t *
 				cost.S3Gateway:     0,
 			},
 			Usage: trace5.Events[0].Usage,
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+			},
 		},
 	}
 

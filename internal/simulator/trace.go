@@ -13,6 +13,7 @@ import (
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/cost"
 	"github.com/KinasTomes/miles/internal/policy"
+	"github.com/KinasTomes/miles/internal/simulator/workloads"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -43,6 +44,7 @@ type Event struct {
 	Counters                    cost.WriteCounters              `json:"write_counters"`
 	Traffic                     map[cost.Route]uint64           `json:"traffic_bytes"`
 	Usage                       []cost.Usage                    `json:"usage"`
+	DirectUsage                 []cost.Usage                    `json:"direct_usage,omitempty"`
 	StorageBytes                map[storage.StorageClass]uint64 `json:"billable_storage_bytes"`
 	Tiering                     *Tiering                        `json:"tiering,omitempty"`
 	ColdLogicalDeliveredBytes   uint64                          `json:"cold_logical_delivered_bytes,omitempty"`
@@ -116,6 +118,7 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 		Counters                    cost.WriteCounters              `json:"write_counters"`
 		Traffic                     map[cost.Route]uint64           `json:"traffic_bytes"`
 		Usage                       []cost.Usage                    `json:"usage"`
+		DirectUsage                 []cost.Usage                    `json:"direct_usage,omitempty"`
 		StorageBytes                map[storage.StorageClass]uint64 `json:"billable_storage_bytes"`
 		Tiering                     *Tiering                        `json:"tiering,omitempty"`
 		ColdLogicalDeliveredRaw     json.RawMessage                 `json:"cold_logical_delivered_bytes,omitempty"`
@@ -134,6 +137,7 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 	e.Counters = raw.Counters
 	e.Traffic = raw.Traffic
 	e.Usage = raw.Usage
+	e.DirectUsage = raw.DirectUsage
 	e.StorageBytes = raw.StorageBytes
 	e.Tiering = raw.Tiering
 	e.ColdLogicalDeliveredByClass = raw.ColdLogicalDeliveredByClass
@@ -142,6 +146,26 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 		var num uint64
 		if err := json.Unmarshal(raw.ColdLogicalDeliveredRaw, &num); err == nil {
 			e.ColdLogicalDeliveredBytes = num
+			if len(e.ColdLogicalDeliveredByClass) > 0 {
+				if len(e.ColdLogicalDeliveredByClass) == 1 {
+					for _, b := range e.ColdLogicalDeliveredByClass {
+						if b != num {
+							return fmt.Errorf("conflicting cold delivery telemetry: scalar %d != class delivery %d", num, b)
+						}
+					}
+				} else {
+					var sum uint64
+					for _, b := range e.ColdLogicalDeliveredByClass {
+						if b > ^uint64(0)-sum {
+							return errors.New("cold delivery telemetry overflow")
+						}
+						sum += b
+					}
+					if sum != num {
+						return fmt.Errorf("conflicting cold delivery telemetry: scalar %d != sum of class delivery %d", num, sum)
+					}
+				}
+			}
 			return nil
 		}
 		var classMap map[storage.StorageClass]uint64
@@ -150,6 +174,9 @@ func (e *Event) UnmarshalJSON(data []byte) error {
 				e.ColdLogicalDeliveredByClass = classMap
 			} else {
 				for k, v := range classMap {
+					if existing, ok := e.ColdLogicalDeliveredByClass[k]; ok && existing != v {
+						return fmt.Errorf("conflicting cold delivery telemetry for class %s: %d != %d", k, existing, v)
+					}
 					e.ColdLogicalDeliveredByClass[k] = v
 				}
 			}
@@ -243,4 +270,9 @@ func (t Trace) RestoreDuration(event Event) (time.Duration, bool) {
 		}
 	}
 	return 0, false
+}
+
+// EmbeddedWorkload returns the embedded demo workload trace bytes for the given name or workload ID.
+func EmbeddedWorkload(name string) []byte {
+	return workloads.Get(name)
 }

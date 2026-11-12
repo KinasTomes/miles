@@ -58,6 +58,9 @@ func TestComparePoliciesCompleteMatchedSavingsAndBreakEven(t *testing.T) {
 				{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1"},
 				{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "10"},
 			},
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+			},
 		},
 	}
 
@@ -142,6 +145,9 @@ func TestComparePoliciesBreakEvenTimeWeightedStorage(t *testing.T) {
 				{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1"},
 				{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "100"},
 			},
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "100"},
+			},
 		},
 		{
 			AtNS: 15 * dayNS,
@@ -201,6 +207,9 @@ func TestComparePoliciesBreakEvenTimeWeightedStorage(t *testing.T) {
 				{RateID: "alb.lcu", Unit: "LCU-Hrs", Quantity: "48"},
 				{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1/15"},
 				{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "10"},
+			},
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
 			},
 		},
 		{

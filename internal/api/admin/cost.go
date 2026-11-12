@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"math/big"
@@ -11,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/KinasTomes/miles/benchmarks/traces"
 	pricingschema "github.com/KinasTomes/miles/configs/pricing"
 	"github.com/KinasTomes/miles/internal/cost"
 	"github.com/KinasTomes/miles/internal/pricing"
@@ -80,8 +80,8 @@ type InfrastructureReport struct {
 type RevivalCopyReport struct {
 	RevivedChunks              *uint64 `json:"revived_chunks"`
 	RevivedBytesStored         *uint64 `json:"revived_bytes_stored"`
-	CopySourceDownloadBytes    uint64  `json:"copy_source_download_bytes"`
-	CopyDestinationUploadBytes uint64  `json:"copy_destination_upload_bytes"`
+	CopySourceDownloadBytes    *uint64 `json:"copy_source_download_bytes"`
+	CopyDestinationUploadBytes *uint64 `json:"copy_destination_upload_bytes"`
 	Note                       string  `json:"note"`
 }
 
@@ -111,11 +111,26 @@ type CostReportResponse struct {
 	Limitations        []string                 `json:"limitations"`
 }
 
+// loadWorkloadTrace loads benchmark trace bytes, prioritizing neutral embedded trace assets from internal/simulator/workloads
+// and falling back to relative filesystem paths for development workloads.
+func loadWorkloadTrace(traceFileName string) ([]byte, error) {
+	if embedded := simulator.EmbeddedWorkload(traceFileName); len(embedded) > 0 {
+		return embedded, nil
+	}
+	for _, dir := range []string{"benchmarks/traces", "../../benchmarks/traces", "../../../benchmarks/traces"} {
+		p := filepath.Join(dir, traceFileName)
+		if b, readErr := os.ReadFile(p); readErr == nil {
+			return b, nil
+		}
+	}
+	return nil, os.ErrNotExist
+}
+
 func (s *server) costReport(c *call) error {
 	if err := c.admin(); err != nil {
 		return err
 	}
-	q, err := query(c.r, "region", "as_of", "scenario", "profile", "from", "to", "bucket", "domain", "workload")
+	q, err := query(c.r, "region", "as_of", "scenario", "profile", "from", "to", "bucket", "domain", "workload", "policy", "candidate_policy")
 	if err != nil {
 		return err
 	}
@@ -242,19 +257,8 @@ func (s *server) costReport(c *call) error {
 			return invalid("workload trace %q not found", workload)
 		}
 
-		var traceData []byte
-		if embedded := traces.Get(traceFileName); len(embedded) > 0 {
-			traceData = embedded
-		} else {
-			for _, dir := range []string{"benchmarks/traces", "../../benchmarks/traces", "../../../benchmarks/traces"} {
-				p := filepath.Join(dir, traceFileName)
-				if b, readErr := os.ReadFile(p); readErr == nil {
-					traceData = b
-					break
-				}
-			}
-		}
-		if traceData == nil {
+		traceData, loadErr := loadWorkloadTrace(traceFileName)
+		if loadErr != nil || traceData == nil {
 			return invalid("workload trace %q not found", workload)
 		}
 		tr, parseErr := simulator.Read(bytes.NewReader(traceData))
@@ -268,7 +272,35 @@ func (s *server) costReport(c *call) error {
 		}
 		comp, compErr := simulator.ComparePolicies(c.r.Context(), tr, catalog)
 		if compErr != nil {
-			return &apiError{http.StatusInternalServerError, "simulation_failed", compErr.Error()}
+			if errors.Is(compErr, context.Canceled) || errors.Is(compErr, context.DeadlineExceeded) {
+				return &apiError{http.StatusGatewayTimeout, "simulation_timeout", "workload policy comparison timed out"}
+			}
+			return &apiError{http.StatusInternalServerError, "simulation_failed", "workload policy comparison failed due to an internal error"}
+		}
+
+		// Support policy selector for all simulator candidate policies (including warm_glacier_flexible)
+		policyParam := q.Get("policy")
+		if policyParam == "" {
+			policyParam = q.Get("candidate_policy")
+		}
+		var targetPolicy simulator.PolicyName
+		if policyParam != "" {
+			switch policyParam {
+			case "warm_standard_only":
+				targetPolicy = simulator.PolicyWarmStandardOnly
+			case "warm_glacier_ir":
+				targetPolicy = simulator.PolicyWarmGlacierIR
+			case "warm_glacier_flexible":
+				targetPolicy = simulator.PolicyWarmGlacierFlex
+			default:
+				return invalid("unsupported candidate policy %q: must be one of warm_standard_only, warm_glacier_ir, warm_glacier_flexible", policyParam)
+			}
+		} else {
+			if scenario == "A" {
+				targetPolicy = simulator.PolicyWarmStandardOnly
+			} else {
+				targetPolicy = simulator.PolicyWarmGlacierIR
+			}
 		}
 
 		var directPol, candidatePol *simulator.PolicySummary
@@ -277,12 +309,8 @@ func (s *server) costReport(c *call) error {
 			if p.Name == simulator.PolicyDirectS3 {
 				directPol = p
 			}
-			if candidatePol == nil && p.Name != simulator.PolicyDirectS3 {
-				if scenario == "A" && p.Name == simulator.PolicyWarmStandardOnly {
-					candidatePol = p
-				} else if scenario == "B" && p.Name == simulator.PolicyWarmGlacierIR {
-					candidatePol = p
-				}
+			if p.Name == targetPolicy {
+				candidatePol = p
 			}
 		}
 		if candidatePol == nil && len(comp.Policies) > 1 {
@@ -462,9 +490,9 @@ func (s *server) costReport(c *call) error {
 			RevivalCopy: RevivalCopyReport{
 				RevivedChunks:              nil,
 				RevivedBytesStored:         nil,
-				CopySourceDownloadBytes:    0,
-				CopyDestinationUploadBytes: 0,
-				Note:                       "Revival and copy breakdowns are accounted in totals; not double charged.",
+				CopySourceDownloadBytes:    nil,
+				CopyDestinationUploadBytes: nil,
+				Note:                       "No revival or promotion copy operations observed in workload trace.",
 			},
 			Results: CostReportResults{
 				PricedSubtotalUSDExact:   candidatePol.Report.Subtotal,
@@ -505,7 +533,7 @@ func (s *server) costReport(c *call) error {
 		summary = bs.Summary
 		methodology = "bucket_inventory_snapshot"
 
-		// Finding 1: If bucket summary has no per-class breakdown (PhysicalClasses is empty),
+		// Invariant: If bucket summary has no per-class breakdown (PhysicalClasses is empty),
 		// we only infer storage class from global when ALL conditions are strictly met:
 		// 1. Global inventory is complete (global.PhysicalComplete is true).
 		// 2. Both Global and Bucket share the exact same snapshot generation (non-empty SnapshotID match).
@@ -549,7 +577,7 @@ func (s *server) costReport(c *call) error {
 	storageByClass := map[string]int64{}
 	hasUnpricedPhysicalInventory := false
 
-	// Finding 2: Incomplete or unmeasured physical inventory must not be priced as $0.
+	// Invariant: Incomplete or unmeasured physical inventory must not be priced as $0.
 	if !summary.PhysicalComplete {
 		hasUnpricedPhysicalInventory = true
 		dsgUsage = append(dsgUsage, cost.Usage{
@@ -601,7 +629,7 @@ func (s *server) costReport(c *call) error {
 		}
 	}
 
-	// Finding 2: Preserve physical bytes and handle unallocated / unaccounted bytes.
+	// Invariant: Preserve physical bytes and handle unallocated / unaccounted bytes.
 	// If the sum of physical bytes across classes is less than BytesStored
 	// (e.g. unmeasured class distribution, rounding, or empty classes map),
 	// the difference must NOT vanish into $0. It is recorded as UNKNOWN class and unpriced usage.
@@ -761,8 +789,8 @@ func (s *server) costReport(c *call) error {
 		RevivalCopy: RevivalCopyReport{
 			RevivedChunks:              summary.RevivedChunks,
 			RevivedBytesStored:         summary.RevivedBytes,
-			CopySourceDownloadBytes:    0,
-			CopyDestinationUploadBytes: 0,
+			CopySourceDownloadBytes:    nil,
+			CopyDestinationUploadBytes: nil,
 			Note:                       "Revival and copy breakdowns are omitted in live snapshot; unmeasured.",
 		},
 		Results: CostReportResults{

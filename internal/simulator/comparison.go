@@ -100,11 +100,16 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		return ComparisonResult{}, err
 	}
 
-	applyCompletenessTotals(&reports, trace, replayRes.currentLogical, replayRes.hasStorageInconsistency, replayRes.hasUnprovenColdPacks)
+	applyCompletenessTotals(&reports, trace, replayRes.currentLogical, replayRes.hasStorageInconsistency, replayRes.unprovenColdReasons)
 
 	metrics := computePolicyMetrics(trace, replayRes, reports)
 
 	var reduction10 = 1.0
+	var totalReduction *float64
+	if baseResult.Ratios != nil {
+		totalReduction = baseResult.Ratios.TotalReduction
+	}
+
 	directSummary := PolicySummary{
 		Name:                PolicyDirectS3,
 		Description:         "Baseline direct write to S3 Standard without deduplication or compression",
@@ -123,7 +128,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		LogicalBytes:             replayRes.currentLogical,
 		PhysicalBytes:            replayRes.finalPhysical,
 		StorageBytesByClass:      replayRes.warmStdClassMap,
-		TotalReduction:           baseResult.Ratios.TotalReduction,
+		TotalReduction:           totalReduction,
 		Report:                   reports.warmStdReport,
 		Breakdown:                &reports.warmStdBreakdown,
 		TotalCostUSD:             reports.warmStdReport.Subtotal,
@@ -139,7 +144,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		LogicalBytes:             replayRes.currentLogical,
 		PhysicalBytes:            replayRes.finalPhysical,
 		StorageBytesByClass:      replayRes.glacierIRClassMap,
-		TotalReduction:           baseResult.Ratios.TotalReduction,
+		TotalReduction:           totalReduction,
 		Report:                   reports.glacierIRReport,
 		Breakdown:                &reports.glacierIRBreakdown,
 		TotalCostUSD:             reports.glacierIRReport.Subtotal,
@@ -157,7 +162,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		PhysicalBytes:            replayRes.finalPhysical,
 		StorageBytesByClass:      replayRes.glacierFlexClassMap,
 		TemporaryRestoredBytes:   replayRes.temporaryRestoredBytes,
-		TotalReduction:           baseResult.Ratios.TotalReduction,
+		TotalReduction:           totalReduction,
 		Report:                   reports.glacierFlexReport,
 		Breakdown:                &reports.glacierFlexBreakdown,
 		TotalCostUSD:             reports.glacierFlexReport.Subtotal,
@@ -168,7 +173,7 @@ func ComparePolicies(ctx context.Context, trace Trace, catalog *pricing.Catalog)
 		RestoreAmplification:     metrics.glacierFlexRestoreAmp,
 	}
 
-	omissions := buildComparisonOmissions(trace, replayRes.hasObservedCold, replayRes.hasStorageInconsistency, replayRes.hasUnprovenColdPacks, metrics.hasUnpricedOmission, metrics.hasIncompleteOmission)
+	omissions := buildComparisonOmissions(trace, replayRes.hasObservedCold, replayRes.hasStorageInconsistency, replayRes.unprovenColdReasons, metrics.hasUnpricedOmission, metrics.hasIncompleteOmission)
 
 	res := ComparisonResult{
 		SchemaVersion: 1,

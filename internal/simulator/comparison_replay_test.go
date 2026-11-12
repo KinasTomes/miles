@@ -1052,6 +1052,9 @@ func TestComparePoliciesStandardPackDeletionWithoutRefDoesNotSuppressGlacierComp
 				{RateID: "ddb.storage", Unit: "GB-Mo", Quantity: "1"},
 				{RateID: "ddb.write", Unit: "WriteRequestUnits", Quantity: "100"},
 			},
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "100"},
+			},
 		},
 		{
 			AtNS: 10 * dayNS,

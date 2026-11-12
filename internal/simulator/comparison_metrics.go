@@ -140,6 +140,10 @@ func calcSavings(directReport cost.Report, polReport cost.Report, currentLogical
 	return &s, &pct, indicativeDiff, hasUnpricedOmission, hasIncompleteOmission
 }
 
+// calcBreakEven calculates the logical data volume (GB) required for cumulative deduplication and
+// compression savings to offset the gateway's fixed infrastructure overhead.
+// Modeling assumption: ddb.storage is treated as fixed baseline metadata table overhead for the
+// trace duration; linear DynamoDB storage growth with higher logical footprint is not modeled.
 func calcBreakEven(polReport cost.Report, polBreakdown PolicyCostBreakdown, directReport cost.Report, directBreakdown PolicyCostBreakdown, directTotals map[string]*big.Rat, currentLogical uint64, trace Trace, monthDuration time.Duration) *string {
 	if directReport.CompleteTotalUSD == nil || polReport.CompleteTotalUSD == nil {
 		return nil
@@ -211,197 +215,93 @@ func calcBreakEven(polReport cost.Report, polBreakdown PolicyCostBreakdown, dire
 	return cost.BreakEven(monthlyFixedInfra, unitSaving)
 }
 
+func countTraceColdClasses(trace Trace) (hasIR, hasFlex bool, coldClassesInTrace int) {
+	for _, ev := range trace.Events {
+		for _, u := range ev.Usage {
+			switch {
+			case u.RateID == "s3.retrieval_ir":
+				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+					hasIR = true
+				}
+			case u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb":
+				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+					hasFlex = true
+				}
+			}
+		}
+	}
+	if hasIR {
+		coldClassesInTrace++
+	}
+	if hasFlex {
+		coldClassesInTrace++
+	}
+	return
+}
+
+func processEventColdRetrieval(polName PolicyName, trace Trace, event Event, eventIdx int, tracker *RestoreTracker, coldBytesRetrieved *uint64) (hasColdUsageForPolicy bool, hasIRInEvent bool, hasFlexInEvent bool, restoredPacksInEvent map[storage.PackRef]bool) {
+	restoredPacksInEvent = make(map[storage.PackRef]bool)
+	for _, u := range event.Usage {
+		switch {
+		case u.RateID == "s3.retrieval_ir":
+			if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+				hasIRInEvent = true
+				if polName == PolicyWarmGlacierIR {
+					b, ok := ratGBToBytes(q, trace.BytesPerGB)
+					if !ok || b > math.MaxUint64-*coldBytesRetrieved {
+						tracker.MarkUnproven(UnprovenColdRestoreDuration)
+						continue
+					}
+					*coldBytesRetrieved += b
+					hasColdUsageForPolicy = true
+				}
+			}
+		case u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb":
+			if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
+				hasFlexInEvent = true
+				if polName == PolicyWarmGlacierFlex {
+					b, ok := ratGBToBytes(q, trace.BytesPerGB)
+					if !ok || b > math.MaxUint64-*coldBytesRetrieved {
+						tracker.MarkUnproven(UnprovenColdRestoreDuration)
+						continue
+					}
+					*coldBytesRetrieved += b
+					hasColdUsageForPolicy = true
+
+					var packBytes uint64
+					if event.Tiering != nil && event.Tiering.Pack.Size > 0 {
+						packBytes = uint64(event.Tiering.Pack.Size)
+					}
+					pInfo, ok := tracker.RegisterRestore(eventIdx, event, trace, b, packBytes)
+					if ok && pInfo != nil {
+						restoredPacksInEvent[pInfo.PackRef] = true
+					}
+				}
+			}
+		}
+	}
+	return
+}
+
 func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 	if polName != PolicyWarmGlacierIR && polName != PolicyWarmGlacierFlex {
 		return nil
 	}
 	var coldBytesRetrieved uint64
 	var coldDeliveredBytes uint64
-	hasUnprovenColdDelivery := false
+	tracker := NewRestoreTracker()
 
-	type packRestoreInfo struct {
-		retrievedBytes  uint64
-		restoredUntilNS int64
-		expired         bool
-	}
-	restoredPacks := make(map[storage.PackRef]*packRestoreInfo)
+	_, _, coldClassesInTrace := countTraceColdClasses(trace)
 
-	var targetClass storage.StorageClass
-	switch polName {
-	case PolicyWarmGlacierIR:
-		targetClass = storage.GlacierIR
-	case PolicyWarmGlacierFlex:
-		targetClass = storage.Glacier
-	}
+	for eventIdx, event := range trace.Events {
+		tracker.ExpirePastDeadlines(event.AtNS)
 
-	// Count distinct cold classes that had retrieval/restore usage in the entire trace.
-	hasIRInTrace := false
-	hasFlexInTrace := false
-	for _, ev := range trace.Events {
-		for _, u := range ev.Usage {
-			switch {
-			case u.RateID == "s3.retrieval_ir":
-				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
-					hasIRInTrace = true
-				}
-			case u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb":
-				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
-					hasFlexInTrace = true
-				}
-			}
-		}
-	}
-	coldClassesInTrace := 0
-	if hasIRInTrace {
-		coldClassesInTrace++
-	}
-	if hasFlexInTrace {
-		coldClassesInTrace++
-	}
-
-	for _, event := range trace.Events {
-		hasColdUsageForPolicy := false
-		hasIRInEvent := false
-		hasFlexInEvent := false
-		packRestoredInThisEvent := make(map[storage.PackRef]bool)
+		hasColdUsageForPolicy, hasIRInEvent, hasFlexInEvent, restoredInThisEvent := processEventColdRetrieval(
+			polName, trace, event, eventIdx, tracker, &coldBytesRetrieved,
+		)
 
 		if polName == PolicyWarmGlacierFlex {
-			for _, p := range restoredPacks {
-				if event.AtNS >= p.restoredUntilNS {
-					p.expired = true
-				}
-			}
-		}
-
-		for _, u := range event.Usage {
-			switch {
-			case u.RateID == "s3.retrieval_ir":
-				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
-					hasIRInEvent = true
-					if polName == PolicyWarmGlacierIR {
-						gbFloat, _ := q.Float64()
-						b := uint64(gbFloat * float64(trace.BytesPerGB))
-						coldBytesRetrieved += b
-						hasColdUsageForPolicy = true
-					}
-				}
-			case u.RateID == "s3.restore_standard_gb" || u.RateID == "s3.restore_bulk_gb":
-				if q, ok := new(big.Rat).SetString(u.Quantity); ok && q.Sign() > 0 {
-					hasFlexInEvent = true
-					if polName == PolicyWarmGlacierFlex {
-						gbFloat, _ := q.Float64()
-						b := uint64(gbFloat * float64(trace.BytesPerGB))
-						if b > math.MaxUint64-coldBytesRetrieved {
-							hasUnprovenColdDelivery = true
-							continue
-						}
-						coldBytesRetrieved += b
-						hasColdUsageForPolicy = true
-						restoreDur, ok := trace.RestoreDuration(event)
-						if !ok {
-							hasUnprovenColdDelivery = true
-							continue
-						}
-						durNS := restoreDur.Nanoseconds()
-						if durNS <= 0 || durNS > math.MaxInt64-event.AtNS {
-							hasUnprovenColdDelivery = true
-							continue
-						}
-						expiry := event.AtNS + durNS
-
-						var packRef storage.PackRef
-						if event.Tiering != nil {
-							packRef = event.Tiering.Pack.Ref
-							if !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
-								eventTime := trace.Start.Add(time.Duration(event.AtNS))
-								if !event.Tiering.Pack.RestoredUntil.After(eventTime) {
-									expiry = event.AtNS
-								} else {
-									expiry = event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
-								}
-							}
-						}
-
-						pInfo := restoredPacks[packRef]
-						if pInfo == nil {
-							pInfo = &packRestoreInfo{}
-							restoredPacks[packRef] = pInfo
-						}
-						if b > math.MaxUint64-pInfo.retrievedBytes {
-							hasUnprovenColdDelivery = true
-							continue
-						}
-						pInfo.retrievedBytes += b
-
-						if !packRestoredInThisEvent[packRef] {
-							pInfo.restoredUntilNS = expiry
-							pInfo.expired = (event.AtNS >= expiry)
-							packRestoredInThisEvent[packRef] = true
-						} else {
-							if expiry > pInfo.restoredUntilNS {
-								pInfo.restoredUntilNS = expiry
-								pInfo.expired = (event.AtNS >= expiry)
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// If this event carries authoritative pack metadata for an already restored pack,
-		// update that pack's active restore window or detect expiry.
-		// Never allow an unrestored pack's metadata to extend or create a restore window (Finding 1 [P2]).
-		// Never allow metadata to reactivate an expired restore without a restore event (Case 1 [P2]).
-		// Always update active expiry to the authoritative observed deadline (Case 2 [P2]).
-		if polName == PolicyWarmGlacierFlex && event.Tiering != nil {
-			packRef := event.Tiering.Pack.Ref
-			pInfo := restoredPacks[packRef]
-			if pInfo != nil && pInfo.retrievedBytes > 0 {
-				eventTime := trace.Start.Add(time.Duration(event.AtNS))
-
-				if event.Tiering.Pack.State != "" && event.Tiering.Pack.State != "Restored" && event.Tiering.Pack.State != "Restoring" {
-					pInfo.expired = true
-					pInfo.restoredUntilNS = event.AtNS
-				}
-
-				if !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
-					isFutureExpiry := event.Tiering.Pack.RestoredUntil.After(eventTime)
-					packExpiryNS := event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
-
-					if packRestoredInThisEvent[packRef] {
-						// Restore occurred in this event: apply authoritative pack metadata.
-						if !isFutureExpiry {
-							pInfo.restoredUntilNS = event.AtNS
-							pInfo.expired = true
-						} else {
-							pInfo.restoredUntilNS = packExpiryNS
-							pInfo.expired = false
-						}
-					} else {
-						// No restore usage in this event.
-						if pInfo.expired || event.AtNS >= pInfo.restoredUntilNS {
-							// Pack was already expired!
-							// Case 1: Metadata cannot reactivate an expired restore without a restore event.
-							// If metadata claims a future restore window for an expired pack without restore usage,
-							// this indicates an unproven restore cycle whose physical restore cost is missing.
-							if isFutureExpiry {
-								hasUnprovenColdDelivery = true
-							}
-							pInfo.expired = true
-						} else {
-							// Pack is currently active.
-							// Case 2: Update expiry according to authoritative observed evidence,
-							// whether shorter (earlier deadline) or longer.
-							if !isFutureExpiry {
-								pInfo.restoredUntilNS = event.AtNS
-								pInfo.expired = true
-							} else {
-								pInfo.restoredUntilNS = packExpiryNS
-							}
-						}
-					}
-				}
-			}
+			tracker.ApplyAuthoritativeMetadata(event, trace, restoredInThisEvent)
 		}
 
 		coldClassesWithRetrievalInEvent := 0
@@ -412,137 +312,18 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 			coldClassesWithRetrievalInEvent++
 		}
 
-		// Check if this event claims cold delivery for targetClass.
-		var delivered uint64
-		hasDeliveryClaim := false
-
-		if len(event.ColdLogicalDeliveredByClass) > 0 {
-			if b, ok := event.ColdLogicalDeliveredByClass[targetClass]; ok && b > 0 {
-				delivered = b
-				hasDeliveryClaim = true
-			}
-			// When class-specific telemetry is present, NEVER fall back to scalar for missing class.
-		} else if event.ColdLogicalDeliveredBytes > 0 {
-			// Scalar telemetry fallback is only permitted when:
-			// 1. In this event, targetClass is the only cold class retrieved (if retrieval occurred in this event), OR
-			// 2. In this trace, targetClass is the only cold class retrieved anywhere (if delivery occurs after restore).
-			if hasColdUsageForPolicy && coldClassesWithRetrievalInEvent == 1 {
-				delivered = event.ColdLogicalDeliveredBytes
-				hasDeliveryClaim = true
-			} else if !hasColdUsageForPolicy && coldClassesInTrace == 1 {
-				delivered = event.ColdLogicalDeliveredBytes
-				hasDeliveryClaim = true
-			}
-		}
-
-		// For candidate Glacier policies (WarmGlacierIR, WarmGlacierFlex), client reads
-		// are served strictly through the Dedup Storage Gateway via gateway_to_client.
-		// Direct route s3_to_client belongs to the Direct S3 baseline topology and is
-		// never evidence of gateway-delivered cold reads.
 		clientTraffic := event.Traffic[cost.GatewayClient]
-
-		// If this event has a physical cold retrieval for this policy:
-		if hasColdUsageForPolicy {
-			// If the event has client traffic (gateway_to_client > 0) but lacks proven delivery telemetry:
-			if clientTraffic > 0 && !hasDeliveryClaim {
-				hasUnprovenColdDelivery = true
-				continue
-			}
+		delivered, ok := tracker.CheckDeliveryProvenance(
+			event, polName, trace, clientTraffic, hasColdUsageForPolicy,
+			coldClassesWithRetrievalInEvent, coldClassesInTrace,
+		)
+		if !ok {
+			return nil
 		}
-
-		if hasDeliveryClaim {
-			// Provenance check: verify the delivery can be linked to an active retrieval or restore.
-			if polName == PolicyWarmGlacierFlex {
-				if coldBytesRetrieved == 0 {
-					hasUnprovenColdDelivery = true
-					continue
-				}
-
-				// If event metadata carries RestoredUntil that is already expired at or before event time, fail closed.
-				if event.Tiering != nil && !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
-					eventTime := trace.Start.Add(time.Duration(event.AtNS))
-					if !event.Tiering.Pack.RestoredUntil.After(eventTime) {
-						hasUnprovenColdDelivery = true
-						continue
-					}
-				}
-
-				var packInfo *packRestoreInfo
-				if event.Tiering != nil && event.Tiering.Pack.Ref.ID != "" {
-					// Event explicitly references a specific pack by PackRef.ID + Generation.
-					packInfo = restoredPacks[event.Tiering.Pack.Ref]
-				} else {
-					// Event does not identify a specific pack by Ref.ID.
-					// Attribution is only sound when exactly one distinct pack was restored in the trace.
-					numRestored := 0
-					var solePack *packRestoreInfo
-					for _, p := range restoredPacks {
-						if p.retrievedBytes > 0 {
-							numRestored++
-							solePack = p
-						}
-					}
-					if numRestored == 1 {
-						packInfo = solePack
-					} else {
-						// Ambiguous (multiple packs restored) or no packs restored.
-						hasUnprovenColdDelivery = true
-						continue
-					}
-				}
-
-				// Finding 1 [P2]: The pack being read must have been restored (proven in numerator).
-				if packInfo == nil || packInfo.retrievedBytes == 0 {
-					hasUnprovenColdDelivery = true
-					continue
-				}
-
-				// Finding 2 [P3]: Check expiration (packInfo.expired or event.AtNS >= restoredUntilNS).
-				if packInfo.expired || event.AtNS >= packInfo.restoredUntilNS {
-					hasUnprovenColdDelivery = true
-					continue
-				}
-			} else if polName == PolicyWarmGlacierIR {
-				// For Glacier IR, reads are instant retrievals; delivery must occur in an event with s3.retrieval_ir.
-				if !hasColdUsageForPolicy {
-					hasUnprovenColdDelivery = true
-					continue
-				}
-			}
-
-			// Consistency check 1: Measured gateway-to-client traffic must be positive.
-			if clientTraffic == 0 {
-				hasUnprovenColdDelivery = true
-				continue
-			}
-
-			// Consistency check 2: The sum of cold deliveries across all classes in this event
-			// must not exceed measured client traffic, and must not overflow uint64.
-			totalColdDelivered, ok := event.TotalColdDeliveredBytes()
-			if !ok || totalColdDelivered > clientTraffic {
-				hasUnprovenColdDelivery = true
-				continue
-			}
-
-			// Consistency check 3: Cold delivery for this class must not exceed measured client traffic.
-			if delivered > clientTraffic {
-				hasUnprovenColdDelivery = true
-				continue
-			}
-
-			coldDeliveredBytes += delivered
-		} else {
-			// Even if this event does not claim delivery for targetClass, if it claims cold delivery
-			// for other classes, verify that total claimed cold delivery does not exceed measured traffic.
-			totalColdDelivered, ok := event.TotalColdDeliveredBytes()
-			if !ok || (totalColdDelivered > 0 && totalColdDelivered > clientTraffic) {
-				hasUnprovenColdDelivery = true
-				continue
-			}
-		}
+		coldDeliveredBytes += delivered
 	}
 
-	if hasUnprovenColdDelivery || coldBytesRetrieved == 0 || coldDeliveredBytes == 0 {
+	if tracker.HasUnprovenCold || coldBytesRetrieved == 0 || coldDeliveredBytes == 0 {
 		return nil
 	}
 	return cost.RestoreAmplification(coldBytesRetrieved, coldDeliveredBytes)

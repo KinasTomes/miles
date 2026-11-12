@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "name": "cloud-tiering-boundary",
+  "kind": "synthetic",
+  "region": "ap-southeast-1",
+  "profile": "cloud",
+  "metadata_backend": "dynamodb",
+  "topology": "Modelled Cloud gateway with an Internet client; not a DynamoDB runtime measurement",
+  "start": "2026-01-01T00:00:00Z",
+  "duration_ns": 2592000000000000,
+  "bytes_per_gb": 1073741824,
+  "storage_month_seconds": 2592000,
+  "policy_revision": 1,
+  "policy": {
+    "tiering": {"enabled": true, "warm_storage_class": "STANDARD", "cold_storage_class": "GLACIER_IR", "cold_after_days": 30, "min_pack_live_ratio": 0.8, "auto_restore": true, "auto_restore_days": 1, "auto_restore_tier": "Standard"},
+    "compression": {"enabled": true, "codec": "zstd", "level": 3, "min_saving_ratio": 0.1},
+    "chunking": {"min_bytes": 262144, "avg_bytes": 1048576, "max_bytes": 4194304}
+  },
+  "omissions": ["Full EC2/EBS/ALB/KMS/CloudWatch infrastructure and account-wide tier aggregation", "Minimum duration/size, archive metadata, restore and retries not exercised", "Storage month and GB divisor are explicit modelling assumptions"],
+  "events": [
+    {
+      "at_ns": 0,
+      "snapshot": {"bytes_logical": 3221225472, "bytes_unique_raw": 1073741824, "bytes_unique_stored": 536870912, "bytes_physical": 1073741824},
+      "write_counters": {"chunk_occurrences": 3, "dup_occurrences": 2, "revived_distinct_chunks": 0, "revived_bytes_stored": 0},
+      "traffic_bytes": {"client_to_gateway": 3221225472, "gateway_to_client": 3221225472, "gateway_to_s3_upload": 1073741824, "s3_to_gateway_download": 0, "metadata_control_plane": 4096, "inter_node": 0},
+      "usage": [{"rate_id": "s3.put_standard", "unit": "Requests", "quantity": "3"}, {"rate_id": "ddb.write", "unit": "WriteRequestUnits", "quantity": "8"}, {"rate_id": "transfer.internet_egress", "unit": "GB", "quantity": "3"}],
+      "billable_storage_bytes": {"STANDARD": 1073741824}
+    },
+    {
+      "at_ns": 2591999999999999,
+      "tiering": {
+        "pack": {"Version": 1, "Ref": {"ID": "candidate", "Generation": "generation-1"}, "Size": 100, "StateRevision": 1, "State": "Warm", "Class": "STANDARD", "LastAccess": "2026-01-01T00:00:00Z", "ProtectedUntil": "2026-01-01T00:16:00Z"},
+        "live_bytes": 80, "total_bytes": 100, "metadata": 1, "authority": 1, "safe_to_transition": 1
+      }
+    },
+    {
+      "at_ns": 2592000000000000,
+      "tiering": {
+        "pack": {"Version": 1, "Ref": {"ID": "candidate", "Generation": "generation-1"}, "Size": 100, "StateRevision": 1, "State": "Warm", "Class": "STANDARD", "LastAccess": "2026-01-01T00:00:00Z", "ProtectedUntil": "2026-01-01T00:16:00Z"},
+        "live_bytes": 80, "total_bytes": 100, "metadata": 1, "authority": 1, "safe_to_transition": 1
+      }
+    }
+  ]
+}

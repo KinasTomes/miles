@@ -2,6 +2,7 @@ package simulator
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,6 +114,9 @@ func TestComparePoliciesS3RateIsolationAcrossPolicies(t *testing.T) {
 				storage.Standard: oneGiB,
 			},
 			Usage: baseUsage,
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+			},
 		},
 	}
 
@@ -155,6 +159,9 @@ func TestComparePoliciesS3RateIsolationAcrossPolicies(t *testing.T) {
 				storage.Standard: oneGiB,
 			},
 			Usage: irUsage,
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+			},
 		},
 	}
 
@@ -198,13 +205,11 @@ func TestComparePoliciesS3RateIsolationAcrossPolicies(t *testing.T) {
 		t.Fatal("expected s3.put_ir line in WarmGlacierIR report")
 	}
 
-	// 2. Add Glacier Flexible operations (s3.put_glacier, s3.restore_bulk_requests, s3.restore_bulk_gb):
-	flexUsage := make([]cost.Usage, len(baseUsage), len(baseUsage)+3)
+	// 2. Add Glacier Flexible operations (s3.put_glacier):
+	flexUsage := make([]cost.Usage, len(baseUsage), len(baseUsage)+1)
 	copy(flexUsage, baseUsage)
 	flexUsage = append(flexUsage,
 		cost.Usage{RateID: "s3.put_glacier", Unit: "Requests", Quantity: "5000"},
-		cost.Usage{RateID: "s3.restore_bulk_requests", Unit: "Requests", Quantity: "20"},
-		cost.Usage{RateID: "s3.restore_bulk_gb", Unit: "GB", Quantity: "1"},
 	)
 
 	traceWithFlex := traceBase
@@ -220,6 +225,9 @@ func TestComparePoliciesS3RateIsolationAcrossPolicies(t *testing.T) {
 				storage.Standard: oneGiB,
 			},
 			Usage: flexUsage,
+			DirectUsage: []cost.Usage{
+				{RateID: "s3.put_standard", Unit: "Requests", Quantity: "10"},
+			},
 		},
 	}
 
@@ -249,5 +257,12 @@ func TestComparePoliciesS3RateIsolationAcrossPolicies(t *testing.T) {
 	}
 	if *resWithFlex.Policies[2].SavingsUSD != baseIRSavings {
 		t.Fatalf("WarmGlacierIR SavingsUSD changed with Flex ops: expected %q, got %q", baseIRSavings, *resWithFlex.Policies[2].SavingsUSD)
+	}
+
+	// Verify WarmGlacierIR lines do not contain s3.put_glacier
+	for _, l := range resWithFlex.Policies[2].Report.Lines {
+		if strings.Contains(l.RateID, "glacier") {
+			t.Fatalf("WarmGlacierIR report must not contain Glacier Flex line: %s", l.RateID)
+		}
 	}
 }
