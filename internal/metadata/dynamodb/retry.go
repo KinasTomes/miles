@@ -7,6 +7,7 @@ import (
 	"time"
 
 	s "github.com/KinasTomes/miles/internal/storage"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/smithy-go"
 )
@@ -21,6 +22,36 @@ func retryableRead(err error) bool {
 		return true
 	}
 	return false
+}
+
+// Discovery must keep successful physical pages when a later Scan is throttled.
+// Use service-scale backoff rather than transaction-CAS millisecond delays;
+// both the attempt limit and the caller's shutdown/authority budget still apply.
+func (m *Store) scanOutboxPage(ctx context.Context, input *ddb.ScanInput) (*ddb.ScanOutput, error) {
+	backoff := retry.NewExponentialJitterBackoff(2 * time.Second)
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		out, err := m.api.Scan(ctx, input)
+		if err == nil || !retryableRead(err) || attempt+1 >= max(1, m.maxAttempts) {
+			return out, err
+		}
+		delay, err := backoff.BackoffDelay(attempt+1, err)
+		if err != nil {
+			return nil, err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+		if m.onRetry != nil {
+			m.onRetry()
+		}
+	}
 }
 func (m *Store) readItem(ctx context.Context, input *ddb.GetItemInput) (*ddb.GetItemOutput, error) {
 	for attempt := 0; attempt < m.maxAttempts; attempt++ {
