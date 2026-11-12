@@ -95,7 +95,23 @@ func runNativeRuntime(t *testing.T, gcFlows bool, terminal string, coldClass ...
 	runSharedRuntimeFixture(t, gcFlows, false, false, terminal, coldClass...)
 }
 
+type nativeScenario func(context.Context, []Dependencies, *dynamodb.Store, *s3.Client, string, storage.Bucket, string)
+
+// Dataset capture always uses the versioned local fixture. The normal non-GC
+// fixture intentionally writes a default-policy regression object before handoff.
+func runNativeScenario(t *testing.T, scenario nativeScenario) {
+	runSharedRuntimeFixtureWithScenario(t, true, false, false, "", scenario)
+}
+
 func runSharedRuntimeFixture(t *testing.T, gcFlows, live, faultFlows bool, terminal string, coldClass ...coldFlowScenario) {
+	runSharedRuntimeFixtureWithScenario(t, gcFlows, live, faultFlows, terminal, nil, coldClass...)
+}
+
+func runSharedRuntimeFixtureWithScenario(t *testing.T, gcFlows, live, faultFlows bool, terminal string, scenario nativeScenario, coldClass ...coldFlowScenario) {
+	// Reject mixed workloads before creating clients or provisioning resources.
+	if scenario != nil && (!gcFlows || live || faultFlows || terminal != "" || len(coldClass) != 0) {
+		t.Fatal("dataset scenario requires a dedicated versioned local fixture")
+	}
 	var dEndpoint, sEndpoint *string
 	region := "ap-southeast-1"
 	if !live {
@@ -333,6 +349,10 @@ func runSharedRuntimeFixture(t *testing.T, gcFlows, live, faultFlows bool, termi
 	nodes[1].Admin.Finish(ctx, mutation)
 	if e != nil {
 		t.Fatal(e)
+	}
+	if scenario != nil {
+		scenario(ctx, nodes, m, clients.packs, c.PackBucket, bucket, tokenID+"."+tokenSecret)
+		return
 	}
 	if terminal != "" {
 		nativeTerminalFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, terminal, tokenID+"."+tokenSecret)

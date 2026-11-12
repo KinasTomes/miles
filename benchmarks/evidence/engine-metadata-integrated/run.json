@@ -1,0 +1,49 @@
+{
+  "backend": "dynamodb-local+s3-moto",
+  "dataset_manifest_sha256": "d1c22927f59278a124a703df74e5600fd39421e54feed267a57af668a32d1a08",
+  "finished_at": "2026-11-11T16:09:35.352518476Z",
+  "go_version": "go1.27.2",
+  "kind": "local-native-engine-metadata-smoke",
+  "limitations": [
+    "smoke only; no throughput/cost claim",
+    "snapshots approximate, not atomic",
+    "layout metadata-only; full GET hashes recorded separately",
+    "three sequential cohorts, not independent performance trials",
+    "all retained listed bytes include setup/control/history",
+    "temporary restore billing and infrastructure are not measured"
+  ],
+  "phases": [
+    {
+      "name": "empty",
+      "owners": 0,
+      "workload_finished_at": "2026-11-11T16:08:42.504274559Z",
+      "snapshot_id": "c8fd71ba987f2a55477a4568634a11d9"
+    },
+    {
+      "name": "owner-a",
+      "owners": 1,
+      "workload_finished_at": "2026-11-11T16:08:56.272851675Z",
+      "snapshot_id": "140c4641b293931cecf66a38b7c125de"
+    },
+    {
+      "name": "owner-b",
+      "owners": 2,
+      "workload_finished_at": "2026-11-11T16:09:09.202027743Z",
+      "snapshot_id": "248860417504394fd9293be2667f2676"
+    },
+    {
+      "name": "owner-c",
+      "owners": 3,
+      "workload_finished_at": "2026-11-11T16:09:25.592723611Z",
+      "snapshot_id": "eb5d63a4ece9bf7f6cbd9b85f4a1b5c9"
+    }
+  ],
+  "scheduler": "no periodic job runner; explicit bounded stats refresh",
+  "schema_version": 1,
+  "source_commit": "290337952751fb40134713deec635cdc87b3d4fe",
+  "source_dirty": false,
+  "started_at": "2026-11-11T16:08:41.195340358Z",
+  "status": "passed",
+  "test_binary_sha256": "ad0b0b443b1dfd178f29fbd5a6b1711a8fba1cd65ed672a937102ee29b300a06",
+  "transport": "object-service PUT/GET and authenticated Admin handlers; not a SigV4 front-door benchmark"
+}

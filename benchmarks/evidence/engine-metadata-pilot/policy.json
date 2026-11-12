@@ -1,0 +1,1 @@
+{"revision":1,"tiering":{"enabled":true,"warm_storage_class":"STANDARD","cold_storage_class":"GLACIER_IR","cold_after_days":30,"min_pack_live_ratio":8e-1,"auto_restore":true,"auto_restore_days":1,"auto_restore_tier":"Standard"},"compression":{"enabled":true,"codec":"zstd","level":3,"min_saving_ratio":1e-1},"chunking":{"min_bytes":262144,"avg_bytes":1048576,"max_bytes":4194304}}
