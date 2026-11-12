@@ -1,8 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,5 +67,48 @@ func TestShutdownJournalRetryPreservesDeadlineAndFencing(t *testing.T) {
 				t.Fatal("retried after fencing or the shutdown deadline", authority.calls)
 			}
 		})
+	}
+}
+
+func TestShutdownAttemptLogsClassifyWithoutRawErrors(t *testing.T) {
+	var out bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&out, nil)))
+	defer slog.SetDefault(old)
+	private := "secret-token-private-bucket"
+	authority := &rejectedRecoveryAuthority{err: fmt.Errorf("%s: %w", private, storage.ErrFenced)}
+	journal := journalRuntime{authority: authority, clock: clock.NewReal()}
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := journal.flush(ctx); !errors.Is(err, storage.ErrFenced) {
+		t.Fatal(err)
+	}
+	if strings.Contains(out.String(), private) {
+		t.Fatal("raw error leaked")
+	}
+	var last map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record["msg"] == "shutdown journal attempt" {
+			last = record
+		}
+	}
+	if last["attempt"] != float64(1) || last["stage"] != "acquire_authority" || last["work_failure"] != "fenced" || last["cleanup_failure"] != "none" || last["remaining_ms"].(float64) <= 0 {
+		t.Fatal("missing classified attempt outcome", last)
+	}
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nil, "none"}, {storage.ErrR1Busy, "r1_gate_busy"}, {storage.ErrUnavailable, "backend_unavailable"},
+		{storage.ErrClockUncertain, "clock_uncertainty_exceeded"}, {context.Canceled, "canceled"},
+		{context.DeadlineExceeded, "deadline_exceeded"}, {errors.New(private), "unknown"},
+	} {
+		if got := journalFailure(tc.err); got != tc.want {
+			t.Fatal(got, tc.want)
+		}
 	}
 }

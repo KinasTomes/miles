@@ -24,10 +24,55 @@ type journalRuntime struct {
 	authority jobs.Authority
 }
 
+type journalAttemptKey struct{}
+
+func journalFailure(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, storage.ErrR1Busy):
+		return "r1_gate_busy"
+	case errors.Is(err, storage.ErrFenced):
+		return "fenced"
+	case errors.Is(err, storage.ErrClockUncertain):
+		return "clock_uncertainty_exceeded"
+	case errors.Is(err, storage.ErrUnavailable):
+		return "backend_unavailable"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, storage.ErrConflict):
+		return "metadata_conflict"
+	case errors.Is(err, storage.ErrInvalid):
+		return "invalid_state"
+	default:
+		return "unknown"
+	}
+}
+
 func (j *journalRuntime) once(ctx context.Context, flush bool) (workErr, cleanupErr error) {
-	observe := func(stage string) {
+	started := time.Now()
+	stage := "acquire_authority"
+	attempt, _ := ctx.Value(journalAttemptKey{}).(int)
+	defer func() {
+		if !flush {
+			return
+		}
+		remaining := int64(0)
+		if deadline, ok := ctx.Deadline(); ok {
+			remaining = max(0, time.Until(deadline).Milliseconds())
+		}
+		slog.InfoContext(ctx, "shutdown journal attempt", "attempt", attempt,
+			"stage", stage, "work_failure", journalFailure(workErr), "cleanup_failure", journalFailure(cleanupErr),
+			"elapsed_ms", time.Since(started).Milliseconds(), "remaining_ms", remaining)
+	}()
+	observe := func(next string) {
 		if flush {
-			slog.InfoContext(ctx, "shutdown journal progress", "stage", stage)
+			if next != "close_authority" {
+				stage = next
+			}
+			slog.InfoContext(ctx, "shutdown journal progress", "stage", next, "attempt", attempt)
 		}
 	}
 	id := "recovery_supervisor"
@@ -72,8 +117,8 @@ func (j *journalRuntime) run(ctx context.Context) error {
 func (j *journalRuntime) flush(parent context.Context) error {
 	ctx, cancel := context.WithTimeout(parent, 8*time.Minute)
 	defer cancel()
-	for {
-		workErr, cleanupErr := j.once(ctx, true)
+	for attempt := 1; ; attempt++ {
+		workErr, cleanupErr := j.once(context.WithValue(ctx, journalAttemptKey{}, attempt), true)
 		retryable := errors.Is(workErr, storage.ErrR1Busy) || errors.Is(workErr, storage.ErrUnavailable)
 		if cleanupErr != nil || !retryable {
 			return errors.Join(workErr, cleanupErr)
