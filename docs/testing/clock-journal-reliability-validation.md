@@ -1,8 +1,9 @@
 # Clock and journal shutdown follow-up validation
 
 Updated 12 November 2026. PR #86 implements focused offline fixes after the
-[previous AWS run](aws-clock-recovery-validation.md). **This is not new AWS
-acceptance.** The [execution plan](../planning/clock-conflict-aws-diagnostics.md)
+[previous AWS run](aws-clock-recovery-validation.md). The [focused AWS recheck](focused-clock-shutdown-aws-validation.md)
+records one passing clock cycle and a failed stressed shutdown; cleanup status
+is tracked in that report. The [execution plan](../planning/clock-conflict-aws-diagnostics.md)
 defines the remaining live gates and cleanup.
 
 ## Reproduced mechanisms and changes
@@ -17,8 +18,9 @@ The scan change does **not** add an ordering index, avoid every full-table scan,
 retain an in-memory cursor across crashes, or guarantee progress under sustained
 capacity starvation. The existing frozen schema and sorted logical cursor remain
 unchanged. After retry exhaustion, a fresh flush may still rediscover work. The
-live run must establish whether these bounded corrections meet the existing
-eight-minute shutdown budget at Outbox read cap 128.
+live run failed the existing eight-minute shutdown budget at Outbox read cap
+128. Peers completed the remaining progress later; that does not satisfy the
+failed Edge invocation. Sustained-capacity progress needs another correction.
 
 Shutdown progress logs use only constant stage codes: authority acquisition,
 epoch discovery, historical sealing, current-page export, flush completion and
@@ -58,8 +60,9 @@ accepted reference restores bounded time. This validates Miles' guard, not
 Chrony's packet filtering or the physical cause of NTP delay variation.
 
 `deploy/chrony/aws-burst.conf` already contains `minpoll 2 maxpoll 4 burst`.
-It remains a candidate requiring configuration validation on the AWS host and
-two complete final-profile C1-to-C4 cycles with complete telemetry. No filter,
+It completed one live final-profile C1-to-C4 cycle with complete telemetry.
+The second cycle was not completed after the owner redirected the run to native
+throttling; this does not establish the original two-cycle criterion. No filter,
 freshness bound, uncertainty guard, lease budget or clock-step restriction is
 relaxed by this follow-up.
 

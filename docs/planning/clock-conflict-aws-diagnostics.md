@@ -8,10 +8,12 @@ does not authorize another AWS run.
 
 ## Implementation status and execution checklist
 
-Status: **offline fixes implemented; focused live validation pending**. Renewal
+Status: **offline fixes implemented; focused AWS shutdown acceptance failed**. Renewal
 causes survive read cancellation, Outbox retries retain successful scan pages,
 and export-receipt CAS retries retain their worker fence. The four-attempt
-Chrony profile is still an unvalidated candidate. See the
+Chrony profile completed one C1/C4 cycle with valid clock evidence. The full
+two-cycle criterion was reduced at owner steering; do not claim that criterion
+passed. The stressed Edge shutdown still exhausted its eight-minute budget. See the
 [local proof and remaining limits](../testing/clock-journal-reliability-validation.md).
 Keep the PR Draft until its live scope has evidence for review.
 
@@ -27,13 +29,20 @@ Reuse them; historical passing trials do not validate a new release/profile.
   capacity/time-budget acceptance remains a live gate.
 - [x] Replay the recorded clock freshness failure and fresh-reference recovery
   without changing guards or measurement filters (step 3). The packaged
-  four-attempt candidate still requires live evaluation.
+  four-attempt candidate completed one live C1/C4 cycle; the original two-cycle
+  criterion was not completed.
 - [x] Commit implemented parts separately and record focused/race/native local
   proof. Retain unresolved findings rather than marking them fixed.
-- [ ] Prepare a fresh concrete IAM/plan/cost/cleanup package for approval before
-  any paid AWS run; earlier grants and budget approvals are not reused.
-- [ ] After approval, validate the final release/profile, capture exact shutdown
-  proof, classify any PUT 409 and independently verify cleanup.
+- [x] Prepare and obtain approval for the concrete IAM/plan/cost/cleanup package
+  for the 12 November focused run; earlier grants were not reused.
+- [x] Run the approved comparison and native throttling experiment; record the
+  failed shutdown and reduced clock scope in the
+  [focused live report](../testing/focused-clock-shutdown-aws-validation.md).
+- [x] Finish cleanup: 117 managed resources destroyed, independent audit accepted
+  88 checks with only the two approved pending deletions; estimate 3.89 USD
+  before tax, not final billing.
+- [ ] Correct sustained-capacity shutdown progress and obtain fresh acceptance.
+  PUT 409 remains unclassified because it did not recur.
 
 Scope exclusions: no unrelated features, replacement time provider, blind
 mutation retries, wider IAM grants, capacity/timeout increases or changes to
@@ -166,8 +175,9 @@ Record the reproducer, fix commit, focused/race test results and remaining limit
 for each work item. The final paid report must include release/profile hashes,
 two complete cycles, classified request failures, native clock evidence, journal
 shutdown proof, strict teardown audit and cost. Update the runbook only with
-steps actually verified. No runtime changes or paid actions are part of this
-documentation handoff.
+steps actually verified. The initialization-only boundary applied to the original documentation handoff.
+The follow-up now includes the separately authorized implementation and focused
+AWS run; that run does not authorize another window.
 
 ## Status after the live comparison
 
@@ -303,3 +313,36 @@ source/profile/config hashes, baseline failure and correction evidence, C1/C4
 results, conflict findings, shutdown proof, final audit and cost estimate. The
 follow-up acceptance PR must retain its failed/unverified verdict until its own
 criteria pass; merging the diagnostic PR does not change those verdicts.
+
+
+## Remaining work after the focused recheck
+
+The focused run established real native read-limit throttling while historical
+closure/sealing and independent S3 verification succeeded. Edge still timed out
+exporting the current epoch, repeatedly acquiring authority and restarting
+current-page discovery. Peers later finished all current export progress. Preserve
+these separate observations; missing progress at the Edge timeout did not mean
+retained producer inputs were lost.
+
+Before another paid run:
+
+1. Add bounded classifications for each failed flush attempt and its stage using
+   existing safe diagnostics. The current stage logs cannot identify the exact
+   `workErr` behind every outer retry. Never log raw backend messages or keys.
+2. Reproduce sustained read-cap pressure using the retained history/current
+   inventory sizes, concurrent exporters and service-scale recovery windows.
+   The earlier single transient page fault was insufficient to establish this
+   eight-minute availability property. Measure completed logical pages and
+   repeated discovery separately from raw retry counts.
+3. Choose the owning discovery/backoff correction based on that reproducer.
+   Retain the frozen schema, ordering, exact closure, fencing and crash-safe
+   receipts unless a separate contract decision is justified. Do not simply
+   increase the table cap or shutdown deadline.
+4. Keep GET late-cancellation diagnosis separate. All candidate C4 client bytes
+   and SHA-256 checks passed without retry. A local final-emit cancellation
+   reproducer explains how the server can still return an error; the three
+   original IDs lack proxy byte evidence. Use the sanitized ID/byte trace to
+   classify a recurrence before changing public failure semantics or retries.
+5. Scope the next AWS proof to the remaining correction, reuse verified setup,
+   and obtain a fresh concrete paid window. Do not repeat full clock cycles or
+   unrelated suites merely because infrastructure is available.
