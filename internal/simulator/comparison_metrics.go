@@ -222,6 +222,7 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 	type packRestoreInfo struct {
 		retrievedBytes  uint64
 		restoredUntilNS int64
+		expired         bool
 	}
 	restoredPacks := make(map[storage.PackRef]*packRestoreInfo)
 
@@ -262,6 +263,15 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 		hasColdUsageForPolicy := false
 		hasIRInEvent := false
 		hasFlexInEvent := false
+		packRestoredInThisEvent := make(map[storage.PackRef]bool)
+
+		if polName == PolicyWarmGlacierFlex {
+			for _, p := range restoredPacks {
+				if event.AtNS >= p.restoredUntilNS {
+					p.expired = true
+				}
+			}
+		}
 
 		for _, u := range event.Usage {
 			switch {
@@ -303,7 +313,12 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 						if event.Tiering != nil {
 							packRef = event.Tiering.Pack.Ref
 							if !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
-								expiry = event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
+								eventTime := trace.Start.Add(time.Duration(event.AtNS))
+								if !event.Tiering.Pack.RestoredUntil.After(eventTime) {
+									expiry = event.AtNS
+								} else {
+									expiry = event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
+								}
 							}
 						}
 
@@ -317,28 +332,73 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 							continue
 						}
 						pInfo.retrievedBytes += b
-						if expiry > pInfo.restoredUntilNS {
+
+						if !packRestoredInThisEvent[packRef] {
 							pInfo.restoredUntilNS = expiry
+							pInfo.expired = (event.AtNS >= expiry)
+							packRestoredInThisEvent[packRef] = true
+						} else {
+							if expiry > pInfo.restoredUntilNS {
+								pInfo.restoredUntilNS = expiry
+								pInfo.expired = (event.AtNS >= expiry)
+							}
 						}
 					}
 				}
 			}
 		}
 
-		// If this event carries authoritative pack metadata with RestoredUntil for an already restored pack,
+		// If this event carries authoritative pack metadata for an already restored pack,
 		// update that pack's active restore window or detect expiry.
 		// Never allow an unrestored pack's metadata to extend or create a restore window (Finding 1 [P2]).
-		if polName == PolicyWarmGlacierFlex && event.Tiering != nil && !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
+		// Never allow metadata to reactivate an expired restore without a restore event (Case 1 [P2]).
+		// Always update active expiry to the authoritative observed deadline (Case 2 [P2]).
+		if polName == PolicyWarmGlacierFlex && event.Tiering != nil {
 			packRef := event.Tiering.Pack.Ref
 			pInfo := restoredPacks[packRef]
 			if pInfo != nil && pInfo.retrievedBytes > 0 {
 				eventTime := trace.Start.Add(time.Duration(event.AtNS))
-				if !event.Tiering.Pack.RestoredUntil.After(eventTime) {
+
+				if event.Tiering.Pack.State != "" && event.Tiering.Pack.State != "Restored" && event.Tiering.Pack.State != "Restoring" {
+					pInfo.expired = true
 					pInfo.restoredUntilNS = event.AtNS
-				} else {
+				}
+
+				if !event.Tiering.Pack.RestoredUntil.IsZero() && !trace.Start.IsZero() {
+					isFutureExpiry := event.Tiering.Pack.RestoredUntil.After(eventTime)
 					packExpiryNS := event.Tiering.Pack.RestoredUntil.Sub(trace.Start).Nanoseconds()
-					if packExpiryNS > pInfo.restoredUntilNS {
-						pInfo.restoredUntilNS = packExpiryNS
+
+					if packRestoredInThisEvent[packRef] {
+						// Restore occurred in this event: apply authoritative pack metadata.
+						if !isFutureExpiry {
+							pInfo.restoredUntilNS = event.AtNS
+							pInfo.expired = true
+						} else {
+							pInfo.restoredUntilNS = packExpiryNS
+							pInfo.expired = false
+						}
+					} else {
+						// No restore usage in this event.
+						if pInfo.expired || event.AtNS >= pInfo.restoredUntilNS {
+							// Pack was already expired!
+							// Case 1: Metadata cannot reactivate an expired restore without a restore event.
+							// If metadata claims a future restore window for an expired pack without restore usage,
+							// this indicates an unproven restore cycle whose physical restore cost is missing.
+							if isFutureExpiry {
+								hasUnprovenColdDelivery = true
+							}
+							pInfo.expired = true
+						} else {
+							// Pack is currently active.
+							// Case 2: Update expiry according to authoritative observed evidence,
+							// whether shorter (earlier deadline) or longer.
+							if !isFutureExpiry {
+								pInfo.restoredUntilNS = event.AtNS
+								pInfo.expired = true
+							} else {
+								pInfo.restoredUntilNS = packExpiryNS
+							}
+						}
 					}
 				}
 			}
@@ -437,8 +497,8 @@ func calcRestoreAmplification(polName PolicyName, trace Trace) *float64 {
 					continue
 				}
 
-				// Finding 2 [P3]: Check expiration at or after restoredUntilNS (event.AtNS >= restoredUntilNS).
-				if event.AtNS >= packInfo.restoredUntilNS {
+				// Finding 2 [P3]: Check expiration (packInfo.expired or event.AtNS >= restoredUntilNS).
+				if packInfo.expired || event.AtNS >= packInfo.restoredUntilNS {
 					hasUnprovenColdDelivery = true
 					continue
 				}
