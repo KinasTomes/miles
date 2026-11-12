@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/clock"
@@ -24,6 +25,11 @@ type journalRuntime struct {
 }
 
 func (j *journalRuntime) once(ctx context.Context, flush bool) (workErr, cleanupErr error) {
+	observe := func(stage string) {
+		if flush {
+			slog.InfoContext(ctx, "shutdown journal progress", "stage", stage)
+		}
+	}
 	id := "recovery_supervisor"
 	if flush {
 		suffix, e := storage.NewBucketID()
@@ -32,11 +38,13 @@ func (j *journalRuntime) once(ctx context.Context, flush bool) (workErr, cleanup
 		}
 		id = "shutdown_" + suffix
 	}
+	observe("acquire_authority")
 	f, err := j.authority.Acquire(ctx, id, "recovery")
 	if err != nil {
 		return fmt.Errorf("acquire recovery authority: %w", err), nil
 	}
 	defer func() {
+		observe("close_authority")
 		cleanup, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		cleanupErr = j.authority.Close(cleanup, f)
@@ -44,7 +52,7 @@ func (j *journalRuntime) once(ctx context.Context, flush bool) (workErr, cleanup
 			cleanupErr = fmt.Errorf("release recovery authority: %w", cleanupErr)
 		}
 	}()
-	w := recovery.Worker{Store: j.store, Payloads: j.store, Objects: j.objects, Catalog: j.catalog, Clock: j.clock, Fence: f}
+	w := recovery.Worker{Store: j.store, Payloads: j.store, Objects: j.objects, Catalog: j.catalog, Clock: j.clock, Fence: f, Observe: observe}
 	if flush {
 		return w.FlushSupervised(ctx), nil
 	}
