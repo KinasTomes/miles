@@ -1,6 +1,34 @@
 # Tái sử dụng bằng chứng AWS lịch sử cho benchmark
 
-**Trạng thái: inventory từ báo cáo công khai, chưa kiểm chứng lại raw private artifacts.** Các lần chạy này là *observed AWS evidence* cho workload cụ thể và release cụ thể, **không** tự trở thành kết quả benchmark chính thức. Không chạy AWS mới để lập inventory này. Nếu muốn kết luận performance, phải đối chiếu artifact gốc với checksum/provenance, thời gian đo, config, isolation và comparator thực tế theo [ma trận](benchmark-matrix.md) và [ngưỡng](thresholds.md).
+**Trạng thái: đã đối chiếu 16 `warmbench result.json` lịch sử và telemetry summary hiện có qua bộ tổng hợp read-only; nguồn AWS/Chrony độc lập vẫn giữ verdict gốc.** Các lần chạy này là *observed AWS evidence* cho workload cụ thể và release cụ thể, **không** tự trở thành kết quả benchmark chính thức. Không chạy AWS mới để lập inventory này. Nếu muốn kết luận performance, phải đối chiếu artifact gốc với checksum/provenance, thời gian đo, config, isolation và comparator thực tế theo [ma trận](benchmark-matrix.md) và [ngưỡng](thresholds.md).
+
+## Kết quả raw reconciliation (offline, 12/11/2026)
+
+Bộ chọn 16 file kết quả có tên rõ ràng ở [aws-history-selection.json](evidence/aws-history-selection.json). Bộ tổng hợp [reuse_aws_evidence.py](../scripts/reuse_aws_evidence.py) chỉ đọc file private tại vị trí operator chỉ định, đối chiếu manifest 90 file, tổng bytes, từng mẫu PUT/HEAD/GET, các trường SHA-256, trạng thái fail/skip, thời gian, hash binary/release và summary clock (nếu có). Chỉ những trường an toàn được xuất ra [sanitized evidence](evidence/aws-historical-edge-summary.json) cùng `artifact_sha256` của raw input.
+
+| Nhóm lịch sử | Tổng trial | Warm PUT/HEAD/4×GET verified | Failed/incomplete | Tác dụng |
+|---|---:|---:|---:|---|
+| PR #76 — 3 phiên Edge ngày 11/11 | 12 | 8 | 4 | Edge Warm C1/C4, clock, fail-fast/cancellation và các regression khác release |
+| PR #86 — focused recheck 12/11 | 4 | 3 | 1 | Candidate Edge C1/C4 một chu kỳ, baseline C1 clock chưa đủ, extra C1 bị dừng |
+| **Tổng** | **16** | **11** | **5** | **Raw-backed client workload evidence, không phải benchmark chính thức** |
+
+Kết quả minh họa từ **raw per-phase**: PR #86 final candidate Edge C1 PUT **4,392 MB/s**, Edge C4 PUT **5,443 MB/s** (decimal MB/s, không phải network wire). Từng phép đo giữ elapsed, N, p95 và hash nguồn riêng trong JSON. Không tính ratio BEN-03 vì thiếu đối chứng direct-S3 ghép cùng trial/source. `warm_workload_verified=true` chỉ nghĩa là **client PUT/HEAD/GET đã hoàn tất và mẫu SHA khớp manifest**; không chứng minh domain reset, cache/cost accounting, R1/R2/Cold hoặc không lỗi ở phiên khác.
+
+**Phân biệt clock:** Report gốc vẫn báo một số trial `OK` nhưng `window_end_utc` của telemetry summary sớm hơn `finished_at` trong `result.json` (ví dụ một số run #86); raw summary lưu đồng thời `reported_verified` và `window_encloses_run=false`. Không tự nâng thành **clock verified bởi bộ đối chiếu mới**; cần đối chiếu chứng từ đồng bộ/đầu-cuối recorder của phiên nếu dùng clock làm acceptance gate. Các trial có summary `UNVERIFIED` vẫn giữ nguyên.
+
+Cách tái tạo trên **operator host được phép đọc**, không AWS API:
+
+```bash
+python3 -B scripts/reuse_aws_evidence.py \
+  --selection benchmarks/evidence/aws-history-selection.json \
+  --root pr76-early=/private/owned/pr76-first-session \
+  --root pr76-mid=/private/owned/pr76-second-session \
+  --root pr76-late=/private/owned/pr76-third-session \
+  --root pr86=/private/owned/pr86-session \
+  --out /private/owned/new-sanitary-summary.json
+```
+
+Các đường dẫn là placeholder do operator tự thay, không phải thư mục thực được đăng công khai. Output phải chưa tồn tại, được tạo quyền 0600. **Không** chạy lệnh này trên AWS host để tạo lại tài nguyên hoặc phục hồi credentials. Không commit raw result, per-file names/hashes, credentials, Terraform state hay node telemetry. Kiểm tra `artifact_sha256` khi đối soát với bản raw được bảo quản; SHA nguồn không tự chứng minh attestation AWS độc lập. Tham chiếu sample giữa raw dataset manifest và object logic đã kiểm; file payload gốc không được regenerate/re-hash trong bước import.
 
 ## Nguồn và khả năng dùng lại
 
@@ -32,4 +60,4 @@
 3. Gom theo **same binary + policy + Chrony profile + dataset + comparator topology + isolation + interval**. Không coi hai phiên khác release/profile, trial bị fail hoặc session-level cost là repetitions của cùng benchmark. Giữ `reported`, `raw-verified`, `matched`, `incomplete`, `failed` khác nhau.
 4. Khi thiếu artifact, ghi `INCOMPLETE` và liệt kê chính xác số đo còn thiếu; không chạy AWS mới chỉ để lấp bảng. Việc dùng kết quả AWS lịch sử không cho phép tự phê duyệt threshold, phí AWS mới hoặc đóng task.
 
-**Kết luận:** Thừa hưởng được nhiều **bằng chứng Warm Edge, integrity, clock, recovery và lỗi thực**. Chưa đủ điều kiện chốt các ngưỡng tiết kiệm, throughput so direct S3, default-vs-separated domains và cross-domain/Cold. Mọi kết luận phải kèm đúng source/phiên và limitations.
+**Kết luận:** Đã có 16 raw client runs được đối soát ở mức manifest/sample; thừa hưởng được nhiều **bằng chứng Warm Edge, integrity, clock, recovery và lỗi thực**. Chưa đủ điều kiện chốt các ngưỡng tiết kiệm, throughput so direct S3, default-vs-separated domains và cross-domain/Cold. Mọi kết luận phải kèm đúng source/phiên và limitations.
