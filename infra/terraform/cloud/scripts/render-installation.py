@@ -50,6 +50,8 @@ def render(configuration):
     mfa = require(r"arn:aws:iam::" + account + r":mfa/[A-Za-z0-9_+=,.@/-]+", operator["mfa_arn"], "operator.mfa_arn")
     deploy = require(r"arn:aws:iam::" + account + r":role/[A-Za-z0-9_+=,.@/-]+", operator["deploy_role_arn"], "operator.deploy_role_arn")
     runtime_names = {name + "-" + suffix for suffix in ("gateway", "jobs", "edge", "edge-bootstrap")}
+    if values.get("enable_acceptance_nodes") is True:
+        runtime_names.update(name + "-acceptance-" + node for node in ("edge", "client"))
     if deploy.rsplit("/", 1)[-1] in runtime_names:
         raise ValueError("Deploy role name must be separate from runtime roles")
     profile = require(r"[A-Za-z0-9_-]+", operator["terraform_profile"], "operator.terraform_profile")
@@ -116,6 +118,21 @@ def render(configuration):
             condition = statement.get("Condition", {}).get("StringEquals", {})
             if "ec2:InstanceType" in condition:
                 condition["ec2:InstanceType"] = sorted({instance_type, fleet_type})
+    if values.get("enable_acceptance_nodes") is True:
+        roles = [f"arn:aws:iam::{account}:role{path}{name}-acceptance-{node}" for node in ("edge", "client")]
+        profiles = [arn.replace(":role/", ":instance-profile/") for arn in roles]
+        for statement in output["iam/deploy-runtime-roles.json"]["Statement"]:
+            for kind, resources in ((":role/", roles), (":instance-profile/", profiles)):
+                if any(kind in arn for arn in statement["Resource"]):
+                    statement["Resource"].extend(resources)
+        for statement in output["iam/deploy-compute.json"]["Statement"]:
+            condition = statement.get("Condition", {}).get("StringEquals", {})
+            if "ec2:InstanceProfile" in condition:
+                condition["ec2:InstanceProfile"] = [condition["ec2:InstanceProfile"], *profiles]
+        assets = f"arn:aws:s3:::{name}-data-{account}-{region}/acceptance-assets/*"
+        output["iam/deploy-provision.json"]["Statement"][0]["Resource"].append(assets)
+        output["iam/runtime-boundary.json"]["Statement"].append({
+            "Sid": "ReadPinnedAcceptanceAssets", "Effect": "Allow", "Action": ["s3:GetObjectVersion"], "Resource": [assets]})
     output["backend.hcl"] = (
         f'bucket = "{state_bucket}"\nkey = "{state_key}"\nregion = "{region}"\n'
         f'encrypt = true\nuse_lockfile = true\nprofile = "{profile}"\n'

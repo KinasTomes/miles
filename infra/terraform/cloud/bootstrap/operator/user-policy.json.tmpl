@@ -31,6 +31,12 @@
       "Effect": "Deny",
       "Action": "iam:CreateAccessKey",
       "Resource": "*"
+    },
+    {
+      "Sid": "NeverAssumeOtherRoles",
+      "Effect": "Deny",
+      "Action": "sts:AssumeRole",
+      "NotResource": "{{DEPLOY_ROLE_ARN}}"
     }
   ]
 }

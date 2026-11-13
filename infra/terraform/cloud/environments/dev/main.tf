@@ -187,6 +187,10 @@ module "acceptance" {
   name                       = local.name
   region                     = var.region
   account_id                 = var.account_id
+  runtime_iam_path           = var.runtime_iam_path
+  environment                = var.environment
+  owner                      = var.owner
+  architecture               = var.release_architecture
   ami_id                     = var.ami_id
   instance_type              = var.fleet_instance_type
   subnet_id                  = module.network.private_subnets[local.zones[0]]

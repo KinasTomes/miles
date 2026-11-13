@@ -1,5 +1,6 @@
 """Installation inputs must scope every generated artifact to the same identity."""
 import copy
+from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 import importlib.util
 import json
@@ -20,6 +21,26 @@ def fixture():
 
 
 class InstallationTests(unittest.TestCase):
+    def test_operator_cannot_assume_other_roles_or_reassign_resource_ownership(self):
+        config = fixture()
+        output = installation.render(config)
+        user = output["iam/user-policy.json"]["Statement"]
+        deny = next(s for s in user if s["Sid"] == "NeverAssumeOtherRoles")
+        self.assertEqual(deny["Effect"], "Deny")
+        self.assertEqual(deny["Action"], "sts:AssumeRole")
+        self.assertEqual(deny["NotResource"], config["operator"]["deploy_role_arn"])
+        guard = output["iam/deploy-isolation.json"]["Statement"]
+        for key, value in [("Project", "Miles"), ("Environment", config["environment"]), ("Installation", config["installation_name"])]:
+            for kind, sid in [("Resource", "DoNotClaimForeign"), ("Request", "DoNotChangeOwnership")]:
+                statement = next(s for s in guard if s["Sid"] == sid + key)
+                tag = "aws:" + kind + "Tag/" + key
+                self.assertEqual(statement["Effect"], "Deny")
+                self.assertIn("rolesanywhere:TagResource", statement["Action"])
+                self.assertIn("acm:AddTagsToCertificate", statement["Action"])
+                self.assertEqual(statement["Condition"], {"Null": {tag:"false"}, "StringNotEquals": {tag:value}})
+        removal = next(s for s in guard if s["Sid"] == "KeepOwnershipLabels")
+        self.assertEqual(removal["Condition"]["ForAnyValue:StringEqualsIgnoreCase"]["aws:TagKeys"], ["Project", "Environment", "Installation"])
+
     def test_profile_cleanup_is_scoped_to_the_installation_profiles(self):
         config = fixture()
         policy = installation.render(config)["iam/deploy-runtime-roles.json"]
@@ -36,6 +57,33 @@ class InstallationTests(unittest.TestCase):
                        prefix.replace("123456789012", "210987654321") + "miles-member-test-gateway",
                        config["operator"]["deploy_role_arn"]):
             self.assertFalse(any(fnmatchcase(denied, resource) for resource in allowed_resources))
+
+    def test_private_acceptance_identities_are_opt_in_and_bounded(self):
+        config = fixture()
+        original = installation.render(config)
+        self.assertNotIn("-acceptance-", json.dumps(original["iam/deploy-runtime-roles.json"]))
+        config["enable_acceptance_nodes"] = True
+        output = installation.render(config)
+        prefix = "arn:aws:iam::123456789012:"
+        roles = [prefix + "role/miles/member/miles-member-test-acceptance-" + node for node in ("edge", "client")]
+        profiles = [role.replace(":role/", ":instance-profile/") for role in roles]
+        for statement in output["iam/deploy-runtime-roles.json"]["Statement"]:
+            if statement["Sid"] in ("CreateBoundedRuntimeRoles", "ManageRuntimeRoles", "PassOnlyRuntimeRoles"):
+                self.assertTrue(set(roles).issubset(statement["Resource"]))
+            if statement["Sid"] in ("ManageRuntimeProfiles", "DeleteRuntimeProfiles"):
+                self.assertTrue(set(profiles).issubset(statement["Resource"]))
+            if "iam:CreateRole" in statement["Action"]:
+                self.assertEqual(statement["Condition"]["StringEquals"]["iam:PermissionsBoundary"], config["runtime_permissions_boundary_arn"])
+        launch = next(s for s in output["iam/deploy-compute.json"]["Statement"] if s["Sid"] == "LaunchTaggedRuntime")
+        self.assertTrue(set(profiles).issubset(launch["Condition"]["StringEquals"]["ec2:InstanceProfile"]))
+        assets = next(s for s in output["iam/runtime-boundary.json"]["Statement"] if s["Sid"] == "ReadPinnedAcceptanceAssets")
+        self.assertEqual(assets["Resource"], ["arn:aws:s3:::miles-member-test-data-123456789012-ap-southeast-1/acceptance-assets/*"])
+        self.assertLessEqual(len(output["operator.tfvars.json"]["deploy_documents"]), 9)
+        config["operator"]["cleanup_expires_at"] = (datetime.now(timezone.utc) + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.assertLessEqual(len(installation.render(config)["operator.tfvars.json"]["deploy_documents"]), 9)
+        config["operator"]["deploy_role_arn"] = roles[0]
+        with self.assertRaisesRegex(ValueError, "separate"):
+            installation.render(config)
 
     def test_two_accounts_regions_and_prefixes_stay_independent(self):
         for account, region, name in [("123456789012", "ap-southeast-1", "miles-member-test"),
