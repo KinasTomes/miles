@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare, plan and operate a fresh Miles installation using temporary AWS logins."""
+"""Prepare, plan and operate Miles with new or externally managed bootstrap resources."""
 import argparse
 import base64
 import csv
@@ -62,6 +62,7 @@ class AWSFailure(RuntimeError):
 class Installation:
     def __init__(self, config, directory):
         self.configuration = read(config)
+        self.bootstrap_mode = self.configuration.get("bootstrap_mode", "new")
         inputs.render(self.configuration)  # Validate identities before producing artifacts or calling AWS.
         self.private = directory.resolve()
         if self.private.is_relative_to(REPO) or directory.is_symlink():
@@ -178,7 +179,7 @@ class Installation:
             inputs.write(configuration, self.private / "rendered")
         elif read(self.private / "rendered/installation.tfvars.json") != inputs.render(configuration)["installation.tfvars.json"]:
             raise ValueError("Prepared inputs differ from the retained artifacts")
-        for name in ("operator", "state"):
+        for name in (("operator", "state") if self.bootstrap_mode == "new" else ()):
             destination = self.private / name
             destination.mkdir(mode=0o700, exist_ok=True)
             for file in (CLOUD / "bootstrap" / name).glob("*.tf"):
@@ -186,7 +187,8 @@ class Installation:
             shutil.copyfile(CLOUD / "bootstrap" / name / ".terraform.lock.hcl", destination / ".terraform.lock.hcl")
         shutil.copytree(CLOUD, self.private / "cloud", dirs_exist_ok=True, ignore=shutil.ignore_patterns(
             ".terraform", "terraform.tfstate*", "*.tfplan", "__pycache__", "*.tfvars", "*.tfvars.json",
-            "override.tf", "*_override.tf", "override.tf.json", "*_override.tf.json"))
+            "override.tf", "*_override.tf", "override.tf.json", "*_override.tf.json",
+            *(("bootstrap",) if self.bootstrap_mode == "existing" else ())))
         self.state.update(prepared=True, source_commit=run(["git", "rev-parse", "HEAD"], cwd=REPO).strip())
         self.persist()
 
@@ -209,7 +211,28 @@ class Installation:
             arguments.append("-backend-config=" + str(backend))
         self.terraform(self.stack(stage), *arguments, admin=stage == "operator")
 
+    def bootstrap_stage(self, stage):
+        if self.bootstrap_mode == "existing" and stage in ("operator", "state"):
+            raise ValueError("Existing bootstrap is externally managed; operator/state plan and apply are disabled")
+
+    def verify_bootstrap(self):
+        if self.bootstrap_mode != "existing" or not self.state.get("prepared"):
+            raise ValueError("Existing bootstrap verification requires prepare and bootstrap_mode=existing")
+        self.state.pop("existing_bootstrap", None)
+        (self.private / "bootstrap-verification.json").unlink(missing_ok=True)
+        self.persist()
+        self.identity()
+        spec = importlib.util.spec_from_file_location("existing_bootstrap", CLOUD / "scripts/existing-bootstrap.py")
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        proof = verifier.verify(self.aws, read(self.private / "rendered/bootstrap-inventory.json"), self.state, self.private)
+        save(self.private / "bootstrap-verification.json", proof)
+        self.state["existing_bootstrap"] = proof
+        self.persist()
+        return proof
+
     def plan(self, stage):
+        self.bootstrap_stage(stage)
         if not self.state.get("prepared"):
             raise ValueError("Run prepare first")
         if self.state.get("destroy_applied") and stage != "operator":
@@ -219,8 +242,9 @@ class Installation:
         if stage == "active" and self.state.get("unprotect_applied"):
             raise ValueError("Restore datastore protections before resuming an unprotected runtime")
         prerequisites = {"state":"operator_applied", "foundation":"state_applied", "active":"provisioned", "paused":"active_applied"}
-        if stage in prerequisites and not self.state.get(prerequisites[stage]):
+        if stage in prerequisites and not (stage == "foundation" and self.bootstrap_mode == "existing") and not self.state.get(prerequisites[stage]):
             raise ValueError("Complete the prerequisite installation stage first")
+        bootstrap = self.verify_bootstrap() if self.bootstrap_mode == "existing" else None
         if stage == "destroy" and not self.state.get("unprotect_applied"):
             raise ValueError("Apply the reviewed protection update before creating the destroy plan")
         if stage in ("unprotect", "destroy"):
@@ -266,15 +290,21 @@ class Installation:
         digest = hashlib.sha256(file.read_bytes()).hexdigest()
         descriptor = {"stage": stage, "sha256": digest, "configuration_sha256": self.state["configuration_sha256"],
                       "changes": [{"address": r["address"], "actions": r["change"]["actions"]} for r in plan.get("resource_changes", [])]}
+        if bootstrap:
+            descriptor["bootstrap_fingerprint"] = bootstrap["fingerprint"]
         save(self.private / (stage + "-plan.json"), descriptor)
         print(json.dumps(descriptor, indent=2))
 
     def apply(self, stage, expected_hash, delete_data=False):
+        self.bootstrap_stage(stage)
         file = self.private / (stage + ".tfplan")
         descriptor = read(self.private / (stage + "-plan.json"))
         if hashlib.sha256(file.read_bytes()).hexdigest() != expected_hash or descriptor["sha256"] != expected_hash or descriptor["configuration_sha256"] != self.state["configuration_sha256"]:
             raise ValueError("Saved plan hash or installation inputs differ from the reviewed plan")
         self.identity(stage == "operator")
+        if self.bootstrap_mode == "existing":
+            if self.verify_bootstrap()["fingerprint"] != descriptor.get("bootstrap_fingerprint"):
+                raise ValueError("Existing bootstrap changed after plan review; replan before apply")
         if stage == "active":
             if not self.state.get("active_started_at"):
                 self.state["active_started_at"] = datetime.now(timezone.utc).isoformat()
@@ -290,6 +320,9 @@ class Installation:
                 if not delete_data or not self.operator.get("cleanup_expires_at"):
                     raise ValueError("Destroy requires an approved cleanup grant and --delete-data")
                 self.empty_bucket()
+            if stage == "foundation" and self.bootstrap_mode == "existing":
+                self.state["foundation_apply_started"] = True
+                self.persist()
             self.terraform(self.stack(stage), "apply", "-input=false", "-lock-timeout=60s", str(file), admin=stage == "operator")
             applied[stage] = expected_hash
             self.state[stage + "_applied"] = True
@@ -380,6 +413,8 @@ class Installation:
     def provision(self):
         self.check_source()
         self.identity()
+        if self.bootstrap_mode == "existing":
+            self.verify_bootstrap()
         if not self.state.get("foundation_applied") or self.state.get("destroy_applied"):
             raise ValueError("Provision requires a retained foundation")
         inventory = self.inventory()
@@ -511,7 +546,10 @@ class Installation:
         save(self.private / "cleanup-evidence.json", {"source_commit":self.state["source_commit"],
              "runtime_state_empty":True, "instances_volumes_vpcs_absent":True, "datastores_absent":True,
              "kms_secrets_pending_deletion":True, "bootstrap_state_retained":True})
-        print("Runtime cleanup verified. Remove cleanup_expires_at and review/apply the operator plan to revoke cleanup permissions.")
+        if self.bootstrap_mode == "existing":
+            print("Runtime cleanup verified. External IAM/backend retained; ask their owner to review cleanup permissions.")
+        else:
+            print("Runtime cleanup verified. Remove cleanup_expires_at and review/apply the operator plan to revoke cleanup permissions.")
 
     def nodes(self):
         inventory = self.inventory()
@@ -608,7 +646,7 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--private", type=Path, required=True)
     sub = parser.add_subparsers(dest="command", required=True)
-    for command in ("prepare", "provision", "verify", "closeout"):
+    for command in ("prepare", "verify-bootstrap", "provision", "verify", "closeout"):
         sub.add_parser(command)
     for command in ("plan", "apply"):
         child = sub.add_parser(command)
@@ -626,7 +664,9 @@ def main():
             elif args.command == "apply":
                 installation.apply(args.stage, args.plan_sha256, args.delete_data)
             else:
-                getattr(installation, args.command)()
+                getattr(installation, args.command.replace("-", "_"))()
+                if args.command == "verify-bootstrap":
+                    print("Existing bootstrap verified; private proof saved. No bootstrap resources changed.")
     except (ValueError, RuntimeError) as error:
         raise SystemExit(str(error)) from None
     except (OSError, KeyError, subprocess.TimeoutExpired):

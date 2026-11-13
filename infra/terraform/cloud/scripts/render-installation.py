@@ -25,6 +25,11 @@ def render(configuration):
     if not isinstance(configuration, dict) or not isinstance(configuration.get("operator"), dict):
         raise ValueError("Installation and operator must be objects")
     values = dict(configuration)
+    mode = values.pop("bootstrap_mode", "new")
+    if mode not in ("new", "existing"):
+        raise ValueError("bootstrap_mode must be new or existing")
+    if mode == "existing" and not {"installation_name", "environment", "runtime_iam_path"} <= values.keys():
+        raise ValueError("Existing bootstrap needs explicit installation ownership and IAM path")
     operator = values.pop("operator")
     deployment = values.pop("deployment", {})
     if not isinstance(deployment, dict) or deployment.keys() - {"max_cost_usd", "max_active_minutes"}:
@@ -33,7 +38,7 @@ def render(configuration):
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError("Deployment limits must be positive numbers")
     known_variables = set(re.findall(r'variable "([a-z0-9_]+)"', (CLOUD / "environments/dev/variables.tf").read_text()))
-    if values.keys() - known_variables or operator.keys() - {"user_arn", "mfa_arn", "deploy_role_arn", "terraform_profile", "state_key", "audit_expires_at", "cleanup_expires_at", "utc_reference", "login_profile", "admin_profile"}:
+    if values.keys() - known_variables or operator.keys() - {"user_arn", "mfa_arn", "deploy_role_arn", "terraform_profile", "state_key", "state_bucket", "audit_expires_at", "cleanup_expires_at", "utc_reference", "login_profile", "admin_profile"}:
         raise ValueError("Unknown installation/operator field")
     account = require(r"[0-9]{12}", values["account_id"], "account_id")
     region = require(r"(af|ap|ca|eu|il|me|mx|sa|us)-[a-z]+-[0-9]+", values.get("region", "ap-southeast-1"), "region")
@@ -76,6 +81,14 @@ def render(configuration):
                   runtime_iam_path=path, instance_type=instance_type,
                   edge_certificate_common_name=common_name, deploy_role_arn=None)
     state_bucket = name + "-tfstate-" + account + "-" + region
+    if "state_bucket" in operator:
+        if mode != "existing":
+            raise ValueError("state_bucket override requires existing bootstrap")
+        state_bucket = require(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]", operator["state_bucket"], "operator.state_bucket")
+        if ".." in state_bucket:
+            raise ValueError("Invalid operator.state_bucket")
+    if state_bucket == name + "-data-" + account + "-" + region:
+        raise ValueError("State and data buckets must be separate")
     if len(state_bucket) > 63 or len(name + "-data-" + account + "-" + region) > 63:
         raise ValueError("Installation/Region combination exceeds S3 bucket name limits")
     replacements = {
@@ -103,6 +116,9 @@ def render(configuration):
     output = {
         "installation.tfvars.json": values,
         "bootstrap-state.tfvars.json": {key: values[key] for key in ("account_id", "region", "installation_name", "environment", "owner")},
+        "bootstrap-inventory.json": {"account_id": account, "region": region, "role_arn": deploy,
+            "user_arn": user, "boundary_arn": boundary, "state_bucket": state_bucket, "state_key": state_key,
+            "tags": {"Project": "Miles", "Installation": name, "Environment": environment, "Owner": owner}},
     }
     for template in sorted((CLOUD / "bootstrap/operator").glob("*.json.tmpl")):
         if template.name == "teardown-audit.json.tmpl" and expires is None:
@@ -137,6 +153,9 @@ def render(configuration):
         f'bucket = "{state_bucket}"\nkey = "{state_key}"\nregion = "{region}"\n'
         f'encrypt = true\nuse_lockfile = true\nprofile = "{profile}"\n'
     )
+    if mode == "existing":
+        return {key: value for key, value in output.items()
+                if key in ("installation.tfvars.json", "bootstrap-inventory.json", "backend.hcl", "iam/deploy-bootstrap-read.json")}
     # Shard complete deploy permissions within default IAM attachment/document quotas.
     documents = {}
     statements = []
