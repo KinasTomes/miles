@@ -52,8 +52,9 @@ def identity(source, verify_release=True):
     document = json.loads(fetch("http://169.254.169.254/latest/dynamic/instance-identity/document",
                                headers={"X-aws-ec2-metadata-token": token}))
     startup = json.loads(Path("/etc/miles/startup.json").read_text())
+    expected_health = "127.0.0.1:9100" if startup["profile"] == "edge" else document["privateIp"]+":9100"
     if (startup["profile"] not in {"cloud", "edge"} or startup["runtime_node_id"] != document["instanceId"]
-            or startup["health_address"] != document["privateIp"]+":9100"):
+            or startup["health_address"] != expected_health):
         raise ValueError("Cloud runtime does not match native EC2 identity")
     pid = subprocess.check_output(["systemctl", "show", "miles.service", "-p", "MainPID", "--value"],
                                   text=True, timeout=3).strip()

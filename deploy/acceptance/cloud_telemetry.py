@@ -43,7 +43,7 @@ def targets(r):
                     and instance["State"]["Name"] == "running", "Cloud target installation/tag mismatch")
             node = instance["InstanceId"]
             require(node not in found, "Duplicate instance in diagnostic inventory")
-            found[node] = {"address": instance["PrivateIpAddress"]+":9100",
+            found[node] = {"address": "127.0.0.1:9100" if node == edge else instance["PrivateIpAddress"]+":9100",
                            "profile": "cloud" if node in cloud_ids else "edge"}
     require(set(found) == set(ids), "Cloud EC2/ALB inventory differs")
     return doc, found
