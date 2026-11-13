@@ -202,7 +202,7 @@ def activate(r):
     cost = r.read("cost-review.json")
     require(
         now() - dt.datetime.fromisoformat(cost["at"]) < dt.timedelta(minutes=45)
-        and Decimal(cost["estimate_usd"]) <= Decimal(str(r.c["max_usd"]))
+        and (cost.get("mode") == "operator-envelope" or Decimal(cost["estimate_usd"]) <= Decimal(str(r.c["max_usd"])))
         and cost["envelope_usd"] == r.c["max_usd"]
         and cost["hours"] == r.c["hours"],
         "Cost review stale, over budget or configuration changed",

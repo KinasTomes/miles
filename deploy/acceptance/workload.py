@@ -66,7 +66,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def admin(r, path, body=None):
+def admin(r, path, body=None, method=None):
     tunnel(r)
     # The tunnel script authenticates and owns its loopback socket before publishing readiness.
     token = r.file("system-admin-token").read_text().strip()
@@ -77,7 +77,7 @@ def admin(r, path, body=None):
             "Authorization": "Bearer " + token,
             "Content-Type": "application/json",
         },
-        method="POST" if body is not None else "GET",
+        method=method or ("POST" if body is not None else "GET"),
     )
     with urllib.request.build_opener(NoRedirect()).open(
         request, timeout=30
@@ -229,7 +229,7 @@ def trial(r, concurrency):
 
 
 def benchmark_case(r, case_id, repetition):
-    from deploy.acceptance import approvals, direct, trial_state
+    from deploy.acceptance import approvals, direct, trial_state, cloud_telemetry
     r.identity()
     r.live_window(needed=30)
     require(repetition in (1, 2, 3), "Repetition must be 1, 2, or 3")
@@ -433,6 +433,10 @@ def benchmark_case(r, case_id, repetition):
         }
 
     r.write(f"{prefix}/input.json", settings)
+    if scenario == "cold":
+        from deploy.acceptance import cold
+        cold.prepare(r, settings)
+        return
     remote = "/home/ec2-user/acceptance"
 
     r.ssh(
@@ -479,6 +483,7 @@ def benchmark_case(r, case_id, repetition):
             f"client:{remote}/client.py",
         ]
     )
+    cloud = cloud_telemetry.start(r, slot_name, secrets.token_hex(8))
     r.write(f"{prefix}/window.json", {"started_at": now().isoformat()})
     try:
         r.ssh(
@@ -492,11 +497,15 @@ def benchmark_case(r, case_id, repetition):
         )
     finally:
         try:
-            collect(r, slot_name)
+            cloud_telemetry.stop(r, cloud)
         finally:
-            trial_state.finish(r, slot_name, case, admin)
+            try:
+                collect(r, slot_name)
+            finally:
+                trial_state.finish(r, slot_name, case, admin)
 
     result = r.read(f"{prefix}/result.json")
+    cloud_telemetry.verify(r, cloud, result["started_at"], result["finished_at"])
     summary = r.read(f"{prefix}/telemetry-summary.json")
     if scenario == "cold":
         receipt = result.get("cold_receipt") or {}

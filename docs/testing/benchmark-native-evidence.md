@@ -1,6 +1,6 @@
 # Native evidence và các module benchmark độc lập
 
-**Chỉ có implementation và kiểm thử offline. Chưa chạy AWS hoặc duyệt ngân sách.**
+**Implementation và kiểm thử offline; chưa chạy AWS cho thay đổi này.**
 Cách gọi từng bước: [runbook](../planning/full-aws-benchmark-execution-plan.md).
 Không cần process controller; `full-benchmark.json` không phải luồng bắt buộc.
 
@@ -14,7 +14,8 @@ Không cần process controller; `full-benchmark.json` không phải luồng b�
 | `coldbench --native-config --aws-credentials-file` | Private binding 0600, AWS STS session riêng, manifest | Snapshot current + noncurrent versions trước/sau, retained physical bytes, class và generation của các pack được object tham chiếu |
 | `recoverybench --native-config --aws-credentials-file` | Cùng binding, trusted Chrony của client, reviewed lease-revoke/checkpoint-cut | Probe lease/fence, cut intent, native seal, checkpoint/replay images, seed objects và full GET SHA-256 |
 | `direct-cleanup-plan` / `direct-cleanup` | Ownership receipt, stop proof, client quiescence, approved exact versions | Retain response từng batch, reject partial delete/new version, confirm native absence; không restore IAM trước khi direct resource đã giải quyết |
-| `benchmark-budget --inputs` | 20-case matrix, quantities, đủ rates/source/date | 60 slots, 24 pairs, itemized gross estimate; thiếu giá → UNKNOWN, không cho approval benchmark |
+| `cold-plan` / `cold-step` | Slot đã seed, snapshot binding, exact stage/packs/policy, approval hash | Một phase mỗi lệnh; intent trước write/job/policy CAS; unknown outcome chặn redispatch |
+| `cold-status` / `cold-reconcile` | Slot/source cố định, receipt/segment hiện có | Status không dispatch PUT/restore/job; reconcile chỉ công nhận receipt hoàn chỉnh, không gửi lại mutation |
 
 Binding private: account, assumed role, Region, physical/logical bucket, KMS key,
 20 table names, Project/Environment tags, run ID, slot, source, history,
@@ -61,12 +62,34 @@ transition đã xong. Inventory tổng hợp theo class/category; whole-installa
 retained bytes không bị diễn giải thành dung lượng riêng của tenant hoặc chỉ lấy
 logical GET bytes. Pack Warm cũ/Cold cũ/noncurrent vẫn được tính.
 
-`coldbench` có scope `archive-read-restore-and-physical-inventory`. **Restore+GET
-không chứng minh PUT/UploadPart revival**. Cờ revival giữ false khi chưa exercise;
-case toàn lifecycle bị ghi INCOMPLETE và lệnh benchmark dừng. Việc bổ sung provider
-không tự hoàn thành các phép thử expiry/protection-window/R3 còn thiếu.
-Standard Flexible restore có thể vượt trial timeout; giữ evidence của lỗi và
-snapshot sau lỗi nếu đọc được, không tăng timeout hoặc đổi tier để né approval.
+`benchmark-case` cho Cold chỉ tạo tenant/bucket, seed Warm, kiểm bytes và native
+snapshot. PUT storage-class header không phải công cụ chuyển tầng. Operator chờ
+protection hết theo Chrony thật rồi gửi job tiering exact generation, pin policy
+revision. Installation phải dành riêng cho acceptance, background tiering và
+auto_restore tắt qua Admin policy CAS đã review; không tua UTC hoặc sửa TTL.
+
+`coldbench --phase …` thực hiện độc lập inspect, restore-request, restore-status,
+read, put-cold, part-cold, put-restored, part-restored. Bốn probe có chunk set rời
+nhau để PUT trước không làm Warm nguồn của UploadPart sau. UploadPart được kiểm
+native CAS/Warm **trước Complete**, rồi full GET kiểm SHA-256. Flexible phải tạo
+Warm generation mới; IR phải giữ nguyên location. Mỗi ACK cần protection còn ít
+nhất 15 phút tính từ trusted lower bound sau ACK. Old Cold payload versions và
+sidecar vẫn tồn tại, không rút ngắn minimum retention.
+
+Restore request kiểm `403 InvalidObjectState`, lưu intent/ACK và trả waiting ngay;
+status đọc cả metadata lẫn native S3 state/expiry. Không giữ request chờ nhiều giờ.
+Session có thể refresh giữa các phase nhưng source/installation/slot/dataset và
+paid cleanup deadline không đổi. Lỗi/unknown giữ pending và segment; reconcile
+thu đúng receipt, không tự retry PUT/part/job. Policy CAS mất ACK cần operator
+đọc policy/job để giải quyết, không tự đoán đã apply hay rollback.
+
+Protection test gửi tiering job vào pack vừa revive, cần checkpoint native
+`r1_busy_or_retained`, hủy đúng job và chờ cancelled, xác nhận pack vẫn Warm.
+Finish chỉ PASS khi đủ Cold PUT/part, Restored PUT/part, read SHA, retained inventory,
+protection và telemetry. IR không gọi restore: read + reuse/protection được kiểm
+riêng. Boundary Restored gần expiry được kiểm bằng fixture; không giả thành phép
+đo AWS đã đợi expiry thật. Legacy `coldbench` không có `--phase` vẫn chỉ có scope
+archive-read-restore-and-physical-inventory, không được dùng thay lifecycle verdict.
 
 ## Cloud telemetry và isolation
 
@@ -82,26 +105,26 @@ thay cho domain isolation. Các domain này là namespace benchmark, không sử
 bucket domain đã tạo. Memory/disk reset có proof; Bloom retained phải công bố và
 không gọi là full cold-cache reset. Per-node hit/miss/lookups/errors/puts có baseline
 và delta; không tự đổi chúng thành Cloud OS/clock telemetry hoặc throughput.
-Edge chrony recorder vẫn cung cấp evidence clock của Edge; Cloud clock/OS thật
-cần nghiệm thu ở G2/G3, không được khẳng định từ fixture.
+Edge chrony recorder cung cấp evidence clock của Edge. Foreground Warm/Recovery
+và Cold data phases có collector Cloud riêng: metrics trực tiếp health address
+cả hai Cloud EC2 và Edge EC2, OS CPU/memory/pressure và Chrony trong cùng sequence/window. Hai target
+phải healthy, đúng account/installation/tags/source, boot/PID/executable không đổi.
+Release-bundled script chạy qua SSM Command document cố định, pin version + AWS
+SHA-256 từ Terraform. Không cấp `AWS-RunShellScript` hoặc tham số shell tự do.
+Artifact gzip private có hash/size, tải theo chunk nhỏ để không vượt SSM stdout;
+thiếu node/sample, clock fail, đổi fleet, mất sequence hoặc quá giới hạn đều fail.
+Collector tối đa 20 phút/segment; thời gian chờ Glacier không phải measurement
+window liên tục. Kiểm thử offline không thay xác nhận SSM/SSM Agent trên AWS.
 
-## Dự toán và approval
+## Spending envelope và approval
 
-Budget example dùng upper allowances cho dataset/versions/request amplification,
-không giả định dedup/nén tiết kiệm trước khi đo. Giá lịch sử giữ `verified=false`;
-rate null không thành zero. Model tính 90 ngày IR/Flexible kể cả xóa sớm, IR tối
-thiểu 128 KiB/object, metadata Flexible 32 KiB archive + 8 KiB Standard, restore
-request/GB/Standard copy và mọi dimension hạ tầng/network/metadata/observability.
-Không cộng early-deletion charge lần nữa khi đã tính trọn minimum duration.
-Pending deletion phải điền billable quantity theo điều kiện dịch vụ; không giả
-định luôn tính thêm một tháng hay luôn miễn phí.
-
-Nguồn điều kiện: [S3 pricing](https://aws.amazon.com/s3/pricing/),
-[retrieval options](https://docs.aws.amazon.com/AmazonS3/latest/userguide/restoring-objects-retrieval-options.html).
-Đơn giá cần refresh Singapore tại G1, gắn source và ngày. `window_fit` là đối
-chiếu thời lượng **ước tính** với paid hours trừ 90 phút cleanup; không phải phép
-đo throughput hoặc cam kết restore hoàn thành. Approval ngân sách vẫn do chủ
-account quyết định; không được suy từ merge, CI hay credit còn lại.
+Operator chọn khoảng 10–20 USD; config mặc định `max_usd=20`, từ chối lớn hơn 20.
+Đã bỏ model dự toán chi tiết và gate bắt buộc điền giá/quantities 60 slots.
+`cost-review.json` ghi mode `operator-envelope`, estimate null; không gọi Pricing
+API và không coi null là 0. Envelope không phải hard cap billing, không bảo đảm
+60 trials hoàn thành trong mức này. Giữ thời hạn paid window, 90 phút cleanup,
+review IAM/exact plans và theo dõi chi phí thực tế. Restore và retained Cold
+versions còn phát sinh phí kể cả sau cleanup sớm. Chưa có số đo AWS trong PR này.
 
 ## Kiểm thử offline
 
@@ -111,8 +134,9 @@ go test ./internal/benchmarknative ./internal/coldrunner ./internal/recoveryrunn
 ```
 
 Regression bao phủ invalid/unknown inventory, noncurrent bytes, missing native
-proof, unsafe fault scope, stale fence dispatch, corrupt/unsealed replay, budget
-thiếu giá/minimum-duration, drift/expiry approval, existing/wrong-owner bucket,
+proof, unsafe fault scope, stale fence dispatch, corrupt/unsealed replay,
+drift/expiry approval, phase prerequisites/unknown outcome, fixed SSM document,
+window/process mismatch, existing/wrong-owner bucket,
 lost Create ACK, changed versions và partial cleanup errors. Chúng là local
 fixtures/test seams, **không phải native AWS evidence**. Muốn nghiệm thu phải chạy
 đúng scope được duyệt rồi giữ raw receipts trên source đã pin.

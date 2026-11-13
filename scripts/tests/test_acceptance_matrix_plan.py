@@ -31,7 +31,7 @@ class FullMatrixOfflinePlanTests(unittest.TestCase):
         self.assertEqual(len({x["slot"] for x in out["slots"]}), 60)
         self.assertEqual(out["matched_direct_s3_pairs"], 24)
         self.assertEqual(out["warmbench_slots_not_integrated"], 0)
-        self.assertEqual(out["cold_recovery_slots_blocked"], 12)
+        self.assertEqual(out["cold_recovery_slots_blocked"], 0)
         self.assertFalse(out["aws_approval"])
         self.assertFalse(out["benchmark_executed"])
         self.assertFalse(out["full_run_executable"])
@@ -60,13 +60,13 @@ class FullMatrixOfflinePlanTests(unittest.TestCase):
         self.assertEqual(cases["cold-cloud-flexible"]["non_executable_argv_templates"], [])
         self.assertEqual(cases["recovery-edge-r2"]["non_executable_argv_templates"], [])
 
-    def test_cold_and_recovery_proofs_remain_blocked(self):
+    def test_cold_and_recovery_modules_do_not_claim_live_proof(self):
         out = self.build()
         for slot in out["slots"]:
             if slot["phase"] != "G4":
                 continue
             self.assertEqual(slot["runner"], "requires-runner")
-            self.assertEqual(slot["kit_adapter_status"], "cold-read-inventory-only" if slot["scenario"] == "cold" else "native-provider-implemented-offline")
+            self.assertEqual(slot["kit_adapter_status"], "cold-phase-modules-implemented-offline" if slot["scenario"] == "cold" else "native-provider-implemented-offline")
             proofs = slot["evidence_requirements"]
             if slot["scenario"] == "cold":
                 self.assertIn("restoration-completion-expiry-and-revival", proofs)

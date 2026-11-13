@@ -75,10 +75,10 @@ class BenchmarkPreflightTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             client.verify_seed_manifest(self.dataset, self.manifest)
 
-    def test_cold_native_class_and_recovery_standard_are_verified(self):
+    def test_cold_and_recovery_seed_warm_before_native_lifecycle(self):
         for runner, variant, expected in (
-            ("coldbench", "ir", "GLACIER_IR"),
-            ("coldbench", "flexible", "GLACIER"),
+            ("coldbench", "ir", "STANDARD"),
+            ("coldbench", "flexible", "STANDARD"),
             ("recoverybench", "r1", "STANDARD"),
         ):
             with self.subTest(runner=runner, variant=variant):
@@ -99,13 +99,13 @@ class BenchmarkPreflightTests(unittest.TestCase):
                 self.assertEqual(receipts[0]["class"], expected)
                 self.assertEqual(receipts[0]["sha256"], self.sha)
 
-    def test_backend_class_mismatch_and_unknown_put_fail_closed(self):
+    def test_seed_length_mismatch_and_unknown_put_fail_closed(self):
         settings = {"runner": "coldbench", "variant": "flexible", "region": "ap-southeast-1"}
         def fake_run(argv, **kwargs):
             if "put-object" in argv:
                 return SimpleNamespace(returncode=0, stdout='{"VersionId":"v1"}')
             return SimpleNamespace(returncode=0, stdout=json.dumps({
-                "StorageClass": "STANDARD", "ContentLength": len(self.payload)
+                "StorageClass": "STANDARD", "ContentLength": len(self.payload)+1
             }))
         with mock.patch.object(client.subprocess, "run", side_effect=fake_run), self.assertRaisesRegex(ValueError, "class/length"):
             client.seed_benchmark_dataset(settings, self.folder, {}, "https://edge.miles.test", self.tenant, self.manifest)

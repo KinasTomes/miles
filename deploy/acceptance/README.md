@@ -20,11 +20,22 @@ và sinh [execution manifest](matrix_plan.py). Manifest là danh sách theo dõi
 slots, không phải lệnh thực thi. `full-benchmark.json` là recipe tùy chọn; không
 dùng làm entry point mặc định hoặc bằng chứng đã đủ điều kiện chạy AWS.
 
-Các module mới: `benchmark-budget --inputs …` (offline), `direct-plan`,
+Các module: `direct-plan`,
 `direct-provision`, `benchmark-case --case-id … --repetition …`,
 `direct-cleanup-plan`, `direct-cleanup`. Cold/Recovery dùng provider Go có binding
 installation và AWS session riêng, không dùng chuỗi lệnh fault hay cờ boolean
 để chứng nhận bằng chứng. Xem [hợp đồng bằng chứng](../../docs/testing/benchmark-native-evidence.md).
+
+Cold chạy theo `cold-plan` → approval `cold-step` → `cold-step --stage …`;
+`cold-status` đọc trạng thái riêng, `cold-reconcile` thu receipt khi mất SSH ACK.
+Restore request không chờ hoàn tất; không reseed khi tiếp tục. `benchmark-case`
+cho Cold chỉ seed Warm + native inspect, chưa phải PASS cả lifecycle.
+
+Mức chi tiêu mặc định **20 USD**, theo lựa chọn operator khoảng 10–20 USD;
+không yêu cầu dự toán chi tiết và không gọi Pricing API để mở gate. Đây không
+phải hard cap billing. Cửa sổ paid giữ 90 phút cleanup và không tự gia hạn.
+Telemetry Cloud thu metrics/OS/Chrony trên từng EC2 qua SSM document cố định,
+pin version/hash từ Terraform; không cấp quyền chạy shell tùy ý.
 
 Entry point:
 

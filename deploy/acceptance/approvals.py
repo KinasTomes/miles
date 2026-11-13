@@ -39,9 +39,11 @@ def files(r, action):
     command = action.split(":")
     names = set(required_review(command))
     if command[0] in {"benchmark-case", "direct-provision"}:
-        names |= {"benchmark-budget.json", "direct-plan.json"}
+        names |= {"direct-plan.json"}
     if command[0] == "direct-cleanup":
         names = {"direct-cleanup-plan.json"}
+    if command[0] == "cold-step":
+        names |= {"cold-plan.json"}
     for name in list(names):
         if name.endswith("-plan.json") and name.split("-")[0] in {"foundation", "hosts", "active"}:
             plan = r.read(name)
@@ -62,31 +64,13 @@ def binding(r, action):
 
 def record(r, action):
     """Only an explicit approve command or an approved process checkpoint calls this."""
-    validate_budget(r, action)
     receipt = {"at": now().isoformat(), "review": binding(r, action)}
     r.write("approvals/" + action.replace(":", "-") + ".json", receipt)
     return receipt
 
 
 def check(r, action):
-    validate_budget(r, action)
     receipt = r.read("approvals/" + action.replace(":", "-") + ".json")
     require(receipt["review"] == binding(r, action), "Review inputs changed; obtain a fresh operator approval")
     require(dt.timedelta(0) <= now() - dt.datetime.fromisoformat(receipt["at"])
             < dt.timedelta(minutes=45), "Approval expired; review current evidence again")
-
-
-def validate_budget(r, action):
-    if action in {"benchmark-case", "direct-provision"}:
-        from decimal import Decimal
-        from deploy.acceptance.common import ROOT
-        require(r.file("benchmark-budget.json").is_file(), "Prepare an explicit benchmark budget first")
-        budget = r.read("benchmark-budget.json")
-        require(budget.get("status") == "ESTIMATED" and budget.get("run_id") == r.id
-                and budget.get("source") == r.meta["source"]
-                and budget.get("matrix_sha256") == digest(ROOT/"benchmarks/workload-matrix.json")
-                and budget.get("window_fit") is True
-                and Decimal(budget["window_hours"]) == Decimal(str(r.c["hours"]))
-                and dt.timedelta(0) <= now()-dt.datetime.fromisoformat(budget["generated_at"]) < dt.timedelta(minutes=45)
-                and Decimal(budget["gross_total_usd"]) <= Decimal(str(r.c["max_usd"])),
-                "Benchmark budget incomplete, stale, exceeds envelope or does not fit paid window; review scope first")

@@ -606,7 +606,7 @@ class IAMWorkflowTests(unittest.TestCase):
             {
                 "at": common.now().isoformat(),
                 "estimate_usd": "1.0",
-                "envelope_usd": 10,
+                "envelope_usd": self.r.c["max_usd"],
                 "hours": 4,
             },
         )

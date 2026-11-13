@@ -1,6 +1,6 @@
 # Kế hoạch benchmark AWS theo từng bước do operator quyết định
 
-**Trạng thái: chuẩn bị offline; chưa phê duyệt ngân sách hoặc chạy AWS.** Ma trận
+**Trạng thái: chuẩn bị offline; chưa chạy AWS cho thay đổi này.** Ma trận
 vẫn là **20 cases × 3 repetitions = 60 slots**, có tối thiểu **24 paired direct-S3
 legs**. Đây là inventory công việc; không có lệnh mặc định tự chạy toàn bộ G1–G5.
 
@@ -37,27 +37,19 @@ Các lệnh read/plan không cho phép apply hoặc chi tiền.
 
 ```bash
 kit direct-plan
-kit benchmark-budget --inputs /absolute/private/benchmark-budget.json
 ```
 
-Copy [budget inputs](../../deploy/acceptance/benchmark-budget.example.json) ra
-ngoài Git, điền quantities và đơn giá Singapore có nguồn/ngày kiểm tra. Các giá
-S3/DynamoDB có sẵn trong example là catalog lịch sử, `verified=false`; chưa phải
-báo giá hiện hành. Giá chưa biết không được coi là 0. `benchmark-budget.json`
-liệt kê đủ 60 slots/24 đối chứng, phí restore, bản phục hồi Standard, mọi retained
-version, tối thiểu 90 ngày IR/Flexible, phụ phí metadata Flexible và các hạng mục
-compute/network/metadata/monitoring/KMS/secrets/evidence. Không trừ credit/Free Tier.
+Operator chọn mức chi khoảng **10–20 USD**; config mặc định `max_usd=20`, từ chối
+vượt 20. Không cần model dự toán hoặc điền giá chi tiết. `cost-review.json` ghi
+mode `operator-envelope`, estimate null; không gọi Pricing API để mở gate.
+Đây không phải hard cap billing hoặc cam kết đủ tiền cho cả 60 slots. Theo dõi
+chi phí thực tế, dừng workload và cleanup khi gần envelope. Mặc định cửa sổ 4 giờ,
+tối đa 12 giờ, luôn giữ 90 phút cleanup; không tự gia hạn cửa sổ đang chạy.
+Cold restore có thể kéo dài nhiều giờ: request/status riêng và refresh AWS
+session giữa các phase; deadline của installation vẫn giữ nguyên. Nếu restore
+chưa ready trước cleanup reserve, giữ evidence incomplete rồi teardown theo plan.
 
-Không tiếp tục full benchmark khi `status=UNKNOWN`, vượt envelope hoặc
-`window_fit=false`. Example cố ý chưa đủ điều kiện phê duyệt. Dự toán thời gian là
-assumption cần review, không phải duration đã đo. Mặc định kit 4 giờ; giới hạn
-code hiện hành tối đa 12 giờ/50 USD; luôn giữ 90 phút cleanup. Không tăng các giới
-hạn này trong thay đổi này. Standard Flexible restore thường kéo dài hơn một
-trial 20 phút; timeout giữ trạng thái failed/incomplete, không sửa thành PASS.
-Nếu cần chia nhiều lượt độc lập hoặc thay đổi cách chờ restore, duyệt kế hoạch và
-chi phí đó trước; chưa có cơ chế tự gia hạn một installation qua nhiều paid windows.
-
-Đọc plan, IAM validations/simulations và chi phí. Khi chủ account đã duyệt, chạy
+Đọc plan, IAM validations/simulations và envelope. Khi chủ account đã duyệt, chạy
 lệnh approval cụ thể rồi lệnh thực hiện; approval không tự thực hiện mutation:
 
 ```bash
@@ -102,7 +94,7 @@ kit status
 ```
 
 Operator xem artifact rồi mới chọn case/repetition tiếp theo. Không có loop tự
-chạy 60 slots. Approval benchmark yêu cầu budget đầy đủ, source/matrix khớp,
+chạy 60 slots. Approval benchmark yêu cầu source/matrix khớp,
 cửa sổ đủ và envelope hợp lệ. Mỗi slot có intent riêng; slot đã dispatch không
 được lặp mù, kể cả chưa có `result.json`.
 
@@ -116,24 +108,62 @@ của cặp direct phải khớp. Không trộn Edge AWS VM với kết quả on
 
 ## G4 — Operator gọi Cold/Recovery riêng
 
-Cùng `benchmark-case` với case ID Cold hoặc Recovery và repetition cụ thể; operator
-quyết định khi nào dispatch. Không tự chạy G4 sau G3.
+Recovery vẫn chạy một `benchmark-case` riêng theo ID/repetition. Fault chỉ đóng
+lease tổng hợp của trial (`lease-revoke`), không kill node hoặc sửa raw rows.
+Cut dùng worker R1/R2 có fencing và Chrony thật. Verifier kiểm stale fence bị từ
+chối, sealed chain, replay từ cùng genesis hai lần, seed objects và full GET SHA.
+Không cài image đè metadata live; không phải nghiệm thu node-crash/PITR.
 
-- Cold: inventory native toàn bucket gồm current/noncurrent versions, snapshot
-  hai thời điểm, resolve manifest → chunk → generation để kiểm class physical.
-  Logical storage-class header không thay bằng chứng pack đã transition.
-- Recovery: fault chỉ đóng lease tổng hợp của trial (`lease-revoke`), không kill
-  node hoặc sửa raw rows. Cut dùng worker R1/R2 có fencing và Chrony thật.
-  Verifier kiểm native dispatch của fence cũ bị từ chối, sealed artifact chain,
-  replay từ cùng genesis hai lần và sự hiện diện các object seed trong image.
-  Không cài image đè metadata live. Đây không phải nghiệm thu node-crash/PITR.
-- Các phép đo còn thiếu như PUT revival/UploadPart/protection-window và expiry
-  thật không được suy ra từ Restore+GET. `coldbench` chỉ chứng nhận phạm vi đọc,
-  restore và inventory; receipt revival giữ false khi chưa exercise.
+Cold gồm các bước độc lập, không tự chạy nối tiếp:
 
-Nếu recipe yêu cầu toàn bộ Cold lifecycle mà thiếu proof revival, verdict của
-case phải INCOMPLETE. Không nới điều kiện vì thiếu thời gian restore, mất session
-hoặc provider lỗi. Evidence local/fake không thay native AWS evidence.
+1. Trên installation acceptance dành riêng, lưu policy gốc rồi dùng `dsgctl policy
+   set --file patch.json --expected-revision N` qua tunnel để tắt `tiering.enabled`
+   và `tiering.auto_restore`. Patch là `{"tiering":{"enabled":false,"auto_restore":false}}`.
+   Review CAS trước khi gọi; không thay policy installation đang phục vụ người khác.
+2. `benchmark-case --case-id cold-cloud-flexible --repetition 1 --confirm-run …`
+   tạo tenant/bucket và seed **Warm**, native inspect; kết quả mới là prepared.
+3. `cold-status` đọc snapshot/protection. Chờ UTC thật đến khi transition_ready;
+   không sleep giữ lệnh hoặc tua clock. Trong lúc chờ, operator tự chọn việc khác.
+4. Mỗi stage: `cold-plan` → đọc `cold-plan.json` → approval `cold-step` → `cold-step`.
+   Lần lượt `transition`, `put-cold`, `part-cold`, `restore-request`.
+   Sau transition, gọi `cold-status` đến khi metadata + S3 class đúng trước PUT.
+5. Restore request trả waiting ngay. Gọi `cold-status` sau để xem ready; không
+   request restore lại. Khi ready chạy `read`, `put-restored`, `part-restored`,
+   `protection`, `finish`. IR bỏ request/status restore và Restored phases;
+   sau transition/reuse PUT/part, chạy `read`, `finish`.
+6. Mỗi slot có case-verdict riêng, không suy PASS từ prepare hoặc read/restore.
+   Sau khi mọi Cold slot kết thúc và không còn job active, restore policy gốc bằng
+   CAS qua `dsgctl`; policy cũ đã thay đổi bởi người khác thì dừng để đối soát.
+
+Ví dụ một stage, sau khi đã có slot prepared:
+
+```bash
+kit cold-status --case-id cold-cloud-flexible --repetition 1
+kit cold-plan --case-id cold-cloud-flexible --repetition 1 --stage transition
+# Đọc cold-plan.json: exact packs/generations, policy revision và snapshot.
+kit approve --action cold-step --confirm-run "$RUN_ID"
+kit cold-step --case-id cold-cloud-flexible --repetition 1 --stage transition --confirm-run "$RUN_ID"
+```
+
+Job tiering pin revision bật cho exact packs; kit restore policy disabled bằng
+CAS trước enqueue, rồi job dùng revision lịch sử. Chỉ tiếp tục data phase sau native S3/metadata readback.
+Protection test cần native deferred checkpoint, cancel exact jobs và Warm state
+không đổi. Không tự xóa dữ liệu Cold cũ để làm đẹp retained-byte measurement.
+`cold-plan --stage policy-restore` phục hồi patch tạm của kit khi có ACK và policy
+vẫn đúng revision kit sở hữu; mất ACK CAS/job phải inspect trước, không overwrite.
+
+Mất SSH ACK: giữ nguyên slot và gọi `cold-reconcile` để lấy receipt của đúng segment;
+không chạy lại `benchmark-case`, không reseed. Receipt failed/thiếu hoặc unknown
+policy/job không tự thành PASS; cần đối soát thủ công. Cold status chỉ quan sát,
+không tự coi một pending write đã thành công. Fixture gần expiry không phải bằng
+chứng đã chờ hết restore expiry thật trên AWS.
+
+Cloud foreground trials và Cold data/job segments thu metrics/OS/Chrony trên cả
+hai Cloud EC2 và Edge EC2 qua SSM document fixed, pin version/hash và installation tags. Kiểm G2
+rằng SSM Agent hỗ trợ ENV_VAR, script đúng release và sample đủ window trước khi
+chạy matrix. Clock/OS thiếu một node, source/PID/boot đổi hoặc artifact bị cắt đều
+fail; cache heartbeat không thay OS evidence. Glacier waiting không giữ sampler
+chạy liên tục nhiều giờ và không tính thành throughput.
 
 ## G5 — Collect, review và teardown theo lệnh riêng
 

@@ -11,7 +11,7 @@ import sys
 import unittest
 from unittest import mock
 
-from deploy.acceptance import approvals, budget, direct, run, trial_state
+from deploy.acceptance import approvals, direct, run, trial_state
 from deploy.acceptance.common import ROOT, Run, digest, now
 
 
@@ -53,51 +53,6 @@ class ModuleTests(unittest.TestCase):
             self.assertIn(command, run.MUTATIONS)
         args = parser.parse_args(["--run-dir", str(self.r.path), "approve", "--action", "benchmark-case", "--confirm-run", self.r.id])
         self.assertEqual(args.action, "benchmark-case")
-
-    def test_budget_60_unique_slots_and_24_pairs_unknown_rates_block_approval(self):
-        matrix = json.loads((ROOT/"benchmarks/workload-matrix.json").read_text())
-        inputs = json.loads((ROOT/"deploy/acceptance/benchmark-budget.example.json").read_text())
-        result = budget.estimate(matrix, inputs)
-        self.assertEqual(result["slot_count"], 60)
-        self.assertEqual(len(set(result["slots"])), 60)
-        self.assertEqual(result["direct_pairs"], 24)
-        self.assertEqual(result["status"], "UNKNOWN")
-        self.assertIsNone(result["gross_total_usd"])
-        self.assertFalse(result["approval"])
-        self.assertFalse(result["window_fit"])
-        self.r.write("benchmark-budget.json", result)
-        with self.assertRaises(ValueError):
-            approvals.record(self.r, "benchmark-case")
-
-    def test_budget_cli_is_standalone_outside_repository_without_pythonpath(self):
-        output = self.r.path/"offline-budget.json"
-        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-        result = subprocess.run([sys.executable, "-B", ROOT/"deploy/acceptance/budget.py", "--inputs",
-            ROOT/"deploy/acceptance/benchmark-budget.example.json", "--out", output],
-            cwd=self.r.path, env=env, capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(output.read_text())["slot_count"], 60)
-        self.assertEqual(output.stat().st_mode & 0o777, 0o600)
-
-    def test_budget_minimum_duration_is_not_limited_to_live_window(self):
-        matrix = json.loads((ROOT/"benchmarks/workload-matrix.json").read_text())
-        inputs = json.loads((ROOT/"deploy/acceptance/benchmark-budget.example.json").read_text())
-        inputs["paid_hours"] = 1
-        result = budget.estimate(matrix, inputs)
-        lines = {line["id"]: line for line in result["line_items"]}
-        from decimal import Decimal
-        expected = Decimal(inputs["cold_bytes_per_slot"])*6/Decimal(1024**3)*3
-        self.assertEqual(Decimal(lines["ir_gb_months_90d"]["quantity"]), expected)
-        self.assertGreater(Decimal(lines["flexible_restore_gb"]["quantity"]), 0)
-        self.assertGreater(Decimal(lines["restored_standard_gb_months"]["quantity"]), 0)
-
-    def test_budget_rejects_missing_dimension_and_negative_nan(self):
-        matrix = json.loads((ROOT/"benchmarks/workload-matrix.json").read_text())
-        inputs = json.loads((ROOT/"deploy/acceptance/benchmark-budget.example.json").read_text())
-        del inputs["rates"]["flexible_restore_gb"]
-        with self.assertRaises(ValueError): budget.estimate(matrix, inputs)
-        for value in (-1, "NaN", "Infinity"):
-            with self.subTest(value=value), self.assertRaises(ValueError): budget.number(value)
 
     def test_direct_bucket_name_is_run_bound_and_legacy_bucket_cannot_be_adopted(self):
         expected = direct.name(self.r)

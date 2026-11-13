@@ -319,6 +319,28 @@
           "aws:ResourceTag/Environment": "dev"
         }
       }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:CreateDocument",
+        "ssm:DescribeDocument",
+        "ssm:GetDocument",
+        "ssm:AddTagsToResource",
+        "ssm:ListTagsForResource",
+        "ssm:DeleteDocument"
+      ],
+      "Resource": [
+        "arn:aws:ssm:${REGION}:${ACCOUNT_ID}:document/miles-dev-benchmark-telemetry"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
     }
   ]
 }

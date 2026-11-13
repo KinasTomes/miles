@@ -18,7 +18,7 @@ from deploy.acceptance import hosts
 from deploy.acceptance import iam
 from deploy.acceptance import cleanup
 from deploy.acceptance import workload
-from deploy.acceptance import approvals, direct, budget
+from deploy.acceptance import approvals, direct, cold
 
 MUTATIONS = {
     "iam-activate",
@@ -36,12 +36,14 @@ MUTATIONS = {
     "benchmark-case",
     "direct-provision",
     "direct-cleanup",
+    "cold-step",
 }
 
 APPROVAL_ACTIONS = (
     "iam-activate", "apply:foundation", "apply:hosts", "apply:active", "install",
     "bootstrap", "material", "trial", "shutdown", "restart", "benchmark-case",
     "cleanup-grant", "unprotect", "cleanup", "finish", "direct-provision", "direct-cleanup",
+    "cold-step",
 )
 
 
@@ -61,8 +63,6 @@ def parser():
     approve = sub.add_parser("approve")
     approve.add_argument("--action", required=True, choices=APPROVAL_ACTIONS)
     approve.add_argument("--confirm-run", required=True)
-    budget_cmd = sub.add_parser("benchmark-budget")
-    budget_cmd.add_argument("--inputs", required=True, type=Path)
     for name in [
         "assets",
         "preflight",
@@ -105,6 +105,14 @@ def parser():
     bench.add_argument("--case-id", required=True)
     bench.add_argument("--repetition", type=int, choices=(1, 2, 3), required=True)
     bench.add_argument("--confirm-run", required=True)
+    for action in ("cold-status", "cold-plan", "cold-step", "cold-reconcile"):
+        command = sub.add_parser(action)
+        command.add_argument("--case-id", required=True)
+        command.add_argument("--repetition", type=int, choices=(1, 2, 3), required=True)
+        if action in {"cold-plan", "cold-step"}:
+            command.add_argument("--stage", choices=cold.STAGES, required=True)
+        if action == "cold-step":
+            command.add_argument("--confirm-run", required=True)
     stop = sub.add_parser("shutdown")
     stop.add_argument("--native-throttle", action="store_true")
     stop.add_argument("--confirm-run", required=True)
@@ -282,9 +290,6 @@ def main(argv=None):
         if args.command == "approve":
             print(json.dumps(approvals.record(r, args.action), indent=2))
             return
-        if args.command == "benchmark-budget":
-            print(json.dumps(budget.write(r, args.inputs), indent=2))
-            return
         action = "apply:"+args.stage if args.command == "apply" else args.command
         if action in APPROVAL_ACTIONS:
             approvals.check(r, action)
@@ -326,6 +331,11 @@ def main(argv=None):
             workload.trial(r, args.concurrency)
         elif args.command == "benchmark-case":
             workload.benchmark_case(r, args.case_id, args.repetition)
+        elif args.command.startswith("cold-"):
+            action = {"cold-status": cold.status, "cold-plan": cold.plan,
+                      "cold-step": cold.step, "cold-reconcile": cold.reconcile}[args.command]
+            positional = (args.stage,) if hasattr(args, "stage") else ()
+            action(r, args.case_id, args.repetition, *positional)
         elif args.command == "shutdown":
             workload.stop(r, args.native_throttle)
         elif args.command == "collect":

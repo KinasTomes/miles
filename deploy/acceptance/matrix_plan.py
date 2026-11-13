@@ -180,7 +180,7 @@ def build(matrix, recipe_path, source_sha):
                 "read_repeats": matrix["protocol"]["read_repeats"],
                 "runner": case["runner"],
                 "kit_adapter_status": (
-                    "cold-read-inventory-only" if scenario == "cold"
+                    "cold-phase-modules-implemented-offline" if scenario == "cold"
                     else "native-provider-implemented-offline" if scenario == "recovery"
                     else "operator-command-implemented-offline"
                 ),
@@ -209,7 +209,7 @@ def build(matrix, recipe_path, source_sha):
         "total_trial_slots": len(slots),
         "matched_direct_s3_pairs": sum(x["needs_matched_direct_s3"] for x in slots),
         "warmbench_slots_not_integrated": 0,
-        "cold_recovery_slots_blocked": sum(x["scenario"] == "cold" for x in slots),
+        "cold_recovery_slots_blocked": 0,
         "focused_kit_supported": [
             "infrastructure-staging-with-reviewed-iam-and-saved-plans",
             "focused-edge-get-c1-and-c4",
@@ -218,10 +218,10 @@ def build(matrix, recipe_path, source_sha):
         ],
         "blocking_gates": [
             "review-independent-command-modules-and-native-evidence-on-pinned-source",
-            "implement-full-cold-revival-protection-window-acceptance",
+            "verify-cold-tiering-restore-revival-protection-on-aws",
             "approve-direct-s3-lifecycle-and-verify-live-per-node-reset-and-isolation",
             "verify-real-edge-topology-or-report-aws-edge-profile-only",
-            "re-estimate-time-aws-prices-iam-expiry-and-cleanup-reserve-for-60-trials",
+            "verify-time-iam-expiry-and-cleanup-reserve-within-20-usd-envelope",
             "approve-source-matrix-thresholds-iam-cost-and-exact-destroy-plan",
         ],
         "slots": slots,

@@ -205,6 +205,9 @@ def cleanup_policy(r):
     )
     add(["secretsmanager:DeleteSecret"], i.get("secrets", []))
     add(["acm:DeleteCertificate"], i.get("acm_certificates", []))
+    add(["ssm:DeleteDocument"], [
+        "arn:aws:ssm:"+c["region"]+":"+c["account_id"]+":document/"+name
+        for name in i.get("ssm_documents", [])])
     roles = r.aws("iam", "list-roles", iam=True)["Roles"]
     names = set(i.get("iam_roles", []))
     add(

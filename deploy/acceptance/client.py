@@ -158,15 +158,13 @@ def verify_seed_manifest(dataset_root, manifest_path):
 
 
 def seed_benchmark_dataset(settings, folder, env, endpoint, tenant, manifest_path):
-    """PUT synthetic bytes in the intended class, HEAD verify native readback.
+    """PUT synthetic Warm bytes and HEAD verify length.
 
     Partial unknown operations retain receipts for reconciliation, not replay.
     """
     dataset_root = manifest_path.parent
     files = verify_seed_manifest(dataset_root, manifest_path)
-    if settings.get("runner") == "coldbench":
-        storage_class = {"ir": "GLACIER_IR", "flexible": "GLACIER"}.get(settings["variant"])
-    elif settings.get("runner") == "recoverybench":
+    if settings.get("runner") in {"coldbench", "recoverybench"}:
         storage_class = "STANDARD"
     else:
         storage_class = None
@@ -206,7 +204,7 @@ def seed_benchmark_dataset(settings, folder, env, endpoint, tenant, manifest_pat
             raise ValueError("Cold HEAD missing after PUT; reconciliation required")
         data = json.loads(head.stdout)
         observed_class = data.get("StorageClass") or "STANDARD"
-        if observed_class != storage_class or data.get("ContentLength") != entry["bytes"]:
+        if observed_class != "STANDARD" or data.get("ContentLength") != entry["bytes"]:
             raise ValueError("Cold/Recovery backend class/length not verified; no test run")
         pending.update({
             "path": key, "class": storage_class, "bytes": entry["bytes"],
@@ -444,6 +442,9 @@ def benchmark(settings):
         ]
         cmd.extend(["--native-config", str(folder / "native.json"),
                     "--aws-credentials-file", str(aws_file)])
+        # Cold seed is Warm. Tiering is an independent, exact-generation Admin
+        # job after the real protection window; a logical PUT header cannot do it.
+        cmd.extend(["--phase", "inspect"])
     elif runner == "recoverybench":
         expected_account = native["account"]
         cmd = [
@@ -690,6 +691,51 @@ def pulse(settings):
     return 1 if counts["unexpected"] else 0
 
 
+def cold_phase(settings):
+    """Resume one existing slot; never create another tenant, bucket or seed."""
+    name, segment = settings["name"], settings["segment"]
+    phases = {"inspect", "restore-status", "restore-request", "read", "put-cold",
+              "part-cold", "put-restored", "part-restored"}
+    if (not re.fullmatch(r"[a-z0-9-]+-rep[1-3]", name)
+            or not re.fullmatch(r"[a-f0-9]{16}", segment)
+            or settings["phase"] not in phases):
+        raise ValueError("Invalid Cold phase binding")
+    folder = BASE / name
+    baseline = json.loads((folder / "result/snapshot.json").read_text())["binding"]
+    native = settings["native"]
+    if {k: v for k, v in native.items() if k != "stop_at"} != {
+            k: v for k, v in baseline.items() if k != "stop_at"}:
+        raise ValueError("Resume installation/source differs from seed")
+    temporary = settings["recovery_aws"]
+    stop = dt.datetime.fromisoformat(native["stop_at"])
+    expires = dt.datetime.fromisoformat(temporary["Expiration"].replace("Z", "+00:00"))
+    remaining = (stop - dt.datetime.now(dt.timezone.utc)).total_seconds()
+    if (not temporary["AccessKeyId"].startswith("ASIA") or not temporary.get("SessionToken")
+            or temporary.get("expected_account") != native["account"]
+            or expires <= stop or not 180 <= remaining <= 1200):
+        raise ValueError("AWS session does not cover bounded Cold phase")
+    step = folder / "steps" / segment
+    step.mkdir(parents=True, mode=0o700, exist_ok=False)
+    for filename, value in (("native.json", native), ("aws.json", {k: temporary[k] for k in
+            ("Version", "AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")})):
+        (step / filename).write_text(json.dumps(value))
+        (step / filename).chmod(0o600)
+    env = {k: v for k, v in os.environ.items()
+           if not k.startswith("AWS_") and k.lower() not in {"http_proxy", "https_proxy", "all_proxy"}}
+    env.update(AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null",
+               AWS_EC2_METADATA_DISABLED="true", SSL_CERT_FILE=str(BASE / "tls-ca.pem"))
+    cmd = [str(BASE / "coldbench"), "--config", str(folder / "config.json"),
+           "--manifest", str(BASE / "dataset/manifest.json"), "--out", str(step / "result"),
+           "--native-config", str(step / "native.json"), "--aws-credentials-file", str(step / "aws.json"),
+           "--source-snapshot", str(folder / "result/snapshot.json"),
+           "--phase", settings["phase"], "--variant", settings["variant"]]
+    p = subprocess.run(cmd, env=env, capture_output=True, timeout=min(1100, int(remaining)-30))
+    (step / "stdout.log").write_bytes(p.stdout)
+    (step / "stderr.log").write_bytes(p.stderr)
+    (step / "exit.json").write_text(json.dumps({"code": p.returncode}))
+    return p.returncode
+
+
 def quiescence(_settings=None):
     active = []
     for process in Path("/proc").iterdir():
@@ -714,10 +760,10 @@ def quiescence(_settings=None):
 if __name__ == "__main__":
     os.umask(0o077)
     p = argparse.ArgumentParser()
-    p.add_argument("action", choices=["trial", "pulse", "benchmark", "quiescence"])
+    p.add_argument("action", choices=["trial", "pulse", "benchmark", "cold-phase", "quiescence"])
     args = p.parse_args()
     raise SystemExit(
-        {"trial": trial, "pulse": pulse, "benchmark": benchmark, "quiescence": quiescence}[args.action](
+        {"trial": trial, "pulse": pulse, "benchmark": benchmark, "cold-phase": cold_phase, "quiescence": quiescence}[args.action](
             {} if args.action == "quiescence" else json.load(sys.stdin)
         )
     )
