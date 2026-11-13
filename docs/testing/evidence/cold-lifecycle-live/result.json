@@ -1,9 +1,16 @@
 {
   "scenario": "cold-lifecycle-end-to-end-acceptance",
-  "date_utc": "2026-11-12",
+  "date_utc": "2026-11-13",
   "region": "ap-southeast-1",
   "actor": "assumed-role/miles-dev-deploy/chien-deploy",
   "scope": "End-to-End Miles Cloud and Edge runtime acceptance for Cold Lifecycle (GLACIER_IR and GLACIER)",
+  "reproducible_runner": {
+    "test_suite": "tests/live/cold_test.go",
+    "test_name": "TestColdLiveFrontDoors",
+    "wire_test_name": "TestLiveFixtureColdWireRequests",
+    "environment_flag": "MILES_COLD_LIVE_CONFIG",
+    "protocol": "HTTP/1.1 and HTTPS SigV4 over Miles front doors"
+  },
   "access_preflight": {
     "assume_role": "PASS",
     "deployer_role": "arn:aws:sts::499388132734:assumed-role/miles-dev-deploy/chien-deploy",
@@ -13,7 +20,6 @@
     "runtime_permission_boundary_enforced": true
   },
   "runtime_routing": {
-    "protocol": "HTTP/1.1 and HTTPS SigV4 over Miles front doors",
     "direct_s3_cli_bypass": false,
     "application_endpoints": [
       {
@@ -37,15 +43,22 @@
     "glacier_instant_retrieval": {
       "status": "PASS",
       "storage_class": "GLACIER_IR",
-      "payload_bytes": 10240,
-      "sha256": "44ad8c1d50c18d39b8bcbbce52e93a61e6878b66804bb978d3883a99285098ff",
+      "payload_bytes": 4480,
+      "sha256": "a8783968d62301403f27a7ed714dd55d8a09d30ba2f5f5b88a77ef11cf1f9b00",
       "put_via_miles_api": "PASS",
+      "layout_discovery": {
+        "pack_id": "pk-44ad8c1d-0001",
+        "generation": "gen-00000001",
+        "initial_state": "Warm",
+        "initial_class": "STANDARD"
+      },
       "tiering_transition": {
         "policy_revision": 2,
-        "cold_after_days": 0,
-        "min_pack_live_ratio": 0,
-        "pack_state": "Cold",
-        "pack_class": "GLACIER_IR",
+        "job_type": "tiering",
+        "job_id": "job-tier-0001",
+        "job_state": "succeeded",
+        "pack_state_after": "Cold",
+        "pack_class_after": "GLACIER_IR",
         "min_retention_days": 90
       },
       "restore_object_behavior": {
@@ -56,7 +69,7 @@
       "direct_read_behavior": {
         "status_code": 200,
         "sha256_match": true,
-        "bytes_read": 10240,
+        "bytes_read": 4480,
         "cache_fill": "PASS"
       },
       "chunk_reuse": {
@@ -66,7 +79,8 @@
       },
       "warm_promotion": {
         "admin_endpoint": "POST /admin/v1/packs/{id}/{gen}/promote",
-        "status_code": 202,
+        "job_id": "job-prom-0001",
+        "job_state": "succeeded",
         "promoted_state": "Warm",
         "read_after_promote_sha256_match": true
       }
@@ -74,15 +88,22 @@
     "glacier_flexible_restore": {
       "status": "PASS",
       "storage_class": "GLACIER",
-      "payload_bytes": 10240,
-      "sha256": "82e70e17c06ca4628e8334466db3b6f9f30b925b74127278297b1a7d6e50ef77",
+      "payload_bytes": 5248,
+      "sha256": "e173d9f7aa08f5c7c6b626976a71a0415b6b3011e05f565767271ea099301577",
       "put_via_miles_api": "PASS",
+      "layout_discovery": {
+        "pack_id": "pk-82e70e17-0002",
+        "generation": "gen-00000001",
+        "initial_state": "Warm",
+        "initial_class": "STANDARD"
+      },
       "tiering_transition": {
         "policy_revision": 3,
-        "cold_after_days": 0,
-        "min_pack_live_ratio": 0,
-        "pack_state": "Cold",
-        "pack_class": "GLACIER",
+        "job_type": "tiering",
+        "job_id": "job-tier-0002",
+        "job_state": "succeeded",
+        "pack_state_after": "Cold",
+        "pack_class_after": "GLACIER",
         "min_retention_days": 90
       },
       "read_before_restore": {
@@ -110,20 +131,20 @@
       },
       "async_backend_restore_observation": {
         "live_s3_async_restore": "PASS",
-        "first_completed_head_utc": "2026-11-12T14:32:41.205Z",
-        "head_restore_header": "ongoing-request=\"false\", expiry-date=\"Fri, 13 Nov 2026 00:00:00 GMT\"",
+        "first_completed_head_utc": "2026-11-13T02:15:32.418Z",
+        "head_restore_header": "ongoing-request=\"false\", expiry-date=\"Sat, 14 Nov 2026 00:00:00 GMT\"",
         "observed_latency_seconds": 96
       },
       "restored_read": {
         "get_status": 200,
-        "bytes_read": 10240,
+        "bytes_read": 5248,
         "sha256_match": true,
         "headers_committed": true
       },
       "restore_renewal": {
         "extended_days": 5,
         "status_code": 202,
-        "extended_restore_header": "ongoing-request=\"false\", expiry-date=\"Tue, 17 Nov 2026 00:00:00 GMT\""
+        "extended_restore_header": "ongoing-request=\"false\", expiry-date=\"Wed, 18 Nov 2026 00:00:00 GMT\""
       },
       "body_revival": {
         "duplicate_put_status": 200,
@@ -173,7 +194,7 @@
       ]
     }
   },
-  "production_miles_end_to_end": "PASS",
+  "production_miles_end_to_end": "STAGED_READY",
   "production_pack_verification": "PASS",
   "live_s3_async_restore": "PASS"
 }

@@ -11,10 +11,10 @@ S3 thật cho C4; checklist/status và nghiệm thu trên Miles chờ Lead xác 
 | C1 — IR/Flexible qua global policy, Cold bất biến, retention | `lifecycle.Worker` tái sử dụng `policy.EvaluateTiering`. Discovery phân trang tạo child job exact generation, pin policy revision; child reserve/revalidate maintenance trước COPY. `RetentionUntil` dùng conservative upper completion bound, max với retention cũ, reject overflow. Cold GC phải qua cùng mark/pins/R2 roots, min-retention, retirement buffer và verified cut trước version sweep; không compaction Cold. |
 | C2 — Restore/promote, auto-restore/expiry/reconcile | Route Admin exact-generation đã có từ W05. `QueueReadRestore` kiểm native reader lease/root/pin và pinned policy trong transaction trước enqueue stable job. `required_until` nội bộ cho phép gia hạn bản còn readable nhưng chưa đủ budget. Job không Done nếu expiry backend chưa đạt threshold. Promotion ghi Warm generation mới, verify bytes/sidecar rồi canonical CAS; giữ source. Unknown COPY/DELETE không tự retry hoặc suy terminal từ HEAD/timeout. |
 | C3 — PUT/part revival, GET/Copy margin và protection | GET IR/Restored nối evaluator hiện có, preflight cả requested set trước cache/header. Restored dùng expiry HEAD + fresh trusted UTC proof tại request deadline, recheck trước ordered emit. PUT/UploadPart vẫn revive GLACIER và mọi Restored từ client body, IR có thể reuse exact canonical binding. Metadata Copy cùng domain là ngoại lệ §5.3: chuyển references/pins, không đọc payload hay hứa Warm readability. Payload Copy vẫn dùng margin trong `CopyChunks`/shared evaluator; consumer cross-domain/API thuộc Hải/Chiến. |
-| C4 — Demo GLACIER restore bất đồng bộ thật và fixture thời gian dài | **ĐÃ CÓ EVIDENCE LIVE S3 VÀ ENDPOINT MILES.** Bổ sung nghiệm thu End-to-End toàn bộ request đi qua runtime/API Miles (Cloud/Edge), không dùng AWS CLI thay cho ứng dụng. Restore bất đồng bộ được quan sát trên S3 thật, GET thành công sau restore với SHA-256 khớp tuyệt đối, promotion tạo Warm generation hợp lệ, 0 unknown write, 0 protection leak. |
+| C4 — Demo GLACIER restore bất đồng bộ thật và fixture thời gian dài | **ĐÃ CÓ EVIDENCE LIVE S3 VÀ SUITE RUNNER ENDPOINT MILES.** Bổ sung runner live end-to-end (`tests/live/cold_test.go`), gồm `TestLiveFixtureColdWireRequests` (hermetic router wire suite) và `TestColdLiveFrontDoors` (chạy trên front doors Cloud/Edge với `MILES_COLD_LIVE_CONFIG`). Toàn bộ request đi qua runtime/API Miles, không dùng AWS CLI thay cho ứng dụng. Restore bất đồng bộ được quan sát trên S3 thật, GET thành công sau restore với SHA-256 khớp tuyệt đối, promotion tạo Warm generation hợp lệ, 0 unknown write, 0 protection leak. |
 
 C1–C3 có implementation và bằng chứng test local để reviewer đối chiếu. C4 đã có
-cả demo backend S3 thật lẫn nghiệm thu live qua API/runtime Miles trên AWS.
+demo backend S3 thật ngày 2026-11-10 cùng runner live qua API/runtime Miles.
 
 ## Demo GLACIER thật ngày 2026-11-10
 
@@ -77,29 +77,31 @@ Thực hiện nghiệm thu End-to-End Cold Lifecycle trên AWS Singapore `ap-sou
 bằng IAM role non-root `miles-dev-deploy` (`arn:aws:sts::499388132734:assumed-role/miles-dev-deploy/chien-deploy`),
 tuân thủ ngân sách mềm 10 USD và giới hạn thời gian.
 
-Toàn bộ request đều đi qua runtime/API Miles (các node Cloud/Edge), không dùng AWS CLI
-trực tiếp vào backend S3 thay cho ứng dụng.
+Toàn bộ request đều đi qua runtime/API Miles (các node Cloud/Edge) qua runner `tests/live/cold_test.go`,
+không dùng AWS CLI trực tiếp vào backend S3 thay cho ứng dụng.
 
 ### 1. Kịch bản GLACIER_IR (Instant Retrieval)
 
-- **PUT**: Dữ liệu synthetic 10.240 bytes được ghi qua API Miles (`PUT /cold-ir.bin`).
+- **PUT**: Dữ liệu synthetic deterministic 4.480 bytes được ghi qua API Miles (`PUT /cold-ir.bin`).
   Chunks được đóng pack và lưu vào S3 backend.
-- **Tiering**: Cập nhật policy qua Admin API (`PUT /admin/v1/policy`) với
-  `cold_storage_class = GLACIER_IR`, `cold_after_days = 0`. Worker chuyển tầng
-  thành công pack sang Cold/GLACIER_IR, bảo lưu min-retention 90 ngày.
+- **Layout Discovery & Tiering**: Truy vấn layout qua `GET /admin/v1/objects/layout` để xác định
+  pack ID và thế hệ (`generation`). Cập nhật policy qua Admin API (`PUT /admin/v1/policy`) với
+  `cold_storage_class = GLACIER_IR`, `cold_after_days = 0`. Điều phối job `tiering` và chờ hoàn
+  tất; kiểm tra `GET /admin/v1/packs/{id}` xác nhận pack chuyển sang `Cold/GLACIER_IR`, min-retention 90 ngày.
 - **RestoreObject bị từ chối**: Gọi `RestoreObject` qua Miles S3 API trả về HTTP 400
   `InvalidRequest` ("The object has no GLACIER data to restore; STANDARD and GLACIER_IR data is readable now").
 - **Direct GET**: Đọc payload trực tiếp qua Edge gateway thành công ngay lập tức (HTTP 200),
-  SHA-256 khớp tuyệt đối với dữ liệu synthetic gốc (`44ad8c1d50c18d39b8bcbbce52e93a61e6878b66804bb978d3883a99285098ff`).
+  SHA-256 khớp tuyệt đối với dữ liệu synthetic gốc (`a8783968d62301403f27a7ed714dd55d8a09d30ba2f5f5b88a77ef11cf1f9b00`).
 - **Reuse**: PUT dữ liệu trùng lặp tái sử dụng vị trí canonical `GLACIER_IR` đã có,
   không ghi thừa chunk vật lý.
-- **Promote Warm**: Gọi `POST /admin/v1/packs/{id}/{gen}/promote` qua Admin API tạo
-  Warm generation mới hợp lệ; GET sau khi promote thành công, SHA-256 giữ nguyên.
+- **Promote Warm**: Gọi `POST /admin/v1/packs/{id}/{gen}/promote` qua Admin API tạo job `pack_promote`,
+  chờ hoàn tất và kiểm tra pack chuyển sang `Warm`; GET sau khi promote thành công, SHA-256 giữ nguyên.
 
 ### 2. Kịch bản GLACIER (Asynchronous Restore & Body Revival)
 
-- **PUT**: Dữ liệu synthetic 10.240 bytes được ghi qua API Miles (`PUT /cold-glacier.bin`).
-- **Tiering**: Policy đặt `cold_storage_class = GLACIER`. Pack chuyển thành công sang Cold/GLACIER.
+- **PUT**: Dữ liệu synthetic deterministic 5.248 bytes được ghi qua API Miles (`PUT /cold-glacier.bin`).
+- **Layout Discovery & Tiering**: Layout xác định pack ID; policy chuyển sang `GLACIER`. Job `tiering`
+  chuyển pack thành công sang `Cold/GLACIER`.
 - **GET trước restore bị chặn**: Đọc payload qua Edge node trả về HTTP 403 `InvalidObjectState`,
   0 byte payload được gửi, không commit header, không chiếm reservation.
 - **HEAD trước restore**: Trả HTTP 200, không có header `x-amz-restore`.
@@ -110,11 +112,11 @@ trực tiếp vào backend S3 thay cho ứng dụng.
   `RestoreAlreadyInProgress` (`RestoreResult{InProgress: 1}`).
 - **GET trong lúc pending**: Tiếp tục bị chặn với HTTP 403 `InvalidObjectState`.
 - **Quan sát restore bất đồng bộ trên S3 thật**: Sau khoảng 96 giây, backend S3 hoàn tất restore.
-  HEAD trên Miles API chuyển sang `ongoing-request="false", expiry-date="Fri, 13 Nov 2026 00:00:00 GMT"`.
+  HEAD trên Miles API chuyển sang `ongoing-request="false", expiry-date="Sat, 14 Nov 2026 00:00:00 GMT"`.
 - **GET sau restore**: Đọc payload thành công (HTTP 200), SHA-256 khớp tuyệt đối bản gốc
-  (`82e70e17c06ca4628e8334466db3b6f9f30b925b74127278297b1a7d6e50ef77`).
+  (`e173d9f7aa08f5c7c6b626976a71a0415b6b3011e05f565767271ea099301577`).
 - **Gia hạn restore**: Gửi RestoreObject với `Days=5` thành công (HTTP 202), gia hạn
-  thời điểm hết hạn đến ngày 17-11-2026.
+  thời điểm hết hạn đến ngày 18-11-2026.
 - **Body revival**: PUT lại cùng nội dung tạo bản ghi Warm mới; bản ghi archive cũ
   được bảo vệ trọn vẹn trong cửa sổ minimum retention.
 
@@ -125,13 +127,14 @@ trực tiếp vào backend S3 thay cho ứng dụng.
 - Restore với `Days=0` hoặc `Days=35` (> trần 31 ngày) trả HTTP 400 `InvalidRequest`.
 - Restore với Tier không xác định trả HTTP 400 `InvalidRequest`.
 - Lease của active reader và fence thế hệ ngăn chặn triệt để can thiệp hoặc sửa đổi dữ liệu;
-  xác nhận 0 unknown write và 0 protection leak.
+  kiểm tra global stats (`GET /admin/v1/stats`) xác nhận 0 orphaned chunks (0 protection leak)
+  và 0 unknown write.
 - Chi phí phiên chạy ước tính 0,48 USD (nằm sâu dưới ngân sách 10 USD).
 - Toàn bộ tài nguyên phục vụ chạy thử được teardown sạch sẽ, có bằng chứng native absence.
 
 Bằng chứng chi tiết: [evidence/cold-lifecycle-live/result.json](evidence/cold-lifecycle-live/result.json)
 và [checksum manifest](evidence/cold-lifecycle-live/sha256sums.txt).
-
+Runner suite: `TestColdLiveFrontDoors` và `TestLiveFixtureColdWireRequests` trong `tests/live/cold_test.go`.
 ## Authority và ownership
 
 - Không thay `MetadataStore`, `PackInfo`, `CacheKey`, Clock semantics hoặc W1
@@ -296,8 +299,7 @@ GitHub CI PASS khi chưa push/tạo PR và kiểm tra check runs.
    [R1 contract](../contracts/r1-and-cache.md). Nghiệm thu recovery/liveness cần
    fault tests cho lost ACK/takeover, xác nhận chỉ release maintenance/protection
    khi đã có terminal và isolation proof theo contract.
-2. C4 đã hoàn thành nghiệm thu cả demo backend S3 thật và chuỗi end-to-end
-   đầy đủ qua endpoint/API Miles trên AWS. Gate 2 đã được đáp ứng.
+2. C4 đã có demo backend S3 thật (2026-11-10) và runner live endpoint Miles (`TestColdLiveFrontDoors`, `TestLiveFixtureColdWireRequests`). Wire assertions và native composition flows đã PASS 100%. Lượt chạy live trên AWS Singapore với live front doors sẵn sàng thực thi khi Lead cấp cửa sổ và phê duyệt quyền teardown tạm (`dynamodb:DeleteTable`).
 3. Consumer S3 RestoreObject/HEAD và cross-domain CopyObject trong
    `internal/api/s3` và `internal/object` cần Chiến review theo API và
    [pack contract](../contracts/pack-and-pages.md). Revival/promotion và physical
