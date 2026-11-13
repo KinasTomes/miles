@@ -74,9 +74,26 @@ def prepare(r, slot, case, admin):
     expected = {t["Target"]["Id"] for t in targets}
     require(len(expected) == 2 and all(t["TargetHealth"]["State"] == "healthy" for t in targets), "Expected two healthy Cloud targets")
     edge = r.outputs("hosts")["acceptance_nodes"]["edge"]["instance_id"]
-    require(set(nodes) == expected | {edge}, "Per-node telemetry does not match exact Cloud fleet + Edge")
+    hosts = expected | {edge}
+    matched = {next((h for h in hosts if n == h or n.startswith(h + "-")), n) for n in nodes}
+    require(matched == hosts and len(nodes) == len(hosts), "Per-node telemetry does not match exact Cloud fleet + Edge")
     prefix = f"trials/{slot}"
     r.write(prefix+"/cache-before-purge.json", before, new=True)
+    if "Jobs" in binding["tables"]:
+        def jobs_quiescent():
+            res = r.aws(
+                "dynamodb", "scan",
+                "--table-name", binding["tables"]["Jobs"],
+                "--filter-expression", "#s IN (:q, :r, :c)",
+                "--expression-attribute-names", json.dumps({"#s": "state"}),
+                "--expression-attribute-values", json.dumps({
+                    ":q": {"S": "queued"},
+                    ":r": {"S": "running"},
+                    ":c": {"S": "cancelling"}
+                }),
+            )
+            return len(res.get("Items", [])) == 0
+        r.wait("cluster background jobs quiescent before cache purge", jobs_quiescent, 120)
     # Record before dispatch: lost POST response must be reconciled, not resent.
     r.write(prefix+"/purge-intent.json", {"nodes": sorted(nodes), "at": now().isoformat()}, new=True)
     job = admin(r, "cache/purge", {"scope": "cluster"})

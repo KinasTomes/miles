@@ -140,7 +140,8 @@
         "secretsmanager:UntagResource"
       ],
       "Resource": [
-        "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:miles-dev/runtime-secrets-*"
+        "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:miles-dev/runtime-secrets-*",
+        "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:miles-dev/edge-bootstrap*"
       ],
       "Condition": {
         "DateLessThan": {
@@ -325,7 +326,9 @@
       "Action": [
         "ssm:CreateDocument",
         "ssm:DescribeDocument",
+        "ssm:DescribeDocumentPermission",
         "ssm:GetDocument",
+        "ssm:UpdateDocument",
         "ssm:AddTagsToResource",
         "ssm:ListTagsForResource",
         "ssm:DeleteDocument"
