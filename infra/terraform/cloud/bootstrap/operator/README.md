@@ -4,6 +4,13 @@ IAM bootstrap do chủ account hoặc danh tính quản trị IAM thực hiện.
 bằng deploy role đã kiểm STS/identity gate. Runtime dùng instance profile hoặc
 Roles Anywhere. Thư mục này chứa policy templates cần render và review trước khi gắn.
 
+Operator user chỉ assume được deploy role đã khai báo và phải dùng MFA; deploy role
+không assume tiếp runtime/role khác. Policy isolation chặn nhận tag từ installation
+khác, đổi/xóa các nhãn sở hữu và thao tác regional ngoài Region đã chọn. Không nới
+các deny này khi gặp `AccessDenied`: kiểm tra đúng input và tài nguyên trước.
+Các API inventory dùng resource `*` vẫn có thể nhìn thấy metadata chung của account;
+installation riêng không tạo account/quota/billing riêng.
+
 ## Một file cấu hình cho mỗi installation
 
 Copy [installation example](../../environments/dev/installation.example.json) ra
@@ -21,6 +28,11 @@ python3 infra/terraform/cloud/scripts/render-installation.py \
 Output directory phải mới, nằm ngoài checkout. Renderer dùng standard library,
 không gọi AWS, tạo directory 0700/file 0600 và từ chối trường cấu hình lạ.
 Mỗi lần đổi input tạo output directory mới để review diff trước khi sử dụng.
+
+Khi bật `enable_acceptance_nodes`, renderer thêm đúng hai runtime identity/profile
+`<installation>-acceptance-edge` và `-acceptance-client`, vẫn buộc permissions
+boundary, path và tag của installation. Quyền asset chỉ tới `acceptance-assets/`
+trong bucket riêng. Khi tắt, các grant bổ sung này không được sinh.
 
 | Output | Cách dùng |
 | --- | --- |

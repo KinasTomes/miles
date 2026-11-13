@@ -46,6 +46,16 @@ cp infra/terraform/cloud/environments/dev/installation.example.json \
 
 Một installation giữ cùng config, thư mục private, source SHA và remote state trong suốt lượt chạy. Nếu đổi account/name/AMI/topology, dùng installation mới hoặc thực hiện migration được review riêng. Chỉ thời hạn audit/cleanup được phép điều chỉnh mà không thay danh tính installation.
 
+### Installation riêng trong account đang dùng chung
+
+Các giá trị `miles-dev` trong example/default giữ tương thích với môi trường cũ; không đổi hàng loạt chúng thành tên của một người dùng. Installation mới dùng JSON private với `installation_name`, `environment`, `owner`, runtime IAM path, role và backend riêng. Cấu hình runtime được sinh từ tên installation và Terraform outputs, gồm `ddb_table_prefix`, bucket, KMS key, secret và danh tính Edge; không chạy trực tiếp shared example chưa điền giá trị.
+
+Nếu IAM hoặc bucket state đã được bootstrap bên ngoài Terraform, không chạy luồng fresh-install để nhận quản lý chúng tự động. Chủ account phải đối chiếu ARN, policy, trust, boundary và bucket policy hiện có rồi duyệt import/plan riêng. Giữ nguyên các deny bổ sung đã được phê duyệt; không render lại defaults rồi ghi đè quyền chỉ để vượt `AccessDenied`. Terraform CLI dùng workspace `default` trong backend riêng; bucket/key/lock key phải khớp policy, không migrate/copy state của installation khác.
+
+Khi nâng cấp installation cũ, pin `owner` hiện tại trong private inputs và review mọi thay đổi tag. Các quyền mạng mới yêu cầu tag `Project`, `Environment`, `Installation` đã đúng trên tài nguyên. Nếu tài nguyên cũ chưa có `Installation`, chỉ chủ account được gắn nhãn sau khi đối chiếu từng ARN với state/inventory đã duyệt, trước khi chuyển sang policy mới. Không thêm quyền nhận tài nguyên chưa có tag một cách đại trà. Đổi `installation_name` trong state cũ có thể gây thay thế tài nguyên; đây không phải cách tách môi trường.
+
+Bộ dựng cố định Terraform data directory theo từng stack, workspace `default`, loại bỏ biến `TF_*` kế thừa và không copy private `*.tfvars`/override files từ checkout. Khi chạy Terraform trực tiếp, người chạy phải dùng đúng private inputs/backend tương ứng và tự kiểm các biến môi trường này.
+
 ```bash
 deploy() {
   python3 -B "$MILES_REPO/infra/terraform/cloud/scripts/deploy-installation.py" \
