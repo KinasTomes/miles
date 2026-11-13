@@ -1,0 +1,23 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "InspectOwnBootstrapRole",
+      "Effect": "Allow",
+      "Action": ["iam:GetRole", "iam:SimulatePrincipalPolicy"],
+      "Resource": "{{DEPLOY_ROLE_ARN}}"
+    },
+    {
+      "Sid": "NeverEditOwnBootstrapPolicy",
+      "Effect": "Deny",
+      "Action": ["iam:PutRolePolicy"],
+      "Resource": "{{DEPLOY_ROLE_ARN}}"
+    },
+    {
+      "Sid": "InspectOwnRuntimeBoundary",
+      "Effect": "Allow",
+      "Action": ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyTags"],
+      "Resource": "{{BOUNDARY_ARN}}"
+    }
+  ]
+}

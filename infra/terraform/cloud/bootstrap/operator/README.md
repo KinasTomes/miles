@@ -13,6 +13,27 @@ installation riêng không tạo account/quota/billing riêng.
 
 ## Một file cấu hình cho mỗi installation
 
+`bootstrap_mode` trong cùng JSON chọn `new` (mặc định) hoặc `existing`.
+`new` tạo IAM/state qua hai bootstrap stack. `existing` dùng IAM/backend đã cấp,
+không import, không plan/apply hoặc xóa bootstrap. Member điền config trên máy
+của mình, không phụ thuộc file private trên máy lead. Xem [luồng dùng tài nguyên cấp sẵn](../../../../../docs/testing/aws-personal-account-guide.md#11-dùng-iam-và-backend-đã-cấp-sẵn-trên-máy-member).
+
+Ở `existing`, renderer chỉ xuất workload tfvars, `backend.hcl`,
+`bootstrap-inventory.json` và `iam/deploy-bootstrap-read.json`. Policy kiểm tra này
+phải được chủ account duyệt/cấp trước nếu role còn thiếu; bộ dựng không tự attach.
+Policy chỉ cấp quyền đọc/mô phỏng và chặn `iam:PutRolePolicy` trên chính deploy role,
+để có explicit deny rõ ràng khi các policy khác chứa condition keys chưa đủ context.
+Verifier bổ sung context từ STS/IAM đã đọc, chấp nhận explicit deny đã xác nhận;
+`allowed`/`implicitDeny` còn thiếu context vẫn bị chặn, không tự gán giá trị giả.
+Role deploy cần explicit Deny cả `s3:DeleteObject` và `s3:DeleteObjectVersion` trên đúng state key;
+`implicitDeny` không đủ để chặn Allow từ bucket policy. Giữ Get/Put state và
+Get/Put/Delete `.tflock`. Chế độ `new` sinh deny này trong `deploy-state.json`;
+với `existing`, chủ account cấp trước, bộ dựng chỉ kiểm tra.
+Chạy `prepare` → đăng nhập deploy role → `verify-bootstrap` → foundation rồi
+dùng chung provision/active/verify/cleanup. Backend bucket/key đã cấp được điền
+qua `operator.state_bucket`/`state_key`; không cần đổi defaults trong source.
+Không dùng chế độ này để nhận state workload cũ hoặc bỏ qua review IAM/plan.
+
 Copy [installation example](../../environments/dev/installation.example.json) ra
 thư mục private ngoài Git. Điền account/Region, `installation_name`, `environment`,
 `owner`, `runtime_iam_path`, boundary ARN, AMI/type, Edge certificate CN và operator.
@@ -34,11 +55,14 @@ Khi bật `enable_acceptance_nodes`, renderer thêm đúng hai runtime identity/
 boundary, path và tag của installation. Quyền asset chỉ tới `acceptance-assets/`
 trong bucket riêng. Khi tắt, các grant bổ sung này không được sinh.
 
+Bảng dưới liệt kê output của chế độ `new`.
+
 | Output | Cách dùng |
 | --- | --- |
 | `installation.tfvars.json` | Private var-file cho dev stack, có thể dùng foundation hoặc fleet theo input |
 | `bootstrap-state.tfvars.json` | Var-file cho bootstrap state |
 | `backend.hcl` | Backend bucket/key/Region/profile cùng installation |
+| `bootstrap-inventory.json` | Binding account, IAM, tags và backend để đối chiếu private |
 | `iam/user-policy.json`, `iam/trust-policy.json` | Quyền operator và trust deploy role |
 | `iam/runtime-boundary.json` | Permissions boundary của runtime roles |
 | `iam/deploy-*.json` | Baseline deploy permissions, cần đối chiếu plan thật |
