@@ -89,7 +89,22 @@ func (m *Store) QueueReadRestore(ctx context.Context, reader s.WriterFence, head
 				return e
 			}
 			out, e = get[jobs.Job](t, key("jobs", owner.ID))
-			return e // acceptance already exists, never re-send it from GET
+			if e != nil {
+				return e
+			}
+			if explicit != nil {
+				var prev lifecycle.Params
+				_ = json.Unmarshal(out.Params, &prev)
+				if explicit.Days > prev.Days {
+					created = true
+					prev.Days = explicit.Days
+					prev.Tier = explicit.Tier
+					out.Params, _ = json.Marshal(prev)
+					out.Revision++
+					return put(t, key("jobs", owner.ID), out)
+				}
+			}
+			return nil // acceptance already exists, never re-send it from GET
 		}
 		params := lifecycle.Params{PackID: ref.ID, Generation: ref.Generation, Days: int(settings.AutoRestoreDays), Tier: settings.AutoRestoreTier, RequiredUntil: required.UTC()}
 		if explicit != nil {

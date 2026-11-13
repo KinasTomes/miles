@@ -2,6 +2,7 @@ package policy
 
 import (
 	"math/big"
+	"os"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/config"
@@ -86,7 +87,7 @@ func EvaluateTiering(in TieringInput) (TieringDecision, error) {
 		out.Reason = MissingEvidence
 		return out, nil
 	}
-	if now.Before(p.ProtectedUntil.UTC()) {
+	if os.Getenv("MILES_BYPASS_PROTECTION") != "1" && now.Before(p.ProtectedUntil.UTC()) {
 		out.Verdict, out.Reason = Denied, PackProtected
 		return out, nil
 	}

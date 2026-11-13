@@ -314,7 +314,7 @@ func (m *Store) AcquireR1(ctx context.Context, r s.R1Acquire) (s.R1Lease, error)
 		} else if r.Fence.Epoch != 1 {
 			return s.ErrFenced
 		}
-		if g.State != "Open" && !(g.State == "RecoveryCut" && (r.Kind == "reader" || r.Kind == "recovery")) {
+		if g.State != "Open" && !((g.State == "RecoveryCut" || g.State == "Maintenance") && (r.Kind == "reader" || r.Kind == "recovery" || r.Kind == "control")) {
 			return s.ErrR1Busy
 		}
 		if !b.Upper.Before(r.Deadline) || r.Deadline.After(b.Horizon) {

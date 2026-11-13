@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
-
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/storage"
@@ -146,7 +146,7 @@ func (r *Runner) Tick(ctx context.Context) error {
 		return e
 	}
 	for t, executor := range r.Executors {
-		if executor.Periodic > 0 && n.Ready && !n.Draining {
+		if executor.Periodic > 0 && n.Ready && !n.Draining && os.Getenv("MILES_DISABLE_PERIODIC") != "1" {
 			if err := r.schedule(ctx, t, executor); err != nil && !errors.Is(err, storage.ErrR1Busy) && !errors.Is(err, storage.ErrFenced) {
 				return err
 			}

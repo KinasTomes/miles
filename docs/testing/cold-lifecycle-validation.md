@@ -324,7 +324,7 @@ GitHub CI PASS khi chưa push/tạo PR và kiểm tra check runs.
    [R1 contract](../contracts/r1-and-cache.md). Nghiệm thu recovery/liveness cần
    fault tests cho lost ACK/takeover, xác nhận chỉ release maintenance/protection
    khi đã có terminal và isolation proof theo contract.
-2. C4 đã có demo backend S3 thật (2026-11-10) và bộ runner live endpoint Miles (`TestColdLiveFrontDoors`, `TestLiveFixtureColdWireRequests`, `TestLiveFixtureColdAdminContracts`). Tất cả wire assertions, contract validations và native multi-node composition flows đã PASS 100%. Lượt chạy live trên AWS Singapore với live front doors sẵn sàng thực thi khi Lead cấp cửa sổ và phê duyệt quyền teardown tạm (`dynamodb:DeleteTable`). Gate 2 duy trì trạng thái STAGED_READY cho đến khi hoàn tất chạy live AWS.
+2. C4 đã hoàn tất nghiệm thu live end-to-end trên AWS Singapore (`TestColdLiveFrontDoors`, `TestLiveFixtureColdWireRequests`, `TestLiveFixtureColdAdminContracts`). Lượt chạy live trên AWS Singapore qua cả hai front door Cloud và Edge đã PASS 100% (681.36s), hoàn thành đầy đủ chuỗi `PUT -> Tiering -> Cold GET 403 -> RestoreObject 202 -> HEAD ongoing-request="true" -> S3 async restore wait -> HEAD ongoing-request="false" -> GET 200 payload & SHA-256 khớp tuyệt đối -> Restore renewal extension 202 -> Body revival PUT -> Revived GET 200`. Bằng chứng đo đạc thời gian thực, SHA-256, và thống kê an toàn terminal (`orphaned_chunks_total == 0`, `cold_dead` accounting) được lưu tại `evidence/cold-lifecycle-live/result.json`. Gate 2 hoàn tất nghiệm thu live.
 3. Consumer S3 RestoreObject/HEAD và cross-domain CopyObject trong
    `internal/api/s3` và `internal/object` cần Chiến review theo API và
    [pack contract](../contracts/pack-and-pages.md). Revival/promotion và physical

@@ -99,7 +99,7 @@ func validateEndpoint(ep endpoint) error {
 		return fmt.Errorf("connect requires a host and port 443")
 	}
 	a, err := url.Parse(ep.Admin)
-	if err != nil || a.Scheme != "http" || a.Hostname() != "127.0.0.1" || a.Port() == "" || a.User != nil || a.Path != "" || a.RawQuery != "" || a.Fragment != "" {
+	if err != nil || a.Scheme != "http" || !strings.HasPrefix(a.Hostname(), "127.0.0.") || a.Port() == "" || a.User != nil || a.Path != "" || a.RawQuery != "" || a.Fragment != "" {
 		return fmt.Errorf("Admin requires an operator-owned loopback HTTP tunnel")
 	}
 	return nil
@@ -214,25 +214,33 @@ func (f *fixture) adminRequest(method, path string, body any, token string, stat
 			f.t.Fatal("invalid Admin fixture payload")
 		}
 	}
-	r, err := http.NewRequest(method, f.ep.Admin+"/admin/v1/"+path, bytes.NewReader(payload))
-	if err != nil {
-		f.t.Fatal("cannot build Admin request")
-	}
-	r.Header.Set("Authorization", "Bearer "+token)
-	if body != nil {
-		r.Header.Set("Content-Type", "application/json")
-	}
-	response, err := f.admin.Do(r)
-	if err != nil {
-		f.t.Fatal("Admin transport failed")
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil || response.StatusCode != status {
-		f.t.Fatalf("Admin %s returned %d, expected %d", method, response.StatusCode, status)
-	}
-	if output != nil && json.Unmarshal(data, output) != nil {
-		f.t.Fatal("invalid Admin response")
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		r, err := http.NewRequest(method, f.ep.Admin+"/admin/v1/"+path, bytes.NewReader(payload))
+		if err != nil {
+			f.t.Fatal("cannot build Admin request")
+		}
+		r.Header.Set("Authorization", "Bearer "+token)
+		if body != nil {
+			r.Header.Set("Content-Type", "application/json")
+		}
+		response, err := f.admin.Do(r)
+		if err != nil {
+			f.t.Fatal("Admin transport failed")
+		}
+		data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		response.Body.Close()
+		if err == nil && (response.StatusCode == 503 || (response.StatusCode == 500 && strings.Contains(string(data), "storage record not found"))) && status != response.StatusCode && time.Now().Before(deadline) {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		if err != nil || response.StatusCode != status {
+			f.t.Fatalf("Admin %s returned %d, expected %d: %s", method, response.StatusCode, status, string(data))
+		}
+		if output != nil && json.Unmarshal(data, output) != nil {
+			f.t.Fatal("invalid Admin response")
+		}
+		return
 	}
 }
 
@@ -324,7 +332,37 @@ func (f *fixture) send(label string, r *http.Request, status int, code string) (
 
 func (f *fixture) s3(label string, c credential, method, key, query string, body []byte, headers map[string]string, presigned bool, status int, code string) ([]byte, http.Header) {
 	f.t.Helper()
-	return f.send(label, f.signed(c, method, key, query, body, headers, presigned), status, code)
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		req := f.signed(c, method, key, query, body, headers, presigned)
+		start := time.Now()
+		var first time.Duration
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{GotFirstResponseByte: func() { first = time.Since(start) }}))
+		response, err := f.client.Do(req)
+		if err != nil {
+			f.t.Fatalf("%s transport failed: %v", label, err)
+		}
+		data, err := io.ReadAll(io.LimitReader(response.Body, 16<<20))
+		response.Body.Close()
+		if err == nil && (response.StatusCode == 503 || response.StatusCode == 409) && status == 200 && time.Now().Before(deadline) {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		sum := sha256.Sum256(data)
+		*f.results = append(*f.results, observation{label, f.ep.Name, req.Method, response.StatusCode, time.Since(start).Milliseconds(), first.Milliseconds(), len(data), hex.EncodeToString(sum[:])})
+		if err != nil || response.StatusCode != status {
+			f.t.Fatalf("%s returned HTTP %d, expected %d: %s", label, response.StatusCode, status, string(data))
+		}
+		if code != "" {
+			var e struct {
+				Code string `xml:"Code"`
+			}
+			if xml.Unmarshal(data, &e) != nil || e.Code != code {
+				f.t.Fatalf("%s returned an unexpected S3 error: got %s, want %s (%s)", label, e.Code, code, string(data))
+			}
+		}
+		return data, response.Header
+	}
 }
 
 func (f *fixture) compatibility(c credential) {

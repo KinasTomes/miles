@@ -393,13 +393,13 @@ func (r *WarmReader) ArchiveState(ctx context.Context, head storage.ObjectHead) 
 			}
 			switch {
 			case physical.Class != storage.Glacier:
-			case physical.State == "Restoring":
-				out.Restoring++
 			case physical.State == "Restored" && physical.RestoredUntil.After(now):
 				out.Restored++
 				if out.Expiry.IsZero() || physical.RestoredUntil.Before(out.Expiry) {
 					out.Expiry = physical.RestoredUntil
 				}
+			case physical.State == "Restoring" || info.State == "Restoring":
+				out.Restoring++
 			}
 		}
 	}

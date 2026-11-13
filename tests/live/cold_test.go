@@ -616,7 +616,6 @@ func TestColdLiveFrontDoors(t *testing.T) {
 			if f.bucketID == "" {
 				t.Fatal("missing bucket identity")
 			}
-			f.grant("owner", true)
 
 			// Discover current global policy revision dynamically
 			var curPolicy struct {
@@ -639,10 +638,11 @@ func TestColdLiveFrontDoors(t *testing.T) {
 func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polRev *int) {
 	f.t.Helper()
 	var data []byte
+	uniqueSeed := fmt.Sprintf("%s-%s-payload-seed\n", f.prefix, class)
 	if class == storage.GlacierIR {
-		data = bytes.Clone(coldIRPayload)
+		data = append([]byte(uniqueSeed), coldIRPayload...)
 	} else {
-		data = bytes.Clone(coldGlacierPayload)
+		data = append([]byte(uniqueSeed), coldGlacierPayload...)
 	}
 	sum := sha256.Sum256(data)
 	hexSum := hex.EncodeToString(sum[:])
@@ -670,15 +670,21 @@ func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polR
 	packGen := layout.Packs[0].Generation
 
 	// 3. Configure tiering policy using current pinned revision
+	var polResp struct {
+		Revision int `json:"revision"`
+	}
 	f.adminRequest("PUT", "policy", map[string]any{
 		"expected_revision": *polRev,
 		"tiering": map[string]any{
 			"cold_after_days":     0,
 			"min_pack_live_ratio": 0,
 			"cold_storage_class":  string(class),
+			"auto_restore":        false,
 		},
-	}, f.token, 200, nil)
-	*polRev++
+	}, f.token, 200, &polResp)
+	if polResp.Revision > 0 {
+		*polRev = polResp.Revision
+	}
 
 	// 4. Enqueue tiering job with object params and await physical transition
 	var tierJob struct {
@@ -741,11 +747,19 @@ func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polR
 		f.awaitJob(promJob.JobID, 3*time.Minute)
 
 		// Verify layout after promotion advances generation
-		f.adminRequest("GET", "objects/layout?bucket="+url.QueryEscape(f.bucket)+"&key="+url.QueryEscape(strings.TrimPrefix(key, "/")), nil, f.token, 200, &layout)
-		if len(layout.Packs) == 0 || layout.Packs[0].Generation == packGen {
+		var promotedGen string
+		layoutDeadline := time.Now().Add(60 * time.Second)
+		for time.Now().Before(layoutDeadline) {
+			f.adminRequest("GET", "objects/layout?bucket="+url.QueryEscape(f.bucket)+"&key="+url.QueryEscape(strings.TrimPrefix(key, "/")), nil, f.token, 200, &layout)
+			if len(layout.Packs) > 0 && layout.Packs[0].Generation != packGen {
+				promotedGen = layout.Packs[0].Generation
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if promotedGen == "" {
 			f.t.Fatalf("generation did not advance after promotion: %s", layout.Packs[0].Generation)
 		}
-		promotedGen := layout.Packs[0].Generation
 
 		// Fetch all generations for packID and verify both retained Cold source and new Warm target
 		f.adminRequest("GET", "packs/"+packID, nil, f.token, 200, &packPage)
@@ -790,7 +804,15 @@ func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polR
 		f.s3("GLACIER RestoreObject conflict", c, "POST", key, "restore=", restoreXML(2, "Expedited"), nil, false, 409, "RestoreAlreadyInProgress")
 
 		// 10. HEAD during pending shows ongoing-request="true"
-		_, headPending := f.s3("GLACIER HEAD pending", c, "HEAD", key, "", nil, nil, false, 200, "")
+		headDeadline := time.Now().Add(15 * time.Second)
+		var headPending http.Header
+		for {
+			_, headPending = f.s3("GLACIER HEAD pending", c, "HEAD", key, "", nil, nil, false, 200, "")
+			if strings.Contains(headPending.Get("x-amz-restore"), `ongoing-request="true"`) || time.Now().After(headDeadline) {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
 		if !strings.Contains(headPending.Get("x-amz-restore"), `ongoing-request="true"`) {
 			f.t.Fatalf("HEAD pending expected ongoing-request=true, got: %s", headPending.Get("x-amz-restore"))
 		}
@@ -853,7 +875,17 @@ func (f *fixture) runColdErrorAndIsolation(c credential) {
 		OrphanedChunks *uint64          `json:"orphaned_chunks_total"`
 		Physical       map[string]int64 `json:"listed_bytes_by_pack_lifecycle"`
 	}
-	f.adminRequest("GET", "stats", nil, f.token, 200, &st)
+	deadline := time.Now().Add(45 * time.Second)
+	for {
+		f.adminRequest("GET", "stats", nil, f.token, 200, &st)
+		if st.RevivedChunks != nil && *st.RevivedChunks > 0 && st.Physical != nil && st.Physical["cold_dead"] > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
 	if st.OrphanedChunks == nil || *st.OrphanedChunks != 0 {
 		f.t.Fatalf("terminal safety failure: orphaned chunks must be non-null and exactly 0, got %v", st.OrphanedChunks)
 	}
