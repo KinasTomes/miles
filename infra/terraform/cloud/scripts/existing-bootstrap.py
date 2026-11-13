@@ -74,19 +74,40 @@ def verify(aws, expected, state, private):
         request = {"PolicySourceArn": expected["role_arn"], "ActionNames": [action], "ResourceArns": [resource],
                    "ContextEntries": [{"ContextKeyName": "aws:RequestedRegion", "ContextKeyValues": [region], "ContextKeyType": "string"},
                                       {"ContextKeyName": "aws:PrincipalArn", "ContextKeyValues": [expected["role_arn"]], "ContextKeyType": "string"},
+                                      {"ContextKeyName": "aws:PrincipalAccount", "ContextKeyValues": [actor["Account"]], "ContextKeyType": "string"},
+                                      {"ContextKeyName": "aws:userid", "ContextKeyValues": [actor["UserId"]], "ContextKeyType": "string"},
                                       {"ContextKeyName": "aws:SecureTransport", "ContextKeyValues": ["true"], "ContextKeyType": "boolean"}]}
+        if resource == expected["role_arn"]:
+            request["ContextEntries"].extend({"ContextKeyName": "aws:ResourceTag/" + tag["Key"],
+                                              "ContextKeyValues": [tag["Value"]], "ContextKeyType": "string"}
+                                             for tag in role.get("Tags", []))
         check_file = private / "bootstrap-permission-check.json"
         with check_file.open("w") as stream:
             check_file.chmod(0o600)
             json.dump(request, stream)
         result = aws("iam", "simulate-principal-policy", "--cli-input-json", "file://" + str(check_file))
         evaluations = result.get("EvaluationResults", [])
+        if result.get("IsTruncated") or result.get("Marker") or len(evaluations) != 1:
+            raise ValueError("Incomplete IAM permission simulation")
+        evaluation = evaluations[0]
+        decision = evaluation.get("EvalDecision")
+        resources = evaluation.get("ResourceSpecificResults", [])
+        if evaluation.get("EvalActionName", action).lower() != action.lower() or (resources and (
+                len(resources) != 1 or resources[0].get("EvalResourceName") != resource
+                or resources[0].get("EvalResourceDecision") != decision)):
+            raise ValueError("IAM simulation action/resource decisions differ")
         decisions = ("allowed",) if permitted else ("implicitDeny", "explicitDeny")
         # A resource-policy allow can bypass an implicit identity deny on the state key.
         if action in ("s3:DeleteObject", "s3:DeleteObjectVersion") and not permitted:
             decisions = ("explicitDeny",)
-        if result.get("IsTruncated") or result.get("Marker") or len(evaluations) != 1 or evaluations[0].get("MissingContextValues") or any(r.get("MissingContextValues") for r in evaluations[0].get("ResourceSpecificResults", [])) or evaluations[0].get("EvalDecision") not in decisions:
+        if decision not in decisions:
             raise ValueError("Existing deploy role lacks required backend/lock permissions")
+        missing = set(evaluation.get("MissingContextValues", []))
+        for resource_result in resources:
+            missing.update(resource_result.get("MissingContextValues", []))
+        # A confirmed explicit deny wins even when unrelated statements lack context.
+        if missing and decision != "explicitDeny":
+            raise ValueError("Unresolved IAM simulation context for " + action + ": " + ", ".join(sorted(missing)))
     # Inspect state locally; do not adopt another workload or overwrite its state.
     path = private / "bootstrap-backend-inspection.json"
     path.touch(mode=0o600, exist_ok=True)

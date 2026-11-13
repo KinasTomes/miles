@@ -68,7 +68,7 @@ class ExistingBootstrapTests(unittest.TestCase):
             action, resource = request["ActionNames"][0], request["ResourceArns"][0]
             decision = "allowed"
             if action == "iam:PutRolePolicy":
-                decision = "implicitDeny"
+                decision = "explicitDeny"
             elif action in ("s3:DeleteObject", "s3:DeleteObjectVersion") and not resource.endswith(".tflock"):
                 decision = "explicitDeny"
             return self.permission_overrides.get((action, resource), {"EvaluationResults": [{"EvalDecision": decision}]})
@@ -84,8 +84,17 @@ class ExistingBootstrapTests(unittest.TestCase):
         self.assertNotIn("bootstrap_mode", rendered["installation.tfvars.json"])
         self.assertIn('bucket = "member-private-backend"', rendered["backend.hcl"])
         self.assertIn('key = "member/cloud.tfstate"', rendered["backend.hcl"])
+        deny = {"Sid": "NeverEditOwnBootstrapPolicy", "Effect": "Deny",
+                "Action": ["iam:PutRolePolicy"], "Resource": self.expected["role_arn"]}
+        self.assertEqual([s for s in rendered["iam/deploy-bootstrap-read.json"]["Statement"] if s["Effect"] == "Deny"], [deny])
+        fresh = renderer.render(fixture())
+        self.assertIn(deny, [s for document in fresh["operator.tfvars.json"]["deploy_documents"].values()
+                             for s in json.loads(document)["Statement"]])
         for statement in rendered["iam/deploy-bootstrap-read.json"]["Statement"]:
-            self.assertTrue(all(a.startswith(("iam:Get", "iam:List", "iam:Simulate")) for a in statement["Action"]))
+            if statement["Effect"] == "Allow":
+                self.assertTrue(all(a.startswith(("iam:Get", "iam:List", "iam:Simulate")) for a in statement["Action"]))
+            else:
+                self.assertEqual(statement, deny)
         del self.config["bootstrap_mode"]
         with self.assertRaisesRegex(ValueError, "override"):
             renderer.render(self.config)
@@ -133,6 +142,66 @@ class ExistingBootstrapTests(unittest.TestCase):
                     self.verify()
         self.permission_overrides[("s3:DeleteObjectVersion", state)] = {"EvaluationResults": [{"EvalDecision": "explicitDeny"}]}
         self.verify()
+
+    def test_confirmed_explicit_deny_survives_unrelated_missing_context(self):
+        state = "arn:aws:s3:::" + self.expected["state_bucket"] + "/" + self.expected["state_key"]
+        for action, resource in (("iam:PutRolePolicy", self.expected["role_arn"]),
+                                 ("s3:DeleteObject", state), ("s3:DeleteObjectVersion", state)):
+            self.permission_overrides[(action, resource)] = {"EvaluationResults": [{
+                "EvalActionName": action, "EvalDecision": "explicitDeny",
+                "MissingContextValues": ["ec2:InstanceType"],
+                "ResourceSpecificResults": [{"EvalResourceName": resource, "EvalResourceDecision": "explicitDeny",
+                                             "MissingContextValues": ["ec2:InstanceType"]}]}]}
+        self.verify()
+
+    def test_simulation_supplies_verified_actor_and_iam_resource_tags(self):
+        original = self.aws
+        def aws(*arguments):
+            if arguments[1] == "simulate-principal-policy":
+                request = json.loads(Path(arguments[-1].removeprefix("file://")).read_text())
+                context = {c["ContextKeyName"]: c["ContextKeyValues"] for c in request["ContextEntries"]}
+                self.assertEqual(context["aws:userid"], ["ROLEID:session"])
+                self.assertEqual(context["aws:PrincipalAccount"], [self.expected["account_id"]])
+                if request["ActionNames"] == ["iam:PutRolePolicy"]:
+                    for key, value in self.expected["tags"].items():
+                        self.assertEqual(context["aws:ResourceTag/" + key], [value])
+                else:
+                    self.assertFalse(any(key.startswith("aws:ResourceTag/") for key in context))
+                self.assertNotIn("aws:SourceIp", context)
+                self.assertNotIn("aws:MultiFactorAuthPresent", context)
+            return original(*arguments)
+        existing.verify(aws, self.expected, self.app.state, self.app.private)
+
+    def test_uncertain_and_inconsistent_simulations_stay_closed(self):
+        role = self.expected["role_arn"]
+        state = "arn:aws:s3:::" + self.expected["state_bucket"] + "/" + self.expected["state_key"]
+        cases = [
+            ("iam:PutRolePolicy", role, {"EvalDecision": "implicitDeny", "MissingContextValues": ["aws:SourceIp"]}),
+            ("s3:GetObject", state, {"EvalDecision": "allowed", "MissingContextValues": ["aws:SourceIp"]}),
+            ("iam:PutRolePolicy", role, {"EvalDecision": "explicitDeny", "ResourceSpecificResults": [
+                {"EvalResourceName": role, "EvalResourceDecision": "implicitDeny", "MissingContextValues": ["aws:SourceIp"]}]}),
+            ("iam:PutRolePolicy", role, {"EvalDecision": "explicitDeny", "ResourceSpecificResults": [
+                {"EvalResourceName": role + "-other", "EvalResourceDecision": "explicitDeny"}]}),
+            ("iam:PutRolePolicy", role, {"EvalActionName": "iam:DeleteRolePolicy", "EvalDecision": "explicitDeny"}),
+            ("s3:GetObject", state, {"EvalDecision": "allowed", "ResourceSpecificResults": [
+                {"EvalResourceName": state, "EvalResourceDecision": "allowed", "MissingContextValues": ["aws:SourceIp"]}]}),
+        ]
+        for action, resource, evaluation in cases:
+            with self.subTest(action=action, evaluation=evaluation):
+                self.permission_overrides = {(action, resource): {"EvaluationResults": [evaluation]}}
+                with self.assertRaises(ValueError):
+                    self.verify()
+        self.permission_overrides = {("iam:PutRolePolicy", role): {"EvaluationResults": [{"EvalDecision": "implicitDeny"}]}}
+        self.verify()  # Preserve complete legacy implicit-deny results.
+
+    def test_unresolved_context_identifies_action_and_keys_without_private_values(self):
+        role = self.expected["role_arn"]
+        self.permission_overrides[("iam:PutRolePolicy", role)] = {"EvaluationResults": [{
+            "EvalDecision": "implicitDeny", "MissingContextValues": ["aws:SourceIp"]}]}
+        with self.assertRaisesRegex(ValueError, "iam:PutRolePolicy: aws:SourceIp") as failure:
+            self.verify()
+        self.assertNotIn(role, str(failure.exception))
+        self.assertNotIn(self.expected["account_id"], str(failure.exception))
 
     def test_singleton_trust_bucket_and_boundary_statements(self):
         trust = self.responses["get-role"]["Role"]["AssumeRolePolicyDocument"]

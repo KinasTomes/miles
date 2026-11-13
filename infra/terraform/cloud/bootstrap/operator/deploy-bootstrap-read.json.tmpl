@@ -8,6 +8,12 @@
       "Resource": "{{DEPLOY_ROLE_ARN}}"
     },
     {
+      "Sid": "NeverEditOwnBootstrapPolicy",
+      "Effect": "Deny",
+      "Action": ["iam:PutRolePolicy"],
+      "Resource": "{{DEPLOY_ROLE_ARN}}"
+    },
+    {
       "Sid": "InspectOwnRuntimeBoundary",
       "Effect": "Allow",
       "Action": ["iam:GetPolicy", "iam:GetPolicyVersion", "iam:ListPolicyTags"],
