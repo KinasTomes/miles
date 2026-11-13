@@ -5,6 +5,9 @@ import argparse
 import datetime as dt
 import hashlib
 import json
+import ipaddress
+import re
+import socket
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
@@ -294,9 +297,55 @@ def bootstrap():
         folder.rmdir()
 
 
+def cloud_alias_addresses(dns_name):
+    """Resolve only the reviewed private ALB DNS, never a caller-picked IP."""
+    if not isinstance(dns_name, str) or not re.fullmatch(
+        r"internal-[a-zA-Z0-9-]+\.[a-z0-9-]+\.elb\.amazonaws\.com", dns_name
+    ):
+        raise ValueError("Cloud endpoint requires internal ALB DNS from Terraform output")
+    addresses = set()
+    for candidate in socket.getaddrinfo(dns_name, 443, family=socket.AF_INET,
+                                        type=socket.SOCK_STREAM):
+        address = candidate[4][0]
+        ip = ipaddress.ip_address(address)
+        if not any(ip in ipaddress.ip_network(cidr) for cidr in
+                   ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")):
+            raise ValueError("ALB DNS resolved outside RFC1918 private address space")
+        addresses.add(address)
+    if not addresses or len(addresses) > 8:
+        raise ValueError("Missing or unexpected count of private ALB addresses")
+    return sorted(addresses)
+
+
+def cloud_alias():
+    """Bind cloud.miles.test (ACM cert SNI) to fresh private ALB DNS resolution.
+
+    Called through the already-pinned SSM/SSH connection after active apply.
+    Replaces only this tool's managed block; no unreviewed DNS or host alias.
+    """
+    settings = json.load(sys.stdin)
+    if set(settings) != {"alb_dns"}:
+        raise ValueError("Cloud alias accepts only ALB DNS")
+    addresses = cloud_alias_addresses(settings["alb_dns"])
+    path = Path("/etc/hosts")
+    original = path.read_text()
+    managed = "# miles-acceptance-cloud-alias"
+    retained = [line for line in original.splitlines()
+                if managed not in line and not (
+                    "cloud.miles.test" in line and not line.lstrip().startswith("#")
+                )]
+    # Unowned cloud.miles.test entries are a conflict, not authorization to replace them.
+    for line in original.splitlines():
+        if "cloud.miles.test" in line and managed not in line and not line.lstrip().startswith("#"):
+            raise ValueError("Unowned Cloud host alias; stop and reconcile")
+    retained.extend(f"{addr} cloud.miles.test {managed}" for addr in addresses)
+    path.write_text("\n".join(retained) + "\n")
+    print(json.dumps({"dns_name": settings["alb_dns"], "addresses": addresses}))
+
+
 if __name__ == "__main__":
     os.umask(0o077)
     p = argparse.ArgumentParser()
-    p.add_argument("action", choices=["stage", "bootstrap"])
+    p.add_argument("action", choices=["stage", "bootstrap", "cloud-alias"])
     args = p.parse_args()
-    {"stage": stage, "bootstrap": bootstrap}[args.action]()
+    {"stage": stage, "bootstrap": bootstrap, "cloud-alias": cloud_alias}[args.action]()

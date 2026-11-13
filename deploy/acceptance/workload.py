@@ -280,10 +280,37 @@ def benchmark_case(r, case_id, repetition):
         profile = "edge"
         topology_desc = "two Cloud plus AWS Edge and client"
 
+    if topology == "cloud":
+        alb_dns = r.outputs("active")["runtime_inventory"]["alb_dns"]
+        require(isinstance(alb_dns, str) and alb_dns.startswith("internal-"),
+                "No private ALB DNS in active Terraform outputs")
+        raw_alias = r.ssh(
+            "client", "sudo", "-n", "python3.12",
+            "/home/ec2-user/acceptance/host.py", "cloud-alias",
+            input=json.dumps({"alb_dns": alb_dns}).encode(), timeout=30,
+        )
+        r.write(f"trials/{case_id}-rep{repetition}/cloud-alias.json",
+                json.loads(raw_alias), new=True)
+        # TLS/hostname must be verified by the private CA before sending DSG keys.
+        tls_status = r.ssh(
+            "client", "curl", "-sS", "--max-time", "10",
+            "--cacert", "/home/ec2-user/acceptance/tls-ca.pem",
+            "-o", "/dev/null", "-w", "%{http_code}",
+            "https://cloud.miles.test/", timeout=20,
+        ).strip()
+        require(re.fullmatch(r"[23][0-9]{2}", tls_status.decode()),
+                "Cloud ALB certificate/route probe failed")
+
     t1_id = f"{case_id[:16]}-t1-r{repetition}-{secrets.token_hex(4)}"
     t1_domain = "domain-a" if scenario == "domain" else ("edge-domain-source" if scenario == "edge-clone" else domain)
     admin(r, "users", {"user_id": t1_id, "default_domain": t1_domain, "logical_limit": 10 << 30})
-    t1_keys = admin(r, "credentials", {"user_id": t1_id})
+    debug_scope = scenario in {"domain", "edge-clone"}
+    t1_key_request = {"user_id": t1_id}
+    if debug_scope:
+        # Backend requires system_admin AND debug_allowed for signed DSG headers.
+        # Restrict to new ephemeral benchmark principals and review separately.
+        t1_key_request.update(system_admin=True, debug_allowed=True)
+    t1_keys = admin(r, "credentials", t1_key_request)
 
     tenant1 = {
         "user_id": t1_id,
@@ -316,6 +343,25 @@ def benchmark_case(r, case_id, repetition):
     }
     if scenario == "recovery":
         settings["fault_scope"] = "node-restart" if variant == "r1" else "checkpoint-cut"
+        # DSG access keys are not AWS IAM credentials. Export only a short-lived
+        # already-verified deploy session for native DynamoDB/STS readback.
+        temporary = json.loads(r.command([
+            "aws", "--profile", r.c["deploy_profile"], "--region", r.c["region"],
+            "configure", "export-credentials", "--format", "process",
+        ], env=r.environment()))
+        expires = dt.datetime.fromisoformat(temporary["Expiration"].replace("Z", "+00:00"))
+        require(
+            temporary.get("Version") == 1
+            and temporary.get("AccessKeyId", "").startswith("ASIA")
+            and bool(temporary.get("SessionToken"))
+            and expires > now() + dt.timedelta(minutes=10),
+            "Recovery needs a valid AWS deploy temporary session; do not reuse DSG credentials",
+        )
+        settings["recovery_aws"] = {
+            **{k: temporary[k] for k in
+               ("Version", "AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")},
+            "expected_account": r.c["account_id"],
+        }
 
     if scenario in {"domain", "edge-clone"}:
         t2_id = f"{case_id[:16]}-t2-r{repetition}-{secrets.token_hex(4)}"
@@ -324,7 +370,9 @@ def benchmark_case(r, case_id, repetition):
         else:
             t2_domain = "edge-domain-dest"
         admin(r, "users", {"user_id": t2_id, "default_domain": t2_domain, "logical_limit": 10 << 30})
-        t2_keys = admin(r, "credentials", {"user_id": t2_id})
+        t2_keys = admin(r, "credentials", {
+            "user_id": t2_id, "system_admin": True, "debug_allowed": True,
+        })
         settings["tenant2"] = {
             "user_id": t2_id,
             "bucket": t2_id,
@@ -349,6 +397,19 @@ def benchmark_case(r, case_id, repetition):
                 ],
                 env=r.environment(),
             )
+        )
+        # Never adopt an old shared/unknown bucket. Every direct comparator
+        # bucket must already be provisioned, tagged and reviewed for this run.
+        r.aws("s3api", "head-bucket", "--bucket", direct_bucket,
+              "--expected-bucket-owner", r.c["account_id"])
+        tags = r.aws("s3api", "get-bucket-tagging", "--bucket", direct_bucket,
+                     "--expected-bucket-owner", r.c["account_id"])
+        tagmap = {x["Key"]: x["Value"] for x in tags.get("TagSet", [])}
+        require(
+            tagmap.get("Project") == "Miles"
+            and tagmap.get("Environment") == "dev"
+            and tagmap.get("AcceptanceRun") == r.id,
+            "Direct-S3 bucket missing current-run ownership tags; do not adopt legacy resources",
         )
         settings["direct_s3"] = {
             "bucket": direct_bucket,
@@ -481,6 +542,7 @@ def collect(r, name=None):
             ".",
         )
         r.file(out + "/client-result.tar.gz").write_bytes(samples)
+        expect_direct = r.read(out + "/input.json").get("direct_s3") is not None
         try:
             direct_s3_raw = r.ssh(
                 "client",
@@ -488,7 +550,13 @@ def collect(r, name=None):
                 "/home/ec2-user/acceptance/" + name + "/direct-s3/result.json",
                 timeout=10,
             )
-            r.write(out + "/direct-s3-result.json", json.loads(direct_s3_raw))
+            direct_result = json.loads(direct_s3_raw)
+            require(
+                direct_result.get("status") == "passed"
+                and direct_result.get("manifest_sha256") == result.get("manifest_sha256"),
+                "Direct S3 comparator failed or dataset manifest differs",
+            )
+            r.write(out + "/direct-s3-result.json", direct_result)
             direct_samples = r.ssh(
                 "client",
                 "tar",
@@ -500,8 +568,9 @@ def collect(r, name=None):
                 timeout=30,
             )
             r.file(out + "/direct-s3-client-result.tar.gz").write_bytes(direct_samples)
-        except Exception:
-            pass
+        except Exception as exc:
+            if expect_direct:
+                raise ValueError("Required direct-S3 paired comparator evidence missing/failed") from exc
         r.ssh("edge", "sudo", "-n", "systemctl", "stop", "miles-" + name)
         raw = r.ssh("edge", "sudo", "-n", "cat", "/run/miles/" + name + ".jsonl")
         r.file(out + "/telemetry.jsonl").write_bytes(raw)

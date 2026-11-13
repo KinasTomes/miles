@@ -122,7 +122,110 @@ def trial(settings):
     return p.returncode
 
 
+
+def verify_seed_manifest(dataset_root, manifest_path):
+    """Verify all local bytes before any Cold/Recovery AWS mutation."""
+    import hashlib
+    manifest = json.loads(manifest_path.read_text())
+    files = manifest.get("files", [])
+    if not files or len(files) > 10000:
+        raise ValueError("Invalid benchmark manifest file list")
+    total = 0
+    names = set()
+    for entry in files:
+        name = entry.get("path", "")
+        if not isinstance(name, str) or not name or name.startswith("/") or chr(92) in name:
+            raise ValueError("Unsafe dataset path")
+        parts = Path(name).parts
+        if any(x in ("", ".", "..") for x in parts) or name in names:
+            raise ValueError("Unsafe or duplicate dataset entry")
+        names.add(name)
+        file = (dataset_root / name).resolve()
+        if not file.is_relative_to(dataset_root.resolve()) or not file.is_file():
+            raise ValueError("Dataset symlink/path escape or missing file")
+        size, hasher = 0, hashlib.sha256()
+        with file.open("rb") as handle:
+            while chunk := handle.read(64 * 1024):
+                size += len(chunk)
+                hasher.update(chunk)
+        if (size != entry.get("bytes") or size > 5 << 30
+                or hasher.hexdigest() != entry.get("sha256")):
+            raise ValueError("Dataset SHA/size mismatch before Cold/Recovery seed")
+        total += size
+    if total != manifest.get("total_bytes"):
+        raise ValueError("Dataset total size mismatch")
+    return files
+
+
+def seed_benchmark_dataset(settings, folder, env, endpoint, tenant, manifest_path):
+    """PUT synthetic bytes in the intended class, HEAD verify native readback.
+
+    Partial unknown operations retain receipts for reconciliation, not replay.
+    """
+    dataset_root = manifest_path.parent
+    files = verify_seed_manifest(dataset_root, manifest_path)
+    if settings.get("runner") == "coldbench":
+        storage_class = {"ir": "GLACIER_IR", "flexible": "GLACIER"}.get(settings["variant"])
+    elif settings.get("runner") == "recoverybench":
+        storage_class = "STANDARD"
+    else:
+        storage_class = None
+    if not storage_class:
+        raise ValueError("Unsupported Cold/Recovery storage class")
+    keys = tenant["credentials"]
+    aws_env = {**env, "AWS_ACCESS_KEY_ID": keys["access_key_id"],
+               "AWS_SECRET_ACCESS_KEY": keys["secret_access_key"]}
+    receipts = []
+    receipt_file = folder / "benchmark-seed-receipts.json"
+    for entry in files:
+        key = entry["path"]
+        command = ["aws", "--region", settings["region"], "--endpoint-url", endpoint,
+                   "s3api"]
+        put = subprocess.run(
+            command + ["put-object", "--bucket", tenant["bucket"], "--key", key,
+                       "--body", str(dataset_root / key), "--storage-class", storage_class],
+            env=aws_env, capture_output=True, text=True, timeout=180,
+        )
+        if put.returncode:
+            raise ValueError("Cold PUT failed or unknown; do not replay: " + key)
+        try:
+            result = json.loads(put.stdout)
+        except json.JSONDecodeError as error:
+            raise ValueError("Cold PUT returned unverified receipt: " + key) from error
+        head = subprocess.run(
+            command + ["head-object", "--bucket", tenant["bucket"], "--key", key],
+            env=aws_env, capture_output=True, text=True, timeout=60,
+        )
+        if head.returncode:
+            raise ValueError("Cold HEAD missing after PUT; reconciliation required")
+        data = json.loads(head.stdout)
+        observed_class = data.get("StorageClass") or "STANDARD"
+        if observed_class != storage_class or data.get("ContentLength") != entry["bytes"]:
+            raise ValueError("Cold/Recovery backend class/length not verified; no test run")
+        receipts.append({
+            "path": key, "class": storage_class, "bytes": entry["bytes"],
+            "version": data.get("VersionId"), "put_version": result.get("VersionId"),
+            "sha256": entry["sha256"],
+        })
+        receipt_file.write_text(json.dumps(receipts, indent=2))
+    return receipts
+
 def benchmark(settings):
+    if settings.get("runner") == "coldbench":
+        # A physical inventory observer MUST be staged before billed seed PUTs.
+        if not settings.get("reviewed_physical_inventory_provider"):
+            raise ValueError("Cold native physical-inventory provider not reviewed; no mutation")
+    if settings.get("runner") == "recoverybench":
+        # Reject unreviewed R1/R2 faults BEFORE creating a DSG bucket or data.
+        command = settings.get("reviewed_fault_command", "")
+        native_proof = settings.get("reviewed_native_proof_provider", "")
+        if (not isinstance(command, str)
+                or not command.startswith("/home/ec2-user/acceptance/recovery-fault ")
+                or not isinstance(native_proof, str)
+                or not native_proof.startswith("/home/ec2-user/acceptance/recovery-proof ")):
+            raise ValueError(
+                "Recovery fault injector/native proof provider not staged and reviewed; no mutation"
+            )
     name = settings["name"]
     if not re.fullmatch(r"[a-z0-9-]+-rep[1-3]", name):
         raise ValueError("Invalid benchmark slot ID")
@@ -283,6 +386,14 @@ def benchmark(settings):
         seed_res = json.loads((seed_out / "result.json").read_text())
         source_prefix = seed_res["prefix"]
 
+    if settings.get("runner") in {"coldbench", "recoverybench"}:
+        verify_seed_manifest(manifest_path.parent, manifest_path)
+    if settings.get("runner") in {"coldbench", "recoverybench"}:
+        if (dt.datetime.fromisoformat(settings["stop_at"])
+                - dt.datetime.now(dt.timezone.utc)).total_seconds() < 600:
+            raise ValueError("Cold/Recovery seed requires >=10 min before cleanup reserve")
+        seed_benchmark_dataset(settings, folder, env, endpoint, t1, manifest_path)
+
     remaining = (
         dt.datetime.fromisoformat(settings["stop_at"])
         - dt.datetime.now(dt.timezone.utc)
@@ -309,10 +420,35 @@ def benchmark(settings):
             settings["variant"],
             "--concurrency",
             str(settings["concurrency"]),
+            "--poll-interval", "5s",
+            "--max-poll-wait", str(max(30, timeout_s - 180)) + "s",
             "--fail-fast",
             "--retain-objects",
         ]
     elif runner == "recoverybench":
+        temporary = settings.get("recovery_aws")
+        if not isinstance(temporary, dict) or set(temporary) != {
+            "Version", "AccessKeyId", "SecretAccessKey", "SessionToken",
+            "Expiration", "expected_account",
+        }:
+            raise ValueError("Recovery requires separate temporary AWS credentials")
+        expected_account = temporary["expected_account"]
+        if not re.fullmatch(r"[0-9]{12}", expected_account):
+            raise ValueError("Recovery expected account missing")
+        expires = dt.datetime.fromisoformat(
+            temporary["Expiration"].replace("Z", "+00:00")
+        )
+        if (temporary["Version"] != 1
+                or not temporary["AccessKeyId"].startswith("ASIA")
+                or not temporary["SessionToken"]
+                or expires <= dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)):
+            raise ValueError("Recovery AWS session missing, stale or non-temporary")
+        aws_file = folder / "recovery-aws.json"
+        aws_file.write_text(json.dumps(
+            {k: temporary[k] for k in
+             ("Version", "AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")}
+        ))
+        os.chmod(aws_file, 0o600)
         cmd = [
             "timeout",
             "--signal=TERM",
@@ -332,11 +468,22 @@ def benchmark(settings):
                 "fault_scope",
                 "node-restart" if settings["variant"] == "r1" else "checkpoint-cut",
             ),
+            "--aws-credentials-file", str(aws_file),
+            "--expected-aws-account", expected_account,
             "--concurrency",
             str(settings["concurrency"]),
             "--fail-fast",
             "--retain-objects",
         ]
+        # No implicit fault: a missing native injector is an explicit blocker.
+        fault_command = settings.get("reviewed_fault_command", "")
+        if not fault_command:
+            raise ValueError("No reviewed recovery fault injector; fail closed before dispatch")
+        if not isinstance(fault_command, str) or len(fault_command) > 512:
+            raise ValueError("Invalid fault injector")
+        if not fault_command.startswith("/home/ec2-user/acceptance/recovery-fault "):
+            raise ValueError("Recovery fault injector must be pinned to the staged verified executable")
+        cmd.extend(["--fault-command", fault_command])
     else:
         cmd = [
             "timeout",
