@@ -6,6 +6,9 @@ import datetime as dt
 from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deploy.acceptance.common import ROOT, digest, now, require, save
 
