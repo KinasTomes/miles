@@ -11,6 +11,12 @@ Chạy theo template bằng một process, có checkpoint/receipt và báo cáo 
 [process guide](../../docs/testing/aws-acceptance-process.md). Bộ điều phối gọi
 lại các lệnh dưới đây, không thay runtime hoặc chính sách audit.
 
+Để chuẩn bị **benchmark toàn ma trận** (60 trial slots) chỉ ở mức offline,
+đọc [kế hoạch bàn giao](../../docs/planning/full-aws-benchmark-execution-plan.md)
+và sinh [execution manifest](matrix_plan.py). Full-matrix adapter và các runner
+Cold/Recovery **chưa tích hợp** vào focused process; không thay template focused
+bằng manifest planning để chạy AWS.
+
 Entry point:
 
 ```bash
