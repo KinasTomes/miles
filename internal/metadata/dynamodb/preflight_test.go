@@ -115,6 +115,43 @@ func TestPreflightValidExactSchemaPasses(t *testing.T) {
 	}
 }
 
+func TestPreflightValidInstallationChienPasses(t *testing.T) {
+	cfg := dynamodb.PreflightInventoryConfig{
+		AccountID:        "499388132734",
+		Region:           "ap-southeast-1",
+		InstallationName: "miles-chien",
+		TablePrefix:      "miles-chien-",
+		BucketName:       "miles-chien-data-499388132734-ap-southeast-1",
+		RequiredTags: map[string]string{
+			"Project": "Miles",
+		},
+	}
+	ddbMock := valid20TablesMock(cfg.TablePrefix, cfg.AccountID, cfg.Region)
+	s3Mock := &mockPreflightS3{status: s3types.BucketVersioningStatusEnabled}
+
+	err := dynamodb.ValidateApprovedInventoryAndSchema(context.Background(), ddbMock, s3Mock, cfg)
+	if err != nil {
+		t.Fatalf("expected miles-chien preflight to pass, got: %v", err)
+	}
+}
+
+func TestPreflightRejectsMismatchedInstallationPrefix(t *testing.T) {
+	cfg := dynamodb.PreflightInventoryConfig{
+		AccountID:        "499388132734",
+		Region:           "ap-southeast-1",
+		InstallationName: "miles-chien",
+		TablePrefix:      "miles-dev-",
+		BucketName:       "miles-chien-data-499388132734-ap-southeast-1",
+	}
+	ddbMock := valid20TablesMock("miles-dev-", cfg.AccountID, cfg.Region)
+	s3Mock := &mockPreflightS3{status: s3types.BucketVersioningStatusEnabled}
+
+	err := dynamodb.ValidateApprovedInventoryAndSchema(context.Background(), ddbMock, s3Mock, cfg)
+	if err == nil || !strings.Contains(err.Error(), "unapproved table prefix") {
+		t.Fatalf("expected mismatched table prefix rejection, got: %v", err)
+	}
+}
+
 func TestPreflightRejectsMalformedPartitionKey(t *testing.T) {
 	cfg := defaultPreflightConfig()
 	ddbMock := valid20TablesMock(cfg.TablePrefix, cfg.AccountID, cfg.Region)

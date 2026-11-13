@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/api/s3"
+	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -474,7 +475,28 @@ func TestColdLiveFrontDoors(t *testing.T) {
 	if _, err := rand.Read(nonce[:]); err != nil {
 		t.Fatal(err)
 	}
-	prefix := "cold-live-" + hex.EncodeToString(nonce[:])
+	installation := c.InstallationName
+	if installation == "" {
+		installation = "miles-chien"
+	}
+	accountID := c.AccountID
+	if accountID == "" {
+		accountID = "499388132734"
+	}
+	preflightCfg := dynamodb.PreflightInventoryConfig{
+		AccountID:        accountID,
+		Region:           c.Region,
+		InstallationName: installation,
+		TablePrefix:      installation + "-",
+		BucketName:       fmt.Sprintf("%s-data-%s-%s", installation, accountID, c.Region),
+		RequiredTags: map[string]string{
+			"Project": "Miles",
+		},
+	}
+	if err := dynamodb.ValidateApprovedInventoryAndSchema(context.Background(), nil, nil, preflightCfg); err != nil {
+		t.Fatalf("fail-closed preflight rejected environment parameters: %v", err)
+	}
+	prefix := fmt.Sprintf("%s-cold-%s", installation, hex.EncodeToString(nonce[:]))
 	t.Cleanup(func() {
 		defer out.Close()
 		err := json.NewEncoder(out).Encode(struct {

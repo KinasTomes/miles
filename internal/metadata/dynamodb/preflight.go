@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
@@ -13,7 +14,8 @@ import (
 )
 
 var (
-	accountIDPattern = regexp.MustCompile(`^[0-9]{12}$`)
+	accountIDPattern        = regexp.MustCompile(`^[0-9]{12}$`)
+	installationNamePattern = regexp.MustCompile(`^miles-[a-z0-9][a-z0-9-]{0,62}$`)
 
 	// ErrPreflightStop is returned when approved inventory, schema, or tags drift.
 	// A schema mismatch is an explicit stop condition: never adopt or overwrite.
@@ -33,11 +35,12 @@ type PreflightS3API interface {
 
 // PreflightInventoryConfig specifies the exact expected environment parameters.
 type PreflightInventoryConfig struct {
-	AccountID    string
-	Region       string
-	TablePrefix  string
-	BucketName   string
-	RequiredTags map[string]string
+	AccountID        string
+	Region           string
+	InstallationName string
+	TablePrefix      string
+	BucketName       string
+	RequiredTags     map[string]string
 }
 
 // ValidateApprovedInventoryAndSchema verifies that the live environment matches the exact
@@ -49,10 +52,22 @@ func ValidateApprovedInventoryAndSchema(ctx context.Context, ddbAPI PreflightDDB
 	if cfg.Region != "ap-southeast-1" {
 		return fmt.Errorf("%w: unapproved region %q; only ap-southeast-1 is permitted", ErrPreflightStop, cfg.Region)
 	}
-	if cfg.TablePrefix != "miles-dev-" {
-		return fmt.Errorf("%w: unapproved table prefix %q; must be miles-dev-", ErrPreflightStop, cfg.TablePrefix)
+	installation := cfg.InstallationName
+	if installation == "" {
+		if strings.HasSuffix(cfg.TablePrefix, "-") {
+			installation = strings.TrimSuffix(cfg.TablePrefix, "-")
+		} else {
+			installation = "miles-dev"
+		}
 	}
-	expectedBucket := fmt.Sprintf("miles-dev-data-%s-%s", cfg.AccountID, cfg.Region)
+	if !installationNamePattern.MatchString(installation) {
+		return fmt.Errorf("%w: invalid or unapproved installation name %q; must start with miles-", ErrPreflightStop, installation)
+	}
+	expectedPrefix := installation + "-"
+	if cfg.TablePrefix != expectedPrefix {
+		return fmt.Errorf("%w: unapproved table prefix %q; expected %q", ErrPreflightStop, cfg.TablePrefix, expectedPrefix)
+	}
+	expectedBucket := fmt.Sprintf("%s-data-%s-%s", installation, cfg.AccountID, cfg.Region)
 	if cfg.BucketName != expectedBucket {
 		return fmt.Errorf("%w: unapproved bucket name %q; expected %q", ErrPreflightStop, cfg.BucketName, expectedBucket)
 	}

@@ -74,8 +74,9 @@ project/bucket đã được admin cấp quyền riêng.
 ## Nghiệm thu Live End-to-End qua API/Runtime Miles (AWS)
 
 Thực hiện nghiệm thu End-to-End Cold Lifecycle trên AWS Singapore `ap-southeast-1`
-bằng IAM role non-root `miles-dev-deploy` (`arn:aws:sts::499388132734:assumed-role/miles-dev-deploy/chien-deploy`),
-tuân thủ ngân sách mềm 10 USD và giới hạn thời gian.
+bằng IAM role non-root chuyên biệt `miles-chien-deploy` (`arn:aws:sts::499388132734:assumed-role/miles-chien-deploy/chien-deploy`),
+với installation riêng biệt `miles-chien` (tiền tố bảng `miles-chien-`, S3 data bucket `miles-chien-data-499388132734-ap-southeast-1`
+và backend state riêng `miles-chien-tfstate-499388132734-ap-southeast-1`), tuân thủ ngân sách mềm 10 USD và giới hạn thời gian.
 
 Toàn bộ request đều đi qua runtime/API Miles (các node Cloud/Edge) qua runner `tests/live/cold_test.go`,
 không dùng AWS CLI trực tiếp vào backend S3 thay cho ứng dụng.
@@ -141,18 +142,18 @@ không dùng AWS CLI trực tiếp vào backend S3 thay cho ứng dụng.
 - **Tiền kiểm Schema 20 bảng và S3**: Phát hiện bảng `miles-dev-Buckets` trước đó bị tạo sai partition key
   (`id` thay vì `bucket` theo yêu cầu của adapter tại `internal/metadata/dynamodb/schema.go`).
   Đã xây dựng module tiền kiểm fail-closed `ValidateApprovedInventoryAndSchema` (`internal/metadata/dynamodb/preflight.go`),
-  đối chiếu nghiêm ngặt:
+  hỗ trợ đầy đủ tham số `InstallationName` (mặc định `miles-chien` hoặc `miles-dev`), đối chiếu nghiêm ngặt:
   - Đúng account `499388132734` và Region Singapore `ap-southeast-1`.
-  - Đúng tiền tố bảng `miles-dev-` và tên bucket `miles-dev-data-499388132734-ap-southeast-1` có versioning `Enabled`.
+  - Đúng tiền tố bảng `<installation>-` (ví dụ `miles-chien-` hoặc `miles-dev-`) và tên bucket `<installation>-data-<account>-<region>` có versioning `Enabled`.
   - Đúng partition key và sort key cùng kiểu dữ liệu (`S` hoặc `N`) cho toàn bộ 20 bảng metadata của Miles.
-  - Đúng tags sở hữu `Project=Miles` và `Environment=dev`.
-  - Mọi sai lệch schema là điều kiện dừng bắt buộc; không tự ý nhận, ghi đè hoặc âm thầm tạo lại bảng.
-- **Bộ test preflight tập trung**: 8 tests trong `internal/metadata/dynamodb/preflight_test.go` bao phủ
+  - Đúng tags sở hữu `Project=Miles` (và `Installation`/`Environment` tương ứng).
+  - Mọi sai lệch schema hoặc tiền tố unapproved là điều kiện dừng bắt buộc; không tự ý nhận, ghi đè hoặc âm thầm tạo lại bảng.
+- **Bộ test preflight tập trung**: 10 tests trong `internal/metadata/dynamodb/preflight_test.go` bao phủ
   chặn đứng phân vùng sai, thiếu sort key, sai kiểu sort key, sort key ngoài dự kiến, unapproved bucket name,
-  unapproved prefix/region và thiếu tag. Test live `TestLivePreflightApprovedInventoryAndSchema`
+  unapproved prefix/region, thiếu tag và xác thực thành công cho cả `miles-dev` lẫn `miles-chien`. Test live `TestLivePreflightApprovedInventoryAndSchema`
   chạy trực tiếp trên AWS Singapore xác nhận 20 bảng metadata đã ACTIVE và khớp schema chuẩn.
-- **Cấp quyền cleanup có kiểm soát**: Lead đã ban hành inline policy `MilesDevColdAcceptanceCleanup`
-  trên `miles-dev-deploy` cho phép dọn dẹp bảng tồn đọng và bucket dev đã kiểm tra rỗng.
+- **Cấp quyền cleanup và chuyển đổi installation riêng**: Lead đã ban hành role chuyên biệt `miles-chien-deploy`
+  và state bucket riêng `miles-chien-tfstate-499388132734-ap-southeast-1`, tách bạch hoàn toàn khỏi tài nguyên `miles-dev-*`.
   Tuân thủ nghiêm ngặt operating envelope: không chạy destructive run ngoài cửa sổ được Lead phê chuẩn độc lập.
 
 Bằng chứng chi tiết: [evidence/cold-lifecycle-live/result.json](evidence/cold-lifecycle-live/result.json)

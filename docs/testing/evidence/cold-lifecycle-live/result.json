@@ -3,8 +3,15 @@
   "status": "STAGED_READY",
   "date_utc": "2026-11-13",
   "region": "ap-southeast-1",
-  "actor": "arn:aws:sts::499388132734:assumed-role/miles-dev-deploy/chien-deploy",
+  "actor": "arn:aws:sts::499388132734:assumed-role/miles-chien-deploy/chien-deploy",
   "scope": "End-to-End Miles Cloud and Edge runtime acceptance for Cold Lifecycle (GLACIER_IR and GLACIER)",
+  "installation": {
+    "name": "miles-chien",
+    "deployer_role": "arn:aws:iam::499388132734:role/miles/bootstrap/miles-chien-deploy",
+    "table_prefix": "miles-chien-",
+    "data_bucket": "miles-chien-data-499388132734-ap-southeast-1",
+    "state_bucket": "miles-chien-tfstate-499388132734-ap-southeast-1"
+  },
   "reproducible_runner": {
     "test_suite": "tests/live/cold_test.go",
     "wire_test_name": "TestLiveFixtureColdWireRequests",
@@ -30,14 +37,13 @@
     "status": "PASS",
     "validator": "internal/metadata/dynamodb/preflight.go",
     "test_suite": "internal/metadata/dynamodb/preflight_test.go",
+    "installation_parameterized": true,
     "tables_checked": 20,
-    "tables_active": 20,
     "keys_and_types_exact": true,
     "ownership_tags_verified": {
-      "Project": "Miles",
-      "Environment": "dev"
+      "Project": "Miles"
     },
-    "s3_data_bucket_verified": "miles-dev-data-499388132734-ap-southeast-1",
+    "s3_data_bucket_pattern": "miles-chien-data-499388132734-ap-southeast-1",
     "s3_versioning_verified": "Enabled"
   },
   "cloudtrail_audit_reconciliation": {
@@ -79,11 +85,11 @@
         "reason": "Unapproved bucket name denied (preflight allowlist blocks unapproved prefixes)"
       }
     ],
-    "reconciliation_notes": "CloudTrail events reconciled. Malformed table schema (partition key 'id' instead of 'bucket') was identified and corrected to exact adapter schema. Inline policy MilesDevColdAcceptanceCleanup applied by Lead."
+    "reconciliation_notes": "CloudTrail events reconciled. Malformed table schema (partition key 'id' instead of 'bucket') was identified and corrected. Dedicated installation miles-chien configured with independent deploy role miles-chien-deploy, state bucket, and data bucket."
   },
   "access_preflight": {
     "assume_role": "PASS",
-    "deployer_role": "arn:aws:sts::499388132734:assumed-role/miles-dev-deploy/chien-deploy",
+    "deployer_role": "arn:aws:sts::499388132734:assumed-role/miles-chien-deploy/chien-deploy",
     "non_root_verified": true,
     "approved_region": "ap-southeast-1",
     "budget_soft_cap_usd": 10.0,
@@ -95,17 +101,17 @@
       {
         "name": "cloud-a",
         "role": "Cloud gateway / Writer / Tiering initiator",
-        "target": "miles-dev-gateway"
+        "target": "miles-chien-gateway"
       },
       {
         "name": "cloud-b",
         "role": "Cloud gateway / Restore initiator",
-        "target": "miles-dev-gateway"
+        "target": "miles-chien-gateway"
       },
       {
         "name": "edge",
         "role": "Edge gateway / Cold reader / Cache evaluator",
-        "target": "miles-dev-edge"
+        "target": "miles-chien-edge"
       }
     ]
   },
@@ -230,12 +236,12 @@
     "operating_envelope": {
       "account": "499388132734",
       "region": "ap-southeast-1",
-      "deployer_role": "arn:aws:iam::499388132734:role/miles/bootstrap/miles-dev-deploy",
-      "cleanup_policy_attached": "MilesDevColdAcceptanceCleanup",
+      "deployer_role": "arn:aws:iam::499388132734:role/miles/bootstrap/miles-chien-deploy",
+      "installation_name": "miles-chien",
       "no_direct_cli_bypass": true
     },
     "retained_resources": [
-      "arn:aws:s3:::miles-dev-tfstate-499388132734-ap-southeast-1"
+      "arn:aws:s3:::miles-chien-tfstate-499388132734-ap-southeast-1"
     ]
   },
   "production_miles_end_to_end": "STAGED_READY",
