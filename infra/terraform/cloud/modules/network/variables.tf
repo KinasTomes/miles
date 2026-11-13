@@ -5,3 +5,8 @@ variable "egress_mode" { type = string }
 variable "nat_per_az" { type = bool }
 variable "client_cidrs" { type = set(string) }
 variable "admin_ssh_cidrs" { type = set(string) }
+
+variable "enable_edge" {
+  type    = bool
+  default = false
+}

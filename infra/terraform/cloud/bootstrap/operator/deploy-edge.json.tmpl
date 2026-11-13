@@ -1,0 +1,155 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateEdgeProvider",
+      "Effect": "Allow",
+      "Action": [
+        "rolesanywhere:CreateProfile",
+        "rolesanywhere:CreateTrustAnchor"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:RequestTag/Installation": "{{INSTALLATION_NAME}}",
+          "aws:RequestTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "TagNewEdgeProvider",
+      "Effect": "Allow",
+      "Action": [
+        "rolesanywhere:TagResource"
+      ],
+      "Resource": [
+        "arn:aws:rolesanywhere:{{REGION}}:{{ACCOUNT_ID}}:trust-anchor/*",
+        "arn:aws:rolesanywhere:{{REGION}}:{{ACCOUNT_ID}}:profile/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:RequestTag/Installation": "{{INSTALLATION_NAME}}",
+          "aws:RequestTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "ReadEdgeProvider",
+      "Effect": "Allow",
+      "Action": [
+        "rolesanywhere:GetProfile",
+        "rolesanywhere:GetTrustAnchor",
+        "rolesanywhere:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:rolesanywhere:{{REGION}}:{{ACCOUNT_ID}}:trust-anchor/*",
+        "arn:aws:rolesanywhere:{{REGION}}:{{ACCOUNT_ID}}:profile/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "ManageEdgeProvider",
+      "Effect": "Allow",
+      "Action": [
+        "rolesanywhere:UpdateProfile",
+        "rolesanywhere:UpdateTrustAnchor",
+        "rolesanywhere:EnableProfile",
+        "rolesanywhere:DisableProfile",
+        "rolesanywhere:EnableTrustAnchor",
+        "rolesanywhere:DisableTrustAnchor",
+        "rolesanywhere:DeleteProfile",
+        "rolesanywhere:DeleteTrustAnchor",
+        "rolesanywhere:TagResource",
+        "rolesanywhere:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:rolesanywhere:{{REGION}}:{{ACCOUNT_ID}}:trust-anchor/*",
+        "arn:aws:rolesanywhere:{{REGION}}:{{ACCOUNT_ID}}:profile/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}",
+          "aws:ResourceTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "PassEdgeProviderRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::{{ACCOUNT_ID}}:role{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "rolesanywhere.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "EdgeBootstrapSecret",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetResourcePolicy",
+        "secretsmanager:ListSecretVersionIds",
+        "secretsmanager:TagResource",
+        "secretsmanager:UntagResource",
+        "secretsmanager:UpdateSecret"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:{{REGION}}:{{ACCOUNT_ID}}:secret:{{INSTALLATION_NAME}}/edge-bootstrap-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchEdgeInstance",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:RequestTag/Installation": "{{INSTALLATION_NAME}}",
+          "ec2:InstanceType": "{{EDGE_INSTANCE_TYPE}}",
+          "ec2:MetadataHttpTokens": "required",
+          "ec2:InstanceProfile": "arn:aws:iam::{{ACCOUNT_ID}}:instance-profile{{RUNTIME_IAM_PATH}}{{INSTALLATION_NAME}}-edge-bootstrap"
+        }
+      }
+    },
+    {
+      "Sid": "EdgePublicInterface",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:network-interface/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        },
+        "Bool": {
+          "ec2:AssociatePublicIpAddress": "true"
+        }
+      }
+    }
+  ]
+}

@@ -44,7 +44,7 @@ if subprocess.run(['id', '-u', 'miles'], stdout=subprocess.DEVNULL, stderr=subpr
 subprocess.run(['install', '-d', '-m', '0700', '-o', 'miles', '-g', 'miles', '/var/lib/miles'], check=True)
 subprocess.run(['install', '-d', '-m', '0700', '/var/lib/miles-lifecycle'], check=True)
 subprocess.run(['python3', str(bundle / 'deploy/install.py'), '--bundle', str(bundle),
-    '--profile', 'cloud', '--address', address], check=True)
+    '--profile', 'cloud', '--address', address, '--region', c['region']], check=True)
 startup = dict(profile='cloud', mode='runtime', shutdown_seconds=1800,
     health_address=address + ':9100', s3_address=address + ':8080', admin_address='127.0.0.1:9000',
     runtime_node_id=identity['instanceId'], ddb_table_prefix=c['table_prefix'],

@@ -1,7 +1,7 @@
 provider "aws" {
-  region              = "ap-southeast-1"
+  region              = var.region
   allowed_account_ids = [var.account_id]
-  default_tags { tags = { Project = "Miles", Environment = "dev", ManagedBy = "Terraform", Owner = "Hung" } }
+  default_tags { tags = { Project = "Miles", Installation = var.installation_name, Environment = var.environment, ManagedBy = "Terraform", Owner = var.owner } }
 }
 variable "account_id" {
   type = string
@@ -11,7 +11,7 @@ variable "account_id" {
   }
 }
 resource "aws_s3_bucket" "state" {
-  bucket        = "miles-dev-tfstate-${var.account_id}-ap-southeast-1"
+  bucket        = "${var.installation_name}-tfstate-${var.account_id}-${var.region}"
   force_destroy = false
   lifecycle { prevent_destroy = true }
 }

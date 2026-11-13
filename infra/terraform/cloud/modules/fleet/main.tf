@@ -75,19 +75,19 @@ resource "aws_launch_template" "gateway" {
     }
   }
   dynamic "credit_specification" {
-    for_each = startswith(var.instance_type == null ? "" : var.instance_type, "t") ? [1] : []
+    for_each = can(regex("^t[0-9]+[a-z]*\\.", var.instance_type)) ? [1] : []
     content { cpu_credits = "standard" }
   }
   monitoring { enabled = true }
-  tags      = { Project = "Miles", Environment = "dev", Name = local.asg_name }
+  tags      = { Project = "Miles", Installation = var.name, Environment = var.environment, Owner = var.owner, Name = local.asg_name }
   user_data = base64encode(templatefile("${path.module}/user-data.sh.tftpl", { bootstrap_json = local.bootstrap }))
   tag_specifications {
     resource_type = "instance"
-    tags          = { Project = "Miles", Environment = "dev", Name = local.asg_name }
+    tags          = { Project = "Miles", Installation = var.name, Environment = var.environment, Owner = var.owner, Name = local.asg_name }
   }
   tag_specifications {
     resource_type = "volume"
-    tags          = { Project = "Miles", Environment = "dev", Name = "${var.name}-cache" }
+    tags          = { Project = "Miles", Installation = var.name, Environment = var.environment, Owner = var.owner, Name = "${var.name}-cache" }
   }
   lifecycle {
     create_before_destroy = true
@@ -142,7 +142,17 @@ resource "aws_autoscaling_group" "gateway" {
   }
   tag {
     key                 = "Environment"
-    value               = "dev"
+    value               = var.environment
+    propagate_at_launch = true
+  }
+  tag {
+    key                 = "Installation"
+    value               = var.name
+    propagate_at_launch = true
+  }
+  tag {
+    key                 = "Owner"
+    value               = var.owner
     propagate_at_launch = true
   }
 }

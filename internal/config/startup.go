@@ -35,6 +35,7 @@ type Startup struct {
 	ObservationIntervalSeconds int
 	DeepObservation            bool
 	EnableFaultInjection       bool
+	AWSProfile                 string
 }
 
 func DefaultStartup() Startup {
@@ -110,6 +111,8 @@ func LoadStartup(r io.Reader) (Startup, error) {
 			target = &c.RuntimeSecretARN
 		case "aws_config_file":
 			target = &c.AWSConfigFile
+		case "aws_profile":
+			target = &c.AWSProfile
 		case "utc_reference":
 			target = &c.UTCReference
 		case "observation_interval_seconds":
@@ -143,6 +146,9 @@ func LoadStartup(r io.Reader) (Startup, error) {
 }
 
 func (c Startup) Validate() error {
+	if c.AWSProfile != "" && (c.Profile != "edge" || c.Mode != "runtime" || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`).MatchString(c.AWSProfile)) {
+		return fmt.Errorf("aws_profile requires an explicit Edge runtime profile name")
+	}
 	if c.Profile != "cloud" && c.Profile != "edge" {
 		return fmt.Errorf("profile must be cloud or edge")
 	}
