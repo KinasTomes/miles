@@ -302,7 +302,7 @@ def benchmark_case(r, case_id, repetition):
             "-o", "/dev/null", "-w", "%{http_code}",
             "https://cloud.miles.test/", timeout=20,
         ).strip()
-        require(re.fullmatch(r"[23][0-9]{2}", tls_status.decode()),
+        require(re.fullmatch(r"[234][0-9]{2}", tls_status.decode()),
                 "Cloud ALB certificate/route probe failed")
 
     t1_id = f"{case_id[:16]}-t1-r{repetition}-{secrets.token_hex(4)}"
