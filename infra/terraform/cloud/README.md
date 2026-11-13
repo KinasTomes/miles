@@ -7,13 +7,13 @@ installation mới yêu cầu điền owner riêng. Installation cũ nên pin `o
 private inputs để giữ nguyên tag phục vụ theo dõi chi phí.
 Xem [quy trình cho account cá nhân](../../../docs/testing/aws-personal-account-guide.md).
 
-Môi trường dev một node ở Singapore, được chuẩn bị theo W03-HUNG-01. Hạ tầng đã
+Môi trường dev một node ở Singapore. Hạ tầng đã
 kiểm trên AWS ngày 25/10/2026 với pause/resume; full teardown đã nghiệm thu ngày
 26/10, giữ bootstrap/state và ghi riêng key/secret/SYSTEM backups chờ xóa trong
 [readiness](../../../docs/testing/aws-dev-readiness.md). Đây là bằng chứng lịch sử của single-node stack.
 Terraform 1.15.2, AWS provider 6.21.0; lockfiles pin
 provider cho linux_arm64/linux_amd64. Không thay kiến trúc/API.
-W04-HUNG-01 bổ sung [Cloud ASG/Edge deployment config](../../../deploy/README.md),
+PR #44 bổ sung [Cloud ASG/Edge deployment config](../../../deploy/README.md),
 chỉ kiểm offline/local; chưa triển khai runtime thật.
 
 Nguồn: kiến trúc §10.1/11/19, API §1/8/13 và
@@ -42,6 +42,9 @@ Nguồn: kiến trúc §10.1/11/19, API §1/8/13 và
 - `modules/fleet`: opt-in `enable_asg`, hai private AZ/node với launch template,
   release version/hash pin, lifecycle drain; không dùng retained dev EBS. Mutually
   exclusive với `enable_compute`. [Runbook và giới hạn](../../../deploy/cloud/README.md).
+  Khi account đã có Auto Scaling service-linked role, đặt `existing_autoscaling_role_arn`
+  bằng ARN đã xác minh để dùng chung và giữ role ngoài state. Mặc định Terraform
+  tạo custom role cho fleet khi chưa truyền ARN.
 
 `paused=true` là mặc định an toàn cho **phiên compute/network**, giữ datastore và
 keys; vẫn có phí lưu trữ/key nếu apply. `enable_compute=false` mặc định dành cho

@@ -1,7 +1,7 @@
 # Cache scope API validation
 
-Task W05-PHONG-01; baseline `dde10b3`. Hard dependencies W04-PHONG-01,
-W05-HUNG-01 và W05-HUNG-02 được xác nhận Done trên backlog ngày 2026-11-03.
+Baseline `dde10b3`. Hard dependencies (cache node W04, compose runtime Cloud/Edge
+và Jobs/Nodes W05) được xác nhận Done trên backlog ngày 2026-11-03.
 
 ## Checklist mapping
 

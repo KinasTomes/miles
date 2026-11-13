@@ -1,6 +1,6 @@
 # Kế hoạch triển khai DynamoDB MetadataStore và atomic commit/quota
 
-Task [W04-HAI-01](https://miles.extase.dev/tasks/W04-HAI-01), Tô Ngọc Hải.
+Tô Ngọc Hải.
 Kế hoạch ban đầu ngày 28/10/2026, Asia/Saigon. Nội dung baseline dưới đây ghi lại
 thời điểm trước triển khai; trạng thái implementation hiện tại và các giới hạn
 được cập nhật trong [validation](../testing/dynamodb-metadata-validation.md).
@@ -21,13 +21,13 @@ validation, không đổi thành claim scale/AWS/R1 production readiness.
 ## 1. Readiness và nhánh làm việc
 
 Board hiện ghi **Todo / Ready / checklist 0/4**. Hai hard prerequisites đều Done:
-W01-PHONG-03 (R2 epoch/retention design), W03-HAI-03 (storage/schema handoff).
+thiết kế R2 epoch/retention và storage/schema handoff.
 Không có bình luận task hoặc linked PR mới tại thời điểm đọc.
 
 Đã fast-forward main và tạo nhánh:
 
 ```text
-codex/w04-hai-01-dynamodb-metadata
+PR #36
 base: aa219407850dd6178e3e8906e10599daf2a4e1c3
 ```
 
@@ -262,7 +262,7 @@ admin backdoor. Integration CI khi được bật phải thực sự chạy và 
 thiếu; không dùng SKIP làm evidence contract acceptance.
 
 Levels: unit SDK shape != Local expression/atomic proof != AWS IAM/throttle/runtime
-acceptance. Task W05-HAI-02 dành riêng real-DDB integrity/quota. HAI-01 không cần
+acceptance. Integrity/quota trên DynamoDB thật được tách riêng. Kế hoạch này không cần
 full AWS stack; mọi real dev test bổ sung phải review account/role/budget/cleanup.
 
 ## 10. Lát cắt, commits và consumer handoff

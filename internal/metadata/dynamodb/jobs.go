@@ -101,14 +101,30 @@ func (m *Store) ChangeJob(ctx context.Context, c jobs.Change) (jobs.Job, error) 
 		// A physical lifecycle step may transfer only after its own native
 		// transaction proves terminal/no-effect or known accepted restore.
 		// The public caller cannot supply this reconciliation fact.
-		if c.Kind == "claim" && old.PendingStep != "" && c.Fence != old.Worker && (old.Type == "tiering" || old.Type == "pack_restore" || old.Type == "pack_promote") {
+		// GC and compaction also persist their outcome before the Jobs ACK.
+		// A crash in that gap must not strand a safely completed operation.
+		if c.Kind == "claim" && old.PendingStep != "" && c.Fence != old.Worker && (old.Type == "tiering" || old.Type == "pack_restore" || old.Type == "gc" || lifecycle.Repack(old.Type)) {
 			a, err := r1Read[lifecycle.Action](t, lifecycleKey(old.ID))
 			if err != nil && !errors.Is(err, s.ErrNotFound) {
 				return err
 			}
-			if err == nil && a.Fence == old.Worker && a.Kind == old.Type && (a.State == "Done" || a.State == "Skipped" || a.State == "NotApplied" || a.State == "Waiting") {
+			// A terminal result belongs to its original step, not any later
+			// pending work on the same job. Legacy unbound actions remain blocked.
+			sameStep := a.ID == old.ID && a.JobID == old.ID && a.Kind == old.Type && a.Fence == old.Worker && a.StepID != "" && a.StepID == old.PendingStep
+			settled := a.State == "Done" || a.State == "Skipped" || a.State == "NotApplied" || a.Kind == "pack_restore" && a.State == "Waiting"
+			if err == nil && sameStep && settled {
 				old.PendingStep = ""
 				old.Checkpoint = []byte(`{"lifecycle_reconciled":true}`)
+			}
+			if errors.Is(err, s.ErrNotFound) && tieringDiscovery(old) {
+				lease, e := r1Read[s.R1Lease](t, r1LeaseKey(old.Worker.LeaseID))
+				// AcquireR1 reuses this row only after old authority is Released;
+				// its exact next epoch is the durable closure proof, not expiry.
+				if e != nil || lease.Fence != c.Fence || lease.Fence.Epoch != old.Worker.Epoch+1 || lease.State != "Active" || lease.Kind != "control" || len(lease.Pending) != 0 {
+					return s.ErrFenced
+				}
+				old.PendingStep = ""
+				old.Checkpoint = []byte(`{}`) // repeat discovery; stable child IDs prevent duplicates
 			}
 		}
 		out, e = jobs.Apply(old, c, m.now())

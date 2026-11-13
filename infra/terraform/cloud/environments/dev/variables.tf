@@ -96,6 +96,18 @@ variable "enable_asg" {
     error_message = "Fleet needs ALB/TLS, reviewed boundary/AMI/type/versioned release and two-AZ API egress; it cannot share single-node dev compute."
   }
 }
+variable "existing_autoscaling_role_arn" {
+  type        = string
+  default     = null
+  description = "Pre-existing Auto Scaling service-linked role to retain outside this Terraform state."
+  validation {
+    condition = var.existing_autoscaling_role_arn == null ? true : can(regex(
+      "^arn:aws:iam::${var.account_id}:role/aws-service-role/autoscaling\\.amazonaws\\.com/AWSServiceRoleForAutoScaling(_[A-Za-z0-9+=,.@_-]+)?$",
+      var.existing_autoscaling_role_arn
+    ))
+    error_message = "The existing role must be an Auto Scaling service-linked role in this account."
+  }
+}
 variable "fleet_instance_type" {
   type        = string
   default     = null
@@ -255,4 +267,55 @@ variable "edge_helper_sha256" {
 variable "edge_helper_version_id" {
   type    = string
   default = null
+}
+
+variable "enable_alarms" {
+  description = "Opt-in paid pilot alarms; paused environments do not retain runtime alarms."
+  type        = bool
+  default     = false
+  nullable    = false
+}
+variable "monitored_profiles" {
+  description = "Profiles actually running; absent profiles should not page."
+  type        = set(string)
+  default     = ["cloud", "edge"]
+}
+variable "alarm_actions" {
+  description = "Optional existing SNS topics. Empty means alarm state only, no notifications."
+  type        = list(string)
+  default     = []
+}
+
+variable "deep_observation" {
+  type        = bool
+  default     = false
+  description = "Enable opt-in bounded DynamoDB scans for stuck completing uploads and journal export lag in gateway startup and CloudWatch alarms."
+}
+variable "enable_test_fault_injection" {
+  type        = bool
+  default     = false
+  description = "Enable node-scoped fault injection only for an isolated acceptance fleet."
+}
+variable "enable_edge_private_endpoint" {
+  type        = bool
+  default     = false
+  description = "Enable the Roles Anywhere interface endpoint for a private Edge test node."
+  validation {
+    condition     = !var.enable_edge_private_endpoint || (var.egress_mode == "interface" && var.edge_ca_pem != null)
+    error_message = "Private Edge needs interface endpoints and an Edge trust anchor."
+  }
+}
+variable "alb_internal" {
+  type        = bool
+  default     = false
+  description = "Place the test ALB on private subnets with internal addressing."
+}
+variable "enable_acceptance_nodes" {
+  type        = bool
+  default     = false
+  description = "Provision private SSM-managed Edge/client test nodes with disposable disks."
+  validation {
+    condition     = !var.enable_acceptance_nodes || (var.alb_internal && var.enable_edge_private_endpoint && var.runtime_permissions_boundary_arn != null)
+    error_message = "Private acceptance nodes require internal addressing, Edge endpoint and reviewed runtime boundary."
+  }
 }

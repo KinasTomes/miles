@@ -294,6 +294,11 @@ func (m *Store) Bootstrap(ctx context.Context, b Bootstrap) error {
 func chunkKey(k s.ChunkKey) string { return key("chunks", k.Domain, k.Hash) }
 func packKey(k s.PackRef) string   { return key("packs", k.ID, k.Generation) }
 func headKey(k s.ObjectKey) string { return key("heads", k.Bucket, k.BucketID, k.Key) }
+func (m *Store) SetPackForTest(info s.PackInfo) error {
+	return m.update(context.Background(), func(t *db.Txn) error {
+		return put(t, packKey(info.Ref), info)
+	})
+}
 func (m *Store) fence(t *db.Txn, w s.WriterFence) error {
 	if err := m.localFence(t, w); err != nil {
 		return err

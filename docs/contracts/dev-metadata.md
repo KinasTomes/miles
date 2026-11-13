@@ -1,6 +1,6 @@
 # Durable development metadata
 
-Implementation: W02-HAI-03, `internal/metadata/badger`. This adapter implements
+Implementation: `internal/metadata/badger`. This adapter implements
 the existing `storage.MetadataStore` port on one local Badger database. It does
 not import the reference fake and does not serialize a whole in-memory store.
 
@@ -127,7 +127,7 @@ its quota released. Repeated release is idempotent.
 Worker loops, durable R1 admissions, recovery roots/epoch closure, outbox draining,
 GC, multipart upload creation and DynamoDB implementation remain later tasks.
 
-W03-HAI-03 adds the [storage handoff](storage-handoff.md), a distinct part-page
+The storage handoff work adds the [storage handoff](storage-handoff.md), a distinct part-page
 staging capability and [DynamoDB preparation](dynamodb-adapter.md). Part pages
 survive reopen and validate kind/owner/number/checksum; they do not publish part
 heads or freeze uploads. Native item/request bounds are preparation for W4, not

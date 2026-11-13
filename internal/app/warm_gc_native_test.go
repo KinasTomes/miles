@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -230,9 +232,12 @@ func nativeWarmGCFlows(t *testing.T, ctx context.Context, nodes []Dependencies, 
 		if e != nil {
 			t.Fatal(e)
 		}
+		closed := false
 		defer func() {
-			if e := runner.Authority.Close(ctx, fence); e != nil {
-				t.Error(e)
+			if !closed {
+				if e := runner.Authority.Close(ctx, fence); e != nil {
+					t.Error(e)
+				}
 			}
 		}()
 		change := jobs.Change{JobID: j.ID, ExpectedRevision: j.Revision, Kind: "claim", Fence: fence, NodeID: runner.Node.ID, NodeIncarnation: runner.Node.Incarnation}
@@ -246,6 +251,39 @@ func nativeWarmGCFlows(t *testing.T, ctx context.Context, nodes []Dependencies, 
 		j, e = m.ChangeJob(ctx, change)
 		if e != nil {
 			t.Fatal(e)
+		}
+		out, e := runner.Executors[kind].Step(ctx, j, policy)
+		if kind != "compaction" || e != nil || !out.Done || !out.Settled {
+			return out, e
+		}
+		// Simulate losing the Jobs checkpoint ACK after durable compaction.
+		// Use the composed runtime authority, including pin cleanup, rather
+		// than granting a synthetic replacement fence in the test.
+		if e = runner.Authority.Close(ctx, fence); e != nil {
+			return jobs.Step{}, e
+		}
+		closed = true
+		next, e := runner.Authority.Acquire(ctx, j.ID, "control")
+		if e != nil {
+			return jobs.Step{}, e
+		}
+		defer func() {
+			if e := runner.Authority.Close(ctx, next); e != nil {
+				t.Error(e)
+			}
+		}()
+		if next.Epoch <= fence.Epoch {
+			return jobs.Step{}, fmt.Errorf("takeover did not advance epoch")
+		}
+		old := j
+		for _, change := range []string{"claim", "begin_step"} {
+			j, e = m.ChangeJob(ctx, jobs.Change{JobID: j.ID, ExpectedRevision: j.Revision, Kind: change, Fence: next, NodeID: runner.Node.ID, NodeIncarnation: runner.Node.Incarnation, StepID: strings.Repeat("2", 32)})
+			if e != nil {
+				return jobs.Step{}, e
+			}
+		}
+		if _, e = runner.Executors[kind].Step(ctx, old, policy); !errors.Is(e, storage.ErrFenced) {
+			return jobs.Step{}, fmt.Errorf("old compaction worker was not fenced: %v", e)
 		}
 		return runner.Executors[kind].Step(ctx, j, policy)
 	}

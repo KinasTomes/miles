@@ -33,6 +33,57 @@ func operationCommand(args []string) (command, error) {
 			return command{method: http.MethodGet, path: "/admin/v1/buckets/" + *bucket + "/stats"}, nil
 		}
 		return command{method: http.MethodGet, path: "/admin/v1/stats"}, nil
+	case "cost":
+		if len(args) < 2 || args[1] != "report" {
+			return command{}, invalid
+		}
+		f := newFlags("cost report")
+		region := f.String("region", "", "pricing region")
+		asOf := f.String("as-of", "", "date YYYY-MM-DD")
+		scenario := f.String("scenario", "", "scenario: A|B")
+		profile := f.String("profile", "", "profile: cloud|edge")
+		from := f.String("from", "", "from timestamp")
+		to := f.String("to", "", "to timestamp")
+		bucket := f.String("bucket", "", "filter bucket")
+		domain := f.String("domain", "", "filter domain")
+		workload := f.String("workload", "", "modeled workload trace: cloud-tiering-boundary|edge-revival")
+		set, ok := parse(f, args[2:])
+		if !ok {
+			return command{}, invalid
+		}
+		q := url.Values{}
+		if set["region"] {
+			q.Set("region", *region)
+		}
+		if set["as-of"] {
+			q.Set("as_of", *asOf)
+		}
+		if set["scenario"] {
+			q.Set("scenario", *scenario)
+		}
+		if set["profile"] {
+			q.Set("profile", *profile)
+		}
+		if set["from"] {
+			q.Set("from", *from)
+		}
+		if set["to"] {
+			q.Set("to", *to)
+		}
+		if set["bucket"] {
+			q.Set("bucket", *bucket)
+		}
+		if set["domain"] {
+			q.Set("domain", *domain)
+		}
+		if set["workload"] {
+			q.Set("workload", *workload)
+		}
+		path := "/admin/v1/cost/report"
+		if len(q) > 0 {
+			path += "?" + q.Encode()
+		}
+		return command{method: http.MethodGet, path: path}, nil
 	case "layout":
 		// No flags: a key may start with "-".
 		if len(args) != 3 || !validBucket(args[1]) || args[2] == "" || len(args[2]) > 1024 || !utf8.ValidString(args[2]) {
@@ -47,12 +98,50 @@ func operationCommand(args []string) (command, error) {
 	switch args[0] {
 	case "pack":
 		return packCommand(args[1], args[2:], invalid)
+	case "fault":
+		return faultCommand(args[1], args[2:], invalid)
 	case "cache":
 		return cacheCommand(args[1], args[2:], invalid)
 	case "job", "node":
 		return jobCommand(args[0], args[1], args[2:], invalid)
 	}
 	return command{}, adminclient.ErrUnsupported
+}
+
+func faultCommand(sub string, args []string, invalid error) (command, error) {
+	f := newFlags("fault " + sub)
+	switch sub {
+	case "ls":
+		if len(args) != 0 {
+			return command{}, invalid
+		}
+		return command{method: http.MethodGet, path: "/admin/v1/faults"}, nil
+	case "rm":
+		if len(args) != 1 || args[0] == "" {
+			return command{}, errors.New("fault rm needs <fault_id>")
+		}
+		return command{method: http.MethodDelete, path: "/admin/v1/faults/" + args[0]}, nil
+	case "add":
+		faultType := f.String("type", "", "fault type: s3_5xx|ddb_throttle|kill_node|corrupt_pack")
+		scope := f.String("scope", "node", "scope: node (fault rules are node-local to the directly addressed gateway; cluster scope deferred)")
+		nodeID := f.String("node", "", "node id of the directly addressed gateway (must match target gateway; not a cluster destination)")
+		rate := f.Float64("rate", 1.0, "injection probability (0.0, 1.0]")
+		duration := f.Int64("duration", 60, "duration in seconds (1..86400)")
+		set, ok := parse(f, args)
+		if !ok || !set["type"] || *rate <= 0.0 || *rate > 1.0 || *duration <= 0 || *scope != "node" || !set["node"] {
+			return command{}, invalid
+		}
+		body := map[string]any{
+			"type":             *faultType,
+			"scope":            *scope,
+			"node_id":          *nodeID,
+			"rate":             *rate,
+			"duration_seconds": *duration,
+		}
+		return command{method: http.MethodPost, path: "/admin/v1/faults", body: jsonBody(body)}, nil
+	default:
+		return command{}, invalid
+	}
 }
 
 func packCommand(sub string, args []string, invalid error) (command, error) {

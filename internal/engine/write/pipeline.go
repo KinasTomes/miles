@@ -38,12 +38,22 @@ type Pipeline struct {
 	// BatchBytes bounds retained raw data; zero selects 32 MiB. Every batch
 	// also has at most 100 distinct lookup keys for future DynamoDB adapters.
 	BatchBytes int
+	// Counters optionally accumulates revived/orphaned outcomes across requests.
+	Counters *Counters
 }
 
+// Revived/Orphaned are distinct identities per request (a key is written at
+// most once per pack and looked up again after its pack is published).
 type Result struct {
-	Size       int64
-	ChunkCount uint64
-	PackCount  uint64
+	Size           int64
+	ChunkCount     uint64
+	PackCount      uint64
+	RevivedChunks  uint64
+	RevivedBytes   uint64
+	OrphanedChunks uint64
+	OrphanedBytes  uint64
+	DupChunks      uint64
+	StoredBytes    uint64
 }
 
 const defaultBatchBytes = 32 << 20
@@ -88,9 +98,19 @@ func (p Pipeline) run(ctx context.Context, domain string, next func(context.Cont
 	var result Result
 	refs := orderedRefs{domain: domain, emit: emit, result: &result}
 	defer refs.Close()
+	if p.Counters != nil {
+		setPublisherCounters(p.Publisher, p.Counters)
+	}
+	setPublisherObserver(p.Publisher, func(rc, rb, oc, ob uint64) {
+		result.RevivedChunks += rc
+		result.RevivedBytes += rb
+		result.OrphanedChunks += oc
+		result.OrphanedBytes += ob
+	})
 	var builder *pack.Builder
 	var ref storage.PackRef
 	prior := make(map[storage.ChunkKey]storage.Chunk)
+	var blobsWritten uint64
 	pendingKeys := make(map[storage.ChunkKey]int64)
 	var publishedSeq uint64
 	flush := func() error {
@@ -112,6 +132,7 @@ func (p Pipeline) run(ctx context.Context, domain string, next func(context.Cont
 			}
 		}
 		result.PackCount++
+		result.StoredBytes += uint64(len(packBytes) + len(sidecar))
 		publishedSeq++
 		builder = nil
 		prior = make(map[storage.ChunkKey]storage.Chunk)
@@ -159,6 +180,9 @@ func (p Pipeline) run(ctx context.Context, domain string, next func(context.Cont
 			}
 			if !refs.Empty() {
 				return result, fmt.Errorf("%w: pending refs after final pack", storage.ErrUnavailable)
+			}
+			if result.ChunkCount >= blobsWritten {
+				result.DupChunks = result.ChunkCount - blobsWritten
 			}
 			return result, nil
 		}
@@ -246,6 +270,7 @@ func (p Pipeline) run(ctx context.Context, domain string, next func(context.Cont
 			} else if err != nil {
 				return result, err
 			}
+			blobsWritten++
 			if row, found := rows[key]; found {
 				prior[key] = row
 			}
@@ -277,6 +302,9 @@ func (p Pipeline) run(ctx context.Context, domain string, next func(context.Cont
 			}
 			if !refs.Empty() {
 				return result, fmt.Errorf("%w: pending refs after final pack", storage.ErrUnavailable)
+			}
+			if result.ChunkCount >= blobsWritten {
+				result.DupChunks = result.ChunkCount - blobsWritten
 			}
 			return result, nil
 		}
@@ -310,4 +338,24 @@ func lookupComplete(ctx context.Context, store Lookup, keys []storage.ChunkKey) 
 		}
 	}
 	return nil, storage.ErrUnavailable
+}
+
+func setPublisherCounters(pub Publisher, c *Counters) {
+	if sp, ok := pub.(*StorePublisher); ok && sp.Counters == nil {
+		sp.Counters = c
+	} else if pr, ok := pub.(*packRecorder); ok {
+		if sp, ok := pr.Publisher.(*StorePublisher); ok && sp.Counters == nil {
+			sp.Counters = c
+		}
+	}
+}
+
+func setPublisherObserver(pub Publisher, fn func(rc, rb, oc, ob uint64)) {
+	if sp, ok := pub.(*StorePublisher); ok {
+		sp.Observer = fn
+	} else if pr, ok := pub.(*packRecorder); ok {
+		if sp, ok := pr.Publisher.(*StorePublisher); ok {
+			sp.Observer = fn
+		}
+	}
 }

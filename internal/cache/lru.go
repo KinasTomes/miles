@@ -85,6 +85,20 @@ func (c *LRU) Get(ctx context.Context, key storage.CacheKey) ([]byte, bool, erro
 	return data, true, nil
 }
 
+// Has reports whether key is resident without changing recency or copying bytes.
+func (c *LRU) Has(ctx context.Context, key storage.CacheKey) bool {
+	if ctx.Err() != nil || validKey(key) != nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if ctx.Err() != nil {
+		return false
+	}
+	_, ok := c.entries[key]
+	return ok
+}
+
 // Put is best-effort: nil does not promise residency. An immutable-key conflict
 // removes resident ranges of that exact generation and reports ErrConflict.
 func (c *LRU) Put(ctx context.Context, key storage.CacheKey, data []byte) error {

@@ -37,8 +37,8 @@ variables {
 run "active_fleet" {
   command = apply # Mock provider only: no AWS resources or credentials.
   assert {
-    condition     = output.fleet_contract.min_size == 2 && output.fleet_contract.desired == 2 && output.fleet_contract.max_size == 2 && length(output.fleet_contract.subnets) == 2 && output.fleet_contract.health_type == "ELB"
-    error_message = "Cloud must attach a two-node/two-subnet ELB-health ASG."
+    condition     = output.fleet_contract.min_size == 2 && output.fleet_contract.desired == 2 && output.fleet_contract.max_size == 2 && length(output.fleet_contract.subnets) == 2 && output.fleet_contract.health_type == "EC2"
+    error_message = "Cloud must attach a two-node/two-subnet EC2-health ASG, separating instance liveness from traffic routing readiness."
   }
   assert {
     condition     = output.fleet_contract.heartbeat == 300 && output.fleet_contract.drain == 1800 && output.fleet_contract.controller_max > 1800 && output.alb_contract.idle_timeout == 120 && tonumber(output.alb_contract.drain_seconds) == 1800 && output.alb_contract.preserve_host_header
@@ -47,6 +47,60 @@ run "active_fleet" {
   assert {
     condition     = output.runtime_inventory.compute.instance_id == null && output.runtime_inventory.compute.data_volume_id == null && length(output.runtime_inventory.expected_tables) == 20 && output.runtime_inventory.data.request_unit_cap == 128
     error_message = "Fleet uses shared data, never the retained single-node dev disk."
+  }
+}
+run "private_acceptance_fleet" {
+  command = plan
+  variables {
+    alb_internal                 = true
+    enable_acceptance_nodes      = true
+    enable_edge_private_endpoint = true
+    edge_ca_pem                  = "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----"
+    owner_ssh_public_key         = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixture"
+  }
+  assert {
+    condition     = output.alb_contract.internal && length(output.acceptance_nodes) == 2 && contains(keys(output.network_inventory.interface_endpoints), "rolesanywhere")
+    error_message = "Private acceptance requires the internal ALB, both nodes and Roles Anywhere endpoint."
+  }
+}
+run "reuse_baseline_autoscaling_role" {
+  command = plan
+  variables {
+    existing_autoscaling_role_arn = "arn:aws:iam::123456789012:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_miles-dev"
+  }
+  assert {
+    condition     = length(aws_iam_service_linked_role.autoscaling) == 0 && local.autoscaling_role_arn == var.existing_autoscaling_role_arn
+    error_message = "An existing service-linked role must be referenced outside managed state."
+  }
+}
+run "reject_foreign_autoscaling_role" {
+  command = plan
+  variables {
+    existing_autoscaling_role_arn = "arn:aws:iam::999999999999:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+  }
+  expect_failures = [var.existing_autoscaling_role_arn]
+}
+run "reject_non_service_autoscaling_role" {
+  command = plan
+  variables {
+    existing_autoscaling_role_arn = "arn:aws:iam::123456789012:role/Admin"
+  }
+  expect_failures = [var.existing_autoscaling_role_arn]
+}
+run "private_bootstrap_before_fleet" {
+  command = plan
+  variables {
+    enable_asg                   = false
+    enable_alb                   = false
+    alb_internal                 = true
+    enable_acceptance_nodes      = true
+    enable_edge_private_endpoint = true
+    edge_ca_pem                  = "-----BEGIN CERTIFICATE-----\nfixture\n-----END CERTIFICATE-----"
+    owner_ssh_public_key         = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixture"
+  }
+  assert {
+    condition     = output.fleet_contract == null && output.alb_contract == null && length(output.acceptance_nodes) == 2
+    error_message = "The private operator hosts must bootstrap the empty installation before gateways start."
   }
 }
 run "paused_fleet_plan" {

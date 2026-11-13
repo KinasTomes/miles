@@ -17,6 +17,8 @@ type Params struct {
 	Generation string `json:"generation"`
 	Days       int    `json:"days,omitempty"`
 	Tier       string `json:"tier,omitempty"`
+	// RequiredUntil is set only by trusted read admission, not the Admin body.
+	RequiredUntil time.Time `json:"required_until,omitzero"`
 }
 
 func (p Params) Ref() s.PackRef { return s.PackRef{ID: p.PackID, Generation: p.Generation} }
@@ -25,10 +27,13 @@ func (p Params) Validate(kind jobs.Type) error {
 		return s.ErrInvalid
 	}
 	if kind == "pack_restore" {
-		if p.Days < 1 || p.Days > 30 || p.Tier != "Standard" && p.Tier != "Bulk" && p.Tier != "Expedited" {
+		if (s.RestoreRequest{Days: p.Days, Tier: p.Tier}).Validate() != nil {
 			return s.ErrInvalid
 		}
-	} else if (kind != "tiering" && kind != "gc" && !Repack(kind)) || p.Days != 0 || p.Tier != "" {
+		if !p.RequiredUntil.IsZero() && (p.RequiredUntil.Year() < 1 || p.RequiredUntil.Year() > 9999) {
+			return s.ErrInvalid
+		}
+	} else if (kind != "tiering" && kind != "gc" && !Repack(kind)) || p.Days != 0 || p.Tier != "" || !p.RequiredUntil.IsZero() {
 		return s.ErrInvalid
 	}
 	return nil
@@ -37,6 +42,12 @@ func (p Params) Validate(kind jobs.Type) error {
 // Repack jobs share immutable destination publication and canonical CAS.
 func Repack(kind jobs.Type) bool {
 	return kind == "pack_promote" || kind == "compaction"
+}
+
+// RetirableData excludes pending restore/transition and terminal generations.
+// Eligibility still requires stable roots, pins, protection and retention proof.
+func RetirableData(p s.PackInfo) bool {
+	return p.State == "Warm" && (p.Class == s.Standard || p.Class == s.StandardIA) || p.State == "Cold" && (p.Class == s.GlacierIR || p.Class == s.Glacier) || p.State == "Restored" && p.Class == s.Glacier
 }
 
 func Destination(kind jobs.Type, id string, source s.PackRef) s.PackRef {
@@ -73,6 +84,7 @@ type Action struct {
 	Version       uint32
 	ID            string
 	JobID         string
+	StepID        string
 	Kind          jobs.Type
 	State         string
 	Revision      uint64
@@ -87,14 +99,40 @@ type Action struct {
 	GateRevision  uint64
 	Days          int
 	Tier          string
+	RequiredUntil time.Time `json:",omitzero"`
+}
+
+// Version 1 rows predate durable step binding and remain readable for upgrade
+// compatibility. Version 2 persists the immutable original PendingStep. New
+// readers accept both versions; old readers reject v2 and therefore fail
+// closed during a mixed-version rollout.
+const (
+	ActionVersionLegacy  uint32 = 1
+	ActionVersionCurrent uint32 = 2
+)
+
+func (a Action) ValidateSchema() error {
+	if a.Version == ActionVersionLegacy {
+		if a.StepID != "" && !jobs.ValidID(a.StepID) {
+			return s.ErrInvalid
+		}
+		return nil
+	}
+	if a.Version != ActionVersionCurrent || !jobs.ValidID(a.StepID) {
+		return s.ErrInvalid
+	}
+	return nil
 }
 
 func (a Action) Validate() error {
+	if !a.RequiredUntil.IsZero() && (a.Kind != "pack_restore" || a.RequiredUntil.Year() < 1 || a.RequiredUntil.Year() > 9999) {
+		return s.ErrInvalid
+	}
 	if len(a.SweepVersions) > 0 && (a.Kind != "gc" || !s.ValidSweepVersions(a.SweepVersions)) {
 		return s.ErrInvalid
 	}
 
-	if a.Version != 1 || !jobs.ValidID(a.JobID) || a.ID != a.JobID || a.Revision < 1 || a.Revision >= s.MaxPolicyRevision || a.Source.Ref.Validate() != nil || a.Fence.LeaseID != a.JobID || len(a.Chunks) > 16384 || a.PlanPages > 512 {
+	if a.ValidateSchema() != nil || !jobs.ValidID(a.JobID) || a.ID != a.JobID || a.Revision < 1 || a.Revision >= s.MaxPolicyRevision || a.Source.Ref.Validate() != nil || a.Fence.LeaseID != a.JobID || len(a.Chunks) > 16384 || a.PlanPages > 512 {
 		return s.ErrInvalid
 	}
 	switch a.State {

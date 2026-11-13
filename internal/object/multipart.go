@@ -22,7 +22,7 @@ var ErrPartTooLarge = errors.New("object: part exceeds 5 GiB")
 // a concurrent replacement of the same part number moved.
 const maxPartAttempts = 8
 
-// Uploads is the multipart slice of the shared store (W04-HAI-02): upload,
+// Uploads is the multipart slice of the shared store: upload,
 // part and publisher records, their recovery port, the upload ledger a
 // Complete commits against, and the receipt that answers a Completed upload.
 type Uploads interface {
@@ -53,6 +53,7 @@ type PartRequest struct {
 // checksum in standard Base64 of the upload's algorithm.
 type PartResult struct {
 	ETag, ChecksumAlgorithm, ChecksumValue string
+	Debug                                  WriteDebug
 }
 
 type ListPartsRequest struct {
@@ -175,7 +176,7 @@ func (s *Service) UploadPart(ctx context.Context, r PartRequest) (PartResult, er
 		s.cancelPart(ctx, req, pub.ID)
 		return PartResult{}, err
 	}
-	prepared, packs, err := session.PreparePart(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression, WriteCache: s.o.Cache, AdmitOnWrite: policy.Cache().AdmitOnWrite}, r.Body, manifestID)
+	prepared, packs, err := session.PreparePart(write.Pipeline{Chunking: s.o.Chunking, Compression: s.o.Compression, WriteCache: s.o.Cache, AdmitOnWrite: policy.Cache().AdmitOnWrite, Counters: s.o.WriteCounters}, r.Body, manifestID)
 	if err != nil {
 		return fail(fmt.Errorf("prepare: %w", err))
 	}
@@ -207,7 +208,18 @@ func (s *Service) UploadPart(ctx context.Context, r PartRequest) (PartResult, er
 		})
 		switch {
 		case err == nil:
-			return PartResult{ETag: published.ETag, ChecksumAlgorithm: published.Checksum.Algorithm, ChecksumValue: published.Checksum.Value}, nil
+			return PartResult{
+				ETag:              published.ETag,
+				ChecksumAlgorithm: published.Checksum.Algorithm,
+				ChecksumValue:     published.Checksum.Value,
+				Debug: WriteDebug{
+					ChunksTotal:   prepared.ChunkCount,
+					ChunksDup:     prepared.DupChunks,
+					ChunksRevived: prepared.RevivedChunks,
+					BytesLogical:  prepared.Size,
+					BytesStored:   prepared.StoredBytes,
+				},
+			}, nil
 		case errors.Is(err, storage.ErrUnavailable):
 			// Unknown outcome: the publisher keeps its provisional bytes and
 			// roots, and the writer its pins, until recovery proves publish

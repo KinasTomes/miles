@@ -1,6 +1,6 @@
-# Shared storage contracts — W01-HUNG-04
+# Shared storage contracts
 
-Status: implementation for review, not a production storage feature or task-completion approval. Miles public task `W01-HUNG-04` retains the historical source identity `W01-HAI-01` (A02). Prerequisite `W01-CHIEN-03` is Done. This document derives the storage boundary from architecture v4 and API v2; neither source document changes.
+Status: implementation for review, not a production storage feature or task-completion approval. This document derives the storage boundary from architecture v4 and API v2; neither source document changes.
 
 ## Ownership and source mapping
 
@@ -10,7 +10,7 @@ Status: implementation for review, not a production storage feature or task-comp
 | Reusable contract suite, metadata/pack/cache fakes | [contracttest](../../internal/storage/contracttest/metadata.go), [physical contracts](../../internal/storage/contracttest/physical.go), [reference wiring](../../internal/storage/contracttest/reference_test.go), [fake stores](../../internal/storage/fake/metadata.go) | Architecture §9.0, §10.2, §16; API §2.6/4.3/4.4 |
 | Domain-aware PK, bucket incarnation, head/location CAS | ChunkKey.PartitionKey, NewBucketID, ExpectedRevision, WriterFence; identity/CAS/race tests | Architecture §1.5, §8.2, §10.1–10.2; API §2.2.3 |
 
-W03-HAI-03 [handoff helpers and boundaries](storage-handoff.md) add optional
+The [handoff helpers and boundaries](storage-handoff.md) add optional
 PartPageStore staging alongside ManifestPageReader. Fake/Badger use separate
 object/part namespaces; this is not another MetadataStore or a multipart head
 publication interface. [DynamoDB schema preparation](dynamodb-adapter.md) reuses
@@ -121,10 +121,10 @@ CI's existing `check` job runs the full Go checks and a focused race run for sto
 
 | Follow-up | Existing task boundary |
 |---|---|
-| Binary pack/footer/sidecar and page/golden encodings | W1 pack/manifest format task (historical W01-HAI-02); W02-HAI-02/03 |
-| Chunking/zstd thresholds, dedup/revival flow, detailed commit producer/event encoding | W1 chunking/commit task (historical W01-HAI-03); W02-HAI-01 and later engine tasks |
-| BadgerDB, DynamoDB and S3 adapters, request handlers and API fixture integration | W02-HAI-02/03, W04-HAI-01/02 and Chiến's API/auth tasks |
-| R1 coordinator, read/pin/maintenance protocol; R2 export/seal/checkpoint/recovery | W01-PHONG-02/03 and their implementation tasks |
+| Binary pack/footer/sidecar and page/golden encodings | W1 [pack/manifest format](pack-and-pages.md) task; pack writer and Badger adapter tasks |
+| Chunking/zstd thresholds, dedup/revival flow, detailed commit producer/event encoding | W1 [chunking/commit](chunking-and-commit.md) task; chunker/zstd and later engine tasks |
+| BadgerDB, DynamoDB and S3 adapters, request handlers and API fixture integration | Badger, S3 pack, [DynamoDB](dynamodb-adapter.md) and [multipart metadata](multipart-metadata-handoff.md) adapter tasks and Chiến's API/auth tasks |
+| R1 coordinator, read/pin/maintenance protocol; R2 export/seal/checkpoint/recovery | [R1](r1-and-cache.md)/[R2](r2-recovery.md) contracts and their implementation tasks |
 | HTTP LIST token codec/XML, complete policy merge/validation/evaluation, grant management and jobs | Existing API/config/policy/metadata tasks implement on these shared ports; the six required §18 ports and their reference behaviors are already included in W1 |
 
 Source documents, client fixtures, approved R1–R4 decisions and Cloud/Edge behavior remain authoritative. Extending these core ports must preserve the tested invariants and reference their source sections. Passing this suite on fakes is handoff evidence, not proof that either production adapter, full multipart, R1/R2 recovery or the gateway is Done.

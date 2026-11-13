@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"time"
 
 	s "github.com/KinasTomes/miles/internal/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -14,12 +15,46 @@ import (
 
 var _ s.OutboxExportStore = (*Store)(nil)
 
+// Only a producer-enforced open epoch can use atomic mutation membership to
+// skip idle discovery. Closed cuts always enumerate Outbox independently.
+func (m *Store) emptyOpenOutboxEpoch(ctx context.Context, q s.OutboxQuery) (bool, error) {
+	if _, shared := m.authority.(*SharedAuthority); !shared || !m.requireProducers || q.After != "" {
+		return false, nil
+	}
+	gate, err := m.GetR1Gate(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !gate.RecoveryEnabled || gate.State != "Open" || gate.HistoryID != q.HistoryID || gate.Epoch != q.Epoch {
+		return false, nil
+	}
+	if _, err := m.GetRecoveryEpoch(ctx, q.HistoryID, q.Epoch); !errors.Is(err, s.ErrNotFound) {
+		return false, err
+	}
+	page, err := m.api.Query(ctx, &ddb.QueryInput{
+		TableName: aws.String(m.tables["Leases"]), ConsistentRead: aws.Bool(true), Limit: aws.Int32(1),
+		KeyConditionExpression: aws.String("#pk = :partition"), ProjectionExpression: aws.String("#sk"),
+		ExpressionAttributeNames:  map[string]string{"#pk": "resource_id", "#sk": "lease_id"},
+		ExpressionAttributeValues: Item{":partition": text(recoveryPartition("mutations", q.HistoryID, q.Epoch))},
+	})
+	if err != nil {
+		return false, backend(err)
+	}
+	if page == nil || len(page.Items) == 0 && len(page.LastEvaluatedKey) != 0 {
+		return false, s.ErrUnavailable
+	}
+	return len(page.Items) == 0, nil
+}
+
 // The frozen inventory has no event ordering index. A base scan retains only
 // Limit+1 smallest IDs after the cursor. Memory is bounded; read cost is linear
 // in table size. Neither consistent reads nor this discovery scan seal an epoch.
 func (m *Store) ListOutbox(ctx context.Context, q s.OutboxQuery) (s.OutboxPage, error) {
 	var out s.OutboxPage
 	if err := q.Validate(); err != nil {
+		return out, err
+	}
+	if empty, err := m.emptyOpenOutboxEpoch(ctx, q); err != nil || empty {
 		return out, err
 	}
 	candidates := map[string]Item{}
@@ -115,4 +150,49 @@ func (m *Store) MarkOutboxExported(ctx context.Context, p s.OutboxExport) error 
 }
 func (m *Store) GetOutboxExport(ctx context.Context, id string) (s.OutboxExport, error) {
 	return read[s.OutboxExport](m, ctx, key("exports", id))
+}
+
+// ObserveExportLag is a bounded approximate base scan, never a closure proof.
+// The timestamp is telemetry beside the immutable event, not part of its digest.
+// Uses eventual consistency (ConsistentRead=false) and bounded page count to minimize RCU impact.
+func (m *Store) ObserveExportLag(ctx context.Context, history string) (time.Time, error) {
+	var oldest time.Time
+	var cursor Item
+	for page := 0; page < 4; page++ {
+		result, err := m.api.Scan(ctx, &ddb.ScanInput{TableName: aws.String(m.tables["Outbox"]), ConsistentRead: aws.Bool(false), Limit: aws.Int32(128), ExclusiveStartKey: cursor, ProjectionExpression: aws.String("history_id, event_observed_at, export_progress")})
+		if err != nil {
+			return time.Time{}, backend(err)
+		}
+		if result == nil {
+			return time.Time{}, s.ErrUnavailable
+		}
+		for _, item := range result.Items {
+			h, ok := item["history_id"].(*types.AttributeValueMemberS)
+			if !ok || h == nil {
+				return time.Time{}, s.ErrUnavailable
+			}
+			if h.Value != history || item["export_progress"] != nil {
+				continue
+			}
+			stamp, ok := item["event_observed_at"].(*types.AttributeValueMemberS)
+			if !ok || stamp == nil {
+				return time.Time{}, s.ErrUnavailable
+			}
+			observed, err := time.Parse(time.RFC3339Nano, stamp.Value)
+			if err != nil {
+				return time.Time{}, s.ErrUnavailable
+			}
+			if oldest.IsZero() || observed.Before(oldest) {
+				oldest = observed
+			}
+		}
+		if len(result.LastEvaluatedKey) == 0 {
+			return oldest, nil
+		}
+		if reflect.DeepEqual(cursor, result.LastEvaluatedKey) {
+			return time.Time{}, s.ErrUnavailable
+		}
+		cursor = result.LastEvaluatedKey
+	}
+	return time.Time{}, s.ErrUnavailable
 }

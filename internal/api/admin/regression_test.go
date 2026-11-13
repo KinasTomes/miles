@@ -152,7 +152,8 @@ func TestConcurrentCASHasOneWinner(t *testing.T) {
 			}},
 		{"bucket policy", "/admin/v1/buckets/demo/policy", owner,
 			func(i int) string {
-				return fmt.Sprintf(`{"cache":{"readahead_chunks":%d},"expected_revision":1,"expected_bucket_id":%q}`, i+1, demoID)
+				// Every writer must change the default; a no-op can also succeed.
+				return fmt.Sprintf(`{"cache":{"readahead_chunks":%d},"expected_revision":1,"expected_bucket_id":%q}`, i+8, demoID)
 			},
 			func() uint64 {
 				p, err := w.store.GetBucketPolicy(context.Background(), "demo", demoID, 0)

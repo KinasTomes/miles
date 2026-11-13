@@ -295,6 +295,39 @@ func TestExportIntegrityAndMissingPayload(t *testing.T) {
 		})
 	}
 }
+
+func TestExportRetryVerifiesReceiptWithoutRewriting(t *testing.T) {
+	for _, mode := range []string{"unchanged", "corrupt-page", "missing-page", "changed-source"} {
+		t.Run(mode, func(t *testing.T) {
+			m, f, _ := producerFixture(t, "fake")
+			event, body := commitInput(t, m, f, "receipt-retry", 0)
+			sink := &memoryObjects{objects: map[string][]byte{}}
+			worker := Exporter{Metadata: m, Payloads: memoryInputs{event.PayloadPointer: body}, Objects: sink}
+			if err := worker.Export(t.Context(), event.ID); err != nil {
+				t.Fatal(err)
+			}
+			writes := sink.calls
+			// A verified export must not reread the producer payload on retry.
+			worker.Payloads = memoryInputs{}
+			switch mode {
+			case "corrupt-page":
+				sink.objects[eventRoot(event)+"pages/0.json"] = []byte("corrupt")
+			case "missing-page":
+				delete(sink.objects, eventRoot(event)+"pages/0.json")
+			case "changed-source":
+				event.Revision++
+				worker.Metadata = eventOverride{m, event}
+			}
+			err := worker.Export(t.Context(), event.ID)
+			if (err == nil) != (mode == "unchanged") {
+				t.Fatal("retry accepted missing or altered evidence", err)
+			}
+			if sink.calls != writes {
+				t.Fatal("retry rewrote an already exported bundle")
+			}
+		})
+	}
+}
 func TestOutboxPaginationAndHistoryIsolation(t *testing.T) {
 	for _, backend := range []string{"fake", "badger"} {
 		t.Run(backend, func(t *testing.T) {

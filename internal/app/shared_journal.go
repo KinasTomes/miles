@@ -66,11 +66,12 @@ func (j *journalRuntime) flush(parent context.Context) error {
 	defer cancel()
 	for {
 		workErr, cleanupErr := j.once(ctx, true)
-		if cleanupErr != nil || !errors.Is(workErr, storage.ErrR1Busy) {
+		retryable := errors.Is(workErr, storage.ErrR1Busy) || errors.Is(workErr, storage.ErrUnavailable)
+		if cleanupErr != nil || !retryable {
 			return errors.Join(workErr, cleanupErr)
 		}
-		// A peer may still own a closed epoch's seal. Keep its authority intact
-		// and retry discovery within this shutdown's original flush deadline.
+		// Peer ownership and transient backend failures may clear. Retry only
+		// after successful lease cleanup, within the original flush deadline.
 		if err := j.clock.Sleep(ctx, time.Second); err != nil {
 			return err
 		}

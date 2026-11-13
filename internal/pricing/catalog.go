@@ -38,6 +38,19 @@ type StorageRule struct {
 	SourceID              string `json:"source_id"`
 }
 
+// RuleForClass returns the storage rule for a named storage class, case-insensitively.
+func (c *Catalog) RuleForClass(class string) (StorageRule, bool) {
+	if c == nil {
+		return StorageRule{}, false
+	}
+	for _, r := range c.StorageRules {
+		if strings.EqualFold(r.Class, class) {
+			return r, true
+		}
+	}
+	return StorageRule{}, false
+}
+
 type Rate struct {
 	ID              string            `json:"id"`
 	Category        string            `json:"category"`

@@ -75,6 +75,16 @@ func (n *Node) Get(ctx context.Context, k storage.CacheKey) ([]byte, bool, error
 	}
 	return b, hit, nil
 }
+
+// Has reports whether key is resident in memory or disk without mutating stats or recency.
+func (n *Node) Has(ctx context.Context, k storage.CacheKey) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.closed || ctx.Err() != nil {
+		return false
+	}
+	return n.memory.Has(ctx, k) || (n.disk != nil && n.disk.Has(ctx, k))
+}
 func (n *Node) Put(ctx context.Context, k storage.CacheKey, b []byte) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()

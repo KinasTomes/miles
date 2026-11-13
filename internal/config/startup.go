@@ -15,28 +15,40 @@ import (
 
 // Startup is process configuration, separate from revisioned global policy.
 type Startup struct {
-	Profile             string
-	Mode                string
-	HealthAddress       string
-	ShutdownSeconds     int
-	S3Address           string
-	AdminAddress        string
-	Region              string
-	LocalDataPath       string
-	PackEndpoint        string
-	PackBucket          string
-	PackCredentialsFile string
-	PackKMSKeyID        string
-	RuntimeNodeID       string
-	DDBTablePrefix      string
-	RuntimeSecretARN    string
-	AWSConfigFile       string
-	AWSProfile          string
-	UTCReference        string
+	Profile                    string
+	Mode                       string
+	HealthAddress              string
+	ShutdownSeconds            int
+	S3Address                  string
+	AdminAddress               string
+	Region                     string
+	LocalDataPath              string
+	PackEndpoint               string
+	PackBucket                 string
+	PackCredentialsFile        string
+	PackKMSKeyID               string
+	RuntimeNodeID              string
+	DDBTablePrefix             string
+	RuntimeSecretARN           string
+	AWSConfigFile              string
+	UTCReference               string
+	ObservationIntervalSeconds int
+	DeepObservation            bool
+	EnableFaultInjection       bool
+	AWSProfile                 string
 }
 
 func DefaultStartup() Startup {
-	return Startup{Profile: "edge", Mode: "runtime", HealthAddress: "127.0.0.1:9100", ShutdownSeconds: 1800, Region: "ap-southeast-1"}
+	return Startup{
+		Profile:                    "edge",
+		Mode:                       "runtime",
+		HealthAddress:              "127.0.0.1:9100",
+		ShutdownSeconds:            1800,
+		Region:                     "ap-southeast-1",
+		ObservationIntervalSeconds: 30,
+		DeepObservation:            false,
+		EnableFaultInjection:       false,
+	}
 }
 
 // LoadStartup rejects unknown/duplicate fields and multiple JSON values.
@@ -103,6 +115,12 @@ func LoadStartup(r io.Reader) (Startup, error) {
 			target = &c.AWSProfile
 		case "utc_reference":
 			target = &c.UTCReference
+		case "observation_interval_seconds":
+			target = &c.ObservationIntervalSeconds
+		case "deep_observation":
+			target = &c.DeepObservation
+		case "enable_fault_injection":
+			target = &c.EnableFaultInjection
 		default:
 			return c, fmt.Errorf("unknown startup field %q", name)
 		}
@@ -200,6 +218,9 @@ func (c Startup) Validate() error {
 	}
 	if c.ShutdownSeconds < 1 || c.ShutdownSeconds > 1800 {
 		return fmt.Errorf("shutdown_seconds must be 1..1800")
+	}
+	if c.ObservationIntervalSeconds < 0 || c.ObservationIntervalSeconds > 600 {
+		return fmt.Errorf("observation_interval_seconds must be 0..600")
 	}
 	return nil
 }

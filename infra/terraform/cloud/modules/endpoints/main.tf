@@ -1,5 +1,5 @@
 locals {
-  services = toset(concat(["kms", "ssm", "ssmmessages", "secretsmanager", "logs", "monitoring", "sts", "elasticloadbalancing", "autoscaling"], var.enable_edge ? ["rolesanywhere"] : []))
+  services = toset(concat(["kms", "ssm", "ssmmessages", "secretsmanager", "logs", "monitoring", "sts", "elasticloadbalancing", "autoscaling"], (var.enable_roles_anywhere || var.enable_edge) ? ["rolesanywhere"] : []))
 }
 resource "aws_vpc_endpoint" "gateway" {
   for_each          = toset(["s3", "dynamodb"])
@@ -12,7 +12,7 @@ resource "aws_vpc_endpoint" "gateway" {
     Statement = [{
       Effect    = "Allow"
       Principal = "*"
-      Action    = each.key == "s3" ? ["s3:ListBucket", "s3:GetBucketLocation", "s3:ListBucketMultipartUploads", "s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject", "s3:RestoreObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"] : ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:DescribeTable", "dynamodb:ConditionCheckItem"]
+      Action    = each.key == "s3" ? ["s3:ListBucket", "s3:ListBucketVersions", "s3:GetBucketLocation", "s3:ListBucketMultipartUploads", "s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:DeleteObject", "s3:RestoreObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"] : ["dynamodb:GetItem", "dynamodb:BatchGetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:DescribeTable", "dynamodb:ConditionCheckItem"]
       Resource  = each.key == "s3" ? ["arn:aws:s3:::${var.data_bucket_name}", "arn:aws:s3:::${var.data_bucket_name}/*"] : concat(var.table_arns, [for a in var.table_arns : "${a}/index/*"])
     }]
   })
@@ -40,7 +40,7 @@ resource "aws_vpc_endpoint" "interface" {
   private_dns_enabled = true
   policy = each.key == "rolesanywhere" ? jsonencode({
     Version   = "2012-10-17"
-    Statement = [{ Effect = "Allow", Principal = "*", Action = "rolesanywhere:CreateSession", Resource = var.edge_trust_anchor_arn, Condition = { StringEquals = { "rolesanywhere:x509Subject/CN" = var.edge_certificate_common_name } } }]
+    Statement = [{ Effect = "Allow", Principal = "*", Action = "rolesanywhere:CreateSession", Resource = var.roles_anywhere_trust_anchor_arn, Condition = { StringEquals = { "rolesanywhere:x509Subject/CN" = var.edge_certificate_common_name } } }]
   }) : null
   subnet_ids         = values(var.private_subnets)
   security_group_ids = [aws_security_group.interfaces[0].id]

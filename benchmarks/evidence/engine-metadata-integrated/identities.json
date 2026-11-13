@@ -1,0 +1,142 @@
+[
+  {
+    "domain": "artifact-isolated",
+    "generation": "c7414b629b669fc84185c06ae0eb18cf",
+    "hash": "3496fb93eba865a961e2e034df7e63bbcd1e0a77089cc18bdb832dfd3fbdaeb6",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "c91e18444df4bf2b0127a96a844680c8",
+    "raw_bytes": 65536,
+    "stored_bytes": 65536
+  },
+  {
+    "domain": "artifact-isolated",
+    "generation": "dcfa730e37262b02f3964a0657830e7b",
+    "hash": "49da097c8a791cf7bc839a8ae7bdd9503ef0e0e1dfdce79a606e797ed5156aa8",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "6bb9db3b020a0e814f5ed545e3ec166f",
+    "raw_bytes": 65536,
+    "stored_bytes": 93
+  },
+  {
+    "domain": "artifact-isolated",
+    "generation": "c9959a7064d7f971f1eb9d38975d7c2d",
+    "hash": "66c5df83a1347ee6e097b2b124870212592fc25998968216a24b982ea0b00102",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "bf1c3ce4e762885c5cb9ab19f4fff6e5",
+    "raw_bytes": 65536,
+    "stored_bytes": 93
+  },
+  {
+    "domain": "artifact-isolated",
+    "generation": "5205906a7940d00258e68607eb57224e",
+    "hash": "88fd4b1ae06cd26955fd886b3e8ba12e2f688710b1dc832d5763e014d797440c",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "0ac97ccdb47a3663b9bfbcb563b991b6",
+    "raw_bytes": 65536,
+    "stored_bytes": 65536
+  },
+  {
+    "domain": "artifact-isolated",
+    "generation": "50c653e4e1c563defc14aea7cd172f40",
+    "hash": "e9a660088305abb7a1851d096af0bead34b26b030855a5fcf0c7df5a5ff3e07a",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "2c3529ff53f905f91059203977551862",
+    "raw_bytes": 65536,
+    "stored_bytes": 93
+  },
+  {
+    "domain": "artifact-isolated",
+    "generation": "9018f23080482bd5a887b391ee0fdda3",
+    "hash": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "350ecfd5f23b73ae71ed13d5a5ff46c5",
+    "raw_bytes": 65566,
+    "stored_bytes": 65566
+  },
+  {
+    "domain": "artifact-isolated",
+    "generation": "18e89aa041e893e24ee639c86a7ac02f",
+    "hash": "fadc86b2b66538304fb412b2ff142e4721414dc9305820b8139fc672e412a080",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "8cbc8f57476604661332183900b9956f",
+    "raw_bytes": 65536,
+    "stored_bytes": 65536
+  },
+  {
+    "domain": "default",
+    "generation": "627b045d46dcc78d85788c6ebd520062",
+    "hash": "3496fb93eba865a961e2e034df7e63bbcd1e0a77089cc18bdb832dfd3fbdaeb6",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "c1260a1a454a118bc8489b2833c6ea98",
+    "raw_bytes": 65536,
+    "stored_bytes": 65536
+  },
+  {
+    "domain": "default",
+    "generation": "ed7998cdaa1f287a810318ff0dd4ba9d",
+    "hash": "49da097c8a791cf7bc839a8ae7bdd9503ef0e0e1dfdce79a606e797ed5156aa8",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "f249c4986e0c8a29e34008aca51e09b3",
+    "raw_bytes": 65536,
+    "stored_bytes": 93
+  },
+  {
+    "domain": "default",
+    "generation": "58b6436fa1b36d37a01acb52aa6eaaef",
+    "hash": "66c5df83a1347ee6e097b2b124870212592fc25998968216a24b982ea0b00102",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "ba219354570ef700c3c776aa2630bfc6",
+    "raw_bytes": 65536,
+    "stored_bytes": 93
+  },
+  {
+    "domain": "default",
+    "generation": "a5857909d419ce894e6df1fdebd5e48c",
+    "hash": "88fd4b1ae06cd26955fd886b3e8ba12e2f688710b1dc832d5763e014d797440c",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "200ff4ed9e306f3a9561d3807812dbde",
+    "raw_bytes": 65536,
+    "stored_bytes": 65536
+  },
+  {
+    "domain": "default",
+    "generation": "e4de36c614ea40f47e9f13d020593630",
+    "hash": "e9a660088305abb7a1851d096af0bead34b26b030855a5fcf0c7df5a5ff3e07a",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "5b56592b6e065df1b66e5b55d1cbbd50",
+    "raw_bytes": 65536,
+    "stored_bytes": 93
+  },
+  {
+    "domain": "default",
+    "generation": "aab35f16d4cc598d2f9ae471aba42e30",
+    "hash": "facf63959aa1500cd89f0186e4f33d490b15858c146e527b747c8324b8efb87b",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "05306422c589dd1850fe7069b1432c17",
+    "raw_bytes": 65566,
+    "stored_bytes": 65566
+  },
+  {
+    "domain": "default",
+    "generation": "66e49bb08beb1384a29b2b58e3948c65",
+    "hash": "fadc86b2b66538304fb412b2ff142e4721414dc9305820b8139fc672e412a080",
+    "location_revision": 1,
+    "offset": 78,
+    "pack_id": "7488ab862a40d5d9146abac668c1f520",
+    "raw_bytes": 65536,
+    "stored_bytes": 65536
+  }
+]

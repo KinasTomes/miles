@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -17,15 +18,19 @@ import (
 	"github.com/KinasTomes/miles/internal/api/admin"
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/faults"
 	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
 	"github.com/KinasTomes/miles/internal/multipart/core"
 	"github.com/KinasTomes/miles/internal/object"
 	"github.com/KinasTomes/miles/internal/storage"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	dtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	stypes "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+	"github.com/aws/smithy-go"
 )
 
 type nativeUTC struct{}
@@ -71,22 +76,90 @@ func TestNativeWarmGCObjectFlows(t *testing.T) {
 	runNativeSharedRuntime(t, true)
 }
 
-func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
-	dEndpoint, sEndpoint := nativeEndpoint(t, "MILES_DDB_LOCAL_ENDPOINT"), nativeEndpoint(t, "MILES_RECOVERY_S3_ENDPOINT")
+func TestAWSDevWarmGCObjectFlows(t *testing.T) {
+	if os.Getenv("MILES_GC_DEV_ACCEPTANCE") != "1" {
+		t.Skip("AWS GC acceptance not enabled")
+	}
+	runSharedRuntimeFixture(t, true, true, false, "")
+}
+
+func TestNativeJournalS3Fault(t *testing.T) {
+	runSharedRuntimeFixture(t, false, false, true, "")
+}
+
+func runNativeSharedRuntime(t *testing.T, gcFlows bool, coldClass ...coldFlowScenario) {
+	runNativeRuntime(t, gcFlows, "", coldClass...)
+}
+
+func runNativeRuntime(t *testing.T, gcFlows bool, terminal string, coldClass ...coldFlowScenario) {
+	runSharedRuntimeFixture(t, gcFlows, false, false, terminal, coldClass...)
+}
+
+type nativeScenario func(context.Context, []Dependencies, *dynamodb.Store, *s3.Client, string, storage.Bucket, string)
+
+// Dataset capture always uses the versioned local fixture. The normal non-GC
+// fixture intentionally writes a default-policy regression object before handoff.
+func runNativeScenario(t *testing.T, scenario nativeScenario) {
+	runSharedRuntimeFixtureWithScenario(t, true, false, false, "", scenario)
+}
+
+func runSharedRuntimeFixture(t *testing.T, gcFlows, live, faultFlows bool, terminal string, coldClass ...coldFlowScenario) {
+	runSharedRuntimeFixtureWithScenario(t, gcFlows, live, faultFlows, terminal, nil, coldClass...)
+}
+
+func runSharedRuntimeFixtureWithScenario(t *testing.T, gcFlows, live, faultFlows bool, terminal string, scenario nativeScenario, coldClass ...coldFlowScenario) {
+	// Reject mixed workloads before creating clients or provisioning resources.
+	if scenario != nil && (!gcFlows || live || faultFlows || terminal != "" || len(coldClass) != 0) {
+		t.Fatal("dataset scenario requires a dedicated versioned local fixture")
+	}
+	var dEndpoint, sEndpoint *string
+	region := "ap-southeast-1"
+	if !live {
+		dEndpoint = aws.String(nativeEndpoint(t, "MILES_DDB_LOCAL_ENDPOINT"))
+		sEndpoint = aws.String(nativeEndpoint(t, "MILES_RECOVERY_S3_ENDPOINT"))
+	}
 	timeout := 90 * time.Second
 	if gcFlows {
 		timeout = 4 * time.Minute
+	}
+	if live {
+		timeout = 40 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	h := &http.Client{Transport: transport}
+	h := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	t.Cleanup(transport.CloseIdleConnections)
-	cred := aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+	var cred aws.CredentialsProvider = aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 		return aws.Credentials{AccessKeyID: "mileslocal", SecretAccessKey: "mileslocal"}, nil
 	})
-	clients := runtimeClients{metadata: ddb.New(ddb.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(dEndpoint), Credentials: cred, HTTPClient: h, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(sEndpoint), UsePathStyle: true, Credentials: cred, HTTPClient: h, RetryMaxAttempts: 1}), transport: transport}
+	if live {
+		account, role := os.Getenv("MILES_AWS_DEV_ACCOUNT"), os.Getenv("MILES_AWS_DEV_ROLE")
+		if os.Getenv("AWS_REGION") != region || !regexp.MustCompile(`^[0-9]{12}$`).MatchString(account) || !regexp.MustCompile(`^[A-Za-z0-9+=,.@_-]{1,64}$`).MatchString(role) {
+			t.Fatal("expected Singapore, account and assumed role")
+		}
+		for _, key := range []string{"AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_DYNAMODB", "AWS_ENDPOINT_URL_S3", "AWS_ENDPOINT_URL_STS"} {
+			if os.Getenv(key) != "" {
+				t.Fatal("custom AWS endpoint not allowed for live acceptance")
+			}
+		}
+		t.Setenv("AWS_IGNORE_CONFIGURED_ENDPOINT_URLS", "true")
+		cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(region), awsconfig.WithHTTPClient(h))
+		if err != nil {
+			t.Fatal("load AWS configuration", err)
+		}
+		credentials, err := cfg.Credentials.Retrieve(ctx)
+		if err != nil || !credentials.CanExpire || credentials.SessionToken == "" {
+			t.Fatal("temporary AWS credentials required", err)
+		}
+		identity, err := sts.NewFromConfig(cfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+		if err != nil || aws.ToString(identity.Account) != account || !strings.HasPrefix(aws.ToString(identity.Arn), "arn:aws:sts::"+account+":assumed-role/"+role+"/") {
+			t.Fatal("AWS account or assumed role mismatch", err)
+		}
+		cred = cfg.Credentials
+	}
+	clients := runtimeClients{metadata: ddb.New(ddb.Options{Region: region, BaseEndpoint: dEndpoint, Credentials: cred, HTTPClient: h, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: region, BaseEndpoint: sEndpoint, UsePathStyle: !live, Credentials: cred, HTTPClient: h, RetryMaxAttempts: 1}), transport: transport}
 	for {
 		_, e := clients.metadata.ListTables(ctx, &ddb.ListTablesInput{})
 		if e == nil {
@@ -102,6 +175,7 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 		t.Fatal(e)
 	}
 	c := config.DefaultStartup()
+	c.EnableFaultInjection = faultFlows
 	c.RuntimeNodeID = "cloud-a"
 	c.Profile = "cloud"
 	c.LocalDataPath = t.TempDir()
@@ -117,7 +191,7 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 			keys = append(keys, dtypes.KeySchemaElement{AttributeName: aws.String(spec.Sort), KeyType: dtypes.KeyTypeRange})
 		}
 		if _, e = clients.metadata.CreateTable(ctx, &ddb.CreateTableInput{TableName: aws.String(name), AttributeDefinitions: attributes, KeySchema: keys, BillingMode: dtypes.BillingModePayPerRequest}); e != nil {
-			t.Fatal(e)
+			t.Fatalf("fixture table creation outcome uncertain for %s: %v", name, e)
 		}
 		t.Cleanup(func() {
 			_, e := clients.metadata.DeleteTable(context.Background(), &ddb.DeleteTableInput{TableName: aws.String(name)})
@@ -125,20 +199,35 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 				t.Error(e)
 			}
 		})
+		if live {
+			if e = ddb.NewTableExistsWaiter(clients.metadata).Wait(ctx, &ddb.DescribeTableInput{TableName: aws.String(name)}, 3*time.Minute); e != nil {
+				t.Fatal("fixture table did not become ACTIVE", e)
+			}
+		}
 	}
 	if _, e = clients.packs.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(c.PackBucket), CreateBucketConfiguration: &stypes.CreateBucketConfiguration{LocationConstraint: stypes.BucketLocationConstraintApSoutheast1}}); e != nil {
-		t.Fatal(e)
+		t.Fatalf("fixture bucket creation outcome uncertain for %s: %v", c.PackBucket, e)
 	}
+	t.Cleanup(func() { cleanupNativePackBucket(t, clients.packs, c.PackBucket, gcFlows, live) })
 	if gcFlows {
 		_, e = clients.packs.PutBucketVersioning(ctx, &s3.PutBucketVersioningInput{Bucket: aws.String(c.PackBucket), VersioningConfiguration: &stypes.VersioningConfiguration{Status: stypes.BucketVersioningStatusEnabled}})
 		if e != nil {
 			t.Fatal(e)
 		}
+		if live {
+			// S3 recommends a propagation interval after first enabling versioning.
+			timer := time.NewTimer(15 * time.Minute)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				t.Fatal("versioning propagation wait interrupted", ctx.Err())
+			}
+		}
 	}
-	t.Cleanup(func() { cleanupNativePackBucket(t, clients.packs, c.PackBucket, gcFlows) })
 	testClock := &gcFlowClock{Clock: clock.NewReal()}
 	var utc storage.R1TimeSource = nativeUTC{}
-	if gcFlows {
+	if gcFlows || len(coldClass) > 0 {
 		utc = testClock
 	}
 	m, e := sharedStore(c, clients, utc)
@@ -172,11 +261,11 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 		// Real gateways own independent transports. Sharing one here lets one
 		// node's CloseIdleConnections interfere with another node's cleanup.
 		nodeTransport := transport.Clone()
-		nodeHTTP := &http.Client{Transport: nodeTransport}
-		if gcFlows {
-			nodeHTTP.Transport = gcFlowTransport{nodeTransport}
+		nodeHTTP := &http.Client{Transport: nodeTransport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+		if gcFlows || len(coldClass) > 0 {
+			nodeHTTP.Transport = terminalFaultTransport{gcFlowTransport{nodeTransport}}
 		}
-		nodeClients := runtimeClients{metadata: ddb.New(ddb.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(dEndpoint), Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: "ap-southeast-1", BaseEndpoint: aws.String(sEndpoint), UsePathStyle: true, Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), transport: nodeTransport}
+		nodeClients := runtimeClients{metadata: ddb.New(ddb.Options{Region: region, BaseEndpoint: dEndpoint, Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), packs: s3.New(s3.Options{Region: region, BaseEndpoint: sEndpoint, UsePathStyle: !live, Credentials: cred, HTTPClient: nodeHTTP, RetryMaxAttempts: 1}), transport: nodeTransport}
 		d, e := composeShared(ctx, c, nodeClients, testClock, utc, "cluster-v1", bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32))
 		if e != nil {
 			t.Fatal(e)
@@ -188,7 +277,27 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 			}
 		})
 	}
-	if !gcFlows {
+	if faultFlows {
+		reg := nodes[0].Faults
+		rule, err := reg.Add(time.Now(), faults.FaultRule{Type: faults.FaultS35xx, Scope: faults.ScopeNode, NodeID: nodes[0].NodeID, Rate: 1, Duration: 60})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = nodes[0].Journal.objects.Read(ctx, "journal/test-missing")
+		var api smithy.APIError
+		if !errors.As(err, &api) || api.ErrorCode() != "InternalError" {
+			t.Fatal("journal did not receive injected S3 error", err)
+		}
+		if err = reg.Delete(rule.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = nodes[0].Journal.objects.Read(ctx, "journal/test-missing"); !errors.Is(err, storage.ErrNotFound) {
+			t.Fatal("journal did not resume after fault", err)
+		}
+		return
+	}
+	if !gcFlows && len(coldClass) == 0 {
+		nativeRecoveredAdmissionCleanup(t, ctx, nodes[2])
 		nativeShutdownDuringPeerRecovery(t, ctx, nodes)
 		nativeProvisionedCheckpoint(t, ctx, nodes[0])
 	}
@@ -218,6 +327,20 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 	}
 
 	cacheDoc, _ := json.Marshal(map[string]any{"cache": config.DefaultCachePolicy()})
+	// Keep the extra PUT out of fixtures that measure Cold or GC accounting.
+	if !gcFlows && len(coldClass) == 0 {
+		fresh, err := nodes[2].ObjectsForRequest(ctx, bucket.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		freshData := []byte("fresh bucket default policy")
+		if _, err = fresh.PutObject(ctx, object.PutRequest{Bucket: bucket, Key: "before-policy-edit", UserID: "owner", CredentialID: "RUNTIMEKEY00000000001", ContentLength: int64(len(freshData)), Body: bodyForNative(freshData)}); err != nil {
+			t.Fatal("fresh bucket PUT before Admin policy edit", err)
+		}
+		if _, err = m.GetBucketPolicy(ctx, bucket.Name, bucket.ID, 0); !errors.Is(err, storage.ErrNotFound) {
+			t.Fatal("PUT materialized the virtual default policy", err)
+		}
+	}
 	mutation, e = nodes[1].Admin.Admit(ctx, tokenID)
 	if e != nil {
 		t.Fatal(e)
@@ -227,8 +350,21 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	if scenario != nil {
+		scenario(ctx, nodes, m, clients.packs, c.PackBucket, bucket, tokenID+"."+tokenSecret)
+		return
+	}
+	if terminal != "" {
+		nativeTerminalFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, terminal, tokenID+"."+tokenSecret)
+		return
+	}
 	if gcFlows {
 		nativeWarmGCFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, global)
+		assertNativeRuntimeMetrics(t, ctx, nodes)
+		return
+	}
+	if len(coldClass) > 0 {
+		nativeColdFlows(t, ctx, nodes, m, clients.packs, c.PackBucket, bucket, testClock, coldClass[0], tokenID+"."+tokenSecret)
 		return
 	}
 	key := "Unicode/tiếng Việt//plus+percent%2F"
@@ -339,11 +475,50 @@ func runNativeSharedRuntime(t *testing.T, gcFlows bool) {
 		t.Fatal("cache purge changed durable object or prevented refill", e)
 	}
 
+	assertNativeRuntimeMetrics(t, ctx, nodes)
 }
 
-func cleanupNativePackBucket(t *testing.T, client *s3.Client, bucket string, versioned bool) {
+func assertNativeRuntimeMetrics(t *testing.T, ctx context.Context, nodes []Dependencies) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	reads, uploaded, downloaded := 0.0, 0.0, 0.0
+	for i, d := range nodes {
+		if e := d.Operations.Collect(ctx); e != nil {
+			t.Fatal("runtime observer", i, e)
+		}
+		values := map[string]float64{}
+		for _, sample := range d.Operations.Runtime.Snapshot(time.Now()) {
+			values[sample.Name] = sample.Value
+		}
+		reads += values["miles_warm_read_requests_total"]
+		uploaded += values["miles_gateway_s3_request_body_bytes_total"]
+		downloaded += values["miles_gateway_s3_response_body_bytes_total"]
+		if d.Statistics == nil || d.Admin.Statistics == nil {
+			t.Fatal("statistics not wired")
+		}
+		if e := d.Statistics.Refresh(ctx); e != nil {
+			t.Fatal("native runtime statistics", e)
+		}
+		if summary, e := d.Statistics.Global(ctx); e != nil || !summary.PhysicalComplete {
+			t.Fatal("incomplete native statistics", e)
+		}
+		for _, name := range []string{"miles_ddb_calls_total", "miles_ddb_transactions_total", "miles_ddb_lease_write_attempts_total"} {
+			if values[name] <= 0 {
+				t.Fatal("runtime metric missing", i, name, values[name])
+			}
+		}
+	}
+	if reads <= 0 || uploaded <= 0 || downloaded <= 0 {
+		t.Fatal("shared Warm counters missing")
+	}
+}
+
+func cleanupNativePackBucket(t *testing.T, client *s3.Client, bucket string, versioned, live bool) {
+	t.Helper()
+	timeout := 20 * time.Second
+	if live {
+		timeout = 5 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	remove := func(key, version *string) {
 		if _, e := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: key, VersionId: version}); e != nil {

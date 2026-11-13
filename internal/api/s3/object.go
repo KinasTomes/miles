@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/KinasTomes/miles/internal/object"
+	"github.com/KinasTomes/miles/internal/readpath"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -38,9 +39,9 @@ type ObjectLister interface {
 	ListObjects(ctx context.Context, r storage.ListObjectsRequest) (object.ListPage, error)
 }
 
-// Objects serves the object operations of API v2 4.2, 4.5 and 4.6: PutObject,
-// CopyObject, GetObject, HeadObject, DeleteObject, DeleteObjects and
-// ListObjectsV2.
+// Objects serves the object operations of API v2 4.2, 4.4, 4.5 and 4.6:
+// PutObject, CopyObject, GetObject, HeadObject, RestoreObject, DeleteObject,
+// DeleteObjects and ListObjectsV2.
 type Objects struct {
 	Writer       ObjectWriter
 	Reader       ObjectReader
@@ -60,7 +61,7 @@ func NewObjectHandlers(writer ObjectWriter, reader ObjectReader, lister ObjectLi
 	o := &Objects{Writer: writer, Reader: reader, Lister: lister, listTokenKey: bytes.Clone(tokenKey)}
 	return map[Operation]Handler{
 		PutObject: o.PutObject, CopyObject: o.CopyObject, GetObject: o.GetObject, HeadObject: o.HeadObject,
-		DeleteObject: o.DeleteObject, DeleteObjects: o.DeleteObjects, ListObjectsV2: o.ListObjectsV2,
+		RestoreObject: o.RestoreObject, DeleteObject: o.DeleteObject, DeleteObjects: o.DeleteObjects, ListObjectsV2: o.ListObjectsV2,
 	}
 }
 
@@ -134,11 +135,20 @@ func (o *Objects) PutObject(w http.ResponseWriter, r *Request) error {
 		Metadata: metadata, UserID: r.Caller.UserID, CredentialID: r.Caller.AccessKeyID,
 	})
 	if err != nil {
+		var staged *object.PutStageError
+		if errors.As(err, &staged) {
+			r.recordFailure(staged.Stage, err)
+		} else {
+			r.recordFailure("object_put", err)
+		}
 		return objectError(err, r.Bucket, r.Key)
 	}
 	w.Header().Set("ETag", result.ETag)
 	if name, ok := checksumHeaderName(result.ChecksumAlgorithm); ok && result.ChecksumValue != "" {
 		w.Header().Set(name, result.ChecksumValue)
+	}
+	if r.Caller.Debug {
+		WriteDebugHeaders(w.Header(), result.Debug)
 	}
 	w.WriteHeader(http.StatusOK)
 	return nil
@@ -177,12 +187,15 @@ func (o *Objects) GetObject(w http.ResponseWriter, r *Request) error {
 		if hasRange {
 			h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", result.Range.Offset, result.Range.Offset+result.Range.Length-1, result.Info.Size))
 		}
+		if r.Caller.Debug && result.CacheStatus != "" {
+			h.Set("X-Dsg-Cache", result.CacheStatus)
+		}
 		w.WriteHeader(status)
 		wrote = true
 		return nil
 	}
 	_, err := o.Reader.GetObject(ctx, object.GetRequest{
-		Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID,
+		Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID, Debug: r.Caller.Debug,
 		SelectRange: func(info object.Info) (*storage.ByteRange, error) {
 			start, length, selected, ok := parseObjectRange(r.HTTP.Header.Get("Range"), info.Size)
 			if selected && !ok {
@@ -205,10 +218,12 @@ func (o *Objects) GetObject(w http.ResponseWriter, r *Request) error {
 	})
 	if err != nil {
 		if wrote {
+			r.recordStreamAbort("object_get_stream", err)
 			// Headers are committed; the only legal move is to abort the stream
 			// (API v2 4.2), never to append an XML error to object bytes.
 			panic(http.ErrAbortHandler)
 		}
+		r.recordFailure("object_get", err)
 		return objectError(err, r.Bucket, r.Key)
 	}
 	return nil
@@ -224,6 +239,7 @@ func (o *Objects) HeadObject(w http.ResponseWriter, r *Request) error {
 	ctx := r.HTTP.Context()
 	stat, err := o.Reader.Stat(ctx, object.GetRequest{Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID})
 	if err != nil {
+		r.recordFailure("object_head", err)
 		return objectError(err, r.Bucket, r.Key)
 	}
 	_, length, hasRange, ok := parseObjectRange(r.HTTP.Header.Get("Range"), stat.Info.Size)
@@ -239,6 +255,9 @@ func (o *Objects) HeadObject(w http.ResponseWriter, r *Request) error {
 	h.Set("Accept-Ranges", "bytes")
 	h.Set("Content-Length", strconv.FormatInt(length, 10))
 	writeObjectMetadata(h, stat.Info.Metadata)
+	if stat.Info.Restore != "" {
+		h.Set("X-Amz-Restore", stat.Info.Restore)
+	}
 	if !hasRange {
 		writeResponseChecksum(h, r.HTTP.Header.Get("X-Amz-Checksum-Mode"), stat.Info.Checksum)
 	}
@@ -264,6 +283,7 @@ func (o *Objects) DeleteObject(w http.ResponseWriter, r *Request) error {
 		Bucket: r.Access.Bucket, Key: r.Key, UserID: r.Caller.UserID, CredentialID: r.Caller.AccessKeyID,
 	})
 	if err != nil {
+		r.recordFailure("object_delete", err)
 		return objectError(err, r.Bucket, r.Key)
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -333,6 +353,15 @@ func writeResponseChecksum(h http.Header, mode string, checksum storage.Checksum
 	h.Set("x-amz-checksum-type", kind)
 }
 
+// WriteDebugHeaders writes the physical write/dedup debug headers (API v2 5).
+// Callers must invoke it only after verifying r.Caller.Debug.
+func WriteDebugHeaders(h http.Header, d object.WriteDebug) {
+	h.Set("X-Dsg-Chunks-Total", strconv.FormatUint(d.ChunksTotal, 10))
+	h.Set("X-Dsg-Chunks-Dup", strconv.FormatUint(d.ChunksDup, 10))
+	h.Set("X-Dsg-Chunks-Revived", strconv.FormatUint(d.ChunksRevived, 10))
+	h.Set("X-Dsg-Bytes-Logical", strconv.FormatInt(d.BytesLogical, 10))
+	h.Set("X-Dsg-Bytes-Stored", strconv.FormatUint(d.BytesStored, 10))
+}
 func objectError(err error, bucket, key string) error {
 	var e *Error
 	if errors.As(err, &e) {
@@ -354,14 +383,22 @@ func objectError(err error, bucket, key string) error {
 		code = ErrQuotaExceeded
 	case errors.Is(err, storage.ErrConflict):
 		code = ErrOperationAborted
-	case errors.Is(err, storage.ErrUnavailable), errors.Is(err, storage.ErrFenced):
+	case errors.Is(err, storage.ErrUnavailable), errors.Is(err, storage.ErrFenced), errors.Is(err, storage.ErrClockUncertain):
 		code = ErrServiceUnavailable
 	case errors.Is(err, storage.ErrCold):
 		code = ErrInvalidObjectState
 	case errors.Is(err, storage.ErrInvalid):
 		code = ErrInvalidRequest
 	}
-	return &Error{Code: code, Bucket: bucket, Key: key}
+	var cold *readpath.ColdRestoreError
+	var debugRestore string
+	if code == ErrInvalidObjectState && errors.As(err, &cold) {
+		debugRestore = cold.State
+	}
+	if code == ErrServiceUnavailable {
+		return &Error{Code: code, Bucket: bucket, Key: key, failureClass: availabilityFailureClass(err)}
+	}
+	return &Error{Code: code, Bucket: bucket, Key: key, debugRestore: debugRestore}
 }
 
 // parseObjectRange is the S3 GetObject/HeadObject Range grammar of API v2 4.1:

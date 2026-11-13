@@ -1,7 +1,7 @@
 resource "aws_lb" "this" {
   count                      = var.enabled ? 1 : 0
   name                       = var.name
-  internal                   = false
+  internal                   = var.internal
   load_balancer_type         = "application"
   security_groups            = [var.security_group_id]
   subnets                    = var.subnet_ids
@@ -24,10 +24,14 @@ resource "aws_lb_target_group" "s3" {
   vpc_id               = var.vpc_id
   deregistration_delay = var.deregistration_delay_seconds
   health_check {
-    path     = "/readyz"
-    port     = "9100"
-    protocol = "HTTP"
-    matcher  = "200"
+    path                = "/readyz"
+    port                = "9100"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = var.health_check_interval
+    timeout             = var.health_check_timeout
+    healthy_threshold   = var.health_check_healthy_threshold
+    unhealthy_threshold = var.health_check_unhealthy_threshold
   }
 }
 resource "aws_lb_listener" "https" {
@@ -43,9 +47,14 @@ resource "aws_lb_listener" "https" {
   }
 }
 output "dns_name" { value = try(aws_lb.this[0].dns_name, null) }
+output "alb_name" { value = try(aws_lb.this[0].name, null) }
+output "alb_arn" { value = try(aws_lb.this[0].arn, null) }
 output "target_group_arn" { value = try(aws_lb_target_group.s3[0].arn, null) }
 output "contract" {
   value = var.enabled ? {
+    alb_name             = try(aws_lb.this[0].name, null)
+    alb_arn              = try(aws_lb.this[0].arn, null)
+    internal             = aws_lb.this[0].internal
     preserve_host_header = aws_lb.this[0].preserve_host_header
     idle_timeout         = aws_lb.this[0].idle_timeout
     listener_protocol    = aws_lb_listener.https[0].protocol

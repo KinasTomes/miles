@@ -15,7 +15,6 @@ import (
 	"github.com/KinasTomes/miles/internal/pack"
 	"github.com/KinasTomes/miles/internal/policy"
 	"github.com/KinasTomes/miles/internal/storage"
-	packs3 "github.com/KinasTomes/miles/internal/storage/s3"
 )
 
 // WarmOptions accepts contract-conforming metadata adapters. Each adapter must
@@ -23,13 +22,21 @@ import (
 // WarmGate remains a single-node boundary; this wiring does not establish R1.
 type WarmOptions struct {
 	Metadata  storage.MetadataStore
-	Packs     *packs3.Store
+	Packs     storage.PackStore
 	Cache     storage.Cache
 	Admission *Admission
 	Gate      *coordination.WarmGate
 	Clock     clock.Clock
 	Global    config.GlobalSnapshot
 	Metrics   *WarmMetrics
+	// UTC is required for temporary archive copies; nil never upgrades wall time
+	// to UTC evidence. Restore enqueues work only after the entire requested set
+	// has been pinned and preflighted. It never makes this GET readable. A nil
+	// explicit request is GET's policy auto-restore; a RestoreObject passes its
+	// Days/Tier. It reports whether this call created the restore job.
+	UTC          storage.R1TimeSource
+	Restore      func(ctx context.Context, view *coordination.WarmView, head storage.ObjectHead, ref storage.PackRef, revision uint64, required time.Time, explicit *storage.RestoreRequest) (bool, error)
+	RestoreError func(context.Context, error)
 	// Bound on simultaneously owned transport buffers per RangeGet, supplied by
 	// the runtime's transport audit. Excludes shared pools/RSS headroom. No inferred
 	// default; an unbounded/custom buffering transport must not be enabled.
@@ -53,14 +60,29 @@ type WarmRequest struct {
 	// Ready exposes metadata after preflight, also for empty objects. HTTP
 	// consumers may delay committing headers until the first verified body slice.
 	Ready func(WarmResult) error
+	// restore turns Read into RestoreObject: same admission, binding and pins,
+	// then restore requests instead of payload.
+	// Debug enables diagnostic pre-flight cache residency probing (x-dsg-cache).
+	// Only set for authorized debug requests; ordinary GETs skip the scan.
+	Debug   bool
+	restore *restoreCall
 }
 type WarmResult struct {
-	Head  storage.ObjectHead
-	Range storage.ByteRange
+	Head        storage.ObjectHead
+	Range       storage.ByteRange
+	CacheStatus string
 }
 
+// ColdRestoreError reports storage.ErrCold together with the auto-restore
+// state ("requested" or "in-progress") for debug-gated x-dsg-restore.
+type ColdRestoreError struct {
+	State string
+}
+
+func (e *ColdRestoreError) Error() string { return "readpath: cold restore " + e.State }
+func (e *ColdRestoreError) Unwrap() error { return storage.ErrCold }
 func NewWarmReader(o WarmOptions) (*WarmReader, error) {
-	if o.Metadata == nil || (reflect.ValueOf(o.Metadata).Kind() == reflect.Ptr && reflect.ValueOf(o.Metadata).IsNil()) || o.Packs == nil || o.Cache == nil || (reflect.ValueOf(o.Cache).Kind() == reflect.Ptr && reflect.ValueOf(o.Cache).IsNil()) || o.Admission == nil || o.Gate == nil || o.Clock == nil || o.Metrics == nil || o.Global.Revision() == 0 || o.TransportBytes <= 0 || o.TransportBytes > math.MaxInt64-pack.MaxPackBytes || o.MaxManifestPages == 0 || o.MaxManifestPages > 1024 || o.MaxManifestChunks == 0 {
+	if o.Metadata == nil || (reflect.ValueOf(o.Metadata).Kind() == reflect.Ptr && reflect.ValueOf(o.Metadata).IsNil()) || o.Packs == nil || (reflect.ValueOf(o.Packs).Kind() == reflect.Ptr && reflect.ValueOf(o.Packs).IsNil()) || o.Cache == nil || (reflect.ValueOf(o.Cache).Kind() == reflect.Ptr && reflect.ValueOf(o.Cache).IsNil()) || o.Admission == nil || o.Gate == nil || o.Clock == nil || o.Metrics == nil || o.Global.Revision() == 0 || o.TransportBytes <= 0 || o.TransportBytes > math.MaxInt64-pack.MaxPackBytes || o.MaxManifestPages == 0 || o.MaxManifestPages > 1024 || o.MaxManifestChunks == 0 {
 		return nil, storage.ErrInvalid
 	}
 	if err := o.Gate.CheckClock(o.Clock); err != nil {
@@ -69,21 +91,30 @@ func NewWarmReader(o WarmOptions) (*WarmReader, error) {
 	return &WarmReader{options: o}, nil
 }
 
+func (r *WarmReader) PolicyRevision() uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.options.Global.Revision()
+}
+
 // Read emits only verified logical slices, in order. emit borrows each slice
 // until return. An error after prior emission requires the HTTP consumer to abort
 // the stream; it cannot send a new success/error body. No HTTP endpoint is owned
-// here (W03-CHIEN-02). WarmGate is a local no-maintenance boundary, not distributed R1.
+// here (the S3 GET handler owns it). WarmGate is a local no-maintenance boundary, not distributed R1.
 func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.Context, []byte) error) (result WarmResult, err error) {
 	if r == nil || r.options.Metadata == nil || ctx == nil || emit == nil || q.CredentialID == "" || q.MaxOutstanding <= 0 || !validBudget(q.Budget) || (q.Range != nil && q.SelectRange != nil) {
 		return result, storage.ErrInvalid
 	}
 	o := r.options
-	o.Metrics.requests.Add(1)
-	defer func() {
-		if err != nil {
-			o.Metrics.aborted.Add(1)
-		}
-	}()
+	if q.restore == nil { // miles_warm_read_* counts GETs only
+		o.Metrics.requests.Add(1)
+		defer func() {
+			if err != nil {
+				o.Metrics.aborted.Add(1)
+			}
+		}()
+	}
 	auth, err := o.Metadata.Authorize(ctx, q.CredentialID, q.Bucket)
 	if err != nil {
 		return result, err
@@ -203,10 +234,33 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 	if err = view.Resolved(ctx); err != nil {
 		return result, err
 	}
+	if q.restore != nil {
+		return result, ex.restore(ctx, plan, *q.restore)
+	}
 	if err = ex.preflight(ctx, plan, ticket); err != nil {
 		return result, err
 	}
-	result = WarmResult{Head: head, Range: plan.Range}
+	cacheStatus := ""
+	if q.Debug {
+		cacheStatus = "miss"
+		if prober, ok := o.Cache.(interface {
+			Has(context.Context, storage.CacheKey) bool
+		}); ok && len(ex.bindings) > 0 {
+			hits := 0
+			for _, b := range ex.bindings {
+				if prober.Has(ctx, b.key) {
+					hits++
+				}
+			}
+			switch {
+			case hits == len(ex.bindings):
+				cacheStatus = "hit"
+			case hits > 0:
+				cacheStatus = "partial"
+			}
+		}
+	}
+	result = WarmResult{Head: head, Range: plan.Range, CacheStatus: cacheStatus}
 	if err = ex.checkView(ctx); err != nil {
 		return result, err
 	}
@@ -217,6 +271,11 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 	}
 	err = runAdmittedReadAhead(ctx, o.Admission, BucketBinding{Name: q.Bucket, Policy: q.BucketPolicy}, plan, q.MaxOutstanding, ex, func(ctx context.Context, index int, b []byte) error {
 		if e := ex.checkView(ctx); e != nil {
+			return e
+		}
+		// A completed speculative result may have waited behind the emitter.
+		// Revalidate the temporary copy and lifecycle before releasing its bytes.
+		if e := ex.revalidate(ctx, ex.bindings[index]); e != nil {
 			return e
 		}
 		if e := emit(ctx, b); e != nil {
@@ -240,6 +299,111 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 		}
 	}
 	return result, err
+}
+
+// RestoreResult is a RestoreObject outcome over the unique GLACIER packs of
+// the bound head (API v2 4.4). Archive zero means a Warm/IR-only object.
+type RestoreResult struct {
+	Archive, Initiated, InProgress int
+}
+
+type restoreCall struct {
+	request storage.RestoreRequest
+	result  *RestoreResult
+}
+
+// Restore admits, binds and pins the object exactly like Read, then requests
+// restore of every unique GLACIER pack whose backend copy is neither restoring
+// nor restored for at least request.Days; a shorter Restored copy is extended.
+// It never fetches payload or waits for the archive: acceptance is not
+// readability.
+func (r *WarmReader) Restore(ctx context.Context, q WarmRequest, request storage.RestoreRequest) (RestoreResult, error) {
+	var out RestoreResult
+	if q.Range != nil || q.SelectRange != nil || q.Ready != nil || request.Validate() != nil {
+		return out, storage.ErrInvalid
+	}
+	q.restore = &restoreCall{request: request, result: &out}
+	_, err := r.Read(ctx, q, func(context.Context, []byte) error { return storage.ErrInvalid })
+	return out, err
+}
+
+// ArchiveState is the backend restore state of a head's unique GLACIER packs,
+// the input of HEAD's x-amz-restore (API v2 4.4).
+type ArchiveState struct {
+	Archive, Restoring, Restored int
+	Expiry                       time.Time // earliest unexpired expiry of the Restored packs
+}
+
+// ArchiveState reads the head's chunk locations and pack records and HEADs
+// each GLACIER pack on the backend, never payload. It pins nothing, grants no
+// readability and never starts a restore: HEAD is an informational snapshot.
+func (r *WarmReader) ArchiveState(ctx context.Context, head storage.ObjectHead) (ArchiveState, error) {
+	var out ArchiveState
+	o := r.options
+	if head.PageCount > o.MaxManifestPages || head.ChunkCount > o.MaxManifestChunks {
+		return out, ErrExhausted
+	}
+	plan, err := engine.ResolveReadPlan(ctx, o.Metadata, head.Object, head, nil)
+	if err != nil {
+		return out, err
+	}
+	now := o.Clock.Now().WallUTC
+	seen := map[storage.PackRef]bool{}
+	for start := 0; start < len(plan.Chunks); start += 100 {
+		keys := []storage.ChunkKey{}
+		for _, c := range plan.Chunks[start:min(start+100, len(plan.Chunks))] {
+			keys = append(keys, c.Ref.Key)
+		}
+		chunks, err := o.Metadata.GetChunks(ctx, keys, true)
+		if err != nil {
+			return out, err
+		}
+		refs := []storage.PackRef{}
+		for _, key := range keys {
+			c, ok := chunks[key]
+			if !ok {
+				return out, storage.ErrNotFound
+			}
+			if !seen[c.Location.Pack] {
+				seen[c.Location.Pack] = true
+				refs = append(refs, c.Location.Pack)
+			}
+		}
+		if len(refs) == 0 {
+			continue
+		}
+		infos, err := o.Metadata.GetPacks(ctx, refs)
+		if err != nil {
+			return out, err
+		}
+		for _, ref := range refs {
+			info, ok := infos[ref]
+			if !ok {
+				return out, storage.ErrNotFound
+			}
+			if info.Class != storage.Glacier {
+				continue
+			}
+			out.Archive++
+			// The backend, not the metadata record, knows whether a temporary
+			// copy exists and when it expires.
+			physical, err := o.Packs.HeadPack(ctx, ref)
+			if err != nil {
+				return out, err
+			}
+			switch {
+			case physical.Class != storage.Glacier:
+			case physical.State == "Restoring":
+				out.Restoring++
+			case physical.State == "Restored" && physical.RestoredUntil.After(now):
+				out.Restored++
+				if out.Expiry.IsZero() || physical.RestoredUntil.Before(out.Expiry) {
+					out.Expiry = physical.RestoredUntil
+				}
+			}
+		}
+	}
+	return out, nil
 }
 
 type warmBinding struct {
@@ -279,8 +443,11 @@ func (e *warmExecutor) eligible(ctx context.Context, b warmBinding) error {
 	if err := e.view.Check(ctx); err != nil {
 		return err
 	}
-	// Warm-only MVP: never turn cached Cold/Archive bytes into readable content.
-	if b.info.State != "Warm" || (b.info.Class != storage.Standard && b.info.Class != storage.StandardIA) {
+	// This only admits metadata to physical preflight, never cache or emission.
+	if b.info.Class == storage.Glacier && (b.info.State == "Cold" || b.info.State == "Restoring" || b.info.State == "Restored") {
+		return nil
+	}
+	if !(b.info.State == "Warm" && (b.info.Class == storage.Standard || b.info.Class == storage.StandardIA) || b.info.State == "Cold" && b.info.Class == storage.GlacierIR) {
 		return storage.ErrCold
 	}
 	d, err := policy.EvaluateRead(policy.ReadInput{Policy: policy.PinnedPolicy{Snapshot: e.reader.options.Global, RequiredRevision: e.reader.options.Global.Revision()}, Request: policy.Request{Now: e.reader.options.Clock.Now().Instant, Deadline: e.request.Deadline, Cancelled: ctx.Err() != nil}, Pack: b.info, Facts: policy.ReadFacts{Logical: policy.Valid, Metadata: policy.Valid, Authority: policy.Valid, PinCoverage: policy.Valid, Physical: policy.Valid}})
@@ -310,6 +477,7 @@ func (e *warmExecutor) Estimate(i int, _ engine.PlannedChunk) (Cost, error) {
 func (e *warmExecutor) preflight(ctx context.Context, plan engine.ReadPlan, ticket *RequestTicket) error {
 	o := e.reader.options
 	seen := map[storage.PackRef]bool{}
+	archive := []storage.PackRef{}
 	for i, b := range e.bindings {
 		if seen[b.key.Pack] {
 			continue
@@ -328,11 +496,129 @@ func (e *warmExecutor) preflight(ctx context.Context, plan engine.ReadPlan, tick
 			err = e.physical(ctx, b)
 		}
 		reservation.Release()
+		if errors.Is(err, storage.ErrCold) {
+			archive = append(archive, b.key.Pack)
+			continue
+		}
 		if err != nil {
 			return err
 		}
 	}
+	if len(archive) > 0 {
+		if o.Global.Policy().Tiering.AutoRestore && o.Restore != nil {
+			r, proof, proofErr := coordination.RequestUTC(ctx, o.Clock, o.UTC, e.request.Deadline)
+			required, requiredErr := policy.RestoreRequiredUntil(r, proof)
+			if proofErr != nil || requiredErr != nil || required.IsZero() {
+				o.Metrics.restoreErrors.Add(1)
+				if o.RestoreError != nil {
+					o.RestoreError(ctx, errors.Join(storage.ErrFenced, proofErr, requiredErr))
+				}
+				return storage.ErrCold
+			}
+			requested, inProgress := false, false
+			for _, ref := range archive {
+				if err := e.checkView(ctx); err != nil {
+					return err
+				}
+				created, err := o.Restore(ctx, e.view, storage.ObjectHead{Object: plan.Object, Revision: plan.HeadRevision, ManifestID: plan.ManifestID}, ref, o.Global.Revision(), required, nil)
+				if err != nil {
+					o.Metrics.restoreErrors.Add(1)
+					if o.RestoreError != nil {
+						o.RestoreError(ctx, err)
+					}
+					continue
+				}
+				if created {
+					requested = true
+				} else {
+					inProgress = true
+				}
+			}
+			if requested {
+				return &ColdRestoreError{State: "requested"}
+			}
+			if inProgress {
+				return &ColdRestoreError{State: "in-progress"}
+			}
+		}
+		return storage.ErrCold
+	}
 	return nil
+}
+
+// restore requests one restore per unique pinned GLACIER pack, in the order
+// of first use. Every backend pack is checked against its pinned record before
+// the first request, so a mismatch queues nothing. A later enqueue failure
+// returns at once: restores already accepted stay accepted and a retry finds
+// them restoring (API v2 4.4).
+func (e *warmExecutor) restore(ctx context.Context, plan engine.ReadPlan, c restoreCall) error {
+	o := e.reader.options
+	seen := map[storage.PackRef]bool{}
+	archive := []warmBinding{}
+	for _, b := range e.bindings {
+		if b.info.Class == storage.Glacier && !seen[b.key.Pack] {
+			seen[b.key.Pack] = true
+			archive = append(archive, b)
+		}
+	}
+	c.result.Archive = len(archive)
+	if len(archive) == 0 {
+		return nil
+	}
+	if o.Restore == nil {
+		return storage.ErrUnavailable
+	}
+	r, proof, err := coordination.RequestUTC(ctx, o.Clock, o.UTC, e.request.Deadline)
+	if err != nil {
+		return err
+	}
+	required, err := policy.RestoreRequiredUntil(r, proof)
+	if err != nil || required.IsZero() {
+		return errors.Join(storage.ErrFenced, err)
+	}
+	// A temporary copy that already outlives the requested Days is left alone.
+	covered := proof.Upper.UTC().Add(time.Duration(c.request.Days) * 24 * time.Hour)
+	pending := []storage.PackRef{}
+	for _, b := range archive {
+		if err := e.checkView(ctx); err != nil {
+			return err
+		}
+		physical, err := o.Packs.HeadPack(ctx, b.key.Pack)
+		if err != nil {
+			return err
+		}
+		// Same identity checks as GET's physical(), without requiring Restored.
+		if physical.Ref != b.key.Pack || physical.Size != b.info.Size || physical.Class != b.info.Class || !archiveState(b.info.State) || !archiveState(physical.State) {
+			return storage.ErrConflict
+		}
+		switch {
+		case physical.State == "Restoring":
+			c.result.InProgress++
+		case physical.State == "Restored" && !physical.RestoredUntil.Before(covered):
+		default:
+			pending = append(pending, b.key.Pack)
+		}
+	}
+	head := storage.ObjectHead{Object: plan.Object, Revision: plan.HeadRevision, ManifestID: plan.ManifestID}
+	for _, ref := range pending {
+		if err := e.checkView(ctx); err != nil {
+			return err
+		}
+		created, err := o.Restore(ctx, e.view, head, ref, o.Global.Revision(), required, &c.request)
+		if err != nil {
+			return err
+		}
+		if created {
+			c.result.Initiated++
+		} else {
+			c.result.InProgress++
+		}
+	}
+	return nil
+}
+
+func archiveState(state string) bool {
+	return state == "Cold" || state == "Restoring" || state == "Restored"
 }
 func (e *warmExecutor) physical(ctx context.Context, b warmBinding) error {
 	physical, err := e.reader.options.Packs.HeadPack(ctx, b.key.Pack)
@@ -342,34 +628,67 @@ func (e *warmExecutor) physical(ctx context.Context, b warmBinding) error {
 	if physical.Size != b.info.Size || physical.Ref != b.key.Pack {
 		return storage.ErrConflict
 	}
-	if physical.State != "Warm" || physical.Class != b.info.Class {
+	if physical.Class != b.info.Class {
 		return storage.ErrCold
 	}
+	if b.info.Class != storage.Glacier {
+		if physical.State != b.info.State {
+			return storage.ErrCold
+		}
+		return e.eligible(ctx, b)
+	}
+	if physical.State != "Restored" {
+		return storage.ErrCold
+	}
+	r, proof, err := coordination.RequestUTC(ctx, e.reader.options.Clock, e.reader.options.UTC, e.request.Deadline)
+	if err != nil {
+		return err
+	}
+	physical.StateRevision = b.info.StateRevision
+	d, err := policy.EvaluateRead(policy.ReadInput{Policy: policy.PinnedPolicy{Snapshot: e.reader.options.Global, RequiredRevision: e.reader.options.Global.Revision()}, Request: r, UTC: proof, Pack: physical,
+		Facts: policy.ReadFacts{Logical: policy.Valid, Metadata: policy.Valid, Authority: policy.Valid, PinCoverage: policy.Valid, Physical: policy.Valid}, RestoreVerified: policy.Valid})
+	if err != nil {
+		return err
+	}
+	if d.Verdict != policy.Eligible {
+		if d.Reason == policy.RestoreRequired {
+			return storage.ErrCold
+		}
+		return fmt.Errorf("%w: %s", storage.ErrFenced, d.Reason)
+	}
 	return nil
+}
+func (e *warmExecutor) revalidate(ctx context.Context, b warmBinding) error {
+	o := e.reader.options
+	if err := e.checkView(ctx); err != nil {
+		return err
+	}
+	infos, err := o.Metadata.GetPacks(ctx, []storage.PackRef{b.key.Pack})
+	if err != nil {
+		return err
+	}
+	current, ok := infos[b.key.Pack]
+	if !ok {
+		return storage.ErrNotFound
+	}
+	if !sameWarmReadLifecycle(current, b.info) {
+		return storage.ErrConflict
+	}
+	if err = e.eligible(ctx, b); err != nil {
+		return err
+	}
+	if err = e.physical(ctx, b); err != nil {
+		return err
+	}
+	return e.checkView(ctx)
 }
 func (e *warmExecutor) Execute(ctx context.Context, i int, _ engine.PlannedChunk) ([]byte, error) {
 	b := e.bindings[i]
 	o := e.reader.options
-	if err := e.checkView(ctx); err != nil {
+	if err := e.revalidate(ctx, b); err != nil {
 		return nil, err
 	}
-	infos, err := o.Metadata.GetPacks(ctx, []storage.PackRef{b.key.Pack})
-	if err != nil {
-		return nil, err
-	}
-	current, ok := infos[b.key.Pack]
-	if !ok {
-		return nil, storage.ErrNotFound
-	}
-	if !sameWarmReadLifecycle(current, b.info) {
-		return nil, storage.ErrConflict
-	}
-	if err = e.eligible(ctx, b); err != nil {
-		return nil, err
-	}
-	if err = e.physical(ctx, b); err != nil {
-		return nil, err
-	}
+	var err error
 	if err = e.checkView(ctx); err != nil {
 		return nil, err
 	}

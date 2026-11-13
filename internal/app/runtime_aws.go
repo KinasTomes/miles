@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/KinasTomes/miles/internal/config"
+	"github.com/KinasTomes/miles/internal/observability"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials/ec2rolecreds"
@@ -58,6 +59,7 @@ func (p temporaryCredentials) Retrieve(ctx context.Context) (aws.Credentials, er
 }
 
 type runtimeClients struct {
+	telemetry *observability.Runtime
 	metadata  *ddb.Client
 	metrics   *cw.Client
 	packs     *s3.Client
@@ -111,4 +113,16 @@ func runtimeDirectory(path string) error {
 		return errors.New("runtime local_data_path must be a non-symlink 0700 directory")
 	}
 	return nil
+}
+
+func (c runtimeClients) observed(m *observability.Runtime, leaseTable string) runtimeClients {
+	c.telemetry = m
+	d := c.metadata.Options()
+	d.APIOptions = append(d.APIOptions, m.DynamoDB(leaseTable))
+	d.HTTPClient = m.HTTPClient(d.HTTPClient, true)
+	c.metadata = ddb.New(d)
+	p := c.packs.Options()
+	p.HTTPClient = m.HTTPClient(p.HTTPClient, false)
+	c.packs = s3.New(p)
+	return c
 }

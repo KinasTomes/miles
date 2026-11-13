@@ -12,6 +12,9 @@ func TestWarmHarnessRetainsDeclaredBackendAndNoFinalGate(t *testing.T) {
 			c.Target = "miles-warm"
 			c.Environment.Metadata, c.Environment.GatewayCommit, c.Environment.PolicyRevision = backend, "test-source", "1"
 			r, err := Run(context.Background(), c, o)
+			if r.HTTPBodyBytes["client_to_gateway"] == 0 || r.HTTPBodyBytes["gateway_to_client"] == 0 || len(r.HTTPBodyBytes) != 2 {
+				t.Fatal("missing measured body routes", r.HTTPBodyBytes)
+			}
 			if err != nil || r.Status != "passed" || r.DeclaredEnvironment.Metadata != backend || r.MVPThresholdApplied || len(r.Limitations) == 0 {
 				t.Fatal(r, err)
 			}
@@ -20,7 +23,7 @@ func TestWarmHarnessRetainsDeclaredBackendAndNoFinalGate(t *testing.T) {
 	c, _, _ := setup(t)
 	c.Target = "miles-warm"
 	c.Environment.Metadata, c.Environment.GatewayCommit, c.Environment.PolicyRevision = "ram", "test-source", "1"
-	if _, _, err := newClient(c, 1); err == nil {
+	if _, _, err := newClient(c, 1, new(bodyTraffic)); err == nil {
 		t.Fatal("unknown Miles backend accepted")
 	}
 }

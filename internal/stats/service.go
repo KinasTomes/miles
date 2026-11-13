@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/KinasTomes/miles/internal/engine"
+	"github.com/KinasTomes/miles/internal/engine/write"
 	s "github.com/KinasTomes/miles/internal/storage"
 	"sync"
 	"time"
@@ -27,6 +28,8 @@ type Options struct {
 	Now                                           func() time.Time
 	MaxRecords, MaxReferences, MaxPhysicalObjects int
 	Timeout, MaxAge, Interval                     time.Duration
+	// WriteCounters is this process's PUT/UploadPart revival/orphan source.
+	WriteCounters *write.Counters
 }
 type Service struct {
 	o       Options
@@ -210,6 +213,14 @@ func (m *Service) Refresh(ctx context.Context) error {
 	r.Global.SnapshotID = hex.EncodeToString(id[:])
 	r.Global.AsOf = asof
 	r.Global.CollectionStartedAt = started
+	// Write counters are a measured process interval, global only; without a
+	// source they stay null rather than fabricated zeros.
+	if m.o.WriteCounters != nil {
+		c := m.o.WriteCounters.Snapshot()
+		r.Global.WriteCountersSince = &c.Since
+		r.Global.RevivedChunks, r.Global.RevivedBytes = &c.RevivedChunks, &c.RevivedBytes
+		r.Global.OrphanedChunks, r.Global.OrphanedBytes = &c.OrphanedChunks, &c.OrphanedBytes
+	}
 	for name, b := range r.Buckets {
 		b.SnapshotID = r.Global.SnapshotID
 		b.AsOf = asof

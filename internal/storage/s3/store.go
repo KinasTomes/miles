@@ -271,6 +271,31 @@ func (s *Store) ChangeStorageClass(ctx context.Context, ref storage.PackRef, nex
 	in := &awss3.CopyObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key),
 		CopySource: aws.String(s.bucket + "/" + url.PathEscape(key)), StorageClass: types.StorageClass(next),
 		MetadataDirective: types.MetadataDirectiveCopy}
+	if actionID, marked := storage.LifecycleActionFromContext(ctx); marked {
+		// CopyObject is a mutable one-shot operation. Preserve its action identity
+		// on the new S3 version so a lost response can be reconciled against that
+		// exact completed copy instead of current HEAD state.
+		source, headErr := s.client.HeadObject(ctx, &awss3.HeadObjectInput{Bucket: aws.String(s.bucket), Key: aws.String(key)})
+		if headErr != nil {
+			return mapError(headErr)
+		}
+		in.MetadataDirective = types.MetadataDirectiveReplace
+		in.Metadata = copyMetadata(source.Metadata)
+		if in.Metadata == nil {
+			in.Metadata = make(map[string]string)
+		}
+		in.Metadata[lifecycleActionMetadata] = actionID
+		in.ContentType = source.ContentType
+		if in.ContentType == nil {
+			in.ContentType = aws.String("application/octet-stream")
+		}
+		in.CacheControl = source.CacheControl
+		in.ContentDisposition = source.ContentDisposition
+		in.ContentEncoding = source.ContentEncoding
+		in.ContentLanguage = source.ContentLanguage
+		in.Expires = source.Expires
+		in.WebsiteRedirectLocation = source.WebsiteRedirectLocation
+	}
 	if s.kmsKey != "" {
 		in.ServerSideEncryption = types.ServerSideEncryptionAwsKms
 		in.SSEKMSKeyId = aws.String(s.kmsKey)
@@ -280,6 +305,17 @@ func (s *Store) ChangeStorageClass(ctx context.Context, ref storage.PackRef, nex
 	}
 	_, err = s.client.CopyObject(ctx, in, func(o *awss3.Options) { o.Retryer = aws.NopRetryer{} })
 	return mapError(err)
+}
+
+func copyMetadata(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 func (s *Store) Restore(ctx context.Context, ref storage.PackRef, request storage.RestoreRequest) error {

@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import platform
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -28,6 +30,18 @@ lifecycle = load("lifecycle", "deploy/cloud/lifecycle.py")
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_telemetry_dependency_is_available_in_standalone_bundle(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = Path(root)
+            for name in release.FILES:
+                target = directory / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((ROOT / name).read_bytes())
+            result = subprocess.run([sys.executable, "-I", "-c",
+                "import runpy; m = runpy.run_path('scripts/edge_host_telemetry.py'); assert callable(m['parse_chrony_tracking'])"],
+                cwd=directory, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

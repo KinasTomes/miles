@@ -1,4 +1,4 @@
-# Evidence W02-HUNG-02 và chuyển pricing sang Go
+# Evidence pricing/dataset/baseline và chuyển pricing sang Go
 
 Ngày kiểm tra bản Go: **2026-10-20 (UTC+7)**. Nhánh `refactor/pricing-validator-go`, từ `origin/main` tại `58681c4` sau khi [PR #8](https://github.com/KinasTomes/miles/pull/8) merge. Bản ghi này là evidence local; CI/review hiện tại xem trên PR tương ứng, không tự đánh task Done.
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/KinasTomes/miles/internal/observability"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -20,6 +21,7 @@ type Router struct {
 	Access      Access
 	Now         func() time.Time // server clock for X-Amz-Date and presigned expiry
 	Handlers    map[Operation]Handler
+	NodeID      string // startup-configured node identity, never user input
 }
 
 // Request is an S3 request the router admitted: resolved, authenticated,
@@ -34,10 +36,12 @@ type Request struct {
 	// It is zero for ListBuckets and for CreateBucket of a free name. Writes
 	// carry its bucket ID and credential into their metadata transaction,
 	// which checks them again (API v2 2.2.3).
-	Access storage.Authorization
-	Body   *Payload
-	access Access
-	region string
+	Access  storage.Authorization
+	Body    *Payload
+	access  Access
+	region  string
+	failure *failureDiagnostic
+	nodeID  string
 }
 
 // Region is the gateway region every credential scope uses; bucket handlers
@@ -52,26 +56,78 @@ type Handler func(w http.ResponseWriter, r *Request) error
 
 func (rt *Router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := NewRequestID()
+	r = r.WithContext(observability.WithRequestID(r.Context(), id))
 	setCommonHeaders(w.Header(), id)
-	err := rt.serve(w, r, id)
+	diagnostic := failureDiagnostic{stage: "resolve"}
+	defer func() {
+		if rec := recover(); rec != nil {
+			if rec == http.ErrAbortHandler {
+				if !diagnostic.logged && diagnostic.stage != "resolve" {
+					class := diagnostic.class
+					if class == "" {
+						class = "unknown"
+					}
+					slog.ErrorContext(r.Context(), "s3 server failure", "request_id", id,
+						"node_id", rt.NodeID, "method", r.Method, "operation", diagnostic.operation,
+						"stage", diagnostic.stage, "failure_class", class)
+					diagnostic.logged = true
+				}
+			}
+			panic(rec)
+		}
+	}()
+	err := rt.serveWithDiagnostics(w, r, id, &diagnostic)
 	if err == nil {
 		return
 	}
 	var e *Error
 	if !errors.As(err, &e) {
-		slog.ErrorContext(r.Context(), "s3 request failed", "request_id", id, "err", err)
 		e = &Error{Code: ErrInternalError}
 	}
+	if diagnostic.class == "" {
+		diagnostic.class = safeFailureClass(err)
+	}
+	if e.Code == ErrInternalError {
+		// Only fixed classification fields: never log err.Error(), signed
+		// URLs, raw credentials, object keys or upstream response bodies.
+		slog.ErrorContext(r.Context(), "s3 server failure", "request_id", id,
+			"node_id", rt.NodeID, "method", r.Method, "operation", diagnostic.operation,
+			"stage", diagnostic.stage, "failure_class", diagnostic.class)
+	}
+	if e.Code == ErrServiceUnavailable || e.Code == ErrOperationAborted {
+		message := "s3 service unavailable"
+		if e.Code == ErrOperationAborted {
+			message = "s3 operation aborted"
+		}
+		class := e.failureClass
+		if class == "" {
+			class = diagnostic.class
+		}
+		slog.WarnContext(r.Context(), message, "request_id", id,
+			"node_id", rt.NodeID, "method", r.Method, "operation", diagnostic.operation,
+			"stage", diagnostic.stage, "failure_class", class)
+	}
+	if diagnostic.debug && e.Code == ErrInvalidObjectState && e.debugRestore != "" {
+		w.Header().Set("X-Dsg-Restore", e.debugRestore)
+	}
 	if err := WriteError(w, r, e, id); err != nil {
-		slog.WarnContext(r.Context(), "s3 error response not delivered", "request_id", id, "code", e.Code, "err", err)
+		slog.WarnContext(r.Context(), "s3 error response not delivered", "request_id", id, "code", e.Code, "failure_class", safeFailureClass(err))
 	}
 }
 
+// serve retains the package-internal test entrypoint while the live server
+// records a per-request failure stage via serveWithDiagnostics.
 func (rt *Router) serve(w http.ResponseWriter, r *http.Request, id string) error {
+	return rt.serveWithDiagnostics(w, r, id, &failureDiagnostic{stage: "resolve"})
+}
+
+func (rt *Router) serveWithDiagnostics(w http.ResponseWriter, r *http.Request, id string, diagnostic *failureDiagnostic) error {
 	route, e := Resolve(r)
 	if e != nil {
 		return e
 	}
+	diagnostic.operation = route.Op
+	diagnostic.stage = "credential_lookup"
 	caller, s, err := rt.authenticate(r, route.Query)
 	if err != nil {
 		return err
@@ -80,6 +136,7 @@ func (rt *Router) serve(w http.ResponseWriter, r *http.Request, id string) error
 	// retain their semantics: a query signature cannot bypass checksum,
 	// metadata or unsupported-feature validation. Verify the original wire
 	// request first, then expose the effective headers to the handlers.
+	diagnostic.stage = "presigned_headers"
 	original := r
 	r, e = presignedHeaders(r, route.Query)
 	if e != nil {
@@ -96,13 +153,17 @@ func (rt *Router) serve(w http.ResponseWriter, r *http.Request, id string) error
 			return e
 		}
 	}
+	diagnostic.operation = route.Op
+	diagnostic.stage = "authorize"
 	access, err := rt.authorize(r.Context(), route, caller)
 	if err != nil {
 		return err
 	}
+	diagnostic.debug = caller.Debug
+	diagnostic.stage = "handler"
 	h, ok := rt.Handlers[route.Op]
 	if !ok {
 		return &Error{Code: ErrNotImplemented, Message: string(route.Op) + " is not implemented yet", Bucket: route.Bucket, Key: route.Key}
 	}
-	return h(w, &Request{Route: route, HTTP: r, ID: id, Caller: caller, Access: access, Body: newPayload(r, route.Op, s), access: rt.Access, region: rt.Region})
+	return h(w, &Request{Route: route, HTTP: r, ID: id, Caller: caller, Access: access, Body: newPayload(r, route.Op, s), access: rt.Access, region: rt.Region, failure: diagnostic, nodeID: rt.NodeID})
 }

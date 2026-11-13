@@ -18,6 +18,39 @@ type ValidatedUTC struct {
 	Horizon time.Duration
 }
 
+// RequestUTC bridges the trusted R1 bound port to the shared evaluator. R1Bounds
+// already includes uncertainty through Horizon; zero extra drift here does not
+// infer that the underlying clock has zero drift. Account for the entire source
+// call interval, and bind a fresh proof to the returned monotonic request.
+func RequestUTC(ctx context.Context, c clock.Clock, source storage.R1TimeSource, deadline clock.Instant) (policy.Request, policy.UTCProof, error) {
+	if ctx == nil || c == nil || source == nil {
+		return policy.Request{}, policy.UTCProof{}, storage.ErrInvalid
+	}
+	start := c.Now().Instant
+	b, err := source.Bounds(ctx)
+	if err != nil {
+		return policy.Request{}, policy.UTCProof{}, err
+	}
+	now := c.Now().Instant
+	age, err := now.Sub(start)
+	if err != nil || age < 0 || age >= policy.MaxUTCSampleAge {
+		return policy.Request{}, policy.UTCProof{}, policy.ErrUTCStale
+	}
+	remaining, err := deadline.Sub(now)
+	if err != nil || remaining <= 0 {
+		return policy.Request{}, policy.UTCProof{}, storage.ErrFenced
+	}
+	if b.Lower.IsZero() || b.Upper.IsZero() || b.Lower.After(b.Upper) || b.Upper.Add(age).Add(remaining).After(b.Horizon) {
+		return policy.Request{}, policy.UTCProof{}, policy.ErrUTCHorizon
+	}
+	r := policy.Request{Now: now, Deadline: deadline, Cancelled: ctx.Err() != nil}
+	p, err := policy.ValidateUTCSample(policy.UTCSource{ID: "r1-bounds", Provenance: "trusted-r1-time-source", RestartID: "current-clock-domain", Verified: policy.Valid}, policy.UTCSample{
+		SourceID: "r1-bounds", Provenance: "trusted-r1-time-source", RestartID: "current-clock-domain", Observed: start, ValidThrough: deadline,
+		Lower: b.Lower.Add(-age), Upper: b.Upper, Precision: policy.DurationBound{Known: true}, MeasurementError: policy.DurationBound{Known: true}, NodeSkew: policy.DurationBound{Known: true}, Drift: policy.DriftBound{Known: true}, Sync: policy.Valid,
+	}, r)
+	return r, p, err
+}
+
 func (u ValidatedUTC) Bounds(ctx context.Context) (storage.R1Bounds, error) {
 	if ctx == nil || u.Clock == nil || u.Sample == nil || u.Horizon <= 0 {
 		return storage.R1Bounds{}, storage.ErrInvalid

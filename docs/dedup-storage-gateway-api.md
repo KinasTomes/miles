@@ -5,7 +5,7 @@
 
 **Trạng thái v2:** đồng bộ kiến trúc v4, đã chốt hướng triển khai theo quyền lựa chọn người dùng giao sau review. Giữ R1/R2 đầy đủ, multipart, GLACIER_IR/GLACIER và Cloud/Edge. R1–R4/defaults ở mục 13 và kiến trúc 19; khác biệt S3 và thông số cần đo được ghi rõ. Giữ số phiên bản v2; chưa có kết quả test hệ thống.
 
-**Ngôn ngữ triển khai (chốt 2026-10-12):** gateway và `dsgctl` dùng Go, module `github.com/KinasTomes/miles`, toolchain ban đầu Go 1.27.2. Skeleton/CI đọc `go.mod`; chưa có implementation endpoint. Xem kiến trúc mục 1.7 và README của repository.
+**Ngôn ngữ triển khai (chốt 2026-10-12):** gateway và `dsgctl` dùng Go, module `github.com/KinasTomes/miles`, toolchain pin Go 1.27.2. Xem kiến trúc mục 1.7, README của repository và [Hướng dẫn sử dụng & đối chiếu API đầy đủ](api-usage-guide.md).
 
 ---
 
@@ -135,7 +135,7 @@ Hợp đồng của parser/xác thực S3. `tests/fixtures/s3/transport.json` gi
 3. Quyền bucket (mục 2.2.1, thứ tự kiểm ở 2.2.3).
 4. Decoder: khung và độ dài, chữ ký từng chunk/trailer khi đọc, `x-amz-content-sha256` dạng hex (`XAmzContentSHA256Mismatch`), `Content-MD5` (`BadDigest`), checksum header/trailer (`BadDigest`).
 
-**Hiện thực (W02-CHIEN-01)**: `internal/api/s3` — `Router` (http.Handler: request ID, `Resolve`, SigV4, dispatch theo operation), `Payload` (decoder streaming bọc body, trả `io.EOF` chỉ khi mọi kiểm ở bước 4 đã qua) và interface `Credentials` (tra secret đã giải mã theo access key). `transport_test.go` chạy mọi case của `transport.json` qua `Router` bằng handler giả, không cần engine. Lỗi header của decoder (thiếu token `aws-chunked`, `x-amz-decoded-content-length` sai) trả ở lần `Read` đầu nên vẫn xếp sau bước 3. Các điểm chưa ghi ở trên, chọn khi hiện thực, cần review:
+**Hiện thực (Router/transport)**: `internal/api/s3` — `Router` (http.Handler: request ID, `Resolve`, SigV4, dispatch theo operation), `Payload` (decoder streaming bọc body, trả `io.EOF` chỉ khi mọi kiểm ở bước 4 đã qua) và interface `Credentials` (tra secret đã giải mã theo access key). `transport_test.go` chạy mọi case của `transport.json` qua `Router` bằng handler giả, không cần engine. Lỗi header của decoder (thiếu token `aws-chunked`, `x-amz-decoded-content-length` sai) trả ở lần `Read` đầu nên vẫn xếp sau bước 3. Các điểm chưa ghi ở trên, chọn khi hiện thực, cần review:
 
 - Request không có chữ ký trả `AccessDenied` (DSG không có truy cập ẩn danh); header `Authorization: AWS ...` (SigV2) trả `NotImplemented` như presigned SigV2; thuật toán khác `AWS4-HMAC-SHA256` (gồm SigV4a), scope sai Region/ngày/service, `x-amz-content-sha256` ngoài bảng mục 2.2 trả `InvalidArgument`. Credential backend lỗi trả `InternalError`.
 - Presigned có `X-Amz-Date` sau đồng hồ server quá 15 phút trả `RequestTimeTooSkewed`; payload hash là `x-amz-content-sha256` nếu có, không thì `UNSIGNED-PAYLOAD`.
@@ -209,13 +209,13 @@ Bearer thiếu, sai, revoked, hết hạn hoặc thuộc user disabled trả 401
 
 Lựa chọn của DSG, cần review: user disabled trả `AccessDenied` (S3 không có trạng thái này); grant cho owner bị từ chối thay vì bỏ qua; admin chỉ thao tác dữ liệu S3 ở DeleteBucket, Abort và ListParts.
 
-**Hiện thực (W02-CHIEN-02)**:
+**Hiện thực (auth)**:
 
 - `internal/auth.Cache`: giữ kết quả đọc authoritative tới `valid_until` = min(read_at + 5 giây, `expires_at` loader trả), đo bằng `clock.Clock` (monotonic, theo node). read_at lấy trước khi đọc nên bound không trễ; hit không đổi read_at; đọc lỗi không cache; entry hết hạn bị dọn khi map đạt gấp đôi số entry còn sống. `auth.Snapshots` bọc `MetadataStore.Authorize` theo cặp (access key, bucket): credential, user, bucket và grant đọc cùng lần, hết hạn cùng lúc. Lookup secret SigV4 (`s3.Credentials`) nếu cache thì dùng `auth.Cache` cùng bound.
 - `s3.Router` có `Access` (cùng chữ ký `Authorize`), chạy bước 2–4 sau chữ ký và trước handler, nên chưa đọc body, object, upload, nguồn copy hay cache: `storage.ErrAccessDenied` (user disabled, hoặc credential bị revoke sau khi xác thực) trả `AccessDenied`; `storage.ErrNotFound` trả `NoSuchBucket`; điều kiện bảng tạm bỏ `initiator` và read nguồn trả `AccessDenied`. ListBuckets gọi với bucket rỗng, chỉ kiểm user. CreateBucket: tên trống thì giao handler tạo, tên đã có trả `BucketAlreadyOwnedByYou`/`BucketAlreadyExists`. Lỗi backend của `Access` trả `InternalError` như `Credentials`. `Request.Access` là snapshot đã admit (bucket_id, owner, domain, quyền) để handler mang vào transaction ghi.
 - Handler gọi `Request.AuthorizeCopySource(bucket)` (bước 5) trước khi tra key nguồn và `Request.CheckUpload(*UploadBinding)` (bước 6; nil là upload_id không có) trước khi đọc state hay receipt.
 - Router dựa vào thứ tự của `Authorize`: credential revoked/không có hoặc user disabled trả `ErrAccessDenied` trước khi tra bucket. Contract suite `internal/storage/contracttest` ghim thứ tự này (fake và Badger đều đạt).
-- Lựa chọn khi hiện thực: credential bị revoke trong cửa sổ ≤ 5 giây có thể trả `AccessDenied` thay `InvalidAccessKeyId` khi lookup secret còn cache mà `Authorize` đã thấy revoke. Dòng `stream` của snapshot thuộc GET handler (W03-PHONG-01).
+- Lựa chọn khi hiện thực: credential bị revoke trong cửa sổ ≤ 5 giây có thể trả `AccessDenied` thay `InvalidAccessKeyId` khi lookup secret còn cache mà `Authorize` đã thấy revoke. Dòng `stream` của snapshot thuộc GET handler.
 
 ### 2.3 Header chung
 
@@ -408,7 +408,7 @@ Bảng route/operation và mã lỗi thực thi nằm ở `internal/api/s3` (`Re
 - Header ACL/grant/tagging/object lock/SSE-C/website redirect/expected bucket owner/append và điều kiện P2 trả `NotImplemented` (trừ `x-amz-acl: private`/`bucket-owner-full-control`, `x-amz-object-ownership: BucketOwnerEnforced`, `x-amz-tagging-directive: COPY`).
 - Checksum trả `InvalidRequest` khi: algorithm ngoài mục 2.7; có hơn một giá trị checksum (header `x-amz-checksum-<alg>` và trailer cộng lại); `x-amz-sdk-checksum-algorithm`/`x-amz-checksum-algorithm` khác algorithm của giá trị; `x-amz-trailer` không đi với `x-amz-content-sha256` `STREAMING-UNSIGNED-PAYLOAD-TRAILER`/`STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` hoặc ngược lại; `x-amz-checksum-type` ngoài Create/Complete multipart, khác `FULL_OBJECT`/`COMPOSITE`, hoặc ở Create thiếu `x-amz-checksum-algorithm`/sai cặp algorithm-type của bảng 2.7; `x-amz-checksum-mode` ngoài GetObject/HeadObject hoặc khác `ENABLED`.
 
-**Handler (W02-CHIEN-01, W03) kiểm tra phần cần ngữ nghĩa tham số hoặc state:** giá trị `max-keys`, `max-parts`, `part-number-marker`, `continuation-token`, `encoding-type`, `fetch-owner`, `start-after`; cú pháp Range; quy tắc tên bucket; checksum algorithm/type so với upload đã tạo; `If-Match` so với ETag hiện hành (412).
+**Handler (W03) kiểm tra phần cần ngữ nghĩa tham số hoặc state:** giá trị `max-keys`, `max-parts`, `part-number-marker`, `continuation-token`, `encoding-type`, `fetch-owner`, `start-after`; cú pháp Range; quy tắc tên bucket; checksum algorithm/type so với upload đã tạo; `If-Match` so với ETag hiện hành (412).
 
 ### 4.2 Chi tiết các operation P0
 
@@ -445,7 +445,7 @@ Bảng route/operation và mã lỗi thực thi nằm ở `internal/api/s3` (`Re
 
 Acquire read view trước resolve pages, pin location generation trước fetch, pre-flight toàn khoảng cần trước header. GET object rỗng trả 200 length 0; Range trên object rỗng trả 416. Chỉ phát bytes chunk sau SHA-256 đúng. Chunk hỏng/expiry/backend lỗi sau header: abort stream, ghi integrity_error_total/mid_stream_abort_total; không cố trả XML error trong body dữ liệu.
 
-**Hiện thực fixture (W02-CHIEN-03)**: từng trường hợp biên của Range (unit so sánh không phân biệt hoa/thường theo RFC 9110 14.1, unit lạ bị bỏ qua, `-0`, start ≥ size, kẹp end, multi-range, tràn số), empty object, HEAD và parser XML được pin trong `tests/fixtures/s3/compat.json` và kiểm bằng hàm tham chiếu từ mục này; quyết định chi tiết ở [ADR-0001](adr/0001-s3-compat-freeze-decisions.md). Handler W03-CHIEN-02 phải pass nguyên bộ row này.
+**Hiện thực fixture**: từng trường hợp biên của Range (unit so sánh không phân biệt hoa/thường theo RFC 9110 14.1, unit lạ bị bỏ qua, `-0`, start ≥ size, kẹp end, multi-range, tràn số), empty object, HEAD và parser XML được pin trong `tests/fixtures/s3/compat.json` và kiểm bằng hàm tham chiếu từ mục này; quyết định chi tiết ở [ADR-0001](adr/0001-s3-compat-freeze-decisions.md). Handler GetObject/HeadObject phải pass nguyên bộ row này.
 
 #### HeadObject
 
@@ -470,12 +470,12 @@ Cùng quyền/read metadata như GET, không body, kể cả lỗi HEAD không b
 
 XML ListBucketResult có Name/Prefix/Delimiter nếu có, KeyCount/MaxKeys/IsTruncated, ContinuationToken/NextContinuationToken/StartAfter khi có, Contents (Key, LastModified, ETag, Size, StorageClass) và CommonPrefixes. Query consistent theo bucket/prefix, tiếp tục scan đủ trang logical sau khi bỏ tombstone. Không tính item nội bộ vào KeyCount, không bỏ key khi nhảy CommonPrefix. StorageClass logical báo STANDARD là **hạn chế ánh xạ DSG**, không phản ánh pack tier/khả năng đọc; dùng HEAD restore/API admin để biết layout.
 
-**Hiện thực (W03-CHIEN-03)**:
+**Hiện thực (DeleteObject/ListObjectsV2)**:
 
 - `object.Service.DeleteObject` đọc head hiện hành; key không có hoặc đã là tombstone thì không publish gì (204, không trừ quota lần hai). Còn lại: admit writer, reservation `Bytes = 0`, tombstone head + event `Objects/object_commit` commit qua `WriteSession.Delete` với `ExpectedRevision` của head cũ; outcome không rõ được reconcile trước khi release, giống PutObject. Handler đọc payload tới EOF trước transaction nên `x-amz-content-sha256`/checksum sai trả lỗi mà không tạo tombstone.
 - `object.Service.ListObjects` chuyển `storage.ListObjectsRequest` cho store (bỏ tombstone, gộp CommonPrefixes, kiểm read và bucket_id) và trả LastModified từ commit time của head. Handler kiểm `max-keys` (mặc định/cap 1000, 0 hợp lệ, âm/sai kiểu `InvalidArgument`), `encoding-type` chỉ nhận `url` (`url.QueryEscape` cho Key, Prefix, Delimiter, StartAfter, CommonPrefixes), `fetch-owner` kiểu bool.
 - `continuation-token` = `base64url(vị trí đã scan + hạn).base64url(HMAC-SHA256)`, MAC bind principal, tên bucket, bucket_id, prefix và delimiter của request; token sai định dạng, sửa đổi, hết hạn (1 giờ) hoặc dùng với tham số khác trả `InvalidArgument` trước khi tới store. Khóa MAC sinh ngẫu nhiên mỗi process: restart làm token cũ vô hiệu và chưa chia sẻ giữa node; profile cluster (W05) cần keyring chung.
-- Runtime `cmd/miles` vẫn chỉ lắp bucket handlers: lắp object service cần producer outbox (W04-HAI-02) và adapter Warm reader/gate. Bằng chứng AWS CLI của task chạy trên server smoke ghép Router với `object.Service` thật (Badger, pack store, Warm reader) và event fixture.
+- Runtime `cmd/miles` vẫn chỉ lắp bucket handlers: lắp object service cần producer outbox và adapter Warm reader/gate. Bằng chứng AWS CLI của task chạy trên server smoke ghép Router với `object.Service` thật (Badger, pack store, Warm reader) và event fixture.
 
 #### Thao tác bucket
 
@@ -489,7 +489,7 @@ XML ListBucketResult có Name/Prefix/Delimiter nếu có, KeyCount/MaxKeys/IsTru
 
 Không nhận dedup_domain tùy ý từ user qua header PUT/CreateBucket; domain khởi tạo lấy owner. Admin thay miền user chỉ ảnh hưởng bucket mới.
 
-**Hiện thực (W03-CHIEN-01)**:
+**Hiện thực (CreateBucket/HeadBucket/ListBuckets)**:
 
 - `storage.MetadataStore.CreateBucket(BucketCreate)` là transaction của bảng trên: credential và user được kiểm lại trong cùng một write, tên còn free mới publish, và bucket_id (32 hex CSPRNG), owner, domain (chép `default_domain` của owner, rỗng thì "default") lẫn `created_at` do transaction gán. Tên đã có trả về bucket hiện hành để caller map theo owner; tạo lại cùng tên ra bucket_id mới, grant cũ gắn bucket_id cũ nên vô hiệu — contract suite `internal/storage/contracttest` chạy cho fake và Badger.
 - `s3.NewBucketHandlers(store)` lắp CreateBucket/HeadBucket/ListBuckets vào Router. CreateBucket kiểm tên theo S3 (3–63 ký tự, label chữ thường/số/gạch nối ngăn bằng chấm, hai đầu chữ/số; loại hình IP, tiền tố `xn--`/`sthree-`, hậu tố `-s3alias`/`--ol-s3`), đọc CreateBucketConfiguration qua `Payload.DecodeXML`, và LocationConstraint phải rỗng hoặc bằng Region cấu hình — sai region trả `InvalidRequest` 400 (không thêm code mới vào bảng 2.4 đã freeze), body hỏng `MalformedXML`. Race sau authorize map theo owner như trên. Response 200 kèm `Location: /{bucket}`. HeadBucket 200 kèm `x-amz-bucket-region`; 403/404 không body như mọi HEAD. ListBuckets đọc một trang `ListAccessibleBuckets` (owner ∨ read ∨ write; system admin không liệt kê gì khi không có grant) và trả XML `ListAllMyBucketsResult` với `Owner.ID` là user_id DSG, `CreationDate` ISO 8601 UTC, không DisplayName.
@@ -526,7 +526,7 @@ Complete validate danh sách không rỗng, PartNumber tăng nghiêm ngặt, t�
 
 Part upload song song/sai thứ tự được hỗ trợ; cùng partNumber CAS head, last publisher wins khi Active. Candidate/staging bounds ở 2.6 và kiến trúc 9.2. Terminal cleanup giải phóng reservation/counters một lần; TTL chỉ dọn metadata sau receipt/recovery/read protection, không dọn Completing. CI kill sau freeze, sau prepare, trước/sau transaction và khi mất response; retry sau Active expiry nhưng trong receipt retention vẫn trả receipt nếu namespace incarnation còn đúng.
 
-**Hiện thực (W04-CHIEN-02)**: handler `internal/multipart` (`NewHandlers`, wire trong `cmd/miles` cùng object service local/benchmark) cho CreateMultipartUpload, UploadPart, ListParts và AbortMultipartUpload; service trong `internal/object` (`CreateUpload`, `UploadPart`, `ListParts`, `AbortUpload`) dùng `storage.MultipartStore` của W04-HAI-02. CompleteMultipartUpload ở mục hiện thực Complete bên dưới.
+**Hiện thực (handler multipart)**: handler `internal/multipart` (`NewHandlers`, wire trong `cmd/miles` cùng object service local/benchmark) cho CreateMultipartUpload, UploadPart, ListParts và AbortMultipartUpload; service trong `internal/object` (`CreateUpload`, `UploadPart`, `ListParts`, `AbortUpload`) dùng `storage.MultipartStore`. CompleteMultipartUpload ở mục hiện thực Complete bên dưới.
 
 - Create: không gửi algorithm thì CRC64NVME/FULL_OBJECT; gửi algorithm không gửi type thì CRC64NVME→FULL_OBJECT, còn lại COMPOSITE. Metadata HTTP/`x-amz-meta-*` (≤ 2 KiB) lưu vào upload. Backend đặt initiator, owner, domain, expiry 24 giờ, ledger và cap 16 upload.
 - Thứ tự mọi op có `uploadId`: router (bước 2–4), `GetUpload` (chỉ record upload, không đọc receipt) → `Request.CheckUpload` (sai bucket_id/key/ID → `NoSuchUpload`, rồi `AccessDenied` khi thiếu quyền initiator) → chỉ khi upload Completed mới đọc receipt (`ReceiptExpiresAt`) → `Dispatch` bảng 4.3.1, tất cả trước body. Ghi thua (`ErrFenced`/`ErrConflict`) đọc lại upload và trả theo state đã thắng (Completing → `OperationAborted`, Aborting/hết hạn → `NoSuchUpload`); state vẫn Active thì 503.
@@ -545,7 +545,7 @@ Part upload song song/sai thứ tự được hỗ trợ; cùng partNumber CAS h
 
 #### 4.3.1 Complete: input chuẩn hóa, receipt và lỗi — hợp đồng W1
 
-Test case: `tests/fixtures/s3/multipart.json` gồm golden input từ request của client đã pin (XML → canonical → SHA-256 → response lưu trong receipt), ca validation và bảng state. `internal/multipart` (W02-CHIEN-02) hiện thực validation và bảng state dưới đây; test chạy mọi request của fixture (header + XML) qua package đó, so canonical, digest, mã lỗi, state sau lỗi, ETag và checksum của receipt. Handler và freeze/commit thuộc W04.
+Test case: `tests/fixtures/s3/multipart.json` gồm golden input từ request của client đã pin (XML → canonical → SHA-256 → response lưu trong receipt), ca validation và bảng state. `internal/multipart` hiện thực validation và bảng state dưới đây; test chạy mọi request của fixture (header + XML) qua package đó, so canonical, digest, mã lỗi, state sau lỗi, ETag và checksum của receipt. Handler và freeze/commit thuộc W04.
 
 **Canonical input v1**: byte JSON UTF-8, không khoảng trắng, field theo đúng thứ tự bảng.
 
@@ -607,7 +607,7 @@ UploadPart đã nhận khi Active nhưng freeze thắng trước publish trả `
 
 Retry cùng `input_digest` trong hạn trả lại `response` (200, XML như lần đầu trừ RequestId), không cộng quota/refcount, không tạo lại object dù head đã bị overwrite/delete. Receipt không giữ payload làm GC root.
 
-**Hiện thực (W02-CHIEN-02)**: `internal/multipart`, dùng chung cho handler multipart và backend (W04-CHIEN-02/03, W04-HAI-02).
+**Hiện thực**: `internal/multipart`, dùng chung cho handler multipart và backend.
 
 - `Upload` = `s3.UploadBinding` (bucket_id, key, initiator) + algorithm/type lúc Create. Handler kiểm binding bằng `s3.Request.CheckUpload` trước mọi bước dưới.
 - `CompleteXML` là đích của `Payload.DecodeXML` (document sai trả `MalformedXML` ở đó); `Normalize(upload, header, doc)` là dòng 1–5, trả `Input` với `Canonical()` và `Digest()` (`input_digest`). Không đổi state trước khi thành công.
@@ -645,6 +645,14 @@ Backend restore nhiều pack không nguyên tử. Nếu một pack lỗi, giữ 
 
 Restore amplification tính backend bytes toàn pack / logical range bytes yêu cầu, loại duplicate packs; phí gồm request/retrieval và lưu bản restore tạm. x-dsg-restore chỉ trả theo debug gate mục 5; client thường dùng XML error và x-amz-restore.
 
+**Hiện thực RestoreObject và HEAD archive**:
+
+- `s3.Objects.RestoreObject` (`internal/api/s3/restore.go`): quyền read do Router kiểm trước; body `RestoreRequest` (≤64 KiB) đọc qua `Payload.DecodeXML`. Thiếu `Days`, `Days` ngoài 1–30 (`storage.MaxRestoreDays`, cũng là cap `MaxAutoRestoreDays` của policy; S3 cho phép lớn hơn) hoặc `Tier` khác `Expedited`/`Standard`/`Bulk` trả 400 `InvalidRequest`; `Tier` mặc định `Standard`. HTTP, `WarmReader.Restore` và `lifecycle.Params` dùng chung `storage.RestoreRequest.Validate`; readpath kiểm lại trước admission/HEAD/job. `Type` (SELECT), `SelectParameters`, `OutputLocation` trả 501 `NotImplemented`, không bỏ qua. Object chỉ Warm/GLACIER_IR trả 400 `InvalidRequest` (`object.ErrNotArchived`), khác S3 vốn trả `InvalidObjectState` cho class không restore được.
+- `object.Service.RestoreObject` → `readpath.WarmReader.Restore`: cùng admission, read view, bind head, pin và kiểm bucket như GET, không đọc payload, không chờ archive. HEAD backend mọi pack GLACIER duy nhất trước khi enqueue job nào: `Ref`, `Size`, `Class` phải khớp record đã pin và state thuộc Cold/Restoring/Restored, lệch → `ErrConflict` (409 `OperationAborted`), không job nào. Sau đó: `Restoring` tính in-progress; `Restored` có expiry ≥ upper UTC + Days giữ nguyên; còn lại (Cold, Restored ngắn hơn Days, Restored đã hết hạn) gọi `QueueReadRestore` với Days/Tier của request và `required_until` = request hard deadline + 120 giây như GET. Kết quả: có job mới → 202; không job mới nhưng có restore đang chạy hoặc job cùng generation đã queue → 409 `RestoreAlreadyInProgress`; còn lại → 200. Gia hạn bản Restored chạy qua job `pack_restore` bất đồng bộ nên trả 202, khác S3 trả 200 đồng bộ.
+- `QueueReadRestore(..., explicit *RestoreRequest)` trả thêm `created`. GET auto-restore (`explicit == nil`) vẫn cần `auto_restore=true` và dùng Days/Tier policy; RestoreObject không phụ thuộc `auto_restore`. Cả hai chung job ID theo (pack, state revision, policy revision) nên một generation chỉ có một restore; job lỗi terminal cùng identity trả lỗi reconciliation, không tự retry.
+- HEAD (`object.Service.Stat`) gọi `WarmReader.ArchiveState`: đọc page/chunk/pack metadata của head hiện tại và HEAD backend từng pack GLACIER, không pin, không đọc payload, không khởi tạo restore. `x-amz-restore` theo bảng trên: có pack đang restore → `ongoing-request="true"`; mọi pack archive Restored chưa hết hạn → `ongoing-request="false", expiry-date="<expiry nhỏ nhất>"`; còn lại không có header. Đây là ảnh chụp thông tin, không cấp quyền đọc; GET vẫn tự pre-flight. GET không trả `x-amz-restore`.
+- GET/Copy giữ đường đọc Cold có sẵn ([cold lifecycle](testing/cold-lifecycle-validation.md)): IR đọc ngay, GLACIER chưa restore trả 403 `InvalidObjectState` trước header kèm auto-restore theo policy, Restored chỉ đọc khi expiry ≥ hard deadline + 120 giây. Kiểm thử: [restore validation](testing/restore-object-validation.md).
+
 ### 4.5 CopyObject (P1)
 
 PUT /bucket/key + x-amz-copy-source (URL-encoded bucket/key); **read nguồn + write đích** trước mọi lookup, quota logical chủ bucket đích. R1 pin snapshot nguồn và locations, source overwrite không làm copy ghép hai phiên bản.
@@ -677,13 +685,16 @@ Nếu sau này làm UploadPartCopy: khoảng byte của part nguồn không kh�
 
 Edge copy chunk thiếu chạy S3 → Edge → S3, đo network bytes hai chiều theo dữ liệu thực, gồm read-ahead/nén/race.
 
-**Hiện thực CopyObject cùng miền**:
+**Hiện thực CopyObject cùng miền và khác miền**:
 
 - Handler (`internal/api/s3/copy.go`): `x-amz-copy-source` = `[/]bucket/key` decode một lần; thiếu bucket/key hoặc encode sai `InvalidArgument`, `?versionId=` `NotImplemented`. `x-amz-metadata-directive` rỗng/`COPY`/`REPLACE`, giá trị khác `InvalidArgument`. Payload đọc tới EOF (kiểm SHA-256/checksum) rồi `AuthorizeCopySource` (bước 5 mục 2.2.3) trước mọi lookup nguồn. Response 200 `CopyObjectResult` (ETag nguồn, LastModified = commit time đích).
-- Service `object.Service.CopyObject`: mở read view nguồn (`readpath.WarmReader.BindSource`: acquire view của WarmGate trước khi tra head, bind head, không đọc payload, không tốn read budget) nên retirement bị chặn từ trước lookup head nguồn; head nguồn đọc đúng một lần (không có/tombstone → `NoSuchKey` với key nguồn; bucket nguồn mất → `NoSuchBucket`). Trước admission: nguồn > 5 GiB (`MaxCopyBytes`, đúng 5 GiB vẫn qua) `InvalidRequest`; miền nguồn ≠ miền đích `NotImplemented` vì chưa có đường đọc/verify chunk nguồn và ghi lại trong miền đích; `x-amz-checksum-algorithm` khác algorithm nguồn `InvalidRequest`; self-copy (cùng bucket_id/key) với COPY `InvalidRequest`. Metadata COPY = metadata HTTP nguồn; REPLACE = header request (Content-Type, Content-Language, Cache-Control, Content-Disposition, Content-Encoding, Expires, x-amz-meta-*), thiếu Content-Type lưu `application/octet-stream`; GET/HEAD trả lại đủ các header này. Giới hạn 2 KiB user metadata như PUT.
-- Ghi như PUT: admit writer cho key đích, reservation quota của **owner bucket đích** (`max(0, size − size head đích)`, staged = size), `WriteSession.PrepareCopy` ghi manifest mới (`manifest_id` mới) lặp lại đúng refs nguồn theo thứ tự, không đọc payload: mỗi chunk khác nhau trong lô ≤ 100 được writer đích pin generation và gia hạn protection qua `Reuse` như dedup hit của PUT. Read view nguồn chỉ được nhả sau khi mọi generation đã do writer đích pin; view mất giữa chừng thì copy thất bại trước commit. Chunk ở pack không Warm/IR → `InvalidObjectState` (copy metadata cần nguồn đọc được ngay, chưa hỗ trợ nguồn Cold). Head đích giữ ETag/ETagKind/checksum nguồn (R4), commit + outbox `Objects/object_commit` + quota trong một transaction như PUT; lỗi trước commit giữ head đích cũ và release reservation. Self-copy REPLACE ra revision/manifest mới, quota delta 0.
-- Không có ngưỡng ở server: mọi copy ≤ 5 GiB qua `s3api copy-object`; `aws s3 cp/mv` giữa key từ `multipart_threshold` (8 MiB) dừng ở GetObjectTagging 501 (AWS CLI 2.36.41), UploadPartCopy trả 501. Bằng chứng: [copy/delete validation](testing/copy-delete-bucket-validation.md).
-
+- Service `object.Service.CopyObject`: mở read view nguồn (`readpath.WarmReader.BindSource`: acquire view của WarmGate trước khi tra head, bind head, không đọc payload, không tốn read budget) nên retirement bị chặn từ trước lookup head nguồn; head nguồn đọc đúng một lần (không có/tombstone → `NoSuchKey` với key nguồn; bucket nguồn mất → `NoSuchBucket`). Trước admission: nguồn > 5 GiB (`MaxCopyBytes`, đúng 5 GiB vẫn qua) `InvalidRequest`; `x-amz-checksum-algorithm` khác algorithm nguồn `InvalidRequest`; self-copy (cùng bucket_id/key) với COPY `InvalidRequest`. Metadata COPY = metadata HTTP nguồn; REPLACE = header request (Content-Type, Content-Language, Cache-Control, Content-Disposition, Content-Encoding, Expires, x-amz-meta-*), thiếu Content-Type lưu `application/octet-stream`; GET/HEAD trả lại đủ các header này. Giới hạn 2 KiB user metadata như PUT.
+- Ghi như PUT: admit writer cho key đích, reservation quota của **owner bucket đích** (`max(0, size − size head đích)`, staged = size).
+  - **Cùng miền:** `WriteSession.PrepareCopy` ghi manifest mới (`manifest_id` mới) lặp lại đúng refs nguồn theo thứ tự, không đọc payload: mỗi chunk khác nhau trong lô ≤ 100 được writer đích pin generation và gia hạn protection qua `Reuse` như dedup hit của PUT. Nguồn Cold vẫn copy metadata hợp lệ, không cần đọc payload.
+  - **Khác miền:** `WriteSession.PrepareCrossDomainCopy` tra từng chunk ở miền đích `(destDomain, hash)`. Chunk Warm, `GLACIER_IR` hoặc Restored đủ hạn (`required_until`) được tái sử dụng qua `Reuse`, không đọc nguồn. Chunk thiếu/unreadable ở đích mới đọc từ nguồn qua `load`, giải nén và verify SHA-256/CRC, nén theo policy miền đích và ghi pack Warm mới của miền đích. Mọi reference đích thuộc miền đích, không lưu reference chéo miền.
+  - **Nguồn Cold:** chỉ restore pack nguồn thực sự cần đọc (khi thiếu ở đích); nếu miền đích đã đủ chunks thì không trigger restore nguồn. Nếu cần đọc pack Cold chưa restore: trả 403 `InvalidObjectState` và kích hoạt auto-restore pack đó khi bật.
+- Head đích giữ opaque ETag và checksum descriptor nguồn (R4), commit + outbox `Objects/object_commit` + quota trong một transaction như PUT; lỗi trước commit giữ head đích cũ và release reservation. Self-copy REPLACE ra revision/manifest mới, quota delta 0.
+- Không có ngưỡng ở server: mọi copy ≤ 5 GiB qua `s3api copy-object`; `aws s3 cp/mv` giữa key từ `multipart_threshold` (8 MiB) dừng ở GetObjectTagging 501 (AWS CLI 2.36.41), UploadPartCopy trả 501. File >5 GiB hướng dẫn tải về rồi upload multipart. Move (`aws s3 mv`) chỉ xóa nguồn sau khi copy hoàn tất thành công; không cam kết atomic move khi có ghi đồng thời. Bằng chứng: [copy/delete validation](testing/copy-delete-bucket-validation.md).
 ### 4.6 DeleteObjects (P1)
 
 POST /bucket?delete; write bucket. XML Delete gồm tối đa 1000 Object/Key và Quiet. Validate XML, keys, Content-MD5 hoặc checksum header được SDK mục tiêu hỗ trợ **trước mutation**. VersionId ngoài phạm vi trả lỗi rõ.
@@ -755,7 +766,7 @@ Không yêu cầu total=dup+revived+unique vì dup đếm occurrences còn reviv
 | P1 | GET / DELETE | /jobs/{id} | System admin; status hoặc yêu cầu cancellation |
 | P1 | GET | /cache/stats | System admin, scope=node/cluster, số liệu từng node và tổng có định nghĩa |
 | P1 | POST | /cache/purge | System admin, body scope/node_id; cluster fan-out job, kết quả từng node |
-| P1 | GET | /cost/report | System admin; profile/workload, baseline và DSG; không user billing |
+| P1 | GET | /cost/report | System admin; profile/workload, baseline và DSG; không user billing *(hỗ trợ `cloud-tiering-boundary`/`edge-revival` và live snapshot; `domain` filter trả 400)* |
 | P1 | POST / GET | /credentials | System admin tạo/list DSG SigV4 keys gắn user; list không trả secret |
 | P1 | DELETE | /credentials/{access_key_id} | System admin thu hồi; audit, request mới bị từ chối trong 5 giây |
 | P1 | POST / GET | /admin-tokens | System admin cấp/list bearer gắn user_id/scope/lifetime; list không trả secret/hash |
@@ -831,17 +842,30 @@ See [storage statistics](contracts/storage-statistics.md) for the measured scope
 For global stats, `listed_bytes_by_pack_lifecycle` and
 `listed_bytes_by_storage_class` partition the same listed bytes independently.
 A current pack or sidecar can be classified as `head_live`, `no_live_head`,
-`retired`, `orphan` or `unsettled`. The first two categories describe the
-observed generation as a whole, including its overhead. Cold generations with
-no observed live head remain in the totals. Older pack and sidecar versions
-are counted as `noncurrent`. Other objects are counted as `other`.
+`cold_dead`, `retired`, `orphan` or `unsettled`. The first three categories
+describe the observed generation as a whole, including its overhead.
+`no_live_head` is a Warm generation without an observed live head; `cold_dead`
+is a Cold, Restoring or Restored generation without one (for example an archive
+superseded by revival or promotion), still billed and retained until GC
+eligibility. Older pack and sidecar versions are counted as `noncurrent`.
+Other objects are counted as `other`.
 `listed_known_protected_bytes` overlaps those categories. It includes current
 objects with an observed protection deadline or a supplied generation root.
 It is a lower bound from approximate observations and cannot establish GC
-eligibility. None of these fields changes bucket allocation or logical quota.
+eligibility. `listed_pack_overhead_bytes` (complete inventory only) is the part
+of current `head_live` packs not covered by live canonical chunk ranges:
+header/footer/index plus dead or race-loser blobs. None of these fields changes
+bucket allocation or logical quota.
 
-Temporary restored billed bytes and revival counters without verified sources
-are null, not zero. Cached observations include timestamps, version scope,
+`revived_chunks_total`, `revived_bytes_stored_total`, `orphaned_chunks_total`
+and `orphaned_bytes_stored_total` are cumulative PUT/UploadPart counters of the
+serving process since `write_counters_since` (global report only; each Cloud
+node counts its own writes). Revived counts distinct domain/hash identities per
+request whose existing location the request's new Warm blob replaced through
+location CAS, with that blob's stored bytes; orphaned counts the request's
+race-loser blobs left in its own protected pack. Without a counter source they
+are null, not zero; temporary restored billed bytes stay null without a
+verified source. Cached observations include timestamps, version scope,
 allocation methodology and consistency=approximate. Layout is metadata-only,
 not an integrity certification. Physical allocation never changes user quota.
 
@@ -1019,13 +1043,13 @@ Counters tích lũy theo boot, purge không reset; đây là các heartbeat samp
 thời điểm, không phải atomic cluster snapshot hoặc ratio trong một time window.
 Legacy/local runtime chưa có shared cache service trả503, không giả lập cluster.
 
-**POST /admin/v1/faults** (chỉ enabled + system admin):
+**POST /admin/v1/faults** (chỉ `enable_fault_injection=true` + system admin, `node_id` khớp gateway đang gọi):
 
 ```json
-{ "scope": "node", "node_id": "edge-1", "type": "fail_s3_put", "match": { "operation": "PutPack" }, "probability": 0.2, "duration_s": 60 }
+{ "type": "s3_5xx", "scope": "node", "node_id": "edge-1", "rate": 0.2, "duration_seconds": 60 }
 ```
 
-Fault types: fail_s3_put/get, ddb_throttle, delay, kill_after_n_chunks, corrupt_byte, kill_after_head_commit, pause_before_chunk_publish, pause_reader_after_resolve. Phải audit scope/duration và TTL business; faults không tồn tại vĩnh viễn chỉ vì TTL vật lý chậm.
+Fault types hiện thực (`internal/faults`): `s3_5xx`, `ddb_throttle`, `kill_node`, `corrupt_pack`; chỉ hỗ trợ `scope="node"` (`cluster` bị từ chối `400 invalid_request`), `rate` trong `(0, 1]`, `duration_seconds` trong `1..86400`. Response `201` trả `FaultRule` (`fault_id`, `created_at`, `expires_at`); `GET /admin/v1/faults` trả mảng `FaultRule[]`; `DELETE /admin/v1/faults/{id}` trả `204` hoặc `404 fault_not_found`.
 
 ---
 
@@ -1043,7 +1067,7 @@ Fault types: fail_s3_put/get, ddb_throttle, delay, kill_after_n_chunks, corrupt_
 - Offline `dsgctl admin-token bootstrap --recover --user <user_id> --ttl <dur> --token-file <path>` chỉ chạy khi recovery gate R2 §15 còn đóng (service/GC gated), với provisioning role: vô hiệu hóa mọi bearer còn `active` (kể cả token được phục hồi), mint một system token mới, ghi recovery audit; token file như trên. Không endpoint online nào bỏ qua bearer để bootstrap lần hai. Sau PITR/S3 recovery tạo service incarnation/history mới (không reuse epoch/fence cũ), publish base checkpoint + catalog CAS trước readiness và vô hiệu hóa mọi bearer/SigV4 credential đã phục hồi để tránh resurrect revocation sau cut; operator cấp token/keys mới sau audit grants/user status. Dữ liệu/namespace phục hồi theo cut, quyền cũ không tự kích hoạt truy cập.
 - Không có refresh token P1; operator reissue/revoke qua endpoint. Bootstrap/recovery là đường khởi tạo hữu hạn, không thêm IdP/OAuth. Chỉ hop local/SSH tunnel HTTP được chấp nhận mặc định; direct remote Admin API phải TLS và private routing.
 
-### 6.5 Hợp đồng wire Admin (W02-CHIEN-02)
+### 6.5 Hợp đồng wire Admin
 
 Áp cho mọi endpoint mục 6.2; W04 cài route theo đúng mục này. Code dùng chung (không có handler): `internal/api/admin` — bearer (`token.go`), cursor (`cursor.go`), precondition revision (`revision.go`); vector `tests/fixtures/admin/wire.json`. Quyền theo bảng Admin mục 2.2.3 và `tests/fixtures/s3/authorization.json`.
 
@@ -1055,13 +1079,15 @@ Body lỗi `{"error":{"code","message","request_id"}}`; message nêu tên field/
 |---|---|---|
 | `invalid_request` | 400 | Body không là JSON object hoặc lỗi cú pháp; member trùng; giá trị null; member không biết (kể cả privilege elevation: `owner`, `system_admin` ở grants; tiering/compression/chunking/dedup_domain ở bucket policy); sai kiểu (integer phải là JSON number không phần thập phân/số mũ); ngoài miền/pattern; thiếu field bắt buộc; thiếu hoặc lệch precondition (mục 6.5.2); query param sai hoặc không biết (ví dụ `limit`) |
 | `invalid_cursor` | 400 | Mọi lỗi cursor: format, kid không biết, MAC, hết hạn, binding; một code, không oracle |
+| `too_many_targets` | 400 | Cluster fan-out (`POST /jobs`, `POST /cache/purge`) vượt 64 active nodes |
 | `unauthorized` | 401 | Bearer thiếu/sai format/không biết/secret sai/revoked/hết hạn hoặc user disabled; kèm `WWW-Authenticate: Bearer`, một message |
 | `forbidden` | 403 | Thiếu vai trò theo bảng Admin mục 2.2.3 |
-| `bucket_not_found`, `user_not_found`, `grant_not_found`, `credential_not_found`, `token_not_found` | 404 | Resource không có (cùng kiểu `pack_not_found`) |
+| `bucket_not_found`, `user_not_found`, `grant_not_found`, `credential_not_found`, `token_not_found`, `pack_not_found`, `job_not_found`, `node_not_found`, `object_not_found`, `fault_not_found` | 404 | Resource không tồn tại |
 | `revision_conflict` | 409 | Revision hiện tại khác precondition (kể cả 0 khi đã tồn tại, N > 0 khi chưa có) |
 | `bucket_id_mismatch` | 409 | expected_bucket_id khác `bucket_id` hiện tại của tên bucket |
 | `revision_exhausted` | 409 | Cần đổi nội dung khi revision đã là 2^53−1 |
 | `user_exists` | 409 | POST /users với user_id đã có |
+| `job_type_unavailable` | 501 | Executor của job/pack/cache chưa được cài đặt trên runtime đang chạy |
 | `unavailable` | 503 | Metadata không đọc được hoặc outcome không biết; không nhả gì đã giữ |
 | `internal_error` | 500 | Lỗi khác |
 
@@ -1135,14 +1161,14 @@ Kiểu: `string`, `bool`, `int` (JSON integer 0..2^53−1); thời gian RFC 3339
 | GET /admin-tokens | `?user_id=` lọc tùy chọn | 200 list AdminToken | — |
 | DELETE /admin-tokens/{token_id} | — | 204, kể cả đã revoked | 404 `token_not_found` (mục 6.5.1 bước 3) |
 
-#### 6.5.5 Hiện thực (W04-CHIEN-01)
+#### 6.5.5 Hiện thực
 
 - `admin.NewServer` (`internal/api/admin`) phục vụ đúng các route ở bảng 6.5.4; path khác trả 404 không envelope, sai method trên route có thật trả 405. Store là Badger hoặc DynamoDB qua `storage.IdentityStore` (Get/List user, grant, credential, token; `GetCredentialSecurity`; `BootstrapAdmin`) cùng `MutateControl`, `PutPolicy`, `PutBucketPolicy` với `AdminTokenID` là actor; transaction ghi kiểm lại token (active, chưa hết hạn), user active và quyền: token không phải system chỉ được grant trên bucket mình sở hữu và thu hồi token của chính mình; grant cho owner bị từ chối trong transaction.
 - Bearer: snapshot token+user qua `auth.Cache` (≤ 5 giây, không quá `expires_at`), secret so constant-time mỗi request. Grant bị DELETE giữ tombstone `read=write=false` để revision không lặp; với API, tombstone là "chưa có grant" (PUT `expected_revision` 0 tạo lại, DELETE trả 404, list bỏ qua).
-- Credential secret niêm phong bằng `Sealer` (AES-256-GCM, AAD = access_key_id). Local/benchmark dùng key 32 byte `<local_data_path>/credential-key`; adapter KMS cho runtime thuộc phần compose runtime (W05-HUNG-01). S3 local tra secret dev trước, rồi secret đã niêm phong.
+- Credential secret niêm phong bằng `Sealer` (AES-256-GCM, AAD = access_key_id). Local/benchmark dùng key 32 byte `<local_data_path>/credential-key`; adapter KMS cho runtime thuộc phần compose runtime. S3 local tra secret dev trước, rồi secret đã niêm phong.
 - Bucket chưa có cache policy: GET materialize revision 1 = default cache (ghi có event dưới token caller); PUT kiểm schema/bucket_id/revision trên default trong bộ nhớ trước, request bị 400/409 không ghi gì.
 - PATCH `logical_limit` nhỏ hơn `used + reserved` hiện tại trả 400 `invalid_request`, kiểm trong cùng transaction với user/quota/outbox (giữ bất biến ledger mà mọi reservation, kể cả reservation 0 byte của DELETE, đòi hỏi). Quyết định no-op của PATCH user dùng snapshot user+quota nhất quán (đọc lại user sau quota, cùng revision). Mọi route có body không nhận query parameter: có bất kỳ thì 400 ở bước 4, trước khi ghi.
-- `dsgctl admin-token bootstrap` gọi `BootstrapAdmin`: một transaction điều kiện marker chưa có ghi marker, user (tạo hoặc kích hoạt lại, quota 1 TiB), system token và global policy revision 1 nếu chưa có. Chưa ghi outbox epoch 0 (export R2 thuộc W04-PHONG-04); `--recover` báo lỗi vì recovery gate R2 §15 chưa có.
+- `dsgctl admin-token bootstrap` gọi `BootstrapAdmin`: một transaction điều kiện marker chưa có ghi marker, user (tạo hoặc kích hoạt lại, quota 1 TiB), system token và global policy revision 1 nếu chưa có. Chưa ghi outbox epoch 0 (export R2 thuộc phần exporter R2); `--recover` báo lỗi vì recovery gate R2 §15 chưa có.
 - DynamoDB không có GSI: list users/credentials/admin-tokens quét cả bảng rồi sắp xếp mỗi trang (quy mô vận hành); grants dùng Query theo `bucket_id`. Record Credentials/AdminTokens ghi trước khi thêm `debug_allowed/created_at/issued_at` không đọc được trên DynamoDB (chưa có dữ liệu runtime).
 - Stats/layout: `/stats`, `/buckets/{b}/stats`, `/objects/layout` use system-admin-only handlers. Local/benchmark collects bounded background observations; absent/stale providers return unavailable. Other operational routes follow their respective modules.
 
@@ -1153,24 +1179,25 @@ Kiểu: `string`, `bool`, `int` (JSON integer 0..2^53−1); thời gian RFC 3339
 | Lệnh trong hợp đồng CLI | API |
 |---|---|
 | stats [--bucket b] | /stats hoặc /buckets/b/stats (system admin) |
-| user create/ls/set, usage | /users và logical usage |
-| grant ls/set/rm <bucket> <user> | /buckets/b/grants/user (owner/admin) |
+| user create/ls/show/set, usage | /users và logical usage |
+| bucket show, grant ls/set/rm <bucket> <user> | /buckets/b và /buckets/b/grants/user (owner/admin) |
 | policy get/set | /policy toàn hệ thống (system admin) |
 | bucket-policy get/set <bucket> | /buckets/b/policy, cache only |
 | layout <bucket> <key> | /objects/layout với query encode đúng |
 | pack ls, show <pack_id>, restore/promote <pack_id> <generation> | /packs, /packs/{id}, /packs/{id}/{generation}/restore\|promote |
 | job run <type> [--dry-run], ls/show/cancel | /jobs/... |
 | cache stats/purge --scope node\|cluster [--node id] | /cache/... có scope rõ |
-| cost report --scenario B --profile edge | /cost/report |
+| cost report --scenario B --profile edge | /cost/report (`--region --as-of --scenario --profile --from --to --bucket --domain --workload`) |
 | credentials create/ls/rm | /credentials/... |
 | admin-token create/ls/revoke | /admin-tokens/... (system admin cấp; owner revoke của mình) |
-| admin-token bootstrap [--recover] | Offline provisioning role, không bypass bearer trên HTTP |
+| admin-token bootstrap [--recover] | Offline provisioning role (`--local-data-path` \| `--ddb-table-prefix` \| `--runtime-config`) |
+| lifecycle-upgrade-gate | Offline read-only kiểm tra legacy V1 lifecycle trước nâng cấp V2 |
 | node ls/drain | /cluster/nodes/... |
-| fault inject/ls/clear --scope ... | /faults/... |
-| rebuild-index [--dry-run] | Offline với S3/DDB/KMS; không qua gateway khi metadata mất |
-| sim run --trace ... --policies A,B,C,D | Offline, package policy/Clock/pricing chung |
+| fault ls \| add --type ... --scope node --node id \| rm <id> | /faults/... |
+| rebuild-index [--dry-run] | Offline guarded workflow trong `internal/recovery`; chưa lộ trên `dsgctl` |
+| sim run --trace ... --policies A,B,C,D | Offline simulator binary riêng `cmd/costsim` |
 
-dsgctl phân biệt bearer Admin API và SigV4 key để debug S3; không chuyển bearer thành header Authorization S3. Token/log không in secret. CLI đã nối bearer transport cho `stats [--bucket b]`, `layout <bucket> <key>` (bucket/key là query encode một lần), `pack ls [--state --storage-class --live-ratio-lt]/show/restore [--days --tier]/promote`, `cache stats/purge --scope cluster|node --node id`, `user create/ls/show/set`, `usage`, `bucket show`, `grant ls/set/rm`, `policy get/set`, `bucket-policy get/set`, `credentials create/ls/rm`, `admin-token create/ls/revoke`, `job ls/show/run/cancel`, `node ls/drain`; mọi list (`ls`, `pack show`) nhận `--limit 1..1000 --cursor <next_cursor>`. Scope cache sai (thiếu `--scope`, `node` thiếu `--node`, `cluster` kèm `--node`) và tham số không hợp lệ bị từ chối cục bộ, không gửi request. Scope token không đủ là 403 từ gateway; CLI chỉ in status, `error.code` đã kiểm và `request_id` (để tra audit log), không in `message` vì có thể echo input. 404/501 có envelope là lỗi gateway (vd. 501 `job_type_unavailable` khi executor chưa cài); router 404/405 và 501 không envelope là unsupported. Endpoint và token file có thể đặt bằng env `DSGCTL_ENDPOINT` / `DSGCTL_TOKEN_FILE` (flag thắng), hợp với SSH tunnel cố định `127.0.0.1:<port>`; help không in giá trị env. Secret/token của create chỉ ghi vào file `--out` mới (O_EXCL, 0600) và bị che trên stdout. `admin-token bootstrap` chạy offline trên Badger (`--local-data-path`, gateway phải dừng) hoặc DynamoDB (`--ddb-table-prefix --region`, credential provisioning từ env `AWS_*`), ghi token vào `--token-file` mới, chạy lần hai bị từ chối; `--recover` báo lỗi (R2 chưa có). `cost report`, `fault`, `rebuild-index`, `sim run` chưa hiện thực thì báo unsupported, không giả success. Schema endpoint vẫn theo hợp đồng R4. Token file đọc cục bộ permission 0600; không nhận raw bearer làm argument hay biến môi trường in history. [Jobs/Nodes backend và handoff](contracts/jobs-and-nodes.md), [kiểm thử CLI theo vai trò](testing/admin-cli-validation.md).
+dsgctl phân biệt bearer Admin API và SigV4 key để debug S3; không chuyển bearer thành header Authorization S3. Token/log không in secret. CLI đã nối bearer transport cho `stats [--bucket b]`, `layout <bucket> <key>` (bucket/key là query encode một lần), `cost report [--region --as-of --scenario --profile --from --to --bucket --domain --workload]`, `pack ls [--state --storage-class --live-ratio-lt]/show/restore [--days --tier]/promote`, `cache stats/purge --scope cluster|node --node id`, `user create/ls/show/set`, `usage`, `bucket show`, `grant ls/set/rm`, `policy get/set`, `bucket-policy get/set`, `credentials create/ls/rm`, `admin-token create/ls/revoke`, `job ls/show/run/cancel`, `node ls/drain`, `fault ls/add/rm`; mọi list (`ls`, `pack show`) nhận `--limit 1..1000 --cursor <next_cursor>`. Scope cache sai (thiếu `--scope`, `node` thiếu `--node`, `cluster` kèm `--node`) và tham số không hợp lệ bị từ chối cục bộ, không gửi request. Scope token không đủ là 403 từ gateway; CLI chỉ in status, `error.code` đã kiểm và `request_id` (để tra audit log), không in `message` vì có thể echo input. 404/501 có envelope là lỗi gateway (vd. 501 `job_type_unavailable` khi executor chưa cài); router 404/405 và 501 không envelope là unsupported. Endpoint và token file có thể đặt bằng env `DSGCTL_ENDPOINT` / `DSGCTL_TOKEN_FILE` (flag thắng), hợp với SSH tunnel cố định `127.0.0.1:<port>`; help không in giá trị env. Secret/token của create chỉ ghi vào file `--out` mới (O_EXCL, 0600) và bị che trên stdout. `admin-token bootstrap` chạy offline trên Badger (`--local-data-path`, gateway phải dừng), DynamoDB (`--ddb-table-prefix --region`, credential provisioning từ env `AWS_*`) hoặc `--runtime-config`, ghi token vào `--token-file` mới, chạy lần hai bị từ chối; `--recover` báo lỗi vì recovery gate chưa mở qua CLI. `rebuild-index`, `sim run` chưa nối trên `dsgctl` nên báo unsupported (dùng `cmd/costsim` và workflow `internal/recovery` tương ứng). Token file đọc cục bộ permission 0600; không nhận raw bearer làm argument hay biến môi trường in history. Chi tiết lỗi và bảng đối chiếu đầy đủ ở [Hướng dẫn sử dụng & đối chiếu API](api-usage-guide.md), [Jobs/Nodes backend và handoff](contracts/jobs-and-nodes.md), [kiểm thử CLI theo vai trò](testing/admin-cli-validation.md).
 
 ---
 
@@ -1186,7 +1213,7 @@ Cloud ALB override health port 9100. Edge probe local/private. Readiness là tí
 
 Drain: set node admission/draining ngay, trả 503 request mới + readyz=503; Cloud deregister ALB target và chờ deregistration delay, active requests, flush pack và outbox export checkpoint, heartbeat ASG lifecycle hook; báo incomplete nếu timeout. Edge cùng gate/drain, không gọi ALB. Health check có độ trễ và ALB fail-open khi tất cả target unhealthy, nên readyz=503 riêng lẻ không đủ. [AWS ALB health checks](https://docs.aws.amazon.com/elasticloadbalancing/latest/application/target-group-health-checks.html).
 
-Metric đồng nhất kiến trúc: dedup_ratio, compression_ratio, total_reduction, cache_hit_ratio, s3_requests_total{type}, bytes_logical, bytes_physical, revived_chunks_total, revived_bytes_stored_total, gateway_s3_upload_bytes_total, s3_gateway_download_bytes_total, gateway_client_bytes_total, restore_count, pack_state_count{state}, ddb_throttle_count, integrity_error_total, mid_stream_abort_total, oldest_unexported_age_seconds, recovery_cut_age_seconds, gc_gate_duration_seconds, completion_takeover_total, s3_api_requests_total{op,code}, s3_api_latency_seconds{op}. Metrics vật lý chỉ quản trị; không key/user label cardinality cao. CloudWatch export theo batch/agent, không bắt buộc mỗi scrape gọi PutMetricData.
+Metric đồng nhất kiến trúc: dedup_ratio, compression_ratio, total_reduction, cache_hit_ratio, s3_requests_total{type}, bytes_logical, bytes_physical, revived_chunks_total, revived_bytes_stored_total, orphaned_chunks_total, orphaned_bytes_stored_total, gateway_s3_upload_bytes_total, s3_gateway_download_bytes_total, gateway_client_bytes_total, restore_count, pack_state_count{state}, ddb_throttle_count, integrity_error_total, mid_stream_abort_total, oldest_unexported_age_seconds, recovery_cut_age_seconds, gc_gate_duration_seconds, completion_takeover_total, s3_api_requests_total{op,code}, s3_api_latency_seconds{op}. Metrics vật lý chỉ quản trị; không key/user label cardinality cao. CloudWatch export theo batch/agent, không bắt buộc mỗi scrape gọi PutMetricData.
 
 ---
 
@@ -1328,7 +1355,7 @@ Client, version và cấu hình đã pin ở mục 11.1; không suy rằng mọi
 | boto3 | boto3 1.43.114, botocore 1.43.114, s3transfer 0.19.2, urllib3 2.8.0, không awscrt, Python 3.13.13 | Pin đủ dependency ở `scripts/s3capture/requirements.txt`; `pip install boto3` mặc định không có awscrt |
 | curl | 8.21.0 (Schannel) | Chỉ để gọi URL presigned |
 
-Cấu hình: Region `us-east-1`; `addressing_style = path`; `request_checksum_calculation` và `response_checksum_validation` để mặc định `when_supported`; `multipart_threshold`/`multipart_chunksize` mặc định 8MB (case multipart dùng profile 5MB để part nhỏ). TLS luôn verify bằng CA riêng qua `AWS_CA_BUNDLE`/`curl --cacert`, không dùng `--no-verify-ssl`. Fixture `tests/fixtures/s3/transport.json` ghi lại version, file config và lệnh của từng case. Hàng HTTP của bảng kịch bản trên (empty object, Range open/suffix/416, Unicode/space/%/+/ keys, HEAD error không body, malformed XML, payload/trailer corruption) được pin thêm trong `tests/fixtures/s3/compat.json` (W02-CHIEN-03, [suite và fuzz](testing/s3-compat-suite.md)), với fuzz SigV4/aws-chunked/trailer seeded từ request của client đã pin.
+Cấu hình: Region `us-east-1`; `addressing_style = path`; `request_checksum_calculation` và `response_checksum_validation` để mặc định `when_supported`; `multipart_threshold`/`multipart_chunksize` mặc định 8MB (case multipart dùng profile 5MB để part nhỏ). TLS luôn verify bằng CA riêng qua `AWS_CA_BUNDLE`/`curl --cacert`, không dùng `--no-verify-ssl`. Fixture `tests/fixtures/s3/transport.json` ghi lại version, file config và lệnh của từng case. Hàng HTTP của bảng kịch bản trên (empty object, Range open/suffix/416, Unicode/space/%/+/ keys, HEAD error không body, malformed XML, payload/trailer corruption) được pin thêm trong `tests/fixtures/s3/compat.json` ([suite và fuzz](testing/s3-compat-suite.md)), với fuzz SigV4/aws-chunked/trailer seeded từ request của client đã pin.
 
 Hành vi transport quan sát được (chi tiết checksum ở mục 2.7):
 

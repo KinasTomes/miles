@@ -27,7 +27,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, `CLI quản trị Miles
 
-Read: stats [--bucket b]; layout <bucket> <key>
+Read: stats [--bucket b]; layout <bucket> <key>; cost report [--region r] [--as-of date]
 Packs: pack ls [--state s] [--storage-class c] [--live-ratio-lt r]; pack show <pack_id>
   pack restore <pack_id> <generation> [--days 1..30] [--tier Standard|Bulk|Expedited]; pack promote <pack_id> <generation>
 Cache: cache stats|purge --scope cluster | --scope node --node <id>
@@ -43,7 +43,10 @@ Credentials: credentials create --user u [--system-admin] [--debug-allowed] --ou
 Tokens: admin-token create --user u [--system-admin] [--ttl 24h] --out file; admin-token ls [--user u]; admin-token revoke <token_id>
   admin-token bootstrap --user u [--ttl 24h] --token-file file (--local-data-path dir | --ddb-table-prefix p --region r [--ddb-endpoint url])
     offline, gateway stopped; DynamoDB credentials from AWS_* env
+Lifecycle upgrade: lifecycle-upgrade-gate --ddb-table-prefix p --region r [--ddb-endpoint url]
+  read-only V1 action/Job/R1 inventory; stop gateways and workers first; see docs/lifecycle-upgrade.md
 Jobs: job ls, job show <id>, job run <type> [--dry-run] [--params-file file] [--policy-revision n], job cancel <id>
+Faults: fault ls; fault add --type <t> [--scope node] --node id [--rate r] [--duration s]; fault rm <id>
 Nodes: node ls, node drain <id>
 List commands (ls, pack show): --limit 1..1000, --cursor <next_cursor>. Secrets go only to new 0600 --out files.
 SSH tunnel: ssh -N -L 127.0.0.1:19000:<node>:9000 <bastion>; DSGCTL_ENDPOINT=http://127.0.0.1:19000
@@ -80,10 +83,13 @@ SSH tunnel: ssh -N -L 127.0.0.1:19000:<node>:9000 <bastion>; DSGCTL_ENDPOINT=htt
 	if len(args) >= 2 && args[0] == "admin-token" && args[1] == "bootstrap" {
 		return bootstrap(ctx, args[2:], stdout)
 	}
+	if args[0] == "lifecycle-upgrade-gate" {
+		return lifecycleUpgradeGate(ctx, args[1:], stdout)
+	}
 	var cmd command
 	var err error
 	switch args[0] {
-	case "stats", "layout", "pack", "cache", "job", "node":
+	case "stats", "layout", "cost", "pack", "cache", "job", "node", "fault":
 		cmd, err = operationCommand(args)
 	default:
 		cmd, err = identityCommand(args)

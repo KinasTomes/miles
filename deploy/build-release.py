@@ -20,6 +20,8 @@ FILES = [
     "deploy/cloud/aws-config.example", "deploy/cloud/runtime.env.example",
     "deploy/edge/aws-config.example", "deploy/edge/runtime.env.example",
     "deploy/edge/nginx.conf", "deploy/edge/bootstrap.py", "configs/cloud.example.json", "configs/edge.example.json",
+    "scripts/edge_host_telemetry.py", "scripts/runner_diagnostics.py",
+    "deploy/chrony/aws.conf", "deploy/chrony/aws-burst.conf",
 ]
 
 

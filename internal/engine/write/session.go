@@ -3,14 +3,16 @@ package write
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/KinasTomes/miles/internal/clock"
+	"github.com/KinasTomes/miles/internal/coordination"
+	"github.com/KinasTomes/miles/internal/engine"
+	"github.com/KinasTomes/miles/internal/manifest"
+	"github.com/KinasTomes/miles/internal/policy"
+	"github.com/KinasTomes/miles/internal/storage"
 	"io"
 	"sync"
 	"time"
-
-	"github.com/KinasTomes/miles/internal/clock"
-	"github.com/KinasTomes/miles/internal/coordination"
-	"github.com/KinasTomes/miles/internal/manifest"
-	"github.com/KinasTomes/miles/internal/storage"
 )
 
 // SessionOptions bind one logical operation to an already admitted backend
@@ -149,7 +151,7 @@ func (s *WriteSession) prepare(kind byte, pipeline Pipeline, body io.Reader, man
 		return PreparedObject{}, nil, err
 	}
 	pipeline.Lookup = s.metadata
-	packs := &packRecorder{Publisher: &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil, WriteCache: pipeline.WriteCache, AdmitOnWrite: pipeline.AdmitOnWrite}, packs: map[storage.PackRef]struct{}{}}
+	packs := &packRecorder{Publisher: &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil, WriteCache: pipeline.WriteCache, AdmitOnWrite: pipeline.AdmitOnWrite, Counters: pipeline.Counters}, packs: map[storage.PackRef]struct{}{}}
 	pipeline.Publisher = packs
 	p, err := prepare(s.ctx, kind, pipeline, pages, s.writer.Fence(), body, s.auth.Bucket.Domain, manifestID)
 	if err != nil {
@@ -184,7 +186,7 @@ func (s *WriteSession) PrepareCopy(source storage.ObjectHead, manifestID string)
 		return PreparedObject{}, err
 	}
 	publisher := &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil}
-	p, err := CopyManifest(s.ctx, publisher, s.metadata, s.metadata, s.writer.Fence(), source, manifestID)
+	p, err := CopyManifest(s.ctx, referenceCopyPublisher{StorePublisher: publisher, metadata: s.metadata}, s.metadata, s.metadata, s.writer.Fence(), source, manifestID)
 	if err != nil {
 		s.failed = true
 		return PreparedObject{}, err
@@ -193,6 +195,86 @@ func (s *WriteSession) PrepareCopy(source storage.ObjectHead, manifestID string)
 	owned.PageIndex = append([]uint64(nil), p.PageIndex...)
 	s.prepared = &owned
 	return p, nil
+}
+
+// PrepareCrossDomainCopy prepares a fresh destination manifest across dedup domains
+// (API v2 4.5, architecture 5.3). It reuses destination Warm/Restored chunks and only
+// reads and publishes missing or unreadable chunks through load.
+func (s *WriteSession) PrepareCrossDomainCopy(source storage.ObjectHead, manifestID string, compression engine.CompressionPolicy,
+	request policy.Request, utc policy.UTCProof,
+	next func(context.Context) (storage.ChunkRef, error),
+	load func(context.Context, storage.ChunkRef) ([]byte, error)) (PreparedObject, error) {
+	if s == nil || s.writeSession == nil || next == nil || load == nil || manifestID == "" {
+		return PreparedObject{}, storage.ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.active(); err != nil {
+		return PreparedObject{}, err
+	}
+	if s.prepared != nil {
+		return PreparedObject{}, storage.ErrConflict
+	}
+	if source.Deleted || source.ValidateManifestDescriptor() != nil {
+		return PreparedObject{}, storage.ErrInvalid
+	}
+	if err := s.writer.BindRoot(s.ctx, s.object, manifestID); err != nil {
+		return PreparedObject{}, err
+	}
+	pager, err := manifest.NewStreamWriter(manifest.ObjectPage, manifestID, s.auth.Bucket.Domain,
+		func(page storage.ManifestPage, digest [32]byte) error {
+			return writeVerifiedPage(s.ctx, manifest.ObjectPage, s.metadata, s.writer.Fence(), page, digest)
+		})
+	if err != nil {
+		s.failed = true
+		return PreparedObject{}, err
+	}
+	publisher := &StorePublisher{Metadata: s.metadata, Packs: s.packs, Guard: s.metadata, Writer: s.writer.Fence(), ProtectedUntil: s.protectedUntil}
+	result, err := publisher.CopyChunks(s.ctx, s.auth.Bucket.Domain, compression, request, utc, next, load, pager.Add)
+	if err != nil {
+		s.failed = true
+		return PreparedObject{}, err
+	}
+	if err := pager.Finish(); err != nil {
+		s.failed = true
+		return PreparedObject{}, err
+	}
+	size, chunks, pageCount, index, _, err := pager.Descriptor()
+	if err != nil || size != source.Size || chunks != source.ChunkCount {
+		s.failed = true
+		return PreparedObject{}, fmt.Errorf("%w: incomplete manifest", storage.ErrUnavailable)
+	}
+	p := PreparedObject{
+		ManifestID: manifestID,
+		Domain:     s.auth.Bucket.Domain,
+		Size:       size,
+		ChunkCount: chunks,
+		PageCount:  pageCount,
+		PageIndex:  index,
+		PackCount:  result.PackCount,
+	}
+	owned := p
+	owned.PageIndex = append([]uint64(nil), p.PageIndex...)
+	s.prepared = &owned
+	return p, nil
+}
+
+// Same-domain metadata copy is the explicit Architecture §5.3 exception: Cold
+// references may be copied without restoring or claiming Warm readability.
+type referenceCopyPublisher struct {
+	*StorePublisher
+	metadata *CoordinatedMetadata
+}
+
+func (p referenceCopyPublisher) Reuse(ctx context.Context, row storage.Chunk) (bool, error) {
+	infos, err := p.metadata.GetPacks(ctx, []storage.PackRef{row.Location.Pack})
+	if err != nil {
+		return false, err
+	}
+	if info, ok := infos[row.Location.Pack]; ok && info.Class == storage.Glacier {
+		return p.metadata.pinArchiveReference(ctx, row)
+	}
+	return p.StorePublisher.Reuse(ctx, row)
 }
 
 // PrepareCompletion is Prepare for CompleteMultipartUpload: the backend's
