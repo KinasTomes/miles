@@ -1,6 +1,6 @@
-# Dựng một installation Miles mới trên AWS
+# Dựng một installation Miles trên AWS
 
-Member dùng account AWS của mình, một file cấu hình và CLI login tạm thời. Bộ dựng tạo IAM operator, state backend, shared storage, hai Cloud node sau ALB và một Edge EC2. Tất cả runtime đặt trên AWS. Máy đang thao tác chỉ giữ công cụ, source và artifacts private.
+Member dùng một file cấu hình private trên máy của mình và CLI login tạm thời. Chọn `bootstrap_mode: "new"` để tạo IAM operator/state backend mới, hoặc `"existing"` để dùng IAM/backend đã được chủ account cấp sẵn. Hai chế độ dùng chung luồng dựng shared storage, hai Cloud node sau ALB và một Edge EC2. Tất cả runtime đặt trên AWS. Máy đang thao tác chỉ giữ công cụ, source và artifacts private.
 
 Luồng dưới dành cho **dev/test có dữ liệu synthetic**. Bộ dựng tạo CA TLS riêng, certificate Cloud nhập ACM và certificate Edge cấp cho Nginx. Client xác minh bằng CA của installation, không cần domain có sẵn. Đây chưa phải cấu hình certificate công khai và vận hành production. Certificate TLS và certificate Roles Anywhere dùng hai CA/key riêng.
 
@@ -31,14 +31,16 @@ cp infra/terraform/cloud/environments/dev/installation.example.json \
 
 | Trường | Giá trị cần điền |
 | --- | --- |
+| `bootstrap_mode` | `new` (mặc định) hoặc `existing`; chọn trước `prepare` |
 | `account_id`, `region`, `availability_zones` | Account của member, commercial Region và hai AZ có thật |
 | `installation_name`, `environment`, `owner` | Tên riêng cho lượt test và chủ sở hữu |
 | `ami_id`, `release_architecture` | Amazon Linux 2023 đã pin, `arm64` hoặc `amd64` đúng AMI |
 | `instance_type`, `fleet_instance_type`, `edge_instance_type` | Loại máy được account cho phép, cùng kiến trúc release |
 | `client_cidrs` | IP public của máy probe/operator dạng `/32`, được mở cổng 443 tới ALB/Edge |
-| `runtime_iam_path`, `runtime_permissions_boundary_arn` | Path và boundary mới trong account này |
-| `operator.user_arn`, `mfa_arn`, `deploy_role_arn` | Danh tính operator mới, tên MFA và role deploy |
-| `operator.login_profile`, `admin_profile` | Hai profile CLI riêng cho workload và quản trị IAM |
+| `runtime_iam_path`, `runtime_permissions_boundary_arn` | Path và boundary mới, hoặc đúng giá trị đã cấp ở chế độ `existing` |
+| `operator.user_arn`, `mfa_arn`, `deploy_role_arn` | Danh tính operator, tên MFA và role deploy mới hoặc đã cấp |
+| `operator.login_profile`, `admin_profile` | Profile CLI cho deploy role; admin profile chỉ dùng trong chế độ `new` |
+| `operator.state_bucket`, `state_key` | Với `existing`, tên bucket/key đã cấp; nếu bỏ trống dùng `<installation>-tfstate-<account>-<region>` và `cloud/<environment>/terraform.tfstate`. `new` không nhận override bucket |
 | `operator.utc_reference` | Nguồn chrony IPv4 trên máy operator |
 | `deployment.max_cost_usd`, `max_active_minutes` | Envelope và thời hạn của lượt đã được chủ account duyệt |
 
@@ -50,7 +52,7 @@ Một installation giữ cùng config, thư mục private, source SHA và remote
 
 Các giá trị `miles-dev` trong example/default giữ tương thích với môi trường cũ; không đổi hàng loạt chúng thành tên của một người dùng. Installation mới dùng JSON private với `installation_name`, `environment`, `owner`, runtime IAM path, role và backend riêng. Cấu hình runtime được sinh từ tên installation và Terraform outputs, gồm `ddb_table_prefix`, bucket, KMS key, secret và danh tính Edge; không chạy trực tiếp shared example chưa điền giá trị.
 
-Nếu IAM hoặc bucket state đã được bootstrap bên ngoài Terraform, không chạy luồng fresh-install để nhận quản lý chúng tự động. Chủ account phải đối chiếu ARN, policy, trust, boundary và bucket policy hiện có rồi duyệt import/plan riêng. Giữ nguyên các deny bổ sung đã được phê duyệt; không render lại defaults rồi ghi đè quyền chỉ để vượt `AccessDenied`. Terraform CLI dùng workspace `default` trong backend riêng; bucket/key/lock key phải khớp policy, không migrate/copy state của installation khác.
+Nếu IAM và bucket state đã được cấp sẵn, chọn `bootstrap_mode: "existing"` và theo mục 1.1. Bộ dựng chỉ đọc/xác minh chúng, không import vào Terraform hay ghi đè policy. Giữ nguyên các deny bổ sung đã được phê duyệt; không render lại defaults rồi ghi đè quyền chỉ để vượt `AccessDenied`. Terraform CLI dùng workspace `default` trong backend riêng; bucket/key/lock key phải khớp policy, không migrate/copy state của installation khác.
 
 Khi nâng cấp installation cũ, pin `owner` hiện tại trong private inputs và review mọi thay đổi tag. Các quyền mạng mới yêu cầu tag `Project`, `Environment`, `Installation` đã đúng trên tài nguyên. Nếu tài nguyên cũ chưa có `Installation`, chỉ chủ account được gắn nhãn sau khi đối chiếu từng ARN với state/inventory đã duyệt, trước khi chuyển sang policy mới. Không thêm quyền nhận tài nguyên chưa có tag một cách đại trà. Đổi `installation_name` trong state cũ có thể gây thay thế tài nguyên; đây không phải cách tách môi trường.
 
@@ -67,7 +69,36 @@ deploy prepare
 
 `prepare` chạy offline, tạo CA/key, SSH key quản trị có giới hạn, render IAM/tfvars/backend và copy Terraform vào private directory. Nó chưa gọi AWS. Source phải sạch để release và Terraform được pin cùng SHA. Các bước sau tiếp tục dùng artifacts đã giữ.
 
+### 1.1. Dùng IAM và backend đã cấp sẵn trên máy member
+
+Vẫn copy example, điền **một JSON trên máy member**, chọn `"bootstrap_mode": "existing"`. Điền tường minh `installation_name`, `environment`, `owner`, `runtime_iam_path`, boundary ARN và operator ARN theo bàn giao của chủ account. Điền `operator.state_bucket`/`state_key` nếu khác quy ước. Không đổi tên installation để nhận tài nguyên của người khác. Không cần admin credential trên máy member.
+
+Chủ account phải cấp trước user/role MFA, runtime boundary, backend và các quyền workload/cleanup đã duyệt. Role, boundary và bucket cần cùng tags `Project=Miles`, `Installation`, `Environment`, `Owner` theo JSON. Backend cần versioning Enabled, bốn public access blocks, SSE-S3 AES256 và bucket policy deny HTTP. Giữ đủ quyền backend trên đúng key: ListBucket, Get/Put state, Get/Put/Delete `.tflock`. Role deploy phải có **explicit Deny cả `s3:DeleteObject` và `s3:DeleteObjectVersion` trên đúng state key**, không áp dụng deny này lên `.tflock`. Chỉ bỏ quyền Allow là chưa đủ vì bucket policy có thể cấp lại quyền; xem [AWS policy evaluation](https://docs.aws.amazon.com/IAM/latest/UserGuide/reference_policies_evaluation-logic_policy-eval-denyallow.html). Chế độ `new` sinh deny trong policy deploy; với `existing`, chủ account phải cấp trước và bộ dựng chỉ kiểm tra, không tự sửa IAM. Không dùng bucket dữ liệu làm backend.
+
+Role còn cần quyền kiểm tra trong `rendered/iam/deploy-bootstrap-read.json` và các S3 configuration reads cho backend. Policy kiểm tra chỉ cấp action đọc/mô phỏng và có explicit Deny `iam:PutRolePolicy` trên chính deploy role để việc kiểm tra không phụ thuộc một implicit deny thiếu context. Chủ account duyệt/cấp policy; bộ dựng không tự attach hoặc thay policy. Nếu `AccessDenied`, dừng và gửi tên action thiếu cho chủ account. Không mở rộng sang tài nguyên dùng chung.
+
+Sau `deploy prepare`, đăng nhập **deploy role** theo mục 4 hoặc dùng profile AssumeRole/MFA do chủ account bàn giao; kiểm `aws sts get-caller-identity` đúng role/account. Không đăng nhập root/admin để vượt gate. Sau đó:
+
+```bash
+deploy verify-bootstrap
+deploy plan foundation
+# Review foundation-plan-details.json và descriptor trước khi apply.
+deploy apply foundation --plan-sha256 REPLACE_WITH_FOUNDATION_PLAN_SHA256
+```
+
+Không chạy mục 2–3 hoặc `plan/apply state`. Chế độ `existing` chặn cả `plan` và `apply` của `operator`/`state`, không copy hai bootstrap stack vào private directory. Tiếp tục provision/active/verify/pause ở mục 6–8 như chế độ `new`.
+
+`verify-bootstrap` kiểm STS account/RoleId, ARN, trust chỉ operator có MFA, tags, boundary document, cấu hình backend và IAM simulation cho quyền state/lock. S3 GET đọc state thật; không ghi thử state/lock. State key phải chưa có workload, hoặc là state cùng lineage của **chính lượt chạy này** khi resume. Nếu key đã có workload của lượt cũ, khôi phục private directory/source/config gốc, không tự nhận quản lý và không xóa state. Trước mỗi workload plan/apply, bộ dựng kiểm lại bootstrap; thay trust/boundary/backend configuration sau plan sẽ yêu cầu plan mới. Bằng chứng chỉ lưu private tại `bootstrap-verification.json`.
+
+Simulation nhận account/user ID từ STS và resource tags đã đọc từ IAM khi kiểm tra chính deploy role. Bộ dựng không giả lập IP nguồn, MFA hoặc các condition keys chưa xác minh. Theo [AWS EvaluationResult](https://docs.aws.amazon.com/IAM/latest/APIReference/API_EvaluationResult.html), explicit deny quyết định kết quả dù các statement khác thiếu context: gate chấp nhận deny đã xác nhận cho đúng action/resource cần bị chặn. Kết quả bị cắt trang, action/resource không khớp hoặc `allowed`/`implicitDeny` còn `MissingContextValues` vẫn bị từ chối; lỗi nêu action và các key thiếu để chủ account review, không in giá trị private. Với state, cả hai action xóa luôn cần explicit deny. Role cũ có kết quả implicit deny đầy đủ cho `iam:PutRolePolicy` vẫn được chấp nhận.
+
+Gate này không chứng nhận toàn bộ effective IAM rights, SCP, quota hoặc khả năng deploy trên AWS thật; [IAM simulation](https://docs.aws.amazon.com/IAM/latest/APIReference/API_SimulatePrincipalPolicy.html) không thay thế native AWS responses. Quyền state và `.tflock` theo [S3 backend contract](https://developer.hashicorp.com/terraform/language/backend/s3#permissions-required). Chủ account vẫn phải review quyền workload/boundary và plan. Phần `existing` được kiểm bằng fixture offline; chỉ tuyên bố chạy AWS thành công sau khi có evidence thực tế trên account đích.
+
+Cleanup dùng cùng luồng mục 8, chỉ xóa workload. `cleanup_expires_at` vẫn là cửa sổ phê duyệt chạy cleanup tối đa bốn giờ và cần `--delete-data`; ở chế độ `existing` nó **không sửa IAM hoặc tự hết hạn quyền đã cấp vĩnh viễn**. Chủ account chịu trách nhiệm cấp/thu hồi grant; không chạy lại operator stack để bật/tắt quyền. IAM, boundary và state bucket cấp sẵn được giữ ngoài Terraform workload, kể cả khi teardown.
+
 ## 2. Đăng nhập quản trị IAM bằng link và code
+
+Chỉ dành cho `bootstrap_mode: "new"`. Với `existing`, bỏ qua mục 2–3.
 
 Dùng profile `operator.admin_profile`, ví dụ `miles-member-iam`. Chủ account có thể dùng root + MFA cho bootstrap IAM ban đầu. Phiên này chỉ chạy stack `operator`, không chạy workload.
 
@@ -125,6 +156,8 @@ Account phải khớp JSON, ARN là `arn:aws:sts::<account>:assumed-role/<deploy
 Nếu hết phiên, Switch back về user rồi Switch role lại. Khi phiên Console gốc đã cũ, đăng xuất và đăng nhập user bằng MFA trước. Sau đó tạo URL CLI mới. `aws login` không kéo dài phiên role cũ.
 
 ## 5. State và foundation
+
+Chế độ `existing` bỏ qua hai lệnh `plan/apply state` dưới đây, chạy `verify-bootstrap` và foundation theo mục 1.1.
 
 Trước bước này, chủ account duyệt topology, IAM, dự toán, deadline gồm cleanup và quyền xóa dữ liệu synthetic. Tính cả endpoints/ALB, EC2/EBS, public IPv4, DynamoDB/PITR, S3, KMS, Secrets Manager, logs và traffic. Kiểm quota/loại máy/Free Tier của account thực tế. Số tiền trong JSON là envelope do người chạy theo dõi, không phải hard billing cap.
 
@@ -203,7 +236,7 @@ Nếu bootstrap lỗi và không có shutdown proof, dừng cleanup tự động
 Chủ account phải duyệt danh sách dữ liệu và đĩa bị xóa, backup cần giữ và thời hạn grant. Full teardown xóa S3 versions/delete markers/multipart, 20 bảng, runtime IAM/network/logs và root disks không backup. KMS/secret dùng cửa sổ chờ xóa 30 ngày. Bootstrap user/role/boundary/state được giữ để tái sử dụng. Shared ELB service-linked role của account cũng được giữ, custom ASG role của installation bị xóa.
 
 1. Trong JSON, thêm `operator.cleanup_expires_at` theo UTC ISO8601, ví dụ `2026-11-03T18:00:00Z`, trong tương lai và tối đa bốn giờ. Dùng thời điểm của lượt thực tế.
-2. Đăng nhập admin profile nếu cần. `deploy plan operator`, review policy diff có cleanup grant theo installation/thời hạn, rồi `deploy apply operator --plan-sha256 ...` sau khi được duyệt.
+2. Với `new`: đăng nhập admin profile nếu cần; `deploy plan operator`, review policy diff có cleanup grant theo installation/thời hạn, rồi `deploy apply operator --plan-sha256 ...` sau khi được duyệt. Với `existing`: chủ account xác nhận role đã có cleanup rights đúng phạm vi; không plan/apply operator, không sửa IAM từ bộ dựng.
 3. Dùng deploy profile cho các bước còn lại.
 
 ```bash
@@ -218,7 +251,7 @@ Unprotect chỉ được đổi DynamoDB deletion protection từ true sang fals
 
 Đối chiếu thêm các tài nguyên phát sinh ngoài state, import/apply mất ACK và SYSTEM backups/PITR theo [full teardown runbook](../../infra/terraform/cloud/full-teardown.md). Không chỉ dựa vào state rỗng để kết luận không còn orphan. Giữ inventory và thời điểm chờ xóa để hậu kiểm.
 
-Cuối cùng xóa `cleanup_expires_at` khỏi JSON, review/apply lại operator plan bằng admin để thu hồi grant. Không xóa stack operator/state. Logout cả hai profile login nguồn.
+Cuối cùng xóa `cleanup_expires_at` khỏi JSON. Với `new`, review/apply lại operator plan bằng admin để thu hồi grant. Với `existing`, bàn giao evidence và yêu cầu chủ account thu hồi quyền theo chính sách đã duyệt; bộ dựng không sửa grant ngoài quản lý. Không xóa stack operator/state. Logout các profile login đã dùng.
 
 ```bash
 aws logout --profile miles-member
