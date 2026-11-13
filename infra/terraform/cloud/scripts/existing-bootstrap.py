@@ -68,6 +68,7 @@ def verify(aws, expected, state, private):
               ("s3:PutObject", arn + "/" + expected["state_key"] + ".tflock", True),
               ("s3:DeleteObject", arn + "/" + expected["state_key"] + ".tflock", True),
               ("s3:DeleteObject", arn + "/" + expected["state_key"], False),
+              ("s3:DeleteObjectVersion", arn + "/" + expected["state_key"], False),
               ("iam:PutRolePolicy", expected["role_arn"], False)]
     for action, resource, permitted in checks:
         request = {"PolicySourceArn": expected["role_arn"], "ActionNames": [action], "ResourceArns": [resource],
@@ -82,7 +83,7 @@ def verify(aws, expected, state, private):
         evaluations = result.get("EvaluationResults", [])
         decisions = ("allowed",) if permitted else ("implicitDeny", "explicitDeny")
         # A resource-policy allow can bypass an implicit identity deny on the state key.
-        if action == "s3:DeleteObject" and not permitted:
+        if action in ("s3:DeleteObject", "s3:DeleteObjectVersion") and not permitted:
             decisions = ("explicitDeny",)
         if result.get("IsTruncated") or result.get("Marker") or len(evaluations) != 1 or evaluations[0].get("MissingContextValues") or any(r.get("MissingContextValues") for r in evaluations[0].get("ResourceSpecificResults", [])) or evaluations[0].get("EvalDecision") not in decisions:
             raise ValueError("Existing deploy role lacks required backend/lock permissions")

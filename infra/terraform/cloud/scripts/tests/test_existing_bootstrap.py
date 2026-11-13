@@ -69,7 +69,7 @@ class ExistingBootstrapTests(unittest.TestCase):
             decision = "allowed"
             if action == "iam:PutRolePolicy":
                 decision = "implicitDeny"
-            elif action == "s3:DeleteObject" and not resource.endswith(".tflock"):
+            elif action in ("s3:DeleteObject", "s3:DeleteObjectVersion") and not resource.endswith(".tflock"):
                 decision = "explicitDeny"
             return self.permission_overrides.get((action, resource), {"EvaluationResults": [{"EvalDecision": decision}]})
         return copy.deepcopy(self.responses[operation])
@@ -122,6 +122,16 @@ class ExistingBootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "permissions"):
             self.verify()
         self.permission_overrides[("s3:DeleteObject", state)] = {"EvaluationResults": [{"EvalDecision": "explicitDeny"}]}
+        self.verify()
+
+    def test_version_deletion_requires_explicit_deny_on_exact_state_key(self):
+        state = "arn:aws:s3:::" + self.expected["state_bucket"] + "/" + self.expected["state_key"]
+        for decision in ("allowed", "implicitDeny"):
+            with self.subTest(decision=decision):
+                self.permission_overrides[("s3:DeleteObjectVersion", state)] = {"EvaluationResults": [{"EvalDecision": decision}]}
+                with self.assertRaisesRegex(ValueError, "permissions"):
+                    self.verify()
+        self.permission_overrides[("s3:DeleteObjectVersion", state)] = {"EvaluationResults": [{"EvalDecision": "explicitDeny"}]}
         self.verify()
 
     def test_singleton_trust_bucket_and_boundary_statements(self):

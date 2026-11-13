@@ -28,7 +28,7 @@ class InstallationTests(unittest.TestCase):
         deny = next(s for s in policy if s["Sid"] == "NeverDeleteBackendState")
         bucket = config["installation_name"] + "-tfstate-" + config["account_id"] + "-" + config["region"]
         state = "arn:aws:s3:::" + bucket + "/cloud/" + config["environment"] + "/terraform.tfstate"
-        self.assertEqual(deny, {"Sid": "NeverDeleteBackendState", "Effect": "Deny", "Action": ["s3:DeleteObject"], "Resource": [state]})
+        self.assertEqual(deny, {"Sid": "NeverDeleteBackendState", "Effect": "Deny", "Action": ["s3:DeleteObject", "s3:DeleteObjectVersion"], "Resource": [state]})
         self.assertNotIn("Condition", deny)
         unlock = next(s for s in policy if s["Sid"] == "UnlockDevState")
         self.assertEqual(unlock["Resource"], [state + ".tflock"])
