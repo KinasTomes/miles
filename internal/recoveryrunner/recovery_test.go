@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -115,6 +116,9 @@ func TestRecoveryRunnerR1(t *testing.T) {
 			currentEpoch.Add(1) // epoch advances
 			return nil
 		},
+		VerifyNativeProof: func(ctx context.Context, historyID string, baselineEpoch, recoveredEpoch int64) (NativeProof, error) {
+			return NativeProof{LeaseFenceVerified: true, SealedCutVerified: true, ReplayIdempotencyVerified: true}, nil
+		},
 		ReadCheckpoint: func(ctx context.Context, historyID string, epoch int64) (string, error) {
 			return "chk-seal-" + historyID, nil
 		},
@@ -175,6 +179,9 @@ func TestRecoveryRunnerR2(t *testing.T) {
 		SimulateFault: func(ctx context.Context, phase string) error {
 			r2Epoch.Add(1)
 			return nil
+		},
+		VerifyNativeProof: func(ctx context.Context, historyID string, baselineEpoch, recoveredEpoch int64) (NativeProof, error) {
+			return NativeProof{LeaseFenceVerified: true, SealedCutVerified: true, ReplayIdempotencyVerified: true}, nil
 		},
 		ReadCheckpoint: func(ctx context.Context, historyID string, epoch int64) (string, error) {
 			return "chk-cut-" + historyID, nil
@@ -274,6 +281,9 @@ func TestRecoveryRunnerNegativeCases(t *testing.T) {
 			CheckGate: func(ctx context.Context) (*GateState, error) {
 				return &GateState{HistoryID: "h1", Epoch: 1, State: "Open"}, nil
 			},
+			VerifyNativeProof: func(ctx context.Context, historyID string, baselineEpoch, recoveredEpoch int64) (NativeProof, error) {
+				return NativeProof{LeaseFenceVerified: true, SealedCutVerified: true, ReplayIdempotencyVerified: true}, nil
+			},
 			ReadCheckpoint: func(ctx context.Context, historyID string, epoch int64) (string, error) {
 				return "chk-1", nil
 			},
@@ -298,6 +308,9 @@ func TestRecoveryRunnerNegativeCases(t *testing.T) {
 			SimulateFault: func(ctx context.Context, phase string) error {
 				epoch.Add(1)
 				return nil
+			},
+			VerifyNativeProof: func(ctx context.Context, historyID string, baselineEpoch, recoveredEpoch int64) (NativeProof, error) {
+				return NativeProof{LeaseFenceVerified: true, SealedCutVerified: true, ReplayIdempotencyVerified: true}, nil
 			},
 			ReadCheckpoint: func(ctx context.Context, historyID string, epoch int64) (string, error) {
 				return "", errors.New("checkpoint missing from durable state")
@@ -328,6 +341,9 @@ func TestRecoveryRunnerNegativeCases(t *testing.T) {
 				epoch.Add(1)
 				return nil
 			},
+			VerifyNativeProof: func(ctx context.Context, historyID string, baselineEpoch, recoveredEpoch int64) (NativeProof, error) {
+				return NativeProof{LeaseFenceVerified: true, SealedCutVerified: true, ReplayIdempotencyVerified: true}, nil
+			},
 			ReadCheckpoint: func(ctx context.Context, historyID string, epoch int64) (string, error) {
 				return "chk-h1-e2", nil
 			},
@@ -352,4 +368,56 @@ func TestRecoveryRunnerNegativeCases(t *testing.T) {
 			t.Fatal("expected error when fault injection fails")
 		}
 	})
+}
+
+func TestRecoveryRejectsNativeProofAbsentAfterEpochAndCheckpoint(t *testing.T) {
+	manifestPath, content, _ := createTestManifest(t, t.TempDir())
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(content))
+	})
+	cfg, temp := setupFixture(t, handler)
+	var epoch atomic.Int64
+	epoch.Store(8)
+	opt := Options{
+		Manifest:     manifestPath,
+		Out:          filepath.Join(temp, "native-proof-missing"),
+		Variant:      "r2",
+		FaultScope:   "checkpoint-cut",
+		PollInterval: time.Millisecond,
+		MaxPollWait:  25 * time.Millisecond,
+		CheckGate: func(context.Context) (*GateState, error) {
+			return &GateState{HistoryID: "abcd", Epoch: epoch.Load(), State: "Open"}, nil
+		},
+		SimulateFault: func(context.Context, string) error {
+			epoch.Add(1)
+			return nil
+		},
+		ReadCheckpoint: func(context.Context, string, int64) (string, error) {
+			return "journal/epochs/abcd/8/seal-synthetic.json", nil
+		},
+	}
+	res, err := Run(context.Background(), cfg, opt)
+	if err == nil || !strings.Contains(err.Error(), "native lease-fence") {
+		t.Fatalf("expected fail-closed independent native proof, got %v", err)
+	}
+	if res.Status != "failed" || res.RecoveryReceipt == nil ||
+		res.RecoveryReceipt.LeaseFenceVerified ||
+		res.RecoveryReceipt.SealedCutVerified ||
+		res.RecoveryReceipt.ReplayIdempotencyVerified {
+		t.Fatalf("must not fabricate native proof on valid-looking checkpoint: %+v", res)
+	}
+}
+
+func TestRecoveryRefusesDSGCredentialAsDynamoDBSession(t *testing.T) {
+	cfg, temp := setupFixture(t, nil)
+	for _, opt := range []Options{
+		{AWSCredentialsFile: "", ExpectedAWSAccount: "123456789012"},
+		{AWSCredentialsFile: cfg.CredentialsFile, ExpectedAWSAccount: "123456789012"},
+		{AWSCredentialsFile: filepath.Join(temp, "missing"), ExpectedAWSAccount: "123456789012"},
+	} {
+		if _, err := readDynamoDBClient(context.Background(), cfg, opt); err == nil {
+			t.Fatalf("unsafe DynamoDB credentials accepted: %+v", opt)
+		}
+	}
 }

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -105,11 +106,11 @@ func TestColdRunnerIR(t *testing.T) {
 	}
 
 	res, err := Run(context.Background(), cfg, opt)
-	if err != nil {
-		t.Fatalf("Run IR failed: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "authoritative retained physical inventory") {
+		t.Fatalf("expected incomplete IR without inventory, got %v", err)
 	}
-	if res.Status != "passed" {
-		t.Fatalf("expected passed, got %s", res.Status)
+	if res.Status != "incomplete" {
+		t.Fatalf("expected incomplete, got %s", res.Status)
 	}
 	if res.ColdReceipt == nil || !res.ColdReceipt.RevivalVerified || !res.ColdReceipt.TotalGETVerifiedSHA256 {
 		t.Fatalf("invalid ColdReceipt: %+v", res.ColdReceipt)
@@ -117,8 +118,8 @@ func TestColdRunnerIR(t *testing.T) {
 	if res.ColdReceipt.ObservedBackendStorageClass != "GLACIER_IR" {
 		t.Fatalf("expected observed class GLACIER_IR, got %s", res.ColdReceipt.ObservedBackendStorageClass)
 	}
-	if res.ColdReceipt.RetainedPhysicalBytes != int64(len(content)) {
-		t.Fatalf("expected RetainedPhysicalBytes %d, got %d", len(content), res.ColdReceipt.RetainedPhysicalBytes)
+	if res.ColdReceipt.VerifiedLogicalGETBytes != int64(len(content)) || res.ColdReceipt.RetainedPhysicalBytes != nil {
+		t.Fatalf("expected RetainedPhysicalBytes %d, got %d", len(content), res.ColdReceipt.VerifiedLogicalGETBytes)
 	}
 	if len(res.Samples) != 1 || res.Samples[0].SHA256 != hash {
 		t.Fatalf("unexpected samples: %+v", res.Samples)
@@ -189,11 +190,11 @@ func TestColdRunnerFlexible(t *testing.T) {
 	}
 
 	res, err := Run(context.Background(), cfg, opt)
-	if err != nil {
-		t.Fatalf("Run Flexible failed: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "authoritative retained physical inventory") {
+		t.Fatalf("expected incomplete Flexible without inventory, got %v", err)
 	}
-	if res.Status != "passed" {
-		t.Fatalf("expected passed, got %s", res.Status)
+	if res.Status != "incomplete" {
+		t.Fatalf("expected incomplete, got %s", res.Status)
 	}
 	if res.ColdReceipt == nil || !res.ColdReceipt.RevivalVerified || res.ColdReceipt.RestorationStatus != "completed" {
 		t.Fatalf("invalid ColdReceipt: %+v", res.ColdReceipt)
@@ -201,8 +202,8 @@ func TestColdRunnerFlexible(t *testing.T) {
 	if res.ColdReceipt.RestorationExpiry != "Fri, 23 Dec 2026 00:00:00 GMT" {
 		t.Fatalf("expected expiry, got %s", res.ColdReceipt.RestorationExpiry)
 	}
-	if res.ColdReceipt.RetainedPhysicalBytes != int64(len(content)) {
-		t.Fatalf("expected RetainedPhysicalBytes %d, got %d", len(content), res.ColdReceipt.RetainedPhysicalBytes)
+	if res.ColdReceipt.VerifiedLogicalGETBytes != int64(len(content)) || res.ColdReceipt.RetainedPhysicalBytes != nil {
+		t.Fatalf("expected RetainedPhysicalBytes %d, got %d", len(content), res.ColdReceipt.VerifiedLogicalGETBytes)
 	}
 	if len(res.Samples) != 1 || res.Samples[0].SHA256 != hash {
 		t.Fatalf("unexpected samples: %+v", res.Samples)

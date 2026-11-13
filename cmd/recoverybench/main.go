@@ -36,6 +36,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	retain := f.Bool("retain-objects", false, "Retain objects")
 	systemConfigTable := f.String("system-config-table", "miles-dev-SystemConfig", "DynamoDB SystemConfig table name")
 	faultCommand := f.String("fault-command", "", "Command to execute for fault injection")
+	awsCredentials := f.String("aws-credentials-file", "", "Separate 0600 AWS temporary credentials JSON")
+	expectedAccount := f.String("expected-aws-account", "", "Expected 12-digit AWS account ID")
 
 	if err := f.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -63,15 +65,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	opt := recoveryrunner.Options{
-		Manifest:          *manifest,
-		Out:               *out,
-		Variant:           *variant,
-		FaultScope:        *faultScope,
-		SystemConfigTable: *systemConfigTable,
-		FaultCommand:      *faultCommand,
-		Concurrency:       *concurrency,
-		FailFast:          *failFast,
-		RetainObjects:     *retain,
+		Manifest:           *manifest,
+		Out:                *out,
+		Variant:            *variant,
+		FaultScope:         *faultScope,
+		SystemConfigTable:  *systemConfigTable,
+		FaultCommand:       *faultCommand,
+		AWSCredentialsFile: *awsCredentials,
+		ExpectedAWSAccount: *expectedAccount,
+		Concurrency:        *concurrency,
+		FailFast:           *failFast,
+		RetainObjects:      *retain,
 	}
 
 	res, err := recoveryrunner.Run(ctx, c, opt)

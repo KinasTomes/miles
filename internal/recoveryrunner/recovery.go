@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	awssts "github.com/aws/aws-sdk-go-v2/service/sts"
 
 	"github.com/KinasTomes/miles/internal/benchmark"
 	"github.com/KinasTomes/miles/internal/benchmarkdata"
@@ -37,20 +39,23 @@ var AllowedFaultScopes = map[string]bool{
 
 // Options holds runtime options for the recovery benchmark runner.
 type Options struct {
-	Manifest          string
-	Out               string
-	Variant           string // "r1" or "r2"
-	FaultScope        string
-	SystemConfigTable string // DynamoDB table name (e.g. "miles-dev-SystemConfig")
-	FaultCommand      string // Optional shell command for fault injection
-	PollInterval      time.Duration
-	MaxPollWait       time.Duration
-	Concurrency       int
-	FailFast          bool
-	RetainObjects     bool
-	SimulateFault     func(ctx context.Context, phase string) error
-	CheckGate         func(ctx context.Context) (*GateState, error)
-	ReadCheckpoint    func(ctx context.Context, historyID string, epoch int64) (string, error)
+	Manifest           string
+	Out                string
+	Variant            string // "r1" or "r2"
+	FaultScope         string
+	SystemConfigTable  string // DynamoDB table name (e.g. "miles-dev-SystemConfig")
+	AWSCredentialsFile string // Separate, temporary AWS deploy-role credentials (NOT DSG key)
+	ExpectedAWSAccount string // Pinned account ID for STS identity verification
+	FaultCommand       string // Optional shell command for fault injection
+	PollInterval       time.Duration
+	MaxPollWait        time.Duration
+	Concurrency        int
+	FailFast           bool
+	RetainObjects      bool
+	SimulateFault      func(ctx context.Context, phase string) error
+	CheckGate          func(ctx context.Context) (*GateState, error)
+	ReadCheckpoint     func(ctx context.Context, historyID string, epoch int64) (string, error)
+	VerifyNativeProof  func(ctx context.Context, historyID string, baselineEpoch, recoveredEpoch int64) (NativeProof, error)
 }
 
 // GateState represents the coordination/r1/current gate state.
@@ -58,6 +63,14 @@ type GateState struct {
 	HistoryID string `json:"history_id"`
 	Epoch     int64  `json:"epoch"`
 	State     string `json:"state"`
+}
+
+// NativeProof must come from independent native fence/cut/replay observations.
+// A gate epoch, a hash field and a successful GET do not prove these properties.
+type NativeProof struct {
+	LeaseFenceVerified        bool
+	SealedCutVerified         bool
+	ReplayIdempotencyVerified bool
 }
 
 // RecoveryReceipt captures authoritative evidence for recovery workload execution.
@@ -100,39 +113,50 @@ type Result struct {
 	Error           string           `json:"error,omitempty"`
 }
 
-type credJSON struct {
-	AccessKeyID     string `json:"access_key_id"`
-	SecretAccessKey string `json:"secret_access_key"`
-	SessionToken    string `json:"session_token,omitempty"`
+type awsSessionJSON struct {
+	Version         int    `json:"Version"`
+	AccessKeyID     string `json:"AccessKeyId"`
+	SecretAccessKey string `json:"SecretAccessKey"`
+	SessionToken    string `json:"SessionToken"`
+	Expiration      string `json:"Expiration"`
 }
 
-func readDynamoDBClient(cfg benchmark.Config) (*ddb.Client, error) {
-	if cfg.CredentialsFile == "" {
-		return nil, errors.New("credentials_file not configured")
+func readDynamoDBClient(ctx context.Context, cfg benchmark.Config, opt Options) (*ddb.Client, error) {
+	if opt.AWSCredentialsFile == "" || opt.AWSCredentialsFile == cfg.CredentialsFile {
+		return nil, errors.New("separate AWS temporary credentials file required; DSG S3 keys cannot authorize DynamoDB")
 	}
-	b, err := secretfile.Read(cfg.CredentialsFile, 32<<10)
+	if !regexp.MustCompile(`^[0-9]{12}$`).MatchString(opt.ExpectedAWSAccount) {
+		return nil, errors.New("expected AWS account must be pinned")
+	}
+	b, err := secretfile.Read(opt.AWSCredentialsFile, 32<<10)
 	if err != nil {
-		return nil, fmt.Errorf("read credentials_file: %w", err)
+		return nil, fmt.Errorf("read temporary AWS credentials file: %w", err)
 	}
-	var c credJSON
-	if err := json.Unmarshal(b, &c); err != nil || c.AccessKeyID == "" || c.SecretAccessKey == "" {
-		return nil, errors.New("invalid or empty credentials in credentials_file")
+	var c awsSessionJSON
+	if err := json.Unmarshal(b, &c); err != nil {
+		return nil, errors.New("invalid AWS credentials JSON")
 	}
-	region := cfg.Region
-	if region == "" {
+	expires, err := time.Parse(time.RFC3339, c.Expiration)
+	if err != nil || c.Version != 1 || !strings.HasPrefix(c.AccessKeyID, "ASIA") ||
+		c.SecretAccessKey == "" || c.SessionToken == "" || time.Until(expires) < 5*time.Minute {
+		return nil, errors.New("fresh AWS temporary session with expiry >= 5 min required")
+	}
+	if cfg.Region == "" {
 		return nil, errors.New("region not configured")
 	}
-	client := ddb.New(ddb.Options{
-		Region: region,
-		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
-			return aws.Credentials{
-				AccessKeyID:     c.AccessKeyID,
-				SecretAccessKey: c.SecretAccessKey,
-				SessionToken:    c.SessionToken,
-			}, nil
-		}),
+	credentials := aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+		return aws.Credentials{AccessKeyID: c.AccessKeyID, SecretAccessKey: c.SecretAccessKey,
+			SessionToken: c.SessionToken, CanExpire: true, Expires: expires}, nil
 	})
-	return client, nil
+	options := ddb.Options{Region: cfg.Region, Credentials: credentials}
+	identity, err := awssts.New(awssts.Options{Region: cfg.Region, Credentials: credentials}).GetCallerIdentity(ctx, &awssts.GetCallerIdentityInput{})
+	if err != nil {
+		return nil, fmt.Errorf("STS temporary identity verification failed: %w", err)
+	}
+	if aws.ToString(identity.Account) != opt.ExpectedAWSAccount || !strings.Contains(aws.ToString(identity.Arn), ":assumed-role/") {
+		return nil, errors.New("AWS temporary identity/account mismatch")
+	}
+	return ddb.New(options), nil
 }
 
 func readDynamoDBGate(ctx context.Context, client *ddb.Client, table string) (*GateState, error) {
@@ -185,33 +209,55 @@ func readDynamoDBGate(ctx context.Context, client *ddb.Client, table string) (*G
 }
 
 func readDynamoDBCheckpoint(ctx context.Context, client *ddb.Client, table, historyID string, epoch int64) (string, error) {
-	if client == nil {
-		return "", errors.New("dynamodb client is nil")
+	if client == nil || epoch <= 0 || !strings.HasSuffix(table, "SystemConfig") {
+		return "", errors.New("invalid native recovery checkpoint query")
 	}
-	consistent := true
+	completedEpoch := epoch - 1
+	key := historyID + "/" + strconv.FormatInt(completedEpoch, 10)
 	out, err := client.GetItem(ctx, &ddb.GetItemInput{
-		TableName: aws.String(table),
+		TableName: aws.String(strings.TrimSuffix(table, "SystemConfig") + "RecoveryEpochs"),
 		Key: map[string]ddbtypes.AttributeValue{
-			"config_id": &ddbtypes.AttributeValueMemberS{Value: "recovery/state/" + historyID},
+			"history_epoch_key": &ddbtypes.AttributeValueMemberS{Value: key},
 		},
-		ConsistentRead: &consistent,
+		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
-		return "", fmt.Errorf("get recovery state item: %w", err)
+		return "", fmt.Errorf("native recovery epoch read: %w", err)
 	}
-	if out.Item == nil {
-		return "", fmt.Errorf("recovery/state/%s not found in table %q", historyID, table)
+	if len(out.Item) == 0 {
+		return "", errors.New("missing native sealed recovery epoch")
 	}
-	if sVal, ok := out.Item["seal_sha256"].(*ddbtypes.AttributeValueMemberS); ok && sVal.Value != "" {
-		return sVal.Value, nil
+	read := func(name string) string {
+		if v, ok := out.Item[name].(*ddbtypes.AttributeValueMemberS); ok {
+			return v.Value
+		}
+		return ""
 	}
-	if sVal, ok := out.Item["seal_key"].(*ddbtypes.AttributeValueMemberS); ok && sVal.Value != "" {
-		return sVal.Value, nil
+	if read("history_id") != historyID || read("state") != "Sealed" || read("phase") != "complete" {
+		return "", errors.New("recovery epoch is not sealed and complete")
 	}
-	if sVal, ok := out.Item["genesis_sha256"].(*ddbtypes.AttributeValueMemberS); ok && sVal.Value != "" {
-		return sVal.Value, nil
+	sum, keyName := read("seal_sha256"), read("seal_key")
+	if !regexp.MustCompile("^[0-9a-f]{64}$").MatchString(sum) ||
+		keyName != fmt.Sprintf("journal/epochs/%s/%d/seal-%s.json", historyID, completedEpoch, sum) {
+		return "", errors.New("invalid native seal key/digest")
 	}
-	return "", fmt.Errorf("no checkpoint seal found in recovery/state/%s", historyID)
+	state, err := client.GetItem(ctx, &ddb.GetItemInput{
+		TableName:      aws.String(table),
+		Key:            map[string]ddbtypes.AttributeValue{"config_id": &ddbtypes.AttributeValueMemberS{Value: "recovery/state/" + historyID}},
+		ConsistentRead: aws.Bool(true),
+	})
+	if err != nil || len(state.Item) == 0 {
+		return "", errors.New("missing native recovery state")
+	}
+	next, ok := state.Item["next_to_seal"].(*ddbtypes.AttributeValueMemberN)
+	if !ok {
+		return "", errors.New("missing native next_to_seal")
+	}
+	value, err := strconv.ParseInt(next.Value, 10, 64)
+	if err != nil || value <= completedEpoch {
+		return "", errors.New("seal not committed in recovery state")
+	}
+	return keyName, nil
 }
 
 func loadManifest(path string) (*benchmarkdata.Manifest, error) {
@@ -299,7 +345,7 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 	}
 
 	if getGate == nil || getCheckpoint == nil {
-		ddbClient, ddbErr := readDynamoDBClient(cfg)
+		ddbClient, ddbErr := readDynamoDBClient(ctx, cfg, opt)
 		if ddbErr != nil {
 			if getGate == nil {
 				res.Error = fmt.Sprintf("no gate callback and dynamodb client init failed: %v", ddbErr)
@@ -402,7 +448,6 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 		return res, err
 	}
 	receipt.RecoveredEpoch = after.Epoch
-	receipt.LeaseFenceVerified = true
 
 	// Step 4: Sealed cut & durable journal checkpoint verification
 	if getCheckpoint == nil {
@@ -417,6 +462,20 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 		return res, err
 	}
 	receipt.DurableJournalCheckpoint = checkpointID
+	if opt.VerifyNativeProof == nil {
+		err := errors.New("native lease-fence/sealed-cut/replay-idempotency verifier absent (fail-closed)")
+		res.Error = err.Error()
+		res.RecoveryReceipt = receipt
+		return res, err
+	}
+	proof, proofErr := opt.VerifyNativeProof(ctx, baseline.HistoryID, baseline.Epoch, after.Epoch)
+	if proofErr != nil || !proof.LeaseFenceVerified || !proof.SealedCutVerified || !proof.ReplayIdempotencyVerified {
+		err := fmt.Errorf("incomplete native recovery proof (fail-closed): %v", proofErr)
+		res.Error = err.Error()
+		res.RecoveryReceipt = receipt
+		return res, err
+	}
+	receipt.LeaseFenceVerified = true
 	receipt.SealedCutVerified = true
 	receipt.ReplayIdempotencyVerified = true
 

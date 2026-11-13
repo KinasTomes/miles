@@ -45,7 +45,8 @@ type ColdReceipt struct {
 	RestorationCompletedAt      string `json:"restoration_completed_at,omitempty"`
 	RestorationExpiry           string `json:"restoration_expiry,omitempty"`
 	RevivalVerified             bool   `json:"revival_verified"`
-	RetainedPhysicalBytes       int64  `json:"retained_physical_bytes"`
+	RetainedPhysicalBytes       *int64 `json:"retained_physical_bytes,omitempty"`
+	VerifiedLogicalGETBytes     int64  `json:"verified_logical_get_bytes"`
 	TotalGETVerifiedSHA256      bool   `json:"total_get_verified_sha256"`
 }
 
@@ -143,7 +144,7 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 
 	receipt := &ColdReceipt{
 		StorageClass:           expectedClass,
-		RetainedPhysicalBytes:  0,
+		RetainedPhysicalBytes:  nil,
 		TotalGETVerifiedSHA256: false,
 	}
 
@@ -160,6 +161,13 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 	}
 
 	res.ColdReceipt = receipt
+	// Logical GET size is not a backend physical-inventory certificate.
+	if receipt.RetainedPhysicalBytes == nil {
+		err := errors.New("authoritative retained physical inventory unavailable (fail-closed)")
+		res.Error = err.Error()
+		res.Status = "incomplete"
+		return res, err
+	}
 	res.Status = "passed"
 	return res, nil
 }
@@ -202,7 +210,7 @@ func runIR(ctx context.Context, client *awss3.Client, cfg benchmark.Config, mani
 		if out.ContentLength != nil && *out.ContentLength != n {
 			return fmt.Errorf("content length mismatch for %q: header=%d, read=%d", file.Path, *out.ContentLength, n)
 		}
-		receipt.RetainedPhysicalBytes += n
+		receipt.VerifiedLogicalGETBytes += n
 		gotSHA := hex.EncodeToString(h.Sum(nil))
 		if gotSHA != file.SHA256 {
 			return fmt.Errorf("SHA256 mismatch for %q: got %s, expected %s", file.Path, gotSHA, file.SHA256)
@@ -364,7 +372,7 @@ func runFlexible(ctx context.Context, client *awss3.Client, cfg benchmark.Config
 		if out.ContentLength != nil && *out.ContentLength != n {
 			return fmt.Errorf("content length mismatch for restored %q: header=%d, read=%d", file.Path, *out.ContentLength, n)
 		}
-		receipt.RetainedPhysicalBytes += n
+		receipt.VerifiedLogicalGETBytes += n
 
 		res.Samples = append(res.Samples, Sample{
 			Operation: "GetObjectRestored",

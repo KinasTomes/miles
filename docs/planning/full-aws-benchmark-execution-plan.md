@@ -59,6 +59,40 @@ Thêm review gate matrix/source/time/cost/fault/Cold nếu scope thay đổi. Kh
 
 **Definition of offline-ready:** 20/20 case có runner thực và negative tests; 60 unique slots + comparators được binding; full recipe validate trong process; test race/expiry/fail-closed; IAM/cost/time/route và cleanup được review; make check và CI trên cùng HEAD PASS. Agent chưa được mở G1 nếu các blocker ở trên vẫn tồn tại.
 
+## Trạng thái hardening sau HEAD 1bad2b8 (chưa phải full GO)
+
+Các thay đổi bổ sung ở branch nhằm đóng lỗ hổng **PASS giả**, không khẳng định
+AWS benchmark đã chạy:
+
+- Cloud: đọc private ALB DNS từ Terraform output, bind hostname có TLS/SNI
+  certificate verification. Fail nếu ALB DNS không trỏ RFC1918 hoặc TLS không
+  xác thực. Cloud per-node telemetry vẫn cần nghiệm thu.
+- Cold/Recovery: xác minh SHA-256 dataset trước khi seed, upload với đúng class
+  (GLACIER_IR, GLACIER, STANDARD), HEAD readback class/length, giữ
+  receipts trên từng PUT. Unknown PUT không tự replay. Cold Flexible restore
+  vẫn phụ thuộc native transition/async window, không được giả lập.
+- coldbench: tách GET logical bytes khỏi retained physical. Không có native
+  inventory provider => artifact incomplete/fail-closed, không PASS.
+- recoverybench: DynamoDB dùng AWS STS session riêng, verify expected
+  account và expiry; không dùng DSG key. Checkpoint phải là native
+  RecoveryEpochs ở trạng thái Sealed (không lấy genesis làm proof).
+  Epoch tăng không tự chứng minh lease fence/seal/replay; thiếu native verifier
+  => FAIL. Client chặn trước mọi mutation nếu chưa có reviewed fault injector
+  + proof provider.
+- Direct-S3: require bucket hiện có thuộc đúng account và có Project/Environment/
+  AcceptanceRun tags của lượt hiện tại; thiếu bucket/tag/paired result =>
+  fail-closed. Kit chưa tự provision/teardown bucket đối chứng này.
+
+**VẪN BLOCKED TRƯỚC G1 MUTATION:** (1) triển khai và review native
+Recovery fault injector và verifier đầy đủ ba chứng cứ, (2) provider inventory
+physical bytes được pin và snapshot hai thời điểm cho Cold, (3) approved
+provision + teardown direct-S3 bucket hiện tại, (4) đầy đủ Cloud per-node
+telemetry và proof fresh/reset trước trial, (5) chi phí mới cho 60 slots
+và async Glacier restore/minimum duration. Bộ lọc fail-closed có thể khiến
+một số slot dừng nhưng không được xử lý bằng cách nới pass conditions.
+Chỉ chuyển offline-ready khi code/tests/native evidence contracts và
+approval riêng đáp ứng tất cả gate.
+
 ## Thứ tự triển khai AWS sau offline-ready
 
 | Gate | Bước chạy | Điều kiện sang gate tiếp theo |

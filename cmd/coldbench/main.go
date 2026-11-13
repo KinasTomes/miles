@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/benchmark"
 	"github.com/KinasTomes/miles/internal/coldrunner"
@@ -33,6 +34,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	concurrency := f.Int("concurrency", 1, "Concurrency (default 1)")
 	failFast := f.Bool("fail-fast", false, "Halt on first error")
 	retain := f.Bool("retain-objects", false, "Retain objects")
+	pollInterval := f.Duration("poll-interval", 5*time.Second, "Native restore HEAD polling interval")
+	maxPollWait := f.Duration("max-poll-wait", 15*time.Minute, "Bounded native restore completion window")
 
 	if err := f.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -66,6 +69,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		Concurrency:   *concurrency,
 		FailFast:      *failFast,
 		RetainObjects: *retain,
+		PollInterval:  *pollInterval,
+		MaxPollWait:   *maxPollWait,
 	}
 
 	res, err := coldrunner.Run(ctx, c, opt)
