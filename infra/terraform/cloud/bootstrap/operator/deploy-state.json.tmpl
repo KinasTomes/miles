@@ -45,6 +45,16 @@
       ]
     },
     {
+      "Sid": "NeverDeleteBackendState",
+      "Effect": "Deny",
+      "Action": [
+        "s3:DeleteObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::{{STATE_BUCKET}}/{{STATE_KEY}}"
+      ]
+    },
+    {
       "Sid": "UnlockDevState",
       "Effect": "Allow",
       "Action": [

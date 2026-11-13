@@ -21,6 +21,24 @@ def fixture():
 
 
 class InstallationTests(unittest.TestCase):
+    def test_explicit_state_deletion_deny_preserves_lock_and_state_writes(self):
+        config = fixture()
+        rendered = installation.render(config)
+        policy = rendered["iam/deploy-state.json"]["Statement"]
+        deny = next(s for s in policy if s["Sid"] == "NeverDeleteBackendState")
+        bucket = config["installation_name"] + "-tfstate-" + config["account_id"] + "-" + config["region"]
+        state = "arn:aws:s3:::" + bucket + "/cloud/" + config["environment"] + "/terraform.tfstate"
+        self.assertEqual(deny, {"Sid": "NeverDeleteBackendState", "Effect": "Deny", "Action": ["s3:DeleteObject"], "Resource": [state]})
+        self.assertNotIn("Condition", deny)
+        unlock = next(s for s in policy if s["Sid"] == "UnlockDevState")
+        self.assertEqual(unlock["Resource"], [state + ".tflock"])
+        self.assertEqual(unlock["Effect"], "Allow")
+        writes = next(s for s in policy if s["Sid"] == "ReadAndWriteDevState")
+        self.assertIn("s3:PutObject", writes["Action"])
+        self.assertEqual(writes["Resource"], [state, state + ".tflock"])
+        shards = [json.loads(document) for document in rendered["operator.tfvars.json"]["deploy_documents"].values()]
+        self.assertIn(deny, [s for document in shards for s in document["Statement"]])
+
     def test_operator_cannot_assume_other_roles_or_reassign_resource_ownership(self):
         config = fixture()
         output = installation.render(config)

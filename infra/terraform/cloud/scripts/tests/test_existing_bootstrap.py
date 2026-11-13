@@ -66,7 +66,11 @@ class ExistingBootstrapTests(unittest.TestCase):
             request = json.loads(Path(arguments[-1].removeprefix("file://")).read_text())
             self.assertIsInstance(request["ContextEntries"], list)
             action, resource = request["ActionNames"][0], request["ResourceArns"][0]
-            decision = "implicitDeny" if action == "iam:PutRolePolicy" or (action == "s3:DeleteObject" and not resource.endswith(".tflock")) else "allowed"
+            decision = "allowed"
+            if action == "iam:PutRolePolicy":
+                decision = "implicitDeny"
+            elif action == "s3:DeleteObject" and not resource.endswith(".tflock"):
+                decision = "explicitDeny"
             return self.permission_overrides.get((action, resource), {"EvaluationResults": [{"EvalDecision": decision}]})
         return copy.deepcopy(self.responses[operation])
 
@@ -107,6 +111,44 @@ class ExistingBootstrapTests(unittest.TestCase):
         self.assertFalse(proof["bootstrap_resources_managed"])
         self.assertFalse((self.app.private / "bootstrap-backend-inspection.json").exists())
         self.assertTrue(all(op.startswith(("get-", "list-", "simulate-")) for _, op, *_ in self.calls))
+
+    def test_bucket_delete_allow_requires_explicit_identity_deny_on_state(self):
+        state = "arn:aws:s3:::" + self.expected["state_bucket"] + "/" + self.expected["state_key"]
+        policy = json.loads(self.responses["get-bucket-policy"]["Policy"])
+        policy["Statement"].append({"Effect": "Allow", "Principal": {"AWS": self.responses["get-caller-identity"]["Arn"]},
+                                    "Action": "s3:DeleteObject", "Resource": state})
+        self.responses["get-bucket-policy"]["Policy"] = json.dumps(policy)
+        self.permission_overrides[("s3:DeleteObject", state)] = {"EvaluationResults": [{"EvalDecision": "implicitDeny"}]}
+        with self.assertRaisesRegex(ValueError, "permissions"):
+            self.verify()
+        self.permission_overrides[("s3:DeleteObject", state)] = {"EvaluationResults": [{"EvalDecision": "explicitDeny"}]}
+        self.verify()
+
+    def test_singleton_trust_bucket_and_boundary_statements(self):
+        trust = self.responses["get-role"]["Role"]["AssumeRolePolicyDocument"]
+        trust["Statement"] = trust["Statement"][0]
+        policy = json.loads(self.responses["get-bucket-policy"]["Policy"])
+        policy["Statement"] = policy["Statement"][0]
+        self.responses["get-bucket-policy"]["Policy"] = json.dumps(policy)
+        boundary = self.responses["get-policy-version"]["PolicyVersion"]["Document"]
+        boundary["Statement"] = boundary["Statement"][0]
+        self.verify()
+
+    def test_malformed_policy_statements_fail_with_validation_errors(self):
+        for document in (self.responses["get-role"]["Role"]["AssumeRolePolicyDocument"],
+                         self.responses["get-policy-version"]["PolicyVersion"]["Document"]):
+            original = document["Statement"]
+            for invalid in (None, "Allow", ["Allow"], [None]):
+                with self.subTest(invalid=invalid):
+                    document["Statement"] = invalid
+                    with self.assertRaises(ValueError):
+                        self.verify()
+            document["Statement"] = original
+        for invalid in (None, "Deny", ["Deny"], [None]):
+            with self.subTest(bucket=invalid):
+                self.responses["get-bucket-policy"]["Policy"] = json.dumps({"Statement": invalid})
+                with self.assertRaises(ValueError):
+                    self.verify()
 
     def test_wrong_identity_trust_tags_boundary_and_bucket_fail_closed(self):
         mutations = [

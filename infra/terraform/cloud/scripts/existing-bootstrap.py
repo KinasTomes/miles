@@ -4,6 +4,15 @@ import json
 from fnmatch import fnmatchcase
 
 
+def statements(document):
+    entries = document.get("Statement") if isinstance(document, dict) else None
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list) or not entries or any(not isinstance(entry, dict) for entry in entries):
+        raise ValueError("Policy Statement must be an object or a nonempty array of objects")
+    return entries
+
+
 def verify(aws, expected, state, private):
     account, region = expected["account_id"], expected["region"]
     actor = aws("sts", "get-caller-identity")
@@ -17,7 +26,7 @@ def verify(aws, expected, state, private):
             raise ValueError("Existing bootstrap ownership tags differ")
 
     tags(role.get("Tags", []))
-    allows = [s for s in role.get("AssumeRolePolicyDocument", {}).get("Statement", []) if s.get("Effect") == "Allow"]
+    allows = [s for s in statements(role.get("AssumeRolePolicyDocument")) if s.get("Effect") == "Allow"]
     if not allows or any(s.get("Principal") != {"AWS": expected["user_arn"]} or s.get("Action") not in ("sts:AssumeRole", ["sts:AssumeRole"]) or s.get("Condition", {}).get("Bool", {}).get("aws:MultiFactorAuthPresent") != "true" for s in allows):
         raise ValueError("Existing deployment role must trust only the configured MFA operator")
     boundary = aws("iam", "get-policy", "--policy-arn", expected["boundary_arn"])["Policy"]
@@ -28,8 +37,7 @@ def verify(aws, expected, state, private):
         raise ValueError("Incomplete boundary tag inventory")
     tags(listed.get("Tags", []))
     document = aws("iam", "get-policy-version", "--policy-arn", expected["boundary_arn"], "--version-id", boundary["DefaultVersionId"])["PolicyVersion"]["Document"]
-    if not isinstance(document, dict) or not document.get("Statement"):
-        raise ValueError("Missing runtime boundary document")
+    statements(document)
     bucket = expected["state_bucket"]
     args = ("--bucket", bucket, "--expected-bucket-owner", account)
     location = aws("s3api", "get-bucket-location", *args).get("LocationConstraint")
@@ -44,7 +52,7 @@ def verify(aws, expected, state, private):
     policy = json.loads(aws("s3api", "get-bucket-policy", *args)["Policy"])
     arn = "arn:aws:s3:::" + bucket
     tls = False
-    for statement in policy.get("Statement", []):
+    for statement in statements(policy):
         actions, resources = statement.get("Action", []), statement.get("Resource", [])
         actions = [actions] if isinstance(actions, str) else actions
         resources = [resources] if isinstance(resources, str) else resources
@@ -72,7 +80,11 @@ def verify(aws, expected, state, private):
             json.dump(request, stream)
         result = aws("iam", "simulate-principal-policy", "--cli-input-json", "file://" + str(check_file))
         evaluations = result.get("EvaluationResults", [])
-        if result.get("IsTruncated") or result.get("Marker") or len(evaluations) != 1 or evaluations[0].get("MissingContextValues") or any(r.get("MissingContextValues") for r in evaluations[0].get("ResourceSpecificResults", [])) or evaluations[0].get("EvalDecision") not in (("allowed",) if permitted else ("implicitDeny", "explicitDeny")):
+        decisions = ("allowed",) if permitted else ("implicitDeny", "explicitDeny")
+        # A resource-policy allow can bypass an implicit identity deny on the state key.
+        if action == "s3:DeleteObject" and not permitted:
+            decisions = ("explicitDeny",)
+        if result.get("IsTruncated") or result.get("Marker") or len(evaluations) != 1 or evaluations[0].get("MissingContextValues") or any(r.get("MissingContextValues") for r in evaluations[0].get("ResourceSpecificResults", [])) or evaluations[0].get("EvalDecision") not in decisions:
             raise ValueError("Existing deploy role lacks required backend/lock permissions")
     # Inspect state locally; do not adopt another workload or overwrite its state.
     path = private / "bootstrap-backend-inspection.json"
