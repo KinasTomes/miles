@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -95,6 +96,30 @@ func newClient(c Config, concurrency int, traffic *bodyTraffic) (*awss3.Client, 
 	transport.Proxy = nil
 	transport.DisableCompression = true // never transparently decode gzip object bytes
 	transport.MaxIdleConnsPerHost = concurrency
+	var rt http.RoundTripper = transport
+	if traffic != nil {
+		rt = &interceptTransport{
+			base: transport,
+			onResp: func(resp *http.Response) {
+				if resp == nil {
+					return
+				}
+				if d := resp.Header.Get("X-Dsg-Dedup-Domain"); d != "" {
+					traffic.observedDomain.Store(&d)
+				}
+				if dupStr := resp.Header.Get("X-Dsg-Chunks-Dup"); dupStr != "" {
+					if v, err := strconv.ParseUint(dupStr, 10, 64); err == nil {
+						traffic.chunksDup.Add(v)
+					}
+				}
+				if storedStr := resp.Header.Get("X-Dsg-Bytes-Stored"); storedStr != "" {
+					if v, err := strconv.ParseUint(storedStr, 10, 64); err == nil {
+						traffic.bytesStored.Add(v)
+					}
+				}
+			},
+		}
+	}
 	client := awss3.New(awss3.Options{
 		Region: c.Region, BaseEndpoint: aws.String(c.Endpoint), UsePathStyle: true, RetryMaxAttempts: 1,
 		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
@@ -102,9 +127,22 @@ func newClient(c Config, concurrency int, traffic *bodyTraffic) (*awss3.Client, 
 		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 			return aws.Credentials{AccessKeyID: cred.AccessKeyID, SecretAccessKey: cred.SecretAccessKey, SessionToken: cred.SessionToken}, nil
 		}),
-		HTTPClient: observability.CountHTTPClient(&http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, func(n int) { traffic.sent.Add(uint64(n)) }, func(n int) { traffic.received.Add(uint64(n)) }),
+		HTTPClient: observability.CountHTTPClient(&http.Client{Transport: rt, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, func(n int) { traffic.sent.Add(uint64(n)) }, func(n int) { traffic.received.Add(uint64(n)) }),
 	})
 	return client, transport.CloseIdleConnections, nil
+}
+
+type interceptTransport struct {
+	base   http.RoundTripper
+	onResp func(*http.Response)
+}
+
+func (it *interceptTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := it.base.RoundTrip(req)
+	if err == nil && resp != nil && it.onResp != nil {
+		it.onResp(resp)
+	}
+	return resp, err
 }
 
 var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
@@ -163,7 +201,23 @@ func errorCode(err error) string {
 
 const requestTimeout = 30 * time.Minute
 
-type bodyTraffic struct{ sent, received atomic.Uint64 }
+type bodyTraffic struct {
+	sent, received atomic.Uint64
+	observedDomain atomic.Pointer[string]
+	chunksDup      atomic.Uint64
+	bytesStored    atomic.Uint64
+}
+
+func (t *bodyTraffic) getObservedDomain() string {
+	if t == nil {
+		return ""
+	}
+	p := t.observedDomain.Load()
+	if p == nil {
+		return ""
+	}
+	return *p
+}
 
 func (t *bodyTraffic) snapshot(target string) map[string]uint64 {
 	if target == "miles-warm" {

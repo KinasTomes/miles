@@ -26,21 +26,23 @@ import (
 // A protocol fixture, never a Miles performance comparator. Real SDK calls run
 // over HTTP so pagination, signing, body streaming and failures are exercised.
 type s3Fixture struct {
-	mu          sync.Mutex
-	objects     map[string][]byte
-	multiparts  map[string]map[int32][]byte
-	calls       int
-	active      int
-	maxActive   int
-	putCalls    int
-	deleteCalls int
-	listPages   int
-	corrupt     bool
-	failPut     bool
-	badPage     bool
-	extraKey    bool
-	badHead     bool
-	unsigned    bool
+	mu            sync.Mutex
+	objects       map[string][]byte
+	multiparts    map[string]map[int32][]byte
+	calls         int
+	active        int
+	maxActive     int
+	putCalls      int
+	deleteCalls   int
+	listPages     int
+	corrupt       bool
+	failPut       bool
+	badPage       bool
+	extraKey      bool
+	badHead       bool
+	unsigned      bool
+	bucketDomains map[string]string
+	failTenantB   bool
 }
 
 func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -48,8 +50,28 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.calls++
 	f.active++
 	f.maxActive = max(f.maxActive, f.active)
+	bucket := "test-bucket"
+	if strings.HasPrefix(r.URL.Path, "/test-bucket-b/") || r.URL.Path == "/test-bucket-b" {
+		bucket = "test-bucket-b"
+	}
+	if f.bucketDomains != nil {
+		if d, ok := f.bucketDomains[bucket]; ok {
+			w.Header().Set("X-Dsg-Dedup-Domain", d)
+		}
+	}
 	authHeader := r.Header.Get("Authorization")
 	isTenantB := strings.Contains(authHeader, "tenant-b-key") || r.Header.Get("X-Amz-Security-Token") == "tenant-b-session"
+	if isTenantB && f.failTenantB && r.Method == "PUT" {
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = xml.NewEncoder(w).Encode(struct {
+			XMLName xml.Name `xml:"Error"`
+			Code    string   `xml:"Code"`
+			Message string   `xml:"Message"`
+		}{Code: "InternalError", Message: "Simulated Tenant B error"})
+		return
+	}
 	if isTenantB && strings.HasPrefix(r.URL.Path, "/test-bucket/") {
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/xml")
@@ -60,6 +82,13 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Message string   `xml:"Message"`
 		}{Code: "AccessDenied", Message: "Access Denied"})
 		return
+	}
+	if r.Method == "PUT" && f.bucketDomains != nil && isTenantB {
+		if f.bucketDomains["test-bucket-b"] == f.bucketDomains["test-bucket"] {
+			w.Header().Set("X-Dsg-Chunks-Dup", "1")
+		} else {
+			w.Header().Set("X-Dsg-Chunks-Dup", "0")
+		}
 	}
 	token := r.Header.Get("X-Amz-Security-Token")
 	if !strings.HasPrefix(authHeader, "AWS4-HMAC-SHA256 ") || (token != "private-session" && token != "tenant-b-session") {
@@ -1592,7 +1621,7 @@ func TestOverwriteScenario(t *testing.T) {
 }
 
 func TestDomainScenario(t *testing.T) {
-	c, o, _ := setup(t)
+	c, o, f := setup(t)
 	c.DedupDomain = "domain-a"
 	o.Scenario = "domain"
 	o.Variant = "shared-default"
@@ -1629,7 +1658,41 @@ func TestDomainScenario(t *testing.T) {
 		t.Fatalf("expected error about missing dedup_domain, got %v", err)
 	}
 
-	// 2b. shared-default with mismatched domain must fail
+	// 2b. Same bucket must fail
+	c2SameBucket := c
+	c2SameBucket.Bucket = c.Bucket
+	c2SameBucket.CredentialsFile = credsBPath
+	c2SameBucket.DedupDomain = "domain-b"
+	c2SameBucketBytes, _ := json.Marshal(c2SameBucket)
+	c2SameBucketPath := filepath.Join(temp, "tenant2-same-bucket.json")
+	if err := os.WriteFile(c2SameBucketPath, c2SameBucketBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	oSameBucket := o
+	oSameBucket.SecondConfig = c2SameBucketPath
+	oSameBucket.Out = filepath.Join(t.TempDir(), "artifact-domain-same-bucket")
+	if _, err := Run(context.Background(), c, oSameBucket); err == nil || !strings.Contains(err.Error(), "requires distinct buckets for tenant 1 and tenant 2") {
+		t.Fatalf("expected error about same bucket, got %v", err)
+	}
+
+	// 2c. Same credentials file must fail
+	c2SameCreds := c
+	c2SameCreds.Bucket = "test-bucket-b"
+	c2SameCreds.CredentialsFile = c.CredentialsFile
+	c2SameCreds.DedupDomain = "domain-b"
+	c2SameCredsBytes, _ := json.Marshal(c2SameCreds)
+	c2SameCredsPath := filepath.Join(temp, "tenant2-same-creds.json")
+	if err := os.WriteFile(c2SameCredsPath, c2SameCredsBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	oSameCreds := o
+	oSameCreds.SecondConfig = c2SameCredsPath
+	oSameCreds.Out = filepath.Join(t.TempDir(), "artifact-domain-same-creds")
+	if _, err := Run(context.Background(), c, oSameCreds); err == nil || !strings.Contains(err.Error(), "requires distinct credentials files for tenant 1 and tenant 2") {
+		t.Fatalf("expected error about same credentials, got %v", err)
+	}
+
+	// 2d. shared-default with mismatched domain in config must fail
 	c2Sep := c
 	c2Sep.Bucket = "test-bucket-b"
 	c2Sep.CredentialsFile = credsBPath
@@ -1646,7 +1709,11 @@ func TestDomainScenario(t *testing.T) {
 		t.Fatalf("expected error about mismatched domains for shared-default, got %v", err)
 	}
 
-	// 3. Run shared-default with matching second-config
+	// 3. Positive shared-default run with verified runtime domain and dedup observed
+	f.bucketDomains = map[string]string{
+		"test-bucket":   "domain-a",
+		"test-bucket-b": "domain-a",
+	}
 	c2Shared := c2Sep
 	c2Shared.DedupDomain = "domain-a"
 	c2SharedBytes, _ := json.Marshal(c2Shared)
@@ -1667,6 +1734,9 @@ func TestDomainScenario(t *testing.T) {
 	if rShared.Tenant1Domain != "domain-a" || rShared.Tenant2Domain != "domain-a" {
 		t.Fatalf("unexpected tenant domains: t1=%q t2=%q", rShared.Tenant1Domain, rShared.Tenant2Domain)
 	}
+	if rShared.Tenant1RuntimeDomain != "domain-a" || rShared.Tenant2RuntimeDomain != "domain-a" || !rShared.DomainContrastVerified || !rShared.DomainDedupObserved {
+		t.Fatalf("runtime domain or dedup observation failed: %+v", rShared)
+	}
 	if rShared.DomainCrossOwnerCheck == nil || rShared.DomainCrossOwnerCheck.HTTPStatus != 403 {
 		t.Fatalf("cross owner check must report HTTP 403: %+v", rShared.DomainCrossOwnerCheck)
 	}
@@ -1674,7 +1744,7 @@ func TestDomainScenario(t *testing.T) {
 		t.Fatalf("missing second tenant telemetry in result: %+v", rShared)
 	}
 
-	// 4. separated negative test: identical domains must fail
+	// 4. separated negative test: identical domains in config must fail
 	oSepIdentical := o
 	oSepIdentical.Variant = "separated"
 	oSepIdentical.Domain = "separated"
@@ -1684,7 +1754,40 @@ func TestDomainScenario(t *testing.T) {
 		t.Fatalf("expected error about identical domains for separated, got %v", err)
 	}
 
-	// 5. Run separated with distinct second-config
+	// 4b. [P1 Regression] Backend runtime domain collision during separated variant
+	// Operator configured "domain-a" and "domain-b", but backend returns "domain-a" for both!
+	f.bucketDomains = map[string]string{
+		"test-bucket":   "domain-a",
+		"test-bucket-b": "domain-a",
+	}
+	oSepCollision := o
+	oSepCollision.Variant = "separated"
+	oSepCollision.Domain = "separated"
+	oSepCollision.SecondConfig = c2SepPath
+	oSepCollision.Out = filepath.Join(t.TempDir(), "artifact-domain-sep-collision")
+	if _, err := Run(context.Background(), c, oSepCollision); err == nil || (!strings.Contains(err.Error(), "separated variant runtime collision") && !strings.Contains(err.Error(), "tenant 2 runtime domain binding mismatch")) {
+		t.Fatalf("expected error about runtime domain collision or mismatch, got %v", err)
+	}
+
+	// 4c. [P1 Regression] Backend runtime domain mismatch
+	f.bucketDomains = map[string]string{
+		"test-bucket":   "domain-wrong",
+		"test-bucket-b": "domain-b",
+	}
+	oSepMismatch := o
+	oSepMismatch.Variant = "separated"
+	oSepMismatch.Domain = "separated"
+	oSepMismatch.SecondConfig = c2SepPath
+	oSepMismatch.Out = filepath.Join(t.TempDir(), "artifact-domain-sep-mismatch")
+	if _, err := Run(context.Background(), c, oSepMismatch); err == nil || !strings.Contains(err.Error(), "tenant 1 runtime domain binding mismatch") {
+		t.Fatalf("expected error about tenant 1 domain mismatch, got %v", err)
+	}
+
+	// 5. Positive separated run with distinct runtime domains and physical isolation
+	f.bucketDomains = map[string]string{
+		"test-bucket":   "domain-a",
+		"test-bucket-b": "domain-b",
+	}
 	oSep := o
 	oSep.Variant = "separated"
 	oSep.Domain = "separated"
@@ -1700,11 +1803,34 @@ func TestDomainScenario(t *testing.T) {
 	if rSep.Tenant1Domain != "domain-a" || rSep.Tenant2Domain != "domain-b" {
 		t.Fatalf("unexpected separated tenant domains: t1=%q t2=%q", rSep.Tenant1Domain, rSep.Tenant2Domain)
 	}
-	if rSep.DomainCrossOwnerCheck == nil || rSep.DomainCrossOwnerCheck.HTTPStatus != 403 {
-		t.Fatalf("cross owner check must report HTTP 403: %+v", rSep.DomainCrossOwnerCheck)
+	if rSep.Tenant1RuntimeDomain != "domain-a" || rSep.Tenant2RuntimeDomain != "domain-b" || !rSep.DomainContrastVerified || !rSep.DomainPhysicalIsolation {
+		t.Fatalf("runtime domain or physical isolation failed: %+v", rSep)
 	}
-	if len(rSep.SecondTenantPhases) == 0 || len(rSep.SecondTenantSamples) == 0 || rSep.SecondTenantCleanup != "logical_delete_verified" {
-		t.Fatalf("missing second tenant telemetry in separated result: %+v", rSep)
+
+	// 6. [P2 Regression] Tenant 2 failure retains evidence in result.json
+	f.failTenantB = true
+	oFailT2 := oShared
+	oFailT2.Out = filepath.Join(t.TempDir(), "artifact-domain-fail-t2")
+	rFailT2, err := Run(context.Background(), c, oFailT2)
+	if err == nil || !strings.Contains(err.Error(), "tenant 2 PUT phase failed") {
+		t.Fatalf("expected tenant 2 PUT phase failure, got: %v", err)
+	}
+	f.failTenantB = false
+
+	// Verify Tenant 2 telemetry was preserved in artifact result.json
+	resBytes, err := os.ReadFile(filepath.Join(oFailT2.Out, "result.json"))
+	if err != nil {
+		t.Fatalf("failed to read result.json: %v", err)
+	}
+	var resParsed Result
+	if err := json.Unmarshal(resBytes, &resParsed); err != nil {
+		t.Fatalf("invalid result.json: %v", err)
+	}
+	if len(resParsed.SecondTenantSamples) == 0 || len(resParsed.SecondTenantPhases) == 0 {
+		t.Fatalf("P2 failure: Tenant 2 telemetry lost on error: samples=%d phases=%d in %+v", len(resParsed.SecondTenantSamples), len(resParsed.SecondTenantPhases), rFailT2)
+	}
+	if resParsed.SecondTenantSamples[0].HTTPStatus != 500 || resParsed.SecondTenantSamples[0].Error != "InternalError" {
+		t.Fatalf("expected HTTP 500 InternalError in Tenant 2 sample, got %+v", resParsed.SecondTenantSamples[0])
 	}
 }
 
@@ -1718,6 +1844,7 @@ func TestEdgeCloneScenario(t *testing.T) {
 
 	// Negative 1: Missing --second-config
 	oNoSecond := o
+	oNoSecond.SourcePrefix = "warmbench/test-source/"
 	oNoSecond.Out = filepath.Join(t.TempDir(), "artifact-edge-no-second")
 	if _, err := Run(context.Background(), c, oNoSecond); err == nil || !strings.Contains(err.Error(), "requires --second-config") {
 		t.Fatalf("expected error about --second-config, got %v", err)
@@ -1743,31 +1870,56 @@ func TestEdgeCloneScenario(t *testing.T) {
 		t.Fatal(err)
 	}
 	oSame := o
+	oSame.SourcePrefix = "warmbench/test-source/"
 	oSame.SecondConfig = cDestSamePath
 	oSame.Out = filepath.Join(t.TempDir(), "artifact-edge-same")
 	if _, err := Run(context.Background(), c, oSame); err == nil || !strings.Contains(err.Error(), "requires distinct source and destination dedup domains") {
 		t.Fatalf("expected error about identical domains for edge-clone, got %v", err)
 	}
 
-	// Positive 1: Run clone-upload
+	// Negative 3: clone-upload without --source-prefix must fail closed
+	oUploadNoSource := o
+	oUploadNoSource.SecondConfig = cDestPath
+	oUploadNoSource.SourcePrefix = ""
+	oUploadNoSource.Out = filepath.Join(t.TempDir(), "artifact-edge-upload-nosource")
+	if _, err := Run(context.Background(), c, oUploadNoSource); err == nil || !strings.Contains(err.Error(), "requires non-empty --source-prefix") {
+		t.Fatalf("expected error about missing --source-prefix for clone-upload, got %v", err)
+	}
+
+	// Setup: Populate source objects in c.Bucket ("test-bucket") via seed run
+	oSeed := o
+	oSeed.Scenario = "warm"
+	oSeed.RetainObjects = true
+	oSeed.Out = filepath.Join(t.TempDir(), "artifact-edge-seed")
+	rSeed, err := Run(context.Background(), c, oSeed)
+	if err != nil {
+		t.Fatalf("Seed run failed: %v", err)
+	}
+
+	// Positive 1: Run clone-upload with --source-prefix streaming from source GET into destination PUT
 	oUpload := o
 	oUpload.SecondConfig = cDestPath
+	oUpload.SourcePrefix = rSeed.Prefix
+	oUpload.RetainObjects = true
 	oUpload.Out = filepath.Join(t.TempDir(), "artifact-edge-upload")
-	r, err := Run(context.Background(), c, oUpload)
+	rUpload, err := Run(context.Background(), c, oUpload)
 	if err != nil {
 		t.Fatalf("Run edge clone-upload failed: %v", err)
 	}
-	if r.Status != "passed" || r.Cleanup != "retained_owned_prefix_for_observation" {
-		t.Fatalf("edge clone upload mismatch: %+v", r)
+	if rUpload.Status != "passed" || rUpload.Cleanup != "retained_owned_prefix_for_observation" {
+		t.Fatalf("edge clone upload mismatch: %+v", rUpload)
 	}
-	if r.CloneReceipt == nil || r.CloneReceipt.SourceDomain != "edge-domain-source" || r.CloneReceipt.DestinationDomain != "edge-domain-dest" {
-		t.Fatalf("invalid clone receipt: %+v", r.CloneReceipt)
+	if rUpload.CloneReceipt == nil || rUpload.CloneReceipt.SourceDomain != "edge-domain-source" || rUpload.CloneReceipt.DestinationDomain != "edge-domain-dest" {
+		t.Fatalf("invalid clone receipt: %+v", rUpload.CloneReceipt)
 	}
-	if r.CloneReceipt.FilesCloned != len(r.Dataset.Files) || r.CloneReceipt.ReceiptSHA256 == "" {
-		t.Fatalf("invalid clone receipt stats: %+v", r.CloneReceipt)
+	if rUpload.CloneReceipt.SourcePrefix != rSeed.Prefix || rUpload.CloneReceipt.DestinationPrefix != rUpload.Prefix {
+		t.Fatalf("invalid clone receipt prefixes: %+v", rUpload.CloneReceipt)
+	}
+	if rUpload.CloneReceipt.FilesCloned != len(rUpload.Dataset.Files) || rUpload.CloneReceipt.ReceiptSHA256 == "" {
+		t.Fatalf("invalid clone receipt stats: %+v", rUpload.CloneReceipt)
 	}
 
-	// Negative 3: clone-download without --source-prefix must fail closed
+	// Negative 4: clone-download without --source-prefix must fail closed
 	oNoSource := oUpload
 	oNoSource.Variant = "clone-download"
 	oNoSource.SourcePrefix = ""
@@ -1783,12 +1935,12 @@ func TestEdgeCloneScenario(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Positive 2: clone-download with valid source prefix from cDest (which holds retained objects)
+	// Positive 2: clone-download with valid source prefix from cDest (which holds retained clone-upload objects)
 	oDownload := oUpload
 	oDownload.Variant = "clone-download"
 	oDownload.SecondConfig = cSourcePath
 	oDownload.RetainObjects = false
-	oDownload.SourcePrefix = r.Prefix
+	oDownload.SourcePrefix = rUpload.Prefix
 	oDownload.Out = filepath.Join(t.TempDir(), "artifact-edge-download")
 	rDown, err := Run(context.Background(), cDest, oDownload)
 	if err != nil {
@@ -1800,29 +1952,15 @@ func TestEdgeCloneScenario(t *testing.T) {
 	if rDown.CloneReceipt == nil || rDown.CloneReceipt.SourceDomain != "edge-domain-dest" || rDown.CloneReceipt.DestinationDomain != "edge-domain-source" {
 		t.Fatalf("invalid clone receipt for download: %+v", rDown.CloneReceipt)
 	}
-
-	// Positive 3: clone-upload with --source-prefix links source GET to destination PUT
-	oUploadLinked := oUpload
-	oUploadLinked.Variant = "clone-upload"
-	oUploadLinked.SecondConfig = cSourcePath
-	oUploadLinked.SourcePrefix = r.Prefix
-	oUploadLinked.RetainObjects = false
-	oUploadLinked.Out = filepath.Join(t.TempDir(), "artifact-edge-upload-linked")
-	rLinked, err := Run(context.Background(), cDest, oUploadLinked)
-	if err != nil {
-		t.Fatalf("Run edge clone-upload linked failed: %v", err)
-	}
-	if rLinked.Status != "passed" || rLinked.Cleanup != "edge_clone_upload_verified" {
-		t.Fatalf("edge clone upload linked mismatch: %+v", rLinked)
-	}
-	if rLinked.CloneReceipt == nil || rLinked.CloneReceipt.SourceDomain != "edge-domain-dest" || rLinked.CloneReceipt.DestinationDomain != "edge-domain-source" {
-		t.Fatalf("invalid clone receipt for linked upload: %+v", rLinked.CloneReceipt)
+	// Verify that the receipt hash produced by clone-download matches clone-upload byte stream
+	if rDown.CloneReceipt.ReceiptSHA256 != rUpload.CloneReceipt.ReceiptSHA256 {
+		t.Fatalf("pipeline receipt mismatch between clone-upload (%s) and clone-download (%s)", rUpload.CloneReceipt.ReceiptSHA256, rDown.CloneReceipt.ReceiptSHA256)
 	}
 
-	// Clean up retained upload prefix
+	// Clean up retained prefixes
 	f.mu.Lock()
 	for k := range f.objects {
-		if strings.HasPrefix(k, r.Prefix) {
+		if strings.HasPrefix(k, rUpload.Prefix) || strings.HasPrefix(k, rSeed.Prefix) {
 			delete(f.objects, k)
 		}
 	}

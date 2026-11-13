@@ -85,6 +85,8 @@ type Phase struct {
 type CloneReceipt struct {
 	SourceDomain      string `json:"source_domain"`
 	DestinationDomain string `json:"destination_domain"`
+	SourcePrefix      string `json:"source_prefix,omitempty"`
+	DestinationPrefix string `json:"destination_prefix,omitempty"`
 	FilesCloned       int    `json:"files_cloned"`
 	TotalBytesCloned  int64  `json:"total_bytes_cloned"`
 	ReceiptSHA256     string `json:"receipt_sha256"`
@@ -110,6 +112,11 @@ type Result struct {
 	Domain                   string                 `json:"domain,omitempty"`
 	Tenant1Domain            string                 `json:"tenant1_domain,omitempty"`
 	Tenant2Domain            string                 `json:"tenant2_domain,omitempty"`
+	Tenant1RuntimeDomain     string                 `json:"tenant1_runtime_domain,omitempty"`
+	Tenant2RuntimeDomain     string                 `json:"tenant2_runtime_domain,omitempty"`
+	DomainContrastVerified   bool                   `json:"domain_contrast_verified,omitempty"`
+	DomainDedupObserved      bool                   `json:"domain_dedup_observed,omitempty"`
+	DomainPhysicalIsolation  bool                   `json:"domain_physical_isolation,omitempty"`
 	DomainCrossOwnerCheck    *Sample                `json:"domain_cross_owner_check,omitempty"`
 	DomainCrossOwnerRejected bool                   `json:"domain_cross_owner_rejected,omitempty"`
 	SecondTenantVerified     bool                   `json:"second_tenant_verified,omitempty"`
@@ -243,9 +250,9 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 		return result, nil
 	}
 	if o.Scenario == "edge-clone" {
-		if o.Variant == "clone-download" {
+		if o.Variant == "clone-download" || o.Variant == "clone-upload" {
 			if o.SourcePrefix == "" {
-				return result, errors.New("clone-download requires non-empty --source-prefix")
+				return result, fmt.Errorf("%s requires non-empty --source-prefix", o.Variant)
 			}
 			if !strings.HasSuffix(o.SourcePrefix, "/") {
 				o.SourcePrefix += "/"
@@ -974,44 +981,177 @@ func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c
 
 	switch o.Variant {
 	case "clone-download":
-		// Download from source domain/prefix and verify SHA-256
-		if err := filePhase(ctx, client1, root, c1, o, "verify-get", r); err != nil {
+		if o.SourcePrefix == "" {
+			return errors.New("clone-download requires non-empty --source-prefix")
+		}
+		var totalBytes int64
+		pipelineHasher := sha256.New()
+		var getSamples []Sample
+		startGet := time.Now()
+
+		for _, f := range r.Dataset.Files {
+			srcKey := o.SourcePrefix + f.Path
+			startF := time.Now()
+			getOut, err := client1.GetObject(ctx, &awss3.GetObjectInput{
+				Bucket: aws.String(c1.Bucket),
+				Key:    aws.String(srcKey),
+			})
+			status, reqID := responseDiagnostics(err)
+			if err != nil {
+				getSamples = append(getSamples, Sample{
+					Phase: "clone-download-get", Operation: "GetObject", File: f.Path, Group: f.Group,
+					HTTPStatus: status, RequestID: reqID, Error: errorCode(err),
+					LatencyNS: time.Since(startF).Nanoseconds(),
+				})
+				_ = finishPhase(r, "clone-download-get", startGet, getSamples)
+				return fmt.Errorf("clone download GET failed for %s: %w", f.Path, err)
+			}
+			data, err := io.ReadAll(getOut.Body)
+			getOut.Body.Close()
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(data)
+			hexSum := hex.EncodeToString(sum[:])
+			if hexSum != f.SHA256 {
+				return fmt.Errorf("source GET integrity mismatch for %s: got %s, want %s", f.Path, hexSum, f.SHA256)
+			}
+			getSamples = append(getSamples, Sample{
+				Phase: "clone-download-get", Operation: "GetObject", File: f.Path, Group: f.Group,
+				PayloadBytes: int64(len(data)), SHA256: hexSum, HTTPStatus: 200,
+				LatencyNS: time.Since(startF).Nanoseconds(),
+			})
+			pipelineHasher.Write(data)
+			totalBytes += int64(len(data))
+		}
+		if err := finishPhase(r, "clone-download-get", startGet, getSamples); err != nil {
 			return err
 		}
 		r.CloneReceipt = &CloneReceipt{
 			SourceDomain:      c1.DedupDomain,
 			DestinationDomain: cDest.DedupDomain,
+			SourcePrefix:      o.SourcePrefix,
+			DestinationPrefix: r.Prefix,
 			FilesCloned:       len(r.Dataset.Files),
-			TotalBytesCloned:  r.Dataset.TotalBytes,
-			ReceiptSHA256:     r.ManifestSHA256,
+			TotalBytesCloned:  totalBytes,
+			ReceiptSHA256:     hex.EncodeToString(pipelineHasher.Sum(nil)),
 		}
 		r.Cleanup = "edge_clone_download_verified"
 		return nil
+
 	case "clone-upload":
-		if o.SourcePrefix != "" {
-			// Download verified bytes from source domain
-			if err := filePhase(ctx, client1, root, c1, o, "verify-get", r); err != nil {
-				return fmt.Errorf("clone source download failed: %w", err)
-			}
+		if o.SourcePrefix == "" {
+			return errors.New("clone-upload requires non-empty --source-prefix pointing to source domain prefix")
 		}
-		// Upload verified bytes to destination domain
+		var totalBytes int64
+		pipelineHasher := sha256.New()
+		var getSamples []Sample
+		var putSamples []Sample
+		startGet := time.Now()
+		startPut := time.Now()
+
+		for _, f := range r.Dataset.Files {
+			srcKey := o.SourcePrefix + f.Path
+			destKey := r.Prefix + f.Path
+
+			// 1. GET from source domain (client1)
+			startFGet := time.Now()
+			getOut, err := client1.GetObject(ctx, &awss3.GetObjectInput{
+				Bucket: aws.String(c1.Bucket),
+				Key:    aws.String(srcKey),
+			})
+			status, reqID := responseDiagnostics(err)
+			if err != nil {
+				getSamples = append(getSamples, Sample{
+					Phase: "clone-source-get", Operation: "GetObject", File: f.Path, Group: f.Group,
+					HTTPStatus: status, RequestID: reqID, Error: errorCode(err),
+					LatencyNS: time.Since(startFGet).Nanoseconds(),
+				})
+				_ = finishPhase(r, "clone-source-get", startGet, getSamples)
+				return fmt.Errorf("clone source GET failed for %s: %w", f.Path, err)
+			}
+			data, err := io.ReadAll(getOut.Body)
+			getOut.Body.Close()
+			if err != nil {
+				return fmt.Errorf("read source GET body failed for %s: %w", f.Path, err)
+			}
+			getSum := sha256.Sum256(data)
+			getHex := hex.EncodeToString(getSum[:])
+			if getHex != f.SHA256 {
+				return fmt.Errorf("source GET integrity mismatch for %s: got %s, want %s", f.Path, getHex, f.SHA256)
+			}
+			getSamples = append(getSamples, Sample{
+				Phase: "clone-source-get", Operation: "GetObject", File: f.Path, Group: f.Group,
+				PayloadBytes: int64(len(data)), SHA256: getHex, HTTPStatus: 200,
+				LatencyNS: time.Since(startFGet).Nanoseconds(),
+			})
+
+			// 2. PUT directly into destination domain (clientDest) with bytes from source GET (never reading local disk!)
+			startFPut := time.Now()
+			sc := types.StorageClassStandard
+			if cDest.StorageClass != "" {
+				sc = types.StorageClass(cDest.StorageClass)
+			}
+			putInput := &awss3.PutObjectInput{
+				Bucket:            aws.String(cDest.Bucket),
+				Key:               aws.String(destKey),
+				Body:              bytes.NewReader(data),
+				ContentLength:     aws.Int64(int64(len(data))),
+				StorageClass:      sc,
+				ContentType:       aws.String("application/octet-stream"),
+				ChecksumAlgorithm: types.ChecksumAlgorithmSha256,
+				ChecksumSHA256:    aws.String(base64.StdEncoding.EncodeToString(getSum[:])),
+			}
+			if cDest.KMSKeyID != "" {
+				putInput.ServerSideEncryption = types.ServerSideEncryptionAwsKms
+				putInput.SSEKMSKeyId = aws.String(cDest.KMSKeyID)
+			}
+			_, err = clientDest.PutObject(ctx, putInput)
+			putStatus, putReqID := responseDiagnostics(err)
+			if err != nil {
+				putSamples = append(putSamples, Sample{
+					Phase: "clone-dest-put", Operation: "PutObject", File: f.Path, Group: f.Group,
+					HTTPStatus: putStatus, RequestID: putReqID, Error: errorCode(err),
+					LatencyNS: time.Since(startFPut).Nanoseconds(),
+				})
+				_ = finishPhase(r, "clone-source-get", startGet, getSamples)
+				_ = finishPhase(r, "clone-dest-put", startPut, putSamples)
+				return fmt.Errorf("clone destination PUT failed for %s: %w", f.Path, err)
+			}
+			putSamples = append(putSamples, Sample{
+				Phase: "clone-dest-put", Operation: "PutObject", File: f.Path, Group: f.Group,
+				PayloadBytes: int64(len(data)), HTTPStatus: 200,
+				LatencyNS: time.Since(startFPut).Nanoseconds(),
+			})
+
+			pipelineHasher.Write(data)
+			totalBytes += int64(len(data))
+		}
+		if err := finishPhase(r, "clone-source-get", startGet, getSamples); err != nil {
+			return err
+		}
+		if err := finishPhase(r, "clone-dest-put", startPut, putSamples); err != nil {
+			return err
+		}
+
+		// 3. Verify in destination: HEAD and GET
 		oDest := o
 		oDest.SourcePrefix = ""
-		if err := filePhase(ctx, clientDest, root, cDest, oDest, "put", r); err != nil {
-			return fmt.Errorf("clone destination upload failed: %w", err)
-		}
 		if err := filePhase(ctx, clientDest, root, cDest, oDest, "head", r); err != nil {
 			return fmt.Errorf("clone destination head failed: %w", err)
 		}
 		if err := filePhase(ctx, clientDest, root, cDest, oDest, "verify-get", r); err != nil {
 			return fmt.Errorf("clone destination get integrity failed: %w", err)
 		}
+
 		r.CloneReceipt = &CloneReceipt{
 			SourceDomain:      c1.DedupDomain,
 			DestinationDomain: cDest.DedupDomain,
+			SourcePrefix:      o.SourcePrefix,
+			DestinationPrefix: r.Prefix,
 			FilesCloned:       len(r.Dataset.Files),
-			TotalBytesCloned:  r.Dataset.TotalBytes,
-			ReceiptSHA256:     r.ManifestSHA256,
+			TotalBytesCloned:  totalBytes,
+			ReceiptSHA256:     hex.EncodeToString(pipelineHasher.Sum(nil)),
 		}
 		if o.RetainObjects {
 			r.Cleanup = "retained_owned_prefix_for_observation"
@@ -1027,7 +1167,7 @@ func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c
 	}
 }
 
-func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 Config, o Options, r *Result, traffic *bodyTraffic) error {
+func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 Config, o Options, r *Result, traffic1 *bodyTraffic) error {
 	b, err := secretfile.Read(o.SecondConfig, 32<<10)
 	if err != nil {
 		return fmt.Errorf("read second-config failed: %w", err)
@@ -1042,6 +1182,13 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 	if c1.DedupDomain == "" || c2.DedupDomain == "" {
 		return errors.New("domain scenario requires dedup_domain declared in both configs")
 	}
+	if c1.Bucket == c2.Bucket {
+		return errors.New("domain scenario requires distinct buckets for tenant 1 and tenant 2")
+	}
+	if c1.CredentialsFile == c2.CredentialsFile {
+		return errors.New("domain scenario requires distinct credentials files for tenant 1 and tenant 2")
+	}
+
 	switch o.Variant {
 	case "shared-default":
 		if c1.DedupDomain != c2.DedupDomain {
@@ -1058,7 +1205,8 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 	r.Tenant1Domain = c1.DedupDomain
 	r.Tenant2Domain = c2.DedupDomain
 
-	client2, closeClient2, err := newClient(c2, o.Concurrency, traffic)
+	traffic2 := &bodyTraffic{}
+	client2, closeClient2, err := newClient(c2, o.Concurrency, traffic2)
 	if err != nil {
 		return fmt.Errorf("second client initialization failed: %w", err)
 	}
@@ -1103,20 +1251,65 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 		r.DomainCrossOwnerRejected = true
 	}
 
-	// 3. Tenant 2 PUT and GET verify all files into Tenant 2's bucket
+	// 3. Second Tenant Operations - ALWAYS preserve Tenant 2 evidence via defer
 	prefix2 := "warmbench-tenant2/" + filepath.Base(r.Prefix) + "/"
 	o2 := o
 	o2.SourcePrefix = prefix2
 	res2 := Result{Prefix: prefix2, Dataset: r.Dataset}
+	defer func() {
+		r.SecondTenantPhases = res2.Phases
+		r.SecondTenantSamples = res2.Samples
+		if res2.Cleanup != "" {
+			r.SecondTenantCleanup = res2.Cleanup
+		}
+	}()
+
 	if err := filePhase(ctx, client2, root, c2, o2, "put", &res2); err != nil {
 		return fmt.Errorf("tenant 2 PUT phase failed: %w", err)
 	}
 	if err := filePhase(ctx, client2, root, c2, o2, "verify-get", &res2); err != nil {
 		return fmt.Errorf("tenant 2 GET integrity failed: %w", err)
 	}
-	r.SecondTenantPhases = res2.Phases
-	r.SecondTenantSamples = res2.Samples
 	r.SecondTenantVerified = true
+
+	// 4. Runtime domain mapping verification from observed response headers
+	obs1 := traffic1.getObservedDomain()
+	obs2 := traffic2.getObservedDomain()
+	r.Tenant1RuntimeDomain = obs1
+	r.Tenant2RuntimeDomain = obs2
+
+	if obs1 != "" && obs1 != c1.DedupDomain {
+		return fmt.Errorf("tenant 1 runtime domain binding mismatch: backend returned domain %q, expected %q", obs1, c1.DedupDomain)
+	}
+	if obs2 != "" && obs2 != c2.DedupDomain {
+		return fmt.Errorf("tenant 2 runtime domain binding mismatch: backend returned domain %q, expected %q", obs2, c2.DedupDomain)
+	}
+	if obs1 != "" && obs2 != "" {
+		switch o.Variant {
+		case "shared-default":
+			if obs1 != obs2 {
+				return fmt.Errorf("shared-default runtime domain mismatch: tenant 1 mapped to %q, tenant 2 mapped to %q", obs1, obs2)
+			}
+		case "separated":
+			if obs1 == obs2 {
+				return fmt.Errorf("separated variant runtime collision: backend mapped both tenants to identical domain %q", obs1)
+			}
+		}
+	}
+
+	switch o.Variant {
+	case "shared-default":
+		if traffic2.chunksDup.Load() > 0 {
+			r.DomainDedupObserved = true
+		}
+	case "separated":
+		if traffic2.chunksDup.Load() == 0 {
+			r.DomainPhysicalIsolation = true
+		} else {
+			return errors.New("separated domain isolation failure: cross-domain deduplication was observed on physical backend")
+		}
+	}
+	r.DomainContrastVerified = true
 
 	// Cleanup
 	if o.RetainObjects {
@@ -1129,7 +1322,7 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 	if err := filePhase(ctx, client2, root, c2, o2, "delete", &res2); err != nil {
 		return err
 	}
-	r.SecondTenantCleanup = "logical_delete_verified"
+	res2.Cleanup = "logical_delete_verified"
 	r.Cleanup = "domain_two_tenant_isolation_verified"
 	return nil
 }
