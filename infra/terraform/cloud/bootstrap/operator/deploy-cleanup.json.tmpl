@@ -1,0 +1,220 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DeleteInstallationData",
+      "Effect": "Allow",
+      "Action": [
+        "s3:DeleteBucket",
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:AbortMultipartUpload"
+      ],
+      "Resource": [
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}",
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteInstallationTables",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:DeleteTable"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteInstallationSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:DeleteSecret"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:{{REGION}}:{{ACCOUNT_ID}}:secret:{{RUNTIME_SECRET_NAME}}-*",
+        "arn:aws:secretsmanager:{{REGION}}:{{ACCOUNT_ID}}:secret:{{INSTALLATION_NAME}}/edge-bootstrap-*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "ScheduleInstallationKeyDeletion",
+      "Effect": "Allow",
+      "Action": [
+        "kms:ScheduleKeyDeletion"
+      ],
+      "Resource": [
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:key/*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteInstallationVolume",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteVolume"
+      ],
+      "Resource": [
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:volume/*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
+        }
+      }
+    },
+    {
+      "Sid": "ListDeletionBackups",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:ListBackups",
+        "ec2:DescribeSnapshots"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteOwnedNetwork",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeleteVpc",
+        "ec2:DeleteSubnet",
+        "ec2:DeleteRouteTable",
+        "ec2:DisassociateRouteTable",
+        "ec2:DetachInternetGateway",
+        "ec2:DeleteInternetGateway"
+      ],
+      "Resource": [
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:vpc/*",
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:subnet/*",
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:route-table/*",
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:internet-gateway/*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteInstallationBucketPolicy",
+      "Effect": "Allow",
+      "Action": [
+        "s3:DeleteBucketPolicy"
+      ],
+      "Resource": [
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteInstallationKeyAlias",
+      "Effect": "Allow",
+      "Action": [
+        "kms:DeleteAlias"
+      ],
+      "Resource": [
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:alias/{{INSTALLATION_NAME}}-runtime"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteInstallationLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DeleteLogGroup"
+      ],
+      "Resource": [
+        "arn:aws:logs:{{REGION}}:{{ACCOUNT_ID}}:log-group:/{{INSTALLATION_NAME}}/runtime:*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteInstallationParameter",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DeleteParameter"
+      ],
+      "Resource": [
+        "arn:aws:ssm:{{REGION}}:{{ACCOUNT_ID}}:parameter/{{INSTALLATION_NAME}}/bootstrap-config"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "{{CLEANUP_EXPIRES_AT}}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    }
+  ]
+}

@@ -13,7 +13,7 @@ Cloud/Edge/client chạy trên AWS; Oracle chỉ điều phối. Runner tự SSH
 đúng máy. Không cần tự copy lệnh test vào từng host nữa.
 
 ```bash
-cd /home/ubuntu/miles-worktrees/clock-journal-reliability
+cd /path/to/miles
 export REPO="$PWD"
 git branch --show-current
 git status --short
@@ -209,8 +209,9 @@ không tăng timeout8phút. Mỗi worker dừng khi gặp lỗi ngoài throttle.
 Shutdown proof phải thuộc đúng invocation trước stop: exit0 và
 `shutdown complete`. Native pressure còn cần có native throttle; zero throttle
 là chưa exercise, không phải đã chứng minh chịu tải. Lỗi vẫn giữ FAIL dù Cloud
-peer ghi hết progress sau đó. Stage/attempt/error-class/timing nằm trong journal;
-work_failure và cleanup_failure được phân loại riêng, không có raw secret/keys.
+peer ghi hết progress sau đó. Giữ journal của đúng runtime đã build. Nếu build có diagnostics của PR #86,
+stage/attempt/error-class/timing và work_failure/cleanup_failure hỗ trợ phân tích;
+kit độc lập không bổ sung các trường đó vào runtime hoặc suy diễn khi log thiếu.
 
 Muốn chạy baseline rồi pressure trong **cùng hạ tầng**, giữ proof đầu rồi restart
 có chủ đích, tạo thêm current events và snapshot mới:

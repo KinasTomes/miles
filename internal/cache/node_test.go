@@ -252,3 +252,37 @@ func TestFanoutPurgePartialFailureAndCancellation(t *testing.T) {
 		t.Fatal("canceled targets missing", results, err)
 	}
 }
+
+func TestCacheHasDoesNotMutateStatsOrCopy(t *testing.T) {
+	ctx := context.Background()
+	n := testNode(t)
+	a, b := testKey("has-a", "g1"), testKey("has-b", "g1")
+	if n.Has(ctx, a) {
+		t.Fatal("absent key reported present")
+	}
+	if err := n.Put(ctx, a, []byte("aa")); err != nil {
+		t.Fatal(err)
+	}
+	// Fill memory cap (1 entry) with b so a lives only on disk.
+	if err := n.Put(ctx, b, []byte("bb")); err != nil {
+		t.Fatal(err)
+	}
+	if !n.Has(ctx, a) || !n.Has(ctx, b) {
+		t.Fatal("resident disk/memory keys missing from Has")
+	}
+	s := n.Stats()
+	if s.Lookups != 0 || s.Hits != 0 || s.Misses != 0 {
+		t.Fatalf("Has mutated cache stats: %+v", s)
+	}
+	if err := n.Evict(ctx, a.Pack); err != nil {
+		t.Fatal(err)
+	}
+	if n.Has(ctx, a) {
+		t.Fatal("evicted key still reported present")
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if n.Has(canceled, b) {
+		t.Fatal("canceled context reported present")
+	}
+}

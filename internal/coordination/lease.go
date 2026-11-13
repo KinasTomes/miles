@@ -41,20 +41,20 @@ func keepAlive(ctx context.Context, c clock.Clock, interval time.Duration, renew
 	if interval == 0 {
 		return ctx, func() {}, nil
 	} // legacy Warm-only gate
-	child, cancel := context.WithCancelCause(ctx)
+	child, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for {
-			if err := c.Sleep(child, interval); err != nil {
-				cancel(err)
+			if c.Sleep(child, interval) != nil {
+				cancel()
 				return
 			}
-			if err := renew(child); err != nil {
-				cancel(err)
+			if renew(child) != nil {
+				cancel()
 				return
 			}
 		}
 	}()
-	return child, func() { cancel(nil); <-done }, nil
+	return child, func() { cancel(); <-done }, nil
 }

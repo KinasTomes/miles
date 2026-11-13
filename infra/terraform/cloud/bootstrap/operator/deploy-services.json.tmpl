@@ -12,9 +12,10 @@
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestedRegion": "{{REGION}}",
           "aws:RequestTag/Project": "Miles",
-          "aws:RequestTag/Environment": "dev"
+          "aws:RequestTag/Environment": "{{ENVIRONMENT}}",
+          "aws:RequestTag/Installation": "{{INSTALLATION_NAME}}"
         }
       }
     },
@@ -29,7 +30,7 @@
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1"
+          "aws:RequestedRegion": "{{REGION}}"
         }
       }
     },
@@ -50,13 +51,14 @@
         "kms:UntagResource"
       ],
       "Resource": [
-        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:key/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestedRegion": "{{REGION}}",
           "aws:ResourceTag/Project": "Miles",
-          "aws:ResourceTag/Environment": "dev"
+          "aws:ResourceTag/Environment": "{{ENVIRONMENT}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
         }
       }
     },
@@ -67,7 +69,7 @@
         "kms:CreateAlias"
       ],
       "Resource": [
-        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:alias/miles-dev-runtime"
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:alias/{{INSTALLATION_NAME}}-runtime"
       ]
     },
     {
@@ -77,12 +79,13 @@
         "kms:CreateAlias"
       ],
       "Resource": [
-        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:key/*"
       ],
       "Condition": {
         "StringEquals": {
           "aws:ResourceTag/Project": "Miles",
-          "aws:ResourceTag/Environment": "dev"
+          "aws:ResourceTag/Environment": "{{ENVIRONMENT}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
         }
       }
     },
@@ -95,15 +98,16 @@
         "kms:GenerateDataKey"
       ],
       "Resource": [
-        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:key/*"
       ],
       "Condition": {
         "StringEquals": {
           "aws:ResourceTag/Project": "Miles",
-          "aws:ResourceTag/Environment": "dev",
+          "aws:ResourceTag/Environment": "{{ENVIRONMENT}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}",
           "kms:ViaService": [
-            "ssm.ap-southeast-1.amazonaws.com",
-            "secretsmanager.ap-southeast-1.amazonaws.com"
+            "ssm.{{REGION}}.amazonaws.com",
+            "secretsmanager.{{REGION}}.amazonaws.com"
           ]
         }
       }
@@ -120,7 +124,7 @@
         "secretsmanager:UntagResource"
       ],
       "Resource": [
-        "arn:aws:secretsmanager:ap-southeast-1:ACCOUNT_ID:secret:miles-dev/runtime-secrets-*"
+        "arn:aws:secretsmanager:{{REGION}}:{{ACCOUNT_ID}}:secret:{{RUNTIME_SECRET_NAME}}-*"
       ]
     },
     {
@@ -139,8 +143,8 @@
         "logs:DescribeLogStreams"
       ],
       "Resource": [
-        "arn:aws:logs:ap-southeast-1:ACCOUNT_ID:log-group:/miles-dev/runtime",
-        "arn:aws:logs:ap-southeast-1:ACCOUNT_ID:log-group:/miles-dev/runtime:*"
+        "arn:aws:logs:{{REGION}}:{{ACCOUNT_ID}}:log-group:/{{INSTALLATION_NAME}}/runtime",
+        "arn:aws:logs:{{REGION}}:{{ACCOUNT_ID}}:log-group:/{{INSTALLATION_NAME}}/runtime:*"
       ]
     },
     {
@@ -154,7 +158,7 @@
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1"
+          "aws:RequestedRegion": "{{REGION}}"
         }
       }
     },
@@ -169,7 +173,7 @@
         "ssm:RemoveTagsFromResource"
       ],
       "Resource": [
-        "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:parameter/miles-dev/bootstrap-config"
+        "arn:aws:ssm:{{REGION}}:{{ACCOUNT_ID}}:parameter/{{INSTALLATION_NAME}}/bootstrap-config"
       ]
     },
     {
@@ -179,13 +183,14 @@
         "kms:CreateGrant"
       ],
       "Resource": [
-        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:key/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestedRegion": "{{REGION}}",
           "aws:ResourceTag/Project": "Miles",
-          "aws:ResourceTag/Environment": "dev"
+          "aws:ResourceTag/Environment": "{{ENVIRONMENT}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
         },
         "Bool": {
           "kms:GrantIsForAWSResource": "true"
@@ -201,13 +206,14 @@
         "kms:DescribeKey"
       ],
       "Resource": [
-        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:key/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestedRegion": "{{REGION}}",
           "aws:ResourceTag/Project": "Miles",
-          "aws:ResourceTag/Environment": "dev"
+          "aws:ResourceTag/Environment": "{{ENVIRONMENT}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
         }
       }
     },
@@ -222,7 +228,7 @@
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1"
+          "aws:RequestedRegion": "{{REGION}}"
         }
       }
     },
@@ -235,14 +241,15 @@
         "kms:ReEncryptTo"
       ],
       "Resource": [
-        "arn:aws:kms:ap-southeast-1:ACCOUNT_ID:key/*"
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:key/*"
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1",
+          "aws:RequestedRegion": "{{REGION}}",
           "aws:ResourceTag/Project": "Miles",
-          "aws:ResourceTag/Environment": "dev",
-          "kms:ViaService": "ec2.ap-southeast-1.amazonaws.com"
+          "aws:ResourceTag/Environment": "{{ENVIRONMENT}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}",
+          "kms:ViaService": "ec2.{{REGION}}.amazonaws.com"
         }
       }
     }

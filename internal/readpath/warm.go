@@ -62,13 +62,25 @@ type WarmRequest struct {
 	Ready func(WarmResult) error
 	// restore turns Read into RestoreObject: same admission, binding and pins,
 	// then restore requests instead of payload.
+	// Debug enables diagnostic pre-flight cache residency probing (x-dsg-cache).
+	// Only set for authorized debug requests; ordinary GETs skip the scan.
+	Debug   bool
 	restore *restoreCall
 }
 type WarmResult struct {
-	Head  storage.ObjectHead
-	Range storage.ByteRange
+	Head        storage.ObjectHead
+	Range       storage.ByteRange
+	CacheStatus string
 }
 
+// ColdRestoreError reports storage.ErrCold together with the auto-restore
+// state ("requested" or "in-progress") for debug-gated x-dsg-restore.
+type ColdRestoreError struct {
+	State string
+}
+
+func (e *ColdRestoreError) Error() string { return "readpath: cold restore " + e.State }
+func (e *ColdRestoreError) Unwrap() error { return storage.ErrCold }
 func NewWarmReader(o WarmOptions) (*WarmReader, error) {
 	if o.Metadata == nil || (reflect.ValueOf(o.Metadata).Kind() == reflect.Ptr && reflect.ValueOf(o.Metadata).IsNil()) || o.Packs == nil || (reflect.ValueOf(o.Packs).Kind() == reflect.Ptr && reflect.ValueOf(o.Packs).IsNil()) || o.Cache == nil || (reflect.ValueOf(o.Cache).Kind() == reflect.Ptr && reflect.ValueOf(o.Cache).IsNil()) || o.Admission == nil || o.Gate == nil || o.Clock == nil || o.Metrics == nil || o.Global.Revision() == 0 || o.TransportBytes <= 0 || o.TransportBytes > math.MaxInt64-pack.MaxPackBytes || o.MaxManifestPages == 0 || o.MaxManifestPages > 1024 || o.MaxManifestChunks == 0 {
 		return nil, storage.ErrInvalid
@@ -137,14 +149,6 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 		return result, err
 	}
 	defer stopHeartbeat()
-	defer func() {
-		// SDKs and admission checks return ctx.Err(), losing the renewal cause.
-		// Preserve both identities only when cancellation caused this failure;
-		// an ordinary stop must not turn a successful read into an error.
-		if err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
-			err = errors.Join(err, context.Cause(ctx))
-		}
-	}()
 	head, err := o.Metadata.GetObject(ctx, object)
 	if err != nil {
 		return result, err
@@ -236,7 +240,27 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 	if err = ex.preflight(ctx, plan, ticket); err != nil {
 		return result, err
 	}
-	result = WarmResult{Head: head, Range: plan.Range}
+	cacheStatus := ""
+	if q.Debug {
+		cacheStatus = "miss"
+		if prober, ok := o.Cache.(interface {
+			Has(context.Context, storage.CacheKey) bool
+		}); ok && len(ex.bindings) > 0 {
+			hits := 0
+			for _, b := range ex.bindings {
+				if prober.Has(ctx, b.key) {
+					hits++
+				}
+			}
+			switch {
+			case hits == len(ex.bindings):
+				cacheStatus = "hit"
+			case hits > 0:
+				cacheStatus = "partial"
+			}
+		}
+	}
+	result = WarmResult{Head: head, Range: plan.Range, CacheStatus: cacheStatus}
 	if err = ex.checkView(ctx); err != nil {
 		return result, err
 	}
@@ -491,16 +515,30 @@ func (e *warmExecutor) preflight(ctx context.Context, plan engine.ReadPlan, tick
 				}
 				return storage.ErrCold
 			}
+			requested, inProgress := false, false
 			for _, ref := range archive {
 				if err := e.checkView(ctx); err != nil {
 					return err
 				}
-				if _, err := o.Restore(ctx, e.view, storage.ObjectHead{Object: plan.Object, Revision: plan.HeadRevision, ManifestID: plan.ManifestID}, ref, o.Global.Revision(), required, nil); err != nil {
+				created, err := o.Restore(ctx, e.view, storage.ObjectHead{Object: plan.Object, Revision: plan.HeadRevision, ManifestID: plan.ManifestID}, ref, o.Global.Revision(), required, nil)
+				if err != nil {
 					o.Metrics.restoreErrors.Add(1)
 					if o.RestoreError != nil {
 						o.RestoreError(ctx, err)
 					}
+					continue
 				}
+				if created {
+					requested = true
+				} else {
+					inProgress = true
+				}
+			}
+			if requested {
+				return &ColdRestoreError{State: "requested"}
+			}
+			if inProgress {
+				return &ColdRestoreError{State: "in-progress"}
 			}
 		}
 		return storage.ErrCold

@@ -63,7 +63,7 @@ func (m *Store) ListOutbox(ctx context.Context, q s.OutboxQuery) (s.OutboxPage, 
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		page, err := m.scanOutboxPage(ctx, &ddb.ScanInput{TableName: aws.String(m.tables["Outbox"]), ConsistentRead: aws.Bool(true), Limit: aws.Int32(128), ExclusiveStartKey: cursor})
+		page, err := m.api.Scan(ctx, &ddb.ScanInput{TableName: aws.String(m.tables["Outbox"]), ConsistentRead: aws.Bool(true), Limit: aws.Int32(128), ExclusiveStartKey: cursor})
 		if err != nil {
 			return out, backend(err)
 		}
@@ -88,9 +88,6 @@ func (m *Store) ListOutbox(ctx context.Context, q s.OutboxQuery) (s.OutboxPage, 
 				}
 				delete(candidates, largest)
 			}
-		}
-		if len(page.LastEvaluatedKey) != 0 && reflect.DeepEqual(page.LastEvaluatedKey, cursor) {
-			return out, s.ErrUnavailable
 		}
 		cursor = page.LastEvaluatedKey
 		if len(cursor) == 0 {
@@ -124,14 +121,13 @@ func (m *Store) MarkOutboxExported(ctx context.Context, p s.OutboxExport) error 
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	worker := p.Worker
-	p.Worker = s.WriterFence{} // durable progress is independent of an attempt
 	return m.update(ctx, func(t *transaction) error {
 		if _, shared := m.authority.(*SharedAuthority); shared {
-			if err := m.recoveryFence(t, worker, true); err != nil {
+			if err := m.recoveryFence(t, p.Worker, true); err != nil {
 				return err
 			}
 		}
+		p.Worker = s.WriterFence{} // progress is independent of an export attempt
 		e, err := get[s.OutboxEvent](t, key("events", p.Event.ID))
 		if err != nil {
 			return err

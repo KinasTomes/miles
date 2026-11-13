@@ -16,7 +16,7 @@
         "ssm:ListTagsForResource"
       ],
       "Resource": [
-        "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:document/miles-dev-shell"
+        "arn:aws:ssm:{{REGION}}:{{ACCOUNT_ID}}:document/{{INSTALLATION_NAME}}-shell"
       ]
     },
     {
@@ -26,13 +26,14 @@
         "ssm:StartSession"
       ],
       "Resource": [
-        "arn:aws:ec2:ap-southeast-1:ACCOUNT_ID:instance/*"
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:instance/*"
       ],
       "Condition": {
         "StringEquals": {
           "ssm:resourceTag/Project": "Miles",
-          "ssm:resourceTag/Environment": "dev",
-          "aws:RequestedRegion": "ap-southeast-1"
+          "ssm:resourceTag/Environment": "{{ENVIRONMENT}}",
+          "ssm:resourceTag/Installation": "{{INSTALLATION_NAME}}",
+          "aws:RequestedRegion": "{{REGION}}"
         },
         "BoolIfExists": {
           "ssm:SessionDocumentAccessCheck": "true"
@@ -46,7 +47,7 @@
         "ssm:StartSession"
       ],
       "Resource": [
-        "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:document/miles-dev-shell"
+        "arn:aws:ssm:{{REGION}}:{{ACCOUNT_ID}}:document/{{INSTALLATION_NAME}}-shell"
       ],
       "Condition": {
         "BoolIfExists": {
@@ -62,7 +63,7 @@
         "ssm:ResumeSession"
       ],
       "Resource": [
-        "arn:aws:ssm:ap-southeast-1:ACCOUNT_ID:session/*"
+        "arn:aws:ssm:{{REGION}}:{{ACCOUNT_ID}}:session/*"
       ],
       "Condition": {
         "StringLike": {
@@ -81,7 +82,7 @@
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1"
+          "aws:RequestedRegion": "{{REGION}}"
         }
       }
     },
@@ -96,7 +97,7 @@
       ],
       "Condition": {
         "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-1"
+          "aws:RequestedRegion": "{{REGION}}"
         }
       }
     }

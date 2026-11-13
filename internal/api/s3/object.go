@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/KinasTomes/miles/internal/object"
+	"github.com/KinasTomes/miles/internal/readpath"
 	"github.com/KinasTomes/miles/internal/storage"
 )
 
@@ -146,6 +147,9 @@ func (o *Objects) PutObject(w http.ResponseWriter, r *Request) error {
 	if name, ok := checksumHeaderName(result.ChecksumAlgorithm); ok && result.ChecksumValue != "" {
 		w.Header().Set(name, result.ChecksumValue)
 	}
+	if r.Caller.Debug {
+		WriteDebugHeaders(w.Header(), result.Debug)
+	}
 	w.WriteHeader(http.StatusOK)
 	return nil
 }
@@ -183,12 +187,15 @@ func (o *Objects) GetObject(w http.ResponseWriter, r *Request) error {
 		if hasRange {
 			h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", result.Range.Offset, result.Range.Offset+result.Range.Length-1, result.Info.Size))
 		}
+		if r.Caller.Debug && result.CacheStatus != "" {
+			h.Set("X-Dsg-Cache", result.CacheStatus)
+		}
 		w.WriteHeader(status)
 		wrote = true
 		return nil
 	}
 	_, err := o.Reader.GetObject(ctx, object.GetRequest{
-		Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID,
+		Bucket: r.Bucket, BucketID: r.Access.Bucket.ID, Key: r.Key, CredentialID: r.Caller.AccessKeyID, Debug: r.Caller.Debug,
 		SelectRange: func(info object.Info) (*storage.ByteRange, error) {
 			start, length, selected, ok := parseObjectRange(r.HTTP.Header.Get("Range"), info.Size)
 			if selected && !ok {
@@ -346,6 +353,15 @@ func writeResponseChecksum(h http.Header, mode string, checksum storage.Checksum
 	h.Set("x-amz-checksum-type", kind)
 }
 
+// WriteDebugHeaders writes the physical write/dedup debug headers (API v2 5).
+// Callers must invoke it only after verifying r.Caller.Debug.
+func WriteDebugHeaders(h http.Header, d object.WriteDebug) {
+	h.Set("X-Dsg-Chunks-Total", strconv.FormatUint(d.ChunksTotal, 10))
+	h.Set("X-Dsg-Chunks-Dup", strconv.FormatUint(d.ChunksDup, 10))
+	h.Set("X-Dsg-Chunks-Revived", strconv.FormatUint(d.ChunksRevived, 10))
+	h.Set("X-Dsg-Bytes-Logical", strconv.FormatInt(d.BytesLogical, 10))
+	h.Set("X-Dsg-Bytes-Stored", strconv.FormatUint(d.BytesStored, 10))
+}
 func objectError(err error, bucket, key string) error {
 	var e *Error
 	if errors.As(err, &e) {
@@ -374,10 +390,15 @@ func objectError(err error, bucket, key string) error {
 	case errors.Is(err, storage.ErrInvalid):
 		code = ErrInvalidRequest
 	}
+	var cold *readpath.ColdRestoreError
+	var debugRestore string
+	if code == ErrInvalidObjectState && errors.As(err, &cold) {
+		debugRestore = cold.State
+	}
 	if code == ErrServiceUnavailable {
 		return &Error{Code: code, Bucket: bucket, Key: key, failureClass: availabilityFailureClass(err)}
 	}
-	return &Error{Code: code, Bucket: bucket, Key: key}
+	return &Error{Code: code, Bucket: bucket, Key: key, debugRestore: debugRestore}
 }
 
 // parseObjectRange is the S3 GetObject/HeadObject Range grammar of API v2 4.1:

@@ -506,6 +506,63 @@ class WorkflowTests(unittest.TestCase):
             cleanup.execute(self.r)
             self.assertEqual(tf.call_count, 1)
 
+    def test_native_audit_preserves_parallel_resources_and_actual_trust_policy(self):
+        cleanup = importlib.import_module("deploy.acceptance.cleanup")
+        import subprocess
+
+        for name in [
+            "iam-finished.json",
+            "frozen/state.json",
+            "frozen/runtime.json",
+            "frozen/inventory.json",
+            "volume-baseline.json",
+            "account-baseline.json",
+        ]:
+            self.r.write(name, {})
+        bucket = {"Buckets": [{"Name": "miles-dev-unexpected-chien-data"}]}
+        role = {
+            "Role": {
+                "RoleName": "miles-dev-deploy",
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": "*",
+                            "Action": "sts:AssumeRole",
+                        }
+                    ],
+                },
+            }
+        }
+        verifier = mock.Mock()
+
+        def export(path):
+            for args, expected in [
+                (["s3api", "list-buckets"], bucket),
+                (["iam", "get-role", "--role-name", "miles-dev-deploy"], role),
+            ]:
+                with mock.patch(
+                    "subprocess.run",
+                    return_value=subprocess.CompletedProcess(
+                        [], 0, stdout=json.dumps(expected), stderr=""
+                    ),
+                ):
+                    code, stdout, stderr = verifier._runner(args)
+                self.assertEqual(code, 0)
+                self.assertEqual(json.loads(stdout), expected)
+                self.assertEqual(stderr, "")
+            self.r.write("final-absence-summary.json", {"accepted": True})
+
+        verifier.export_summary.side_effect = export
+        with (
+            mock.patch.object(self.r, "identity"),
+            mock.patch.object(
+                cleanup, "TeardownAbsenceVerifier", return_value=verifier
+            ),
+        ):
+            cleanup.audit(self.r)
+
     def test_cleanup_grant_rejects_changed_manifest_before_iam_write(self):
         cleanup = importlib.import_module("deploy.acceptance.cleanup")
         self.r.write("iam/cleanup.json", {})

@@ -27,6 +27,14 @@ type artifact struct {
 	SourceRevision string `json:"source_revision"`
 }
 
+type comparisonArtifact struct {
+	simulator.ComparisonResult
+	TraceSHA256    string `json:"trace_sha256"`
+	PricingSHA256  string `json:"pricing_sha256"`
+	Tool           string `json:"tool"`
+	SourceRevision string `json:"source_revision"`
+}
+
 func readFile(path string, limit int64) ([]byte, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -46,6 +54,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	tracePath := f.String("trace", "", "Version 1 accounting trace JSON")
 	pricingPath := f.String("pricing", "configs/pricing/pricing.ap-southeast-1.example.json", "Shared pricing catalog JSON")
 	out := f.String("out", "", "New private result JSON file; parent must exist")
+	compare := f.Bool("compare", false, "Output four-policy comparative cost artifact")
 	if err := f.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -73,26 +82,59 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return fail(err)
 	}
-	result, err := simulator.Run(ctx, trace, catalog)
-	if err != nil {
-		return fail(err)
-	}
+
 	tHash, pHash := sha256.Sum256(rawTrace), sha256.Sum256(rawPricing)
-	a := artifact{Result: result, TraceSHA256: hex.EncodeToString(tHash[:]), PricingSHA256: hex.EncodeToString(pHash[:]), Tool: buildinfo.String("costsim"), SourceRevision: "unavailable"}
+	traceSHA := hex.EncodeToString(tHash[:])
+	pricingSHA := hex.EncodeToString(pHash[:])
+	tool := buildinfo.String("costsim")
+	sourceRev := "unavailable"
+
 	if info, ok := debug.ReadBuildInfo(); ok {
 		for _, setting := range info.Settings {
 			if setting.Key == "vcs.revision" {
-				a.SourceRevision = setting.Value
+				sourceRev = setting.Value
 			}
 			if setting.Key == "vcs.modified" && setting.Value == "true" {
-				a.Tool += " dirty-source"
+				tool += " dirty-source"
 			}
 		}
 	}
-	data, err := json.MarshalIndent(a, "", "  ")
-	if err != nil {
-		return fail(err)
+
+	var data []byte
+	if *compare {
+		compResult, err := simulator.ComparePolicies(ctx, trace, catalog)
+		if err != nil {
+			return fail(err)
+		}
+		ca := comparisonArtifact{
+			ComparisonResult: compResult,
+			TraceSHA256:      traceSHA,
+			PricingSHA256:    pricingSHA,
+			Tool:             tool,
+			SourceRevision:   sourceRev,
+		}
+		data, err = json.MarshalIndent(ca, "", "  ")
+		if err != nil {
+			return fail(err)
+		}
+	} else {
+		result, err := simulator.Run(ctx, trace, catalog)
+		if err != nil {
+			return fail(err)
+		}
+		a := artifact{
+			Result:         result,
+			TraceSHA256:    traceSHA,
+			PricingSHA256:  pricingSHA,
+			Tool:           tool,
+			SourceRevision: sourceRev,
+		}
+		data, err = json.MarshalIndent(a, "", "  ")
+		if err != nil {
+			return fail(err)
+		}
 	}
+
 	file, err := os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
@@ -105,7 +147,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if err = errors.Join(writeErr, syncErr, closeErr); err != nil {
 		return fail(err)
 	}
-	fmt.Fprintln(stdout, "Prototype artifact written; priced subtotal only, no final performance gate.")
+	if *compare {
+		fmt.Fprintln(stdout, "Four-policy comparative cost artifact written; priced subtotal only, no final performance gate.")
+	} else {
+		fmt.Fprintln(stdout, "Prototype artifact written; priced subtotal only, no final performance gate.")
+	}
 	return 0
 }
 

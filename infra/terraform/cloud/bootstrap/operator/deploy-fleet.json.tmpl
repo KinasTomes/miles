@@ -1,0 +1,232 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "FleetRead",
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:DescribeAutoScalingGroups",
+        "autoscaling:DescribeScalingActivities",
+        "autoscaling:DescribeInstanceRefreshes",
+        "autoscaling:DescribeLifecycleHooks",
+        "autoscaling:DescribeWarmPool",
+        "ec2:DescribeLaunchTemplates",
+        "ec2:DescribeLaunchTemplateVersions",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeLoadBalancerAttributes",
+        "elasticloadbalancing:DescribeListeners",
+        "elasticloadbalancing:DescribeListenerAttributes",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeTargetGroupAttributes",
+        "elasticloadbalancing:DescribeTargetHealth",
+        "elasticloadbalancing:DescribeTags",
+        "elasticloadbalancing:DescribeCapacityReservation",
+        "autoscaling:DescribeLoadBalancerTargetGroups",
+        "autoscaling:DescribeLoadBalancers",
+        "autoscaling:DescribeTrafficSources"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "OwnFleet",
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:CreateAutoScalingGroup",
+        "autoscaling:UpdateAutoScalingGroup",
+        "autoscaling:DeleteAutoScalingGroup",
+        "autoscaling:CreateOrUpdateTags",
+        "autoscaling:DeleteTags",
+        "autoscaling:PutLifecycleHook",
+        "autoscaling:DeleteLifecycleHook",
+        "autoscaling:StartInstanceRefresh",
+        "autoscaling:CancelInstanceRefresh",
+        "autoscaling:RollbackInstanceRefresh",
+        "autoscaling:EnableMetricsCollection",
+        "autoscaling:DisableMetricsCollection",
+        "autoscaling:SuspendProcesses",
+        "autoscaling:ResumeProcesses",
+        "autoscaling:SetDesiredCapacity",
+        "autoscaling:TerminateInstanceInAutoScalingGroup",
+        "autoscaling:RecordLifecycleActionHeartbeat",
+        "autoscaling:CompleteLifecycleAction",
+        "autoscaling:AttachLoadBalancerTargetGroups",
+        "autoscaling:DetachLoadBalancerTargetGroups",
+        "autoscaling:SetInstanceProtection"
+      ],
+      "Resource": [
+        "arn:aws:autoscaling:{{REGION}}:{{ACCOUNT_ID}}:autoScalingGroup:*:autoScalingGroupName/{{INSTALLATION_NAME}}-gateway"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "CreateFleetTemplate",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateLaunchTemplate"
+      ],
+      "Resource": [
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:launch-template/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:RequestTag/Installation": "{{INSTALLATION_NAME}}",
+          "aws:RequestTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "ManageFleetTemplate",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateLaunchTemplateVersion",
+        "ec2:DeleteLaunchTemplateVersions",
+        "ec2:DeleteLaunchTemplate",
+        "ec2:ModifyLaunchTemplate"
+      ],
+      "Resource": [
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:launch-template/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}",
+          "aws:ResourceTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "TagFleetTemplateAtCreate",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:launch-template/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "ec2:CreateAction": "CreateLaunchTemplate",
+          "aws:RequestTag/Installation": "{{INSTALLATION_NAME}}"
+        }
+      }
+    },
+    {
+      "Sid": "OwnLoadBalancer",
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:CreateLoadBalancer",
+        "elasticloadbalancing:CreateTargetGroup",
+        "elasticloadbalancing:CreateListener",
+        "elasticloadbalancing:ModifyListener",
+        "elasticloadbalancing:ModifyListenerAttributes",
+        "elasticloadbalancing:ModifyLoadBalancerAttributes",
+        "elasticloadbalancing:ModifyTargetGroup",
+        "elasticloadbalancing:ModifyTargetGroupAttributes",
+        "elasticloadbalancing:SetSecurityGroups",
+        "elasticloadbalancing:SetSubnets",
+        "elasticloadbalancing:SetIpAddressType",
+        "elasticloadbalancing:AddTags",
+        "elasticloadbalancing:RemoveTags",
+        "elasticloadbalancing:DeleteListener",
+        "elasticloadbalancing:DeleteTargetGroup",
+        "elasticloadbalancing:DeleteLoadBalancer",
+        "elasticloadbalancing:RegisterTargets",
+        "elasticloadbalancing:DeregisterTargets"
+      ],
+      "Resource": [
+        "arn:aws:elasticloadbalancing:{{REGION}}:{{ACCOUNT_ID}}:loadbalancer/app/{{INSTALLATION_NAME}}/*",
+        "arn:aws:elasticloadbalancing:{{REGION}}:{{ACCOUNT_ID}}:targetgroup/{{INSTALLATION_NAME}}-s3/*",
+        "arn:aws:elasticloadbalancing:{{REGION}}:{{ACCOUNT_ID}}:listener/app/{{INSTALLATION_NAME}}/*/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "CreateServiceRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateServiceLinkedRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::{{ACCOUNT_ID}}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_{{INSTALLATION_NAME}}",
+        "arn:aws:iam::{{ACCOUNT_ID}}:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": [
+            "autoscaling.amazonaws.com",
+            "elasticloadbalancing.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "OwnScalingServiceRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole",
+        "iam:DeleteServiceLinkedRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::{{ACCOUNT_ID}}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_{{INSTALLATION_NAME}}"
+      ]
+    },
+    {
+      "Sid": "ObserveServiceRoleDeletion",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetServiceLinkedRoleDeletionStatus"
+      ],
+      "Resource": [
+        "*"
+      ]
+    },
+    {
+      "Sid": "PassOwnScalingServiceRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::{{ACCOUNT_ID}}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_{{INSTALLATION_NAME}}"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "autoscaling.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "CertificateMetadata",
+      "Effect": "Allow",
+      "Action": [
+        "acm:DescribeCertificate",
+        "acm:ListTagsForCertificate"
+      ],
+      "Resource": [
+        "arn:aws:acm:{{REGION}}:{{ACCOUNT_ID}}:certificate/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    }
+  ]
+}

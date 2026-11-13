@@ -45,7 +45,6 @@ func (w Worker) Flush(ctx context.Context) error {
 	if err := w.validate(); err != nil {
 		return err
 	}
-	w.observe("discover_epochs")
 	g, err := w.Store.GetR1Gate(ctx)
 	if err != nil {
 		return err
@@ -59,7 +58,6 @@ func (w Worker) Flush(ctx context.Context) error {
 	}
 	for epoch := state.NextToSeal; epoch <= g.Epoch; epoch++ {
 		if epoch < g.Epoch {
-			w.observe("seal_closed_epoch")
 			e, err := w.Store.GetRecoveryEpoch(ctx, g.HistoryID, epoch)
 			if err != nil {
 				return err
@@ -75,7 +73,6 @@ func (w Worker) Flush(ctx context.Context) error {
 		}
 		q := s.OutboxQuery{HistoryID: g.HistoryID, Epoch: epoch, Limit: 128}
 		for {
-			w.observe("export_open_page")
 			next, err := w.sealer().Exporter.RunPage(ctx, q)
 			if err != nil {
 				return err
@@ -89,7 +86,6 @@ func (w Worker) Flush(ctx context.Context) error {
 			q.After = next
 		}
 	}
-	w.observe("flush_complete")
 	return nil
 }
 

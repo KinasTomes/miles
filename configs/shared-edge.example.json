@@ -13,5 +13,6 @@
   "pack_kms_key_id": "REPLACE_WITH_KMS_KEY_ARN",
   "runtime_secret_arn": "arn:aws:secretsmanager:ap-southeast-1:123456789012:secret:REPLACE",
   "aws_config_file": "/etc/miles/aws-config",
+  "aws_profile": "miles-runtime",
   "utc_reference": "REPLACE_WITH_APPROVED_NTP_IPV4"
 }

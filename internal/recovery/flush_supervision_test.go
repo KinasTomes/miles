@@ -3,7 +3,6 @@ package recovery
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -74,8 +73,7 @@ func TestFlushSupervisedRenewsAndJoins(t *testing.T) {
 			catalog := Catalog{Version: 1, History: strings.Repeat("1", 32), Incarnation: strings.Repeat("2", 32), Genesis: ref([]byte("{}"))}
 			store := blockedFlush{catalog: catalog, started: make(chan struct{}), release: make(chan struct{}), renewed: make(chan struct{}, 1), failure: failure}
 			timer := flushClock{Clock: clock.NewReal(), sleep: make(chan time.Duration, 1), wake: make(chan struct{}, 1)}
-			var stages []string
-			worker := Worker{Store: store, Payloads: memoryInputs{}, Objects: &memoryObjects{}, Catalog: catalog, Clock: timer, Fence: s.WriterFence{ServiceIncarnation: catalog.Incarnation, LeaseID: "flush", Epoch: 1}, Observe: func(stage string) { stages = append(stages, stage) }}
+			worker := Worker{Store: store, Payloads: memoryInputs{}, Objects: &memoryObjects{}, Catalog: catalog, Clock: timer, Fence: s.WriterFence{ServiceIncarnation: catalog.Incarnation, LeaseID: "flush", Epoch: 1}}
 			done := make(chan error, 1)
 			go func() { done <- worker.FlushSupervised(ctx) }()
 			select {
@@ -103,13 +101,6 @@ func TestFlushSupervisedRenewsAndJoins(t *testing.T) {
 			}
 			if err := <-done; !errors.Is(err, failure) {
 				t.Fatal("flush did not retain its renewal outcome", err)
-			}
-			wantStages := []string{"discover_epochs", "export_open_page"}
-			if failure == nil {
-				wantStages = append(wantStages, "flush_complete")
-			}
-			if !reflect.DeepEqual(stages, wantStages) {
-				t.Fatal("flush progress did not identify its last completed stage", stages)
 			}
 			select {
 			case <-store.renewed:

@@ -63,7 +63,7 @@ resource "aws_route" "nat" {
   nat_gateway_id         = aws_nat_gateway.this[var.nat_per_az ? each.key : var.zones[0]].id
 }
 resource "aws_security_group" "this" {
-  for_each    = toset(["alb", "gateway", "jobs", "monitor", "admin"])
+  for_each    = toset(concat(["alb", "gateway", "jobs", "monitor", "admin"], var.enable_edge ? ["edge"] : []))
   name_prefix = "${var.name}-${each.key}-"
   description = "Miles ${each.key}; explicit rules only"
   vpc_id      = aws_vpc.this.id
@@ -113,6 +113,23 @@ resource "aws_vpc_security_group_ingress_rule" "ssh" {
 resource "aws_vpc_security_group_egress_rule" "https" {
   for_each          = toset(["gateway", "jobs"])
   security_group_id = aws_security_group.this[each.key].id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+}
+
+resource "aws_vpc_security_group_ingress_rule" "edge_https" {
+  for_each          = var.enable_edge ? var.client_cidrs : toset([])
+  security_group_id = aws_security_group.this["edge"].id
+  cidr_ipv4         = each.value
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+}
+resource "aws_vpc_security_group_egress_rule" "edge_https" {
+  count             = var.enable_edge ? 1 : 0
+  security_group_id = aws_security_group.this["edge"].id
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "tcp"
   from_port         = 443

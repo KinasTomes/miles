@@ -5,11 +5,11 @@ process chạy nhiều bước, ghi tiến trình/log ra disk và chỉ trả qu
 khi cần duyệt, cần đăng nhập, có lỗi hoặc hoàn tất. Không cần agent dựng lại các
 lệnh SSH/Terraform hoặc đọc mọi dòng log trong lúc AWS đang xử lý.
 
-**Phạm vi:** chuẩn hóa orchestration offline. Không sửa runtime, workload của
-PR #88 hoặc bộ audit của PR #86; không phải phê duyệt chạy AWS mới. Base hiện
-chứa thay đổi audit đã được báo cần đối soát phạm vi môi trường song song.
-Kết quả `finished` của process chỉ nói các bước đã thoát thành công; không nâng
-audit đó thành bằng chứng độc lập hoặc tuyên bố toàn bộ benchmark đạt.
+**Phạm vi:** kit và orchestration độc lập với các sửa runtime trong PR #86 và
+workload của PR #88. `finished` chỉ nói các bước đã thoát thành công; không tự
+chứng minh toàn bộ benchmark đạt. Audit đọc nguyên phản hồi AWS. Thay đổi đồng
+thời của môi trường khác phải được đối soát bằng ownership/baseline; controller
+không lọc theo tên người hoặc dựng lại trust policy để làm kiểm định đạt.
 
 ## Chuẩn bị một lượt
 

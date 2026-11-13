@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--region', help='Override the Region in the private var-file.')
 parser.add_argument('--mode', choices=['isolated', 'nat', 'interface'], default='isolated')
 parser.add_argument('--stack', choices=['dev', 'state'], default='dev')
 parser.add_argument('--paused', action='store_true', help='Plan the dev pause state instead of the selected active egress mode.')
@@ -58,6 +59,8 @@ with tempfile.TemporaryDirectory(prefix='miles-plan-') as work:
         run('terraform', 'init', '-reconfigure', '-input=false', '-no-color', '-lockfile=readonly')
         variables = ['-var-file=' + str(args.var_file)] if args.var_file else []
         variables.append('-var=account_id=' + account_id)
+        if args.region:
+            variables.append('-var=region=' + args.region)
         if args.stack == 'dev':
             variables.append('-var=egress_mode=' + args.mode)
             variables.append('-var=paused=' + str(args.paused).lower())
