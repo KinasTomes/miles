@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -81,6 +82,14 @@ type Phase struct {
 	StopTrigger     string  `json:"stop_trigger,omitempty"`
 }
 
+type CloneReceipt struct {
+	SourceDomain      string `json:"source_domain"`
+	DestinationDomain string `json:"destination_domain"`
+	FilesCloned       int    `json:"files_cloned"`
+	TotalBytesCloned  int64  `json:"total_bytes_cloned"`
+	ReceiptSHA256     string `json:"receipt_sha256"`
+}
+
 type Result struct {
 	SchemaVersion            int                    `json:"schema_version"`
 	MVPThresholdApplied      bool                   `json:"mvp_threshold_applied"`
@@ -99,8 +108,15 @@ type Result struct {
 	Scenario                 string                 `json:"scenario,omitempty"`
 	Variant                  string                 `json:"variant,omitempty"`
 	Domain                   string                 `json:"domain,omitempty"`
+	Tenant1Domain            string                 `json:"tenant1_domain,omitempty"`
+	Tenant2Domain            string                 `json:"tenant2_domain,omitempty"`
+	DomainCrossOwnerCheck    *Sample                `json:"domain_cross_owner_check,omitempty"`
 	DomainCrossOwnerRejected bool                   `json:"domain_cross_owner_rejected,omitempty"`
 	SecondTenantVerified     bool                   `json:"second_tenant_verified,omitempty"`
+	SecondTenantPhases       []Phase                `json:"second_tenant_phases,omitempty"`
+	SecondTenantSamples      []Sample               `json:"second_tenant_samples,omitempty"`
+	SecondTenantCleanup      string                 `json:"second_tenant_cleanup,omitempty"`
+	CloneReceipt             *CloneReceipt          `json:"clone_receipt,omitempty"`
 	LiveLogicalBytes         int64                  `json:"live_logical_bytes,omitempty"`
 	HistoricalBytes          int64                  `json:"historical_bytes,omitempty"`
 	MultipartCount           int                    `json:"multipart_count,omitempty"`
@@ -126,6 +142,9 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 	}
 	if o.Domain == "" {
 		o.Domain = "default"
+	}
+	if o.Scenario == "cold" || o.Scenario == "recovery" {
+		return result, fmt.Errorf("scenario %q requires specialized benchmark runner (P2 restore/revival or R1/R2 fault contract); warmbench does not certify this scenario", o.Scenario)
 	}
 	root, manifest, raw, err := loadDataset(ctx, o.Manifest)
 	if err != nil {
@@ -232,7 +251,7 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 				o.SourcePrefix += "/"
 			}
 		}
-		if err = edgeClonePhase(ctx, client, root, c, o, &result); err != nil {
+		if err = edgeClonePhase(ctx, client, root, c, o, &result, traffic); err != nil {
 			return result, err
 		}
 		return result, nil
@@ -925,29 +944,80 @@ func overwritePhase(ctx context.Context, client *awss3.Client, root *os.Root, c 
 	return nil
 }
 
-func edgeClonePhase(ctx context.Context, client *awss3.Client, root *os.Root, c Config, o Options, r *Result) error {
+func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 Config, o Options, r *Result, traffic *bodyTraffic) error {
+	if o.SecondConfig == "" {
+		return errors.New("edge-clone requires --second-config for independent destination domain")
+	}
+	b, err := secretfile.Read(o.SecondConfig, 32<<10)
+	if err != nil {
+		return fmt.Errorf("read second-config failed: %w", err)
+	}
+	var cDest Config
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	if err = d.Decode(&cDest); err != nil || d.Decode(new(any)) != io.EOF {
+		return errors.New("invalid second-config JSON or unknown field")
+	}
+
+	if c1.DedupDomain == "" || cDest.DedupDomain == "" {
+		return errors.New("edge-clone requires dedup_domain declared in both source and destination configs")
+	}
+	if c1.DedupDomain == cDest.DedupDomain {
+		return fmt.Errorf("edge-clone requires distinct source and destination dedup domains, both are %q", c1.DedupDomain)
+	}
+
+	clientDest, closeDest, err := newClient(cDest, o.Concurrency, traffic)
+	if err != nil {
+		return fmt.Errorf("destination client initialization failed: %w", err)
+	}
+	defer closeDest()
+
 	switch o.Variant {
 	case "clone-download":
-		if err := filePhase(ctx, client, root, c, o, "verify-get", r); err != nil {
+		// Download from source domain/prefix and verify SHA-256
+		if err := filePhase(ctx, client1, root, c1, o, "verify-get", r); err != nil {
 			return err
+		}
+		r.CloneReceipt = &CloneReceipt{
+			SourceDomain:      c1.DedupDomain,
+			DestinationDomain: cDest.DedupDomain,
+			FilesCloned:       len(r.Dataset.Files),
+			TotalBytesCloned:  r.Dataset.TotalBytes,
+			ReceiptSHA256:     r.ManifestSHA256,
 		}
 		r.Cleanup = "edge_clone_download_verified"
 		return nil
 	case "clone-upload":
-		if err := filePhase(ctx, client, root, c, o, "put", r); err != nil {
-			return err
+		if o.SourcePrefix != "" {
+			// Download verified bytes from source domain
+			if err := filePhase(ctx, client1, root, c1, o, "verify-get", r); err != nil {
+				return fmt.Errorf("clone source download failed: %w", err)
+			}
 		}
-		if err := filePhase(ctx, client, root, c, o, "head", r); err != nil {
-			return err
+		// Upload verified bytes to destination domain
+		oDest := o
+		oDest.SourcePrefix = ""
+		if err := filePhase(ctx, clientDest, root, cDest, oDest, "put", r); err != nil {
+			return fmt.Errorf("clone destination upload failed: %w", err)
 		}
-		if err := filePhase(ctx, client, root, c, o, "verify-get", r); err != nil {
-			return err
+		if err := filePhase(ctx, clientDest, root, cDest, oDest, "head", r); err != nil {
+			return fmt.Errorf("clone destination head failed: %w", err)
+		}
+		if err := filePhase(ctx, clientDest, root, cDest, oDest, "verify-get", r); err != nil {
+			return fmt.Errorf("clone destination get integrity failed: %w", err)
+		}
+		r.CloneReceipt = &CloneReceipt{
+			SourceDomain:      c1.DedupDomain,
+			DestinationDomain: cDest.DedupDomain,
+			FilesCloned:       len(r.Dataset.Files),
+			TotalBytesCloned:  r.Dataset.TotalBytes,
+			ReceiptSHA256:     r.ManifestSHA256,
 		}
 		if o.RetainObjects {
 			r.Cleanup = "retained_owned_prefix_for_observation"
 			return nil
 		}
-		if err := filePhase(ctx, client, root, c, o, "delete", r); err != nil {
+		if err := filePhase(ctx, clientDest, root, cDest, oDest, "delete", r); err != nil {
 			return err
 		}
 		r.Cleanup = "edge_clone_upload_verified"
@@ -969,6 +1039,25 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 		return errors.New("invalid second-config JSON or unknown field")
 	}
 
+	if c1.DedupDomain == "" || c2.DedupDomain == "" {
+		return errors.New("domain scenario requires dedup_domain declared in both configs")
+	}
+	switch o.Variant {
+	case "shared-default":
+		if c1.DedupDomain != c2.DedupDomain {
+			return fmt.Errorf("shared-default requires identical tenant dedup domains, got %q and %q", c1.DedupDomain, c2.DedupDomain)
+		}
+	case "separated":
+		if c1.DedupDomain == c2.DedupDomain {
+			return fmt.Errorf("separated variant requires distinct tenant dedup domains, both are %q", c1.DedupDomain)
+		}
+	default:
+		return errors.New("unknown domain variant: " + o.Variant)
+	}
+
+	r.Tenant1Domain = c1.DedupDomain
+	r.Tenant2Domain = c2.DedupDomain
+
 	client2, closeClient2, err := newClient(c2, o.Concurrency, traffic)
 	if err != nil {
 		return fmt.Errorf("second client initialization failed: %w", err)
@@ -987,20 +1076,29 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 	}
 
 	// 2. Cross-Owner Auth: Tenant 2 attempts to read Tenant 1's object in Tenant 1's bucket.
-	// It MUST be rejected (HTTP 403 Forbidden / AccessDenied or 404).
+	// It MUST be rejected with HTTP 403 Forbidden (AccessDenied).
 	if len(r.Dataset.Files) > 0 {
+		startCross := time.Now()
 		testFile := r.Dataset.Files[0]
 		targetKey := r.Prefix + testFile.Path
 		_, err := client2.GetObject(ctx, &awss3.GetObjectInput{
 			Bucket: aws.String(c1.Bucket),
 			Key:    aws.String(targetKey),
 		})
+		status, reqID := responseDiagnostics(err)
+		r.DomainCrossOwnerCheck = &Sample{
+			Phase:      "cross-owner-auth-check",
+			Operation:  "GetObject",
+			File:       testFile.Path,
+			HTTPStatus: status,
+			RequestID:  reqID,
+			LatencyNS:  time.Since(startCross).Nanoseconds(),
+		}
 		if err == nil {
 			return errors.New("domain isolation failure: cross-owner GET succeeded without authorization grant")
 		}
-		status, _ := responseDiagnostics(err)
-		if status != 403 && status != 404 {
-			return fmt.Errorf("cross-owner GET returned unexpected error status %d: %w", status, err)
+		if status != http.StatusForbidden {
+			return fmt.Errorf("cross-owner GET must be rejected with HTTP 403 Forbidden, got %d (%v)", status, err)
 		}
 		r.DomainCrossOwnerRejected = true
 	}
@@ -1009,14 +1107,15 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 	prefix2 := "warmbench-tenant2/" + filepath.Base(r.Prefix) + "/"
 	o2 := o
 	o2.SourcePrefix = prefix2
-	res2 := *r
-	res2.Prefix = prefix2
+	res2 := Result{Prefix: prefix2, Dataset: r.Dataset}
 	if err := filePhase(ctx, client2, root, c2, o2, "put", &res2); err != nil {
 		return fmt.Errorf("tenant 2 PUT phase failed: %w", err)
 	}
 	if err := filePhase(ctx, client2, root, c2, o2, "verify-get", &res2); err != nil {
 		return fmt.Errorf("tenant 2 GET integrity failed: %w", err)
 	}
+	r.SecondTenantPhases = res2.Phases
+	r.SecondTenantSamples = res2.Samples
 	r.SecondTenantVerified = true
 
 	// Cleanup
@@ -1030,6 +1129,7 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 	if err := filePhase(ctx, client2, root, c2, o2, "delete", &res2); err != nil {
 		return err
 	}
+	r.SecondTenantCleanup = "logical_delete_verified"
 	r.Cleanup = "domain_two_tenant_isolation_verified"
 	return nil
 }

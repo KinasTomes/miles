@@ -1593,6 +1593,7 @@ func TestOverwriteScenario(t *testing.T) {
 
 func TestDomainScenario(t *testing.T) {
 	c, o, _ := setup(t)
+	c.DedupDomain = "domain-a"
 	o.Scenario = "domain"
 	o.Variant = "shared-default"
 	o.Domain = "shared-default"
@@ -1610,18 +1611,51 @@ func TestDomainScenario(t *testing.T) {
 	if err := os.WriteFile(credsBPath, []byte(`{"access_key_id":"tenant-b-key","secret_access_key":"tenant-b-secret","session_token":"tenant-b-session"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	c2 := c
-	c2.Bucket = "test-bucket-b"
-	c2.CredentialsFile = credsBPath
-	c2Bytes, _ := json.Marshal(c2)
-	c2Path := filepath.Join(temp, "tenant2-config.json")
-	if err := os.WriteFile(c2Path, c2Bytes, 0600); err != nil {
+
+	// 2a. Tenant B without dedup_domain must fail
+	c2NoDomain := c
+	c2NoDomain.Bucket = "test-bucket-b"
+	c2NoDomain.CredentialsFile = credsBPath
+	c2NoDomain.DedupDomain = ""
+	c2NoDomainBytes, _ := json.Marshal(c2NoDomain)
+	c2NoDomainPath := filepath.Join(temp, "tenant2-no-domain.json")
+	if err := os.WriteFile(c2NoDomainPath, c2NoDomainBytes, 0600); err != nil {
 		t.Fatal(err)
 	}
+	oNoDomain := o
+	oNoDomain.SecondConfig = c2NoDomainPath
+	oNoDomain.Out = filepath.Join(t.TempDir(), "artifact-domain-no-domain")
+	if _, err := Run(context.Background(), c, oNoDomain); err == nil || !strings.Contains(err.Error(), "requires dedup_domain declared in both configs") {
+		t.Fatalf("expected error about missing dedup_domain, got %v", err)
+	}
 
-	// 3. Run shared-default with second-config
+	// 2b. shared-default with mismatched domain must fail
+	c2Sep := c
+	c2Sep.Bucket = "test-bucket-b"
+	c2Sep.CredentialsFile = credsBPath
+	c2Sep.DedupDomain = "domain-b"
+	c2SepBytes, _ := json.Marshal(c2Sep)
+	c2SepPath := filepath.Join(temp, "tenant2-sep.json")
+	if err := os.WriteFile(c2SepPath, c2SepBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	oMismatch := o
+	oMismatch.SecondConfig = c2SepPath
+	oMismatch.Out = filepath.Join(t.TempDir(), "artifact-domain-mismatch")
+	if _, err := Run(context.Background(), c, oMismatch); err == nil || !strings.Contains(err.Error(), "shared-default requires identical tenant dedup domains") {
+		t.Fatalf("expected error about mismatched domains for shared-default, got %v", err)
+	}
+
+	// 3. Run shared-default with matching second-config
+	c2Shared := c2Sep
+	c2Shared.DedupDomain = "domain-a"
+	c2SharedBytes, _ := json.Marshal(c2Shared)
+	c2SharedPath := filepath.Join(temp, "tenant2-shared.json")
+	if err := os.WriteFile(c2SharedPath, c2SharedBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
 	oShared := o
-	oShared.SecondConfig = c2Path
+	oShared.SecondConfig = c2SharedPath
 	oShared.Out = filepath.Join(t.TempDir(), "artifact-domain-shared")
 	rShared, err := Run(context.Background(), c, oShared)
 	if err != nil {
@@ -1630,11 +1664,31 @@ func TestDomainScenario(t *testing.T) {
 	if rShared.Status != "passed" || !rShared.DomainCrossOwnerRejected || !rShared.SecondTenantVerified || rShared.Cleanup != "domain_two_tenant_isolation_verified" {
 		t.Fatalf("domain shared run mismatch: %+v", rShared)
 	}
+	if rShared.Tenant1Domain != "domain-a" || rShared.Tenant2Domain != "domain-a" {
+		t.Fatalf("unexpected tenant domains: t1=%q t2=%q", rShared.Tenant1Domain, rShared.Tenant2Domain)
+	}
+	if rShared.DomainCrossOwnerCheck == nil || rShared.DomainCrossOwnerCheck.HTTPStatus != 403 {
+		t.Fatalf("cross owner check must report HTTP 403: %+v", rShared.DomainCrossOwnerCheck)
+	}
+	if len(rShared.SecondTenantPhases) == 0 || len(rShared.SecondTenantSamples) == 0 || rShared.SecondTenantCleanup != "logical_delete_verified" {
+		t.Fatalf("missing second tenant telemetry in result: %+v", rShared)
+	}
 
-	// 4. Run separated with second-config
-	oSep := oShared
+	// 4. separated negative test: identical domains must fail
+	oSepIdentical := o
+	oSepIdentical.Variant = "separated"
+	oSepIdentical.Domain = "separated"
+	oSepIdentical.SecondConfig = c2SharedPath
+	oSepIdentical.Out = filepath.Join(t.TempDir(), "artifact-domain-sep-identical")
+	if _, err := Run(context.Background(), c, oSepIdentical); err == nil || !strings.Contains(err.Error(), "separated variant requires distinct tenant dedup domains") {
+		t.Fatalf("expected error about identical domains for separated, got %v", err)
+	}
+
+	// 5. Run separated with distinct second-config
+	oSep := o
 	oSep.Variant = "separated"
 	oSep.Domain = "separated"
+	oSep.SecondConfig = c2SepPath
 	oSep.Out = filepath.Join(t.TempDir(), "artifact-domain-sep")
 	rSep, err := Run(context.Background(), c, oSep)
 	if err != nil {
@@ -1643,25 +1697,78 @@ func TestDomainScenario(t *testing.T) {
 	if rSep.Status != "passed" || !rSep.DomainCrossOwnerRejected || !rSep.SecondTenantVerified || rSep.Cleanup != "domain_two_tenant_isolation_verified" {
 		t.Fatalf("domain separated run mismatch: %+v", rSep)
 	}
+	if rSep.Tenant1Domain != "domain-a" || rSep.Tenant2Domain != "domain-b" {
+		t.Fatalf("unexpected separated tenant domains: t1=%q t2=%q", rSep.Tenant1Domain, rSep.Tenant2Domain)
+	}
+	if rSep.DomainCrossOwnerCheck == nil || rSep.DomainCrossOwnerCheck.HTTPStatus != 403 {
+		t.Fatalf("cross owner check must report HTTP 403: %+v", rSep.DomainCrossOwnerCheck)
+	}
+	if len(rSep.SecondTenantPhases) == 0 || len(rSep.SecondTenantSamples) == 0 || rSep.SecondTenantCleanup != "logical_delete_verified" {
+		t.Fatalf("missing second tenant telemetry in separated result: %+v", rSep)
+	}
 }
 
 func TestEdgeCloneScenario(t *testing.T) {
 	c, o, f := setup(t)
+	c.DedupDomain = "edge-domain-source"
 	o.Scenario = "edge-clone"
 	o.Variant = "clone-upload"
 	o.RetainObjects = true
 	o.Out = filepath.Join(t.TempDir(), "artifact-edge-upload")
 
-	r, err := Run(context.Background(), c, o)
+	// Negative 1: Missing --second-config
+	oNoSecond := o
+	oNoSecond.Out = filepath.Join(t.TempDir(), "artifact-edge-no-second")
+	if _, err := Run(context.Background(), c, oNoSecond); err == nil || !strings.Contains(err.Error(), "requires --second-config") {
+		t.Fatalf("expected error about --second-config, got %v", err)
+	}
+
+	// Setup destination config
+	temp := t.TempDir()
+	cDest := c
+	cDest.Bucket = "test-bucket-b"
+	cDest.DedupDomain = "edge-domain-dest"
+	cDestBytes, _ := json.Marshal(cDest)
+	cDestPath := filepath.Join(temp, "edge-dest-config.json")
+	if err := os.WriteFile(cDestPath, cDestBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Negative 2: Same dedup domain
+	cDestSame := cDest
+	cDestSame.DedupDomain = c.DedupDomain
+	cDestSameBytes, _ := json.Marshal(cDestSame)
+	cDestSamePath := filepath.Join(temp, "edge-dest-same.json")
+	if err := os.WriteFile(cDestSamePath, cDestSameBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	oSame := o
+	oSame.SecondConfig = cDestSamePath
+	oSame.Out = filepath.Join(t.TempDir(), "artifact-edge-same")
+	if _, err := Run(context.Background(), c, oSame); err == nil || !strings.Contains(err.Error(), "requires distinct source and destination dedup domains") {
+		t.Fatalf("expected error about identical domains for edge-clone, got %v", err)
+	}
+
+	// Positive 1: Run clone-upload
+	oUpload := o
+	oUpload.SecondConfig = cDestPath
+	oUpload.Out = filepath.Join(t.TempDir(), "artifact-edge-upload")
+	r, err := Run(context.Background(), c, oUpload)
 	if err != nil {
 		t.Fatalf("Run edge clone-upload failed: %v", err)
 	}
 	if r.Status != "passed" || r.Cleanup != "retained_owned_prefix_for_observation" {
 		t.Fatalf("edge clone upload mismatch: %+v", r)
 	}
+	if r.CloneReceipt == nil || r.CloneReceipt.SourceDomain != "edge-domain-source" || r.CloneReceipt.DestinationDomain != "edge-domain-dest" {
+		t.Fatalf("invalid clone receipt: %+v", r.CloneReceipt)
+	}
+	if r.CloneReceipt.FilesCloned != len(r.Dataset.Files) || r.CloneReceipt.ReceiptSHA256 == "" {
+		t.Fatalf("invalid clone receipt stats: %+v", r.CloneReceipt)
+	}
 
-	// 1. clone-download without --source-prefix must fail closed
-	oNoSource := o
+	// Negative 3: clone-download without --source-prefix must fail closed
+	oNoSource := oUpload
 	oNoSource.Variant = "clone-download"
 	oNoSource.SourcePrefix = ""
 	oNoSource.Out = filepath.Join(t.TempDir(), "artifact-edge-no-source")
@@ -1670,18 +1777,46 @@ func TestEdgeCloneScenario(t *testing.T) {
 		t.Fatalf("expected error about --source-prefix, got %v", err)
 	}
 
-	// 2. clone-download with valid source prefix
-	oDownload := o
+	cSourceBytes, _ := json.Marshal(c)
+	cSourcePath := filepath.Join(temp, "edge-source-config.json")
+	if err := os.WriteFile(cSourcePath, cSourceBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Positive 2: clone-download with valid source prefix from cDest (which holds retained objects)
+	oDownload := oUpload
 	oDownload.Variant = "clone-download"
+	oDownload.SecondConfig = cSourcePath
 	oDownload.RetainObjects = false
 	oDownload.SourcePrefix = r.Prefix
 	oDownload.Out = filepath.Join(t.TempDir(), "artifact-edge-download")
-	rDown, err := Run(context.Background(), c, oDownload)
+	rDown, err := Run(context.Background(), cDest, oDownload)
 	if err != nil {
 		t.Fatalf("Run edge clone-download failed: %v", err)
 	}
 	if rDown.Status != "passed" || rDown.Cleanup != "edge_clone_download_verified" {
 		t.Fatalf("edge clone download mismatch: %+v", rDown)
+	}
+	if rDown.CloneReceipt == nil || rDown.CloneReceipt.SourceDomain != "edge-domain-dest" || rDown.CloneReceipt.DestinationDomain != "edge-domain-source" {
+		t.Fatalf("invalid clone receipt for download: %+v", rDown.CloneReceipt)
+	}
+
+	// Positive 3: clone-upload with --source-prefix links source GET to destination PUT
+	oUploadLinked := oUpload
+	oUploadLinked.Variant = "clone-upload"
+	oUploadLinked.SecondConfig = cSourcePath
+	oUploadLinked.SourcePrefix = r.Prefix
+	oUploadLinked.RetainObjects = false
+	oUploadLinked.Out = filepath.Join(t.TempDir(), "artifact-edge-upload-linked")
+	rLinked, err := Run(context.Background(), cDest, oUploadLinked)
+	if err != nil {
+		t.Fatalf("Run edge clone-upload linked failed: %v", err)
+	}
+	if rLinked.Status != "passed" || rLinked.Cleanup != "edge_clone_upload_verified" {
+		t.Fatalf("edge clone upload linked mismatch: %+v", rLinked)
+	}
+	if rLinked.CloneReceipt == nil || rLinked.CloneReceipt.SourceDomain != "edge-domain-dest" || rLinked.CloneReceipt.DestinationDomain != "edge-domain-source" {
+		t.Fatalf("invalid clone receipt for linked upload: %+v", rLinked.CloneReceipt)
 	}
 
 	// Clean up retained upload prefix
@@ -1748,12 +1883,9 @@ func TestColdStorageClass(t *testing.T) {
 	o.Variant = "ir"
 	o.Out = filepath.Join(t.TempDir(), "artifact-cold-ir")
 
-	r, err := Run(context.Background(), c, o)
-	if err != nil {
-		t.Fatalf("Run cold IR failed: %v", err)
-	}
-	if r.Status != "passed" {
-		t.Fatalf("cold IR run failed: %+v", r)
+	_, err := Run(context.Background(), c, o)
+	if err == nil || !strings.Contains(err.Error(), "requires specialized benchmark runner") {
+		t.Fatalf("cold IR must fail closed without specialized runner, got: %v", err)
 	}
 
 	cFlex := c
@@ -1761,12 +1893,9 @@ func TestColdStorageClass(t *testing.T) {
 	oFlex := o
 	oFlex.Variant = "flexible"
 	oFlex.Out = filepath.Join(t.TempDir(), "artifact-cold-flex")
-	rFlex, err := Run(context.Background(), cFlex, oFlex)
-	if err != nil {
-		t.Fatalf("Run cold flexible failed: %v", err)
-	}
-	if rFlex.Status != "passed" {
-		t.Fatalf("cold flexible run failed: %+v", rFlex)
+	_, err = Run(context.Background(), cFlex, oFlex)
+	if err == nil || !strings.Contains(err.Error(), "requires specialized benchmark runner") {
+		t.Fatalf("cold flexible must fail closed without specialized runner, got: %v", err)
 	}
 }
 
@@ -1776,22 +1905,16 @@ func TestRecoveryScenario(t *testing.T) {
 	o.Variant = "r1"
 	o.Out = filepath.Join(t.TempDir(), "artifact-recovery-r1")
 
-	r, err := Run(context.Background(), c, o)
-	if err != nil {
-		t.Fatalf("Run recovery r1 failed: %v", err)
-	}
-	if r.Status != "passed" || r.Scenario != "recovery" || r.Variant != "r1" {
-		t.Fatalf("unexpected recovery r1 result: %+v", r)
+	_, err := Run(context.Background(), c, o)
+	if err == nil || !strings.Contains(err.Error(), "requires specialized benchmark runner") {
+		t.Fatalf("recovery r1 must fail closed without specialized runner, got: %v", err)
 	}
 
 	o2 := o
 	o2.Variant = "r2"
 	o2.Out = filepath.Join(t.TempDir(), "artifact-recovery-r2")
-	r2, err := Run(context.Background(), c, o2)
-	if err != nil {
-		t.Fatalf("Run recovery r2 failed: %v", err)
-	}
-	if r2.Status != "passed" || r2.Scenario != "recovery" || r2.Variant != "r2" {
-		t.Fatalf("unexpected recovery r2 result: %+v", r2)
+	_, err = Run(context.Background(), c, o2)
+	if err == nil || !strings.Contains(err.Error(), "requires specialized benchmark runner") {
+		t.Fatalf("recovery r2 must fail closed without specialized runner, got: %v", err)
 	}
 }

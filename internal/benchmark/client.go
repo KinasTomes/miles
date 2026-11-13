@@ -28,6 +28,7 @@ type Config struct {
 	CredentialsFile string      `json:"credentials_file"`
 	KMSKeyID        string      `json:"kms_key_id,omitempty"`
 	StorageClass    string      `json:"storage_class,omitempty"`
+	DedupDomain     string      `json:"dedup_domain,omitempty"`
 	Environment     Environment `json:"environment"`
 }
 
