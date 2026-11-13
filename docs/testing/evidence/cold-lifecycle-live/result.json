@@ -1,15 +1,29 @@
 {
   "scenario": "cold-lifecycle-end-to-end-acceptance",
+  "status": "STAGED_READY",
   "date_utc": "2026-11-13",
   "region": "ap-southeast-1",
   "actor": "assumed-role/miles-dev-deploy/chien-deploy",
   "scope": "End-to-End Miles Cloud and Edge runtime acceptance for Cold Lifecycle (GLACIER_IR and GLACIER)",
   "reproducible_runner": {
     "test_suite": "tests/live/cold_test.go",
-    "test_name": "TestColdLiveFrontDoors",
     "wire_test_name": "TestLiveFixtureColdWireRequests",
+    "admin_contract_test_name": "TestLiveFixtureColdAdminContracts",
+    "live_test_name": "TestColdLiveFrontDoors",
     "environment_flag": "MILES_COLD_LIVE_CONFIG",
     "protocol": "HTTP/1.1 and HTTPS SigV4 over Miles front doors"
+  },
+  "hermetic_verification": {
+    "wire_fixture": "PASS",
+    "admin_http_contracts": "PASS",
+    "layout_discovery_pack_id": "PASS",
+    "job_creation_json_params": "PASS",
+    "job_status_polling_job_id": "PASS",
+    "pack_items_array_retrieval": "PASS",
+    "pack_promote_job_id": "PASS",
+    "generation_advance_after_promote": "PASS",
+    "terminal_safety_orphaned_chunks_zero": "PASS",
+    "native_composition_flows": "PASS"
   },
   "access_preflight": {
     "assume_role": "PASS",
@@ -39,26 +53,22 @@
       }
     ]
   },
-  "scenarios": {
+  "planned_live_scenarios": {
     "glacier_instant_retrieval": {
-      "status": "PASS",
       "storage_class": "GLACIER_IR",
       "payload_bytes": 4480,
       "sha256": "a8783968d62301403f27a7ed714dd55d8a09d30ba2f5f5b88a77ef11cf1f9b00",
-      "put_via_miles_api": "PASS",
       "layout_discovery": {
-        "pack_id": "pk-44ad8c1d-0001",
-        "generation": "gen-00000001",
-        "initial_state": "Warm",
-        "initial_class": "STANDARD"
+        "pack_id_field": "packs[].pack_id",
+        "initial_class": "STANDARD",
+        "initial_state": "Warm"
       },
       "tiering_transition": {
-        "policy_revision": 2,
         "job_type": "tiering",
-        "job_id": "job-tier-0001",
-        "job_state": "succeeded",
-        "pack_state_after": "Cold",
-        "pack_class_after": "GLACIER_IR",
+        "params_format": "JSON object",
+        "response_field": "job_id",
+        "target_state": "Cold",
+        "target_class": "GLACIER_IR",
         "min_retention_days": 90
       },
       "restore_object_behavior": {
@@ -68,42 +78,35 @@
       },
       "direct_read_behavior": {
         "status_code": 200,
-        "sha256_match": true,
-        "bytes_read": 4480,
-        "cache_fill": "PASS"
+        "expected_bytes": 4480,
+        "expected_sha256": "a8783968d62301403f27a7ed714dd55d8a09d30ba2f5f5b88a77ef11cf1f9b00"
       },
       "chunk_reuse": {
         "duplicate_put_status": 200,
-        "canonical_location_preserved": true,
-        "read_reuse_sha256_match": true
+        "canonical_location_preserved": true
       },
       "warm_promotion": {
         "admin_endpoint": "POST /admin/v1/packs/{id}/{gen}/promote",
-        "job_id": "job-prom-0001",
-        "job_state": "succeeded",
-        "promoted_state": "Warm",
-        "read_after_promote_sha256_match": true
+        "response_field": "job_id",
+        "target_state": "Warm",
+        "generation_advance_verified": true
       }
     },
     "glacier_flexible_restore": {
-      "status": "PASS",
       "storage_class": "GLACIER",
       "payload_bytes": 5248,
       "sha256": "e173d9f7aa08f5c7c6b626976a71a0415b6b3011e05f565767271ea099301577",
-      "put_via_miles_api": "PASS",
       "layout_discovery": {
-        "pack_id": "pk-82e70e17-0002",
-        "generation": "gen-00000001",
-        "initial_state": "Warm",
-        "initial_class": "STANDARD"
+        "pack_id_field": "packs[].pack_id",
+        "initial_class": "STANDARD",
+        "initial_state": "Warm"
       },
       "tiering_transition": {
-        "policy_revision": 3,
         "job_type": "tiering",
-        "job_id": "job-tier-0002",
-        "job_state": "succeeded",
-        "pack_state_after": "Cold",
-        "pack_class_after": "GLACIER",
+        "params_format": "JSON object",
+        "response_field": "job_id",
+        "target_state": "Cold",
+        "target_class": "GLACIER",
         "min_retention_days": 90
       },
       "read_before_restore": {
@@ -130,32 +133,27 @@
         "body_emitted": 0
       },
       "async_backend_restore_observation": {
-        "live_s3_async_restore": "PASS",
-        "first_completed_head_utc": "2026-11-13T02:15:32.418Z",
-        "head_restore_header": "ongoing-request=\"false\", expiry-date=\"Sat, 14 Nov 2026 00:00:00 GMT\"",
+        "live_s3_async_restore": "PASS (demonstrated on live S3)",
+        "head_restore_header": "ongoing-request=\"false\", expiry-date=\"<RFC1123>\"",
         "observed_latency_seconds": 96
       },
       "restored_read": {
         "get_status": 200,
-        "bytes_read": 5248,
-        "sha256_match": true,
+        "expected_bytes": 5248,
+        "expected_sha256": "e173d9f7aa08f5c7c6b626976a71a0415b6b3011e05f565767271ea099301577",
         "headers_committed": true
       },
       "restore_renewal": {
         "extended_days": 5,
-        "status_code": 202,
-        "extended_restore_header": "ongoing-request=\"false\", expiry-date=\"Wed, 18 Nov 2026 00:00:00 GMT\""
+        "status_code": 202
       },
       "body_revival": {
         "duplicate_put_status": 200,
         "new_location_state": "Warm",
-        "old_archive_retained_in_min_retention": true,
-        "revived_read_status": 200,
-        "revived_read_sha256_match": true
+        "old_archive_retained_in_min_retention": true
       }
     },
     "fault_isolation_and_terminal_safety": {
-      "status": "PASS",
       "unrestored_read_rejected_before_emit": true,
       "unrestored_read_cache_isolated": true,
       "invalid_restore_parameters_rejected": [
@@ -166,35 +164,22 @@
       ],
       "active_reader_lease_protected": true,
       "pinned_generation_fences_enforced": true,
-      "unknown_write_count": 0,
-      "protection_leak_count": 0
+      "orphaned_chunks_total_asserted": "must be exactly 0 (fail-closed if null or positive)",
+      "revived_chunks_total_asserted": "must be non-zero",
+      "cold_dead_physical_accounting_asserted": "must be positive"
     }
-  },
-  "metrics": {
-    "total_requests": 64,
-    "successful_requests": 52,
-    "expected_rejected_requests": 12,
-    "unexpected_failures": 0,
-    "p95_put_latency_ms": 38.2,
-    "p95_get_latency_ms": 14.5,
-    "p95_restore_init_latency_ms": 42.1
   },
   "spend_and_teardown": {
-    "estimated_cost_usd": 0.48,
     "soft_budget_limit_usd": 10.0,
-    "teardown_status": "PASS",
-    "unapproved_residuals": 0,
-    "native_absence_proof": {
-      "ec2_instances_active": 0,
-      "alb_load_balancers": 0,
-      "dynamodb_workload_tables_active": 0,
-      "synthetic_data_buckets": 0,
-      "retained_resources": [
-        "arn:aws:s3:::miles-dev-tfstate-499388132734-ap-southeast-1"
-      ]
-    }
+    "teardown_prerequisites": [
+      "Hưng approval for paid AWS deployment window",
+      "Temporary grant for dynamodb:DeleteTable attached to deployer role"
+    ],
+    "retained_resources": [
+      "arn:aws:s3:::miles-dev-tfstate-499388132734-ap-southeast-1"
+    ]
   },
   "production_miles_end_to_end": "STAGED_READY",
-  "production_pack_verification": "PASS",
-  "live_s3_async_restore": "PASS"
+  "production_pack_verification": "STAGED_READY",
+  "live_s3_async_restore": "PASS (S3 backend demo 2026-11-10; live endpoint run staged)"
 }

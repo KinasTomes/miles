@@ -267,6 +267,182 @@ func TestLiveFixtureColdWireRequests(t *testing.T) {
 	}
 }
 
+// Exercise exact Admin HTTP contracts: layout discovery (packs[].pack_id),
+// job creation with object params and job_id response, job status polling,
+// pack items array retrieval, pack promotion, and fail-closed stats assertions.
+func TestLiveFixtureColdAdminContracts(t *testing.T) {
+	promoted := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /admin/v1/objects/layout", func(w http.ResponseWriter, r *http.Request) {
+		gen := "gen-00000001"
+		state := "Cold"
+		class := "GLACIER_IR"
+		if promoted {
+			gen = "gen-00000002"
+			state = "Warm"
+			class = "STANDARD"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{
+			"integrity": "verified",
+			"bucket": "acceptance-cold-bkt",
+			"key": "cold-ir.bin",
+			"packs": [{
+				"pack_id": "pk-contract-test-01",
+				"generation": "%s",
+				"state": "%s",
+				"storage_class": "%s",
+				"chunks": 1
+			}]
+		}`, gen, state, class)
+	})
+	mux.HandleFunc("POST /admin/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Type           string         `json:"type"`
+			Params         map[string]any `json:"params"`
+			PolicyRevision uint64         `json:"policy_revision"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, `{"error":"invalid_request"}`, http.StatusBadRequest)
+			return
+		}
+		if body.Type != "tiering" || body.Params["pack_id"] != "pk-contract-test-01" {
+			http.Error(w, `{"error":"invalid_params"}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job_id":"job-tier-contract-01","type":"tiering","state":"queued"}`))
+	})
+	mux.HandleFunc("GET /admin/v1/jobs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"job_id":"` + r.PathValue("id") + `","state":"succeeded"}`))
+	})
+	mux.HandleFunc("GET /admin/v1/packs/{id}", func(w http.ResponseWriter, r *http.Request) {
+		gen := "gen-00000001"
+		state := "Cold"
+		class := "GLACIER_IR"
+		if promoted {
+			gen = "gen-00000002"
+			state = "Warm"
+			class = "STANDARD"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{
+			"items": [{
+				"pack_id": "pk-contract-test-01",
+				"generation": "%s",
+				"state": "%s",
+				"storage_class": "%s",
+				"min_retention_until": "2027-02-11T00:00:00Z"
+			}]
+		}`, gen, state, class)
+	})
+	mux.HandleFunc("POST /admin/v1/packs/{id}/{generation}/promote", func(w http.ResponseWriter, r *http.Request) {
+		promoted = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"job_id":"job-prom-contract-01","type":"pack_promote","state":"queued"}`))
+	})
+	mux.HandleFunc("GET /admin/v1/stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"revived_chunks_total": 1,
+			"orphaned_chunks_total": 0,
+			"physical_lifecycle_bytes": {"cold_dead": 4480}
+		}`))
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	f := fixture{
+		t:      t,
+		admin:  srv.Client(),
+		ep:     endpoint{Admin: srv.URL},
+		token:  "test-admin-token",
+		bucket: "acceptance-cold-bkt",
+	}
+
+	// 1. Verify layout parsing using packs[].pack_id
+	var layout struct {
+		Packs []struct {
+			PackID       string `json:"pack_id"`
+			Generation   string `json:"generation"`
+			State        string `json:"state"`
+			StorageClass string `json:"storage_class"`
+		} `json:"packs"`
+	}
+	f.adminRequest("GET", "objects/layout?bucket=acceptance-cold-bkt&key=cold-ir.bin", nil, f.token, 200, &layout)
+	if len(layout.Packs) != 1 || layout.Packs[0].PackID != "pk-contract-test-01" {
+		t.Fatalf("layout pack_id DTO mismatch: %+v", layout)
+	}
+	initialGen := layout.Packs[0].Generation
+
+	// 2. Verify job creation DTO with JSON object params and job_id response
+	var tierJob struct {
+		JobID string `json:"job_id"`
+	}
+	f.adminRequest("POST", "jobs", map[string]any{
+		"type":            "tiering",
+		"params":          map[string]any{"pack_id": layout.Packs[0].PackID, "generation": layout.Packs[0].Generation},
+		"policy_revision": 1,
+	}, f.token, 202, &tierJob)
+	if tierJob.JobID != "job-tier-contract-01" {
+		t.Fatalf("tiering job create DTO mismatch: %+v", tierJob)
+	}
+
+	// 3. Verify await job polling with job_id
+	f.awaitJob(tierJob.JobID, 5*time.Second)
+
+	// 4. Verify pack items list DTO (items array)
+	var packPage struct {
+		Items []struct {
+			PackID       string `json:"pack_id"`
+			Generation   string `json:"generation"`
+			State        string `json:"state"`
+			StorageClass string `json:"storage_class"`
+		} `json:"items"`
+	}
+	f.adminRequest("GET", "packs/pk-contract-test-01", nil, f.token, 200, &packPage)
+	if len(packPage.Items) != 1 || packPage.Items[0].PackID != "pk-contract-test-01" || packPage.Items[0].State != "Cold" {
+		t.Fatalf("pack items array DTO mismatch: %+v", packPage)
+	}
+
+	// 5. Verify promote pack DTO with job_id response
+	var promJob struct {
+		JobID string `json:"job_id"`
+	}
+	f.adminRequest("POST", "packs/pk-contract-test-01/"+initialGen+"/promote", map[string]any{}, f.token, 202, &promJob)
+	if promJob.JobID != "job-prom-contract-01" {
+		t.Fatalf("promote job DTO mismatch: %+v", promJob)
+	}
+	f.awaitJob(promJob.JobID, 5*time.Second)
+
+	// 6. Verify layout after promotion advances generation
+	f.adminRequest("GET", "objects/layout?bucket=acceptance-cold-bkt&key=cold-ir.bin", nil, f.token, 200, &layout)
+	if len(layout.Packs) != 1 || layout.Packs[0].Generation == initialGen || layout.Packs[0].State != "Warm" {
+		t.Fatalf("generation did not advance after promotion: %+v", layout)
+	}
+
+	// 7. Verify stats terminal safety assertions (fail-closed on null or positive)
+	var st struct {
+		RevivedChunks  *uint64           `json:"revived_chunks_total"`
+		OrphanedChunks *uint64           `json:"orphaned_chunks_total"`
+		Physical       map[string]uint64 `json:"physical_lifecycle_bytes"`
+	}
+	f.adminRequest("GET", "stats", nil, f.token, 200, &st)
+	if st.OrphanedChunks == nil || *st.OrphanedChunks != 0 {
+		t.Fatalf("orphaned_chunks_total must be non-null 0: %v", st.OrphanedChunks)
+	}
+	if st.RevivedChunks == nil || *st.RevivedChunks != 1 {
+		t.Fatalf("revived_chunks_total must be non-null 1: %v", st.RevivedChunks)
+	}
+	if st.Physical["cold_dead"] == 0 {
+		t.Fatalf("cold_dead physical accounting missing: %+v", st.Physical)
+	}
+}
+
 // Live end-to-end acceptance suite executing against deployed Miles Cloud and Edge front doors.
 // All requests are routed through Miles endpoints; no direct AWS CLI S3 bypass is used.
 func TestColdLiveFrontDoors(t *testing.T) {
@@ -395,10 +571,10 @@ func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polR
 		"Content-Type": "application/octet-stream",
 	}, false, 200, "")
 
-	// 2. Discover physical pack and generation via object layout
+	// 2. Discover physical pack and generation via object layout (packs[].pack_id)
 	var layout struct {
 		Packs []struct {
-			ID           string `json:"id"`
+			PackID       string `json:"pack_id"`
 			Generation   string `json:"generation"`
 			State        string `json:"state"`
 			StorageClass string `json:"storage_class"`
@@ -408,7 +584,7 @@ func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polR
 	if len(layout.Packs) == 0 {
 		f.t.Fatal("no physical pack mapped for object")
 	}
-	packID := layout.Packs[0].ID
+	packID := layout.Packs[0].PackID
 	packGen := layout.Packs[0].Generation
 
 	// 3. Configure tiering policy using current pinned revision
@@ -422,28 +598,29 @@ func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polR
 	}, f.token, 200, nil)
 	*polRev++
 
-	// 4. Enqueue tiering job and await physical transition
-	params, _ := json.Marshal(map[string]string{"pack_id": packID, "generation": packGen})
+	// 4. Enqueue tiering job with object params and await physical transition
 	var tierJob struct {
-		ID string `json:"id"`
+		JobID string `json:"job_id"`
 	}
 	f.adminRequest("POST", "jobs", map[string]any{
 		"type":            "tiering",
-		"params":          params,
+		"params":          map[string]any{"pack_id": packID, "generation": packGen},
 		"policy_revision": *polRev,
 	}, f.token, 202, &tierJob)
-	f.awaitJob(tierJob.ID, 3*time.Minute)
+	f.awaitJob(tierJob.JobID, 3*time.Minute)
 
-	// 5. Inspect physical pack state after tiering
-	var packDetail struct {
-		PackID       string `json:"pack_id"`
-		Generation   string `json:"generation"`
-		State        string `json:"state"`
-		StorageClass string `json:"storage_class"`
+	// 5. Inspect physical pack state after tiering (items array)
+	var packPage struct {
+		Items []struct {
+			PackID       string `json:"pack_id"`
+			Generation   string `json:"generation"`
+			State        string `json:"state"`
+			StorageClass string `json:"storage_class"`
+		} `json:"items"`
 	}
-	f.adminRequest("GET", "packs/"+packID, nil, f.token, 200, &packDetail)
-	if packDetail.State != "Cold" || packDetail.StorageClass != string(class) {
-		f.t.Fatalf("pack %s state=%s class=%s, want Cold/%s", packID, packDetail.State, packDetail.StorageClass, class)
+	f.adminRequest("GET", "packs/"+packID, nil, f.token, 200, &packPage)
+	if len(packPage.Items) == 0 || packPage.Items[0].State != "Cold" || packPage.Items[0].StorageClass != string(class) {
+		f.t.Fatalf("pack %s state=%s class=%s, want Cold/%s", packID, packPage.Items[0].State, packPage.Items[0].StorageClass, class)
 	}
 
 	if class == storage.GlacierIR {
@@ -466,14 +643,20 @@ func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polR
 
 		// 9. Admin promote pack back to Warm generation
 		var promJob struct {
-			ID string `json:"id"`
+			JobID string `json:"job_id"`
 		}
 		f.adminRequest("POST", "packs/"+packID+"/"+packGen+"/promote", map[string]any{}, f.token, 202, &promJob)
-		f.awaitJob(promJob.ID, 3*time.Minute)
+		f.awaitJob(promJob.JobID, 3*time.Minute)
 
-		f.adminRequest("GET", "packs/"+packID, nil, f.token, 200, &packDetail)
-		if packDetail.State != "Warm" {
-			f.t.Fatalf("pack %s state=%s, want Warm after promotion", packID, packDetail.State)
+		f.adminRequest("GET", "packs/"+packID, nil, f.token, 200, &packPage)
+		if len(packPage.Items) == 0 || packPage.Items[0].State != "Warm" {
+			f.t.Fatalf("pack %s state=%s, want Warm after promotion", packID, packPage.Items[0].State)
+		}
+
+		// Verify layout after promotion advances generation
+		f.adminRequest("GET", "objects/layout?bucket="+url.QueryEscape(f.bucket)+"&key="+url.QueryEscape(strings.TrimPrefix(key, "/")), nil, f.token, 200, &layout)
+		if len(layout.Packs) == 0 || layout.Packs[0].Generation == packGen {
+			f.t.Fatalf("generation did not advance after promotion: %s", layout.Packs[0].Generation)
 		}
 
 		gotPromoted, _ := f.s3("IR read after promote", c, "GET", key, "", nil, nil, false, 200, "")
@@ -554,15 +737,21 @@ func (f *fixture) runColdErrorAndIsolation(c credential) {
 	f.s3("zero days restore 400", c, "POST", "/cold-glacier.bin", "restore=", restoreXML(0, "Expedited"), nil, false, 400, "InvalidRequest")
 	f.s3("invalid tier restore 400", c, "POST", "/cold-glacier.bin", "restore=", restoreXML(2, "NonExistent"), nil, false, 400, "InvalidRequest")
 
-	// Verify absence of orphaned chunks / protection leaks in global accounting
+	// Fail-closed terminal safety assertions
 	var st struct {
 		RevivedChunks  *uint64           `json:"revived_chunks_total"`
 		OrphanedChunks *uint64           `json:"orphaned_chunks_total"`
 		Physical       map[string]uint64 `json:"physical_lifecycle_bytes"`
 	}
 	f.adminRequest("GET", "stats", nil, f.token, 200, &st)
-	if st.OrphanedChunks != nil && *st.OrphanedChunks > 0 {
-		f.t.Fatalf("detected %d orphaned chunks (protection leak)", *st.OrphanedChunks)
+	if st.OrphanedChunks == nil || *st.OrphanedChunks != 0 {
+		f.t.Fatalf("terminal safety failure: orphaned chunks must be non-null and exactly 0, got %v", st.OrphanedChunks)
+	}
+	if st.RevivedChunks == nil || *st.RevivedChunks == 0 {
+		f.t.Fatalf("expected non-zero revived chunks after revival flow")
+	}
+	if st.Physical["cold_dead"] == 0 {
+		f.t.Fatalf("expected cold_dead accounting for superseded archive pack")
 	}
 }
 
@@ -571,7 +760,7 @@ func (f *fixture) awaitJob(id string, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		var j struct {
-			ID    string `json:"id"`
+			JobID string `json:"job_id"`
 			State string `json:"state"`
 		}
 		f.adminRequest("GET", "jobs/"+id, nil, f.token, 200, &j)

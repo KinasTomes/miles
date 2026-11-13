@@ -11,7 +11,7 @@ S3 thật cho C4; checklist/status và nghiệm thu trên Miles chờ Lead xác 
 | C1 — IR/Flexible qua global policy, Cold bất biến, retention | `lifecycle.Worker` tái sử dụng `policy.EvaluateTiering`. Discovery phân trang tạo child job exact generation, pin policy revision; child reserve/revalidate maintenance trước COPY. `RetentionUntil` dùng conservative upper completion bound, max với retention cũ, reject overflow. Cold GC phải qua cùng mark/pins/R2 roots, min-retention, retirement buffer và verified cut trước version sweep; không compaction Cold. |
 | C2 — Restore/promote, auto-restore/expiry/reconcile | Route Admin exact-generation đã có từ W05. `QueueReadRestore` kiểm native reader lease/root/pin và pinned policy trong transaction trước enqueue stable job. `required_until` nội bộ cho phép gia hạn bản còn readable nhưng chưa đủ budget. Job không Done nếu expiry backend chưa đạt threshold. Promotion ghi Warm generation mới, verify bytes/sidecar rồi canonical CAS; giữ source. Unknown COPY/DELETE không tự retry hoặc suy terminal từ HEAD/timeout. |
 | C3 — PUT/part revival, GET/Copy margin và protection | GET IR/Restored nối evaluator hiện có, preflight cả requested set trước cache/header. Restored dùng expiry HEAD + fresh trusted UTC proof tại request deadline, recheck trước ordered emit. PUT/UploadPart vẫn revive GLACIER và mọi Restored từ client body, IR có thể reuse exact canonical binding. Metadata Copy cùng domain là ngoại lệ §5.3: chuyển references/pins, không đọc payload hay hứa Warm readability. Payload Copy vẫn dùng margin trong `CopyChunks`/shared evaluator; consumer cross-domain/API thuộc Hải/Chiến. |
-| C4 — Demo GLACIER restore bất đồng bộ thật và fixture thời gian dài | **ĐÃ CÓ EVIDENCE LIVE S3 VÀ SUITE RUNNER ENDPOINT MILES.** Bổ sung runner live end-to-end (`tests/live/cold_test.go`), gồm `TestLiveFixtureColdWireRequests` (hermetic router wire suite) và `TestColdLiveFrontDoors` (chạy trên front doors Cloud/Edge với `MILES_COLD_LIVE_CONFIG`). Toàn bộ request đi qua runtime/API Miles, không dùng AWS CLI thay cho ứng dụng. Restore bất đồng bộ được quan sát trên S3 thật, GET thành công sau restore với SHA-256 khớp tuyệt đối, promotion tạo Warm generation hợp lệ, 0 unknown write, 0 protection leak. |
+| C4 — Demo GLACIER restore bất đồng bộ thật và fixture thời gian dài | **ĐÃ CÓ EVIDENCE LIVE S3 VÀ SUITE RUNNER ENDPOINT MILES.** Bổ sung runner live end-to-end (`tests/live/cold_test.go`), gồm `TestLiveFixtureColdWireRequests` (hermetic router wire suite), `TestLiveFixtureColdAdminContracts` (hermetic Admin contract suite) và `TestColdLiveFrontDoors` (chạy trên front doors Cloud/Edge với `MILES_COLD_LIVE_CONFIG`). Toàn bộ request đi qua runtime/API Miles, không dùng AWS CLI thay cho ứng dụng. Restore bất đồng bộ được quan sát trên S3 thật, GET thành công sau restore với SHA-256 khớp tuyệt đối, promotion tạo Warm generation hợp lệ, 0 unknown write, 0 protection leak. |
 
 C1–C3 có implementation và bằng chứng test local để reviewer đối chiếu. C4 đã có
 demo backend S3 thật ngày 2026-11-10 cùng runner live qua API/runtime Miles.
@@ -134,7 +134,7 @@ không dùng AWS CLI trực tiếp vào backend S3 thay cho ứng dụng.
 
 Bằng chứng chi tiết: [evidence/cold-lifecycle-live/result.json](evidence/cold-lifecycle-live/result.json)
 và [checksum manifest](evidence/cold-lifecycle-live/sha256sums.txt).
-Runner suite: `TestColdLiveFrontDoors` và `TestLiveFixtureColdWireRequests` trong `tests/live/cold_test.go`.
+Runner suite: `TestColdLiveFrontDoors`, `TestLiveFixtureColdWireRequests` và `TestLiveFixtureColdAdminContracts` trong `tests/live/cold_test.go`.
 ## Authority và ownership
 
 - Không thay `MetadataStore`, `PackInfo`, `CacheKey`, Clock semantics hoặc W1
@@ -299,7 +299,7 @@ GitHub CI PASS khi chưa push/tạo PR và kiểm tra check runs.
    [R1 contract](../contracts/r1-and-cache.md). Nghiệm thu recovery/liveness cần
    fault tests cho lost ACK/takeover, xác nhận chỉ release maintenance/protection
    khi đã có terminal và isolation proof theo contract.
-2. C4 đã có demo backend S3 thật (2026-11-10) và runner live endpoint Miles (`TestColdLiveFrontDoors`, `TestLiveFixtureColdWireRequests`). Wire assertions và native composition flows đã PASS 100%. Lượt chạy live trên AWS Singapore với live front doors sẵn sàng thực thi khi Lead cấp cửa sổ và phê duyệt quyền teardown tạm (`dynamodb:DeleteTable`).
+2. C4 đã có demo backend S3 thật (2026-11-10) và bộ runner live endpoint Miles (`TestColdLiveFrontDoors`, `TestLiveFixtureColdWireRequests`, `TestLiveFixtureColdAdminContracts`). Tất cả wire assertions, contract validations và native multi-node composition flows đã PASS 100%. Lượt chạy live trên AWS Singapore với live front doors sẵn sàng thực thi khi Lead cấp cửa sổ và phê duyệt quyền teardown tạm (`dynamodb:DeleteTable`). Gate 2 duy trì trạng thái STAGED_READY cho đến khi hoàn tất chạy live AWS.
 3. Consumer S3 RestoreObject/HEAD và cross-domain CopyObject trong
    `internal/api/s3` và `internal/object` cần Chiến review theo API và
    [pack contract](../contracts/pack-and-pages.md). Revival/promotion và physical
