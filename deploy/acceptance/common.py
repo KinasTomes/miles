@@ -282,7 +282,7 @@ class Run:
             env=env,
             timeout=180,
         )
-        return json.loads(data) if data.strip() and output == "json" else data
+        return json.loads(data) if data.strip() and output == "json" else ({} if output == "json" else data)
 
     def identity(self, iam=False):
         i = self.aws("sts", "get-caller-identity", iam=iam)
