@@ -34,11 +34,13 @@ def main():
     env = fixture_environment(out)
     for profile, address in [("cloud", "10.0.1.20"), ("edge", "127.0.0.1")]:
         stage = out / profile
+        region = "ap-southeast-1" if profile == "cloud" else "ap-southeast-2"
         subprocess.run(["python3", "-B", str(bundle / "deploy/install.py"), "--bundle", str(bundle),
-                        "--root", str(stage), "--profile", profile, "--address", address], check=True)
+                        "--root", str(stage), "--profile", profile, "--address", address,
+                        "--region", region], check=True)
         startup = json.loads((stage / "etc/miles/startup.json").read_text())
         assert startup == {"profile": profile, "mode": "runtime", "health_address": address + ":9100",
-                           "shutdown_seconds": 1800}, "unexpected deployment config"
+                           "shutdown_seconds": 1800, "region": region}, "unexpected deployment config"
         binary = stage / "opt/miles/current/bin/miles"
         binaries.append(hashlib.sha256(binary.read_bytes()).hexdigest())
         assert manifest["source_commit"] in subprocess.check_output([str(binary), "-version"], text=True)

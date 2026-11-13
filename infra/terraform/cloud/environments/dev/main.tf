@@ -1,6 +1,7 @@
 locals {
-  name             = "miles-dev"
-  data_bucket_name = "miles-dev-data-${var.account_id}-${var.region}"
+  name             = var.installation_name
+  zones            = coalesce(var.availability_zones, ["${var.region}a", "${var.region}b"])
+  data_bucket_name = "${local.name}-data-${var.account_id}-${var.region}"
   egress_mode      = var.paused ? "isolated" : var.egress_mode
   autoscaling_role_arn = var.enable_asg ? (
     var.existing_autoscaling_role_arn != null ? var.existing_autoscaling_role_arn : aws_iam_service_linked_role.autoscaling[0].arn
@@ -10,11 +11,12 @@ module "network" {
   source          = "../../modules/network"
   name            = local.name
   cidr            = var.vpc_cidr
-  zones           = var.availability_zones
+  zones           = local.zones
   egress_mode     = local.egress_mode
   nat_per_az      = var.nat_per_az
   client_cidrs    = var.client_cidrs
   admin_ssh_cidrs = var.admin_ssh_cidrs
+  enable_edge     = var.enable_edge
 }
 module "endpoints" {
   source                          = "../../modules/endpoints"
@@ -26,10 +28,13 @@ module "endpoints" {
   gateway_sg_id                   = module.network.security_groups.gateway
   jobs_sg_id                      = module.network.security_groups.jobs
   enable_interfaces               = local.egress_mode == "interface"
-  enable_roles_anywhere           = var.enable_edge_private_endpoint
-  roles_anywhere_trust_anchor_arn = try(module.iam.edge_provider.trust_anchor_arn, null)
   data_bucket_name                = local.data_bucket_name
   table_arns                      = module.data.table_arns
+  enable_edge                     = var.enable_edge
+  edge_sg_id                      = try(module.network.security_groups.edge, null)
+  enable_roles_anywhere           = var.enable_edge_private_endpoint
+  roles_anywhere_trust_anchor_arn = try(module.iam.edge_provider.trust_anchor_arn, null)
+  edge_certificate_common_name    = var.edge_certificate_common_name
 }
 module "security" {
   source               = "../../modules/security"
@@ -48,20 +53,25 @@ module "data" {
   max_request_units = var.enable_asg ? 128 : 10
 }
 module "iam" {
-  source                   = "../../modules/iam"
-  name                     = local.name
-  region                   = var.region
-  account_id               = var.account_id
-  data_bucket_name         = local.data_bucket_name
-  table_arns               = module.data.table_arns
-  kms_key_arn              = module.security.kms_key_arn
-  secret_arn               = module.security.secret_arn
-  parameter_arn            = module.security.parameter_arn
-  log_group_arn            = module.security.log_group_arn
-  permissions_boundary_arn = var.runtime_permissions_boundary_arn
-  fleet_enabled            = var.enable_asg
-  release_sha256           = var.release_sha256
-  edge_ca_pem              = var.edge_ca_pem
+  source                       = "../../modules/iam"
+  name                         = local.name
+  region                       = var.region
+  account_id                   = var.account_id
+  data_bucket_name             = local.data_bucket_name
+  table_arns                   = module.data.table_arns
+  kms_key_arn                  = module.security.kms_key_arn
+  secret_arn                   = module.security.secret_arn
+  parameter_arn                = module.security.parameter_arn
+  log_group_arn                = module.security.log_group_arn
+  permissions_boundary_arn     = var.runtime_permissions_boundary_arn
+  runtime_iam_path             = var.runtime_iam_path
+  edge_certificate_common_name = var.edge_certificate_common_name
+  fleet_enabled                = var.enable_asg
+  release_sha256               = var.release_sha256
+  edge_ca_pem                  = var.edge_ca_pem
+  enable_edge                  = var.enable_edge
+  edge_bootstrap_secret_arn    = try(aws_secretsmanager_secret.edge_bootstrap[0].arn, null)
+  edge_helper_sha256           = var.edge_helper_sha256
 }
 module "compute" {
   source            = "../../modules/compute"
@@ -69,12 +79,16 @@ module "compute" {
   enabled           = var.enable_compute
   paused            = var.paused
   ami_id            = var.ami_id
-  zone              = var.availability_zones[0]
-  subnet_id         = module.network.private_subnets[var.availability_zones[0]]
+  zone              = local.zones[0]
+  subnet_id         = module.network.private_subnets[local.zones[0]]
   security_group_id = module.network.security_groups.gateway
   instance_profile  = module.iam.instance_profile_names.gateway
   kms_key_arn       = module.security.kms_key_arn
   log_group_name    = module.security.log_group_name
+  environment       = var.environment
+  owner             = var.owner
+  instance_type     = var.instance_type
+  architecture      = var.release_architecture
 }
 module "alb" {
   source                       = "../../modules/alb"
@@ -119,6 +133,42 @@ module "fleet" {
   owner_ssh_public_key        = var.owner_ssh_public_key
   deep_observation            = var.deep_observation
   enable_test_fault_injection = var.enable_test_fault_injection
+  environment                 = var.environment
+  owner                       = var.owner
+}
+
+resource "aws_secretsmanager_secret" "edge_bootstrap" {
+  count                   = var.edge_ca_pem != null ? 1 : 0
+  name                    = "${local.name}/edge-bootstrap"
+  kms_key_id              = module.security.kms_key_arn
+  recovery_window_in_days = 30
+}
+module "edge" {
+  count                = var.enable_edge ? 1 : 0
+  source               = "../../modules/edge"
+  depends_on           = [module.endpoints]
+  enabled              = !var.paused
+  name                 = local.name
+  account_id           = var.account_id
+  region               = var.region
+  environment          = var.environment
+  owner                = var.owner
+  ami_id               = var.ami_id
+  architecture         = var.release_architecture
+  instance_type        = var.edge_instance_type
+  subnet_id            = module.network.public_subnets[local.zones[0]]
+  security_group_id    = module.network.security_groups.edge
+  instance_profile     = module.iam.edge_bootstrap_profile
+  data_bucket_name     = local.data_bucket_name
+  kms_key_arn          = module.security.kms_key_arn
+  runtime_secret_arn   = module.security.secret_arn
+  bootstrap_secret_arn = aws_secretsmanager_secret.edge_bootstrap[0].arn
+  release_sha256       = var.release_sha256
+  release_version_id   = var.release_version_id
+  helper_sha256        = var.edge_helper_sha256
+  helper_version_id    = var.edge_helper_version_id
+  provider_config      = module.iam.edge_provider
+  owner_ssh_public_key = var.owner_ssh_public_key
 }
 
 module "observability" {
@@ -137,9 +187,13 @@ module "acceptance" {
   name                       = local.name
   region                     = var.region
   account_id                 = var.account_id
+  runtime_iam_path           = var.runtime_iam_path
+  environment                = var.environment
+  owner                      = var.owner
+  architecture               = var.release_architecture
   ami_id                     = var.ami_id
   instance_type              = var.fleet_instance_type
-  subnet_id                  = module.network.private_subnets[var.availability_zones[0]]
+  subnet_id                  = module.network.private_subnets[local.zones[0]]
   vpc_id                     = module.network.vpc_id
   endpoint_security_group_id = module.endpoints.security_group_id
   alb_security_group_id      = module.network.security_groups.alb

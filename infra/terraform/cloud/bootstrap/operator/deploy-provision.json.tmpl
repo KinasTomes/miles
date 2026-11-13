@@ -1,0 +1,217 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublishAndBootstrap",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": [
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}",
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/releases/*",
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/deployment/*",
+        "arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}/recovery/*"
+      ]
+    },
+    {
+      "Sid": "InitializeSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:ListSecretVersionIds"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:{{REGION}}:{{ACCOUNT_ID}}:secret:{{RUNTIME_SECRET_NAME}}-*",
+        "arn:aws:secretsmanager:{{REGION}}:{{ACCOUNT_ID}}:secret:{{INSTALLATION_NAME}}/edge-bootstrap-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "UseOwnBootstrapKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Encrypt",
+        "kms:Decrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": [
+        "arn:aws:kms:{{REGION}}:{{ACCOUNT_ID}}:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}",
+          "aws:ResourceTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "CreateTestCertificate",
+      "Effect": "Allow",
+      "Action": [
+        "acm:ImportCertificate",
+        "acm:AddTagsToCertificate"
+      ],
+      "Resource": [
+        "arn:aws:acm:{{REGION}}:{{ACCOUNT_ID}}:certificate/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:RequestTag/Installation": "{{INSTALLATION_NAME}}",
+          "aws:RequestTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "ManageTestCertificate",
+      "Effect": "Allow",
+      "Action": [
+        "acm:AddTagsToCertificate",
+        "acm:DeleteCertificate"
+      ],
+      "Resource": [
+        "arn:aws:acm:{{REGION}}:{{ACCOUNT_ID}}:certificate/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}",
+          "aws:ResourceTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "ReadManagedNodes",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:DescribeInstanceInformation",
+        "ssm:GetCommandInvocation",
+        "ssm:ListCommandInvocations"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "OperateOwnNodes",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:SendCommand"
+      ],
+      "Resource": [
+        "arn:aws:ec2:{{REGION}}:{{ACCOUNT_ID}}:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "ssm:resourceTag/Installation": "{{INSTALLATION_NAME}}"
+        }
+      }
+    },
+    {
+      "Sid": "MaintenanceDocument",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:SendCommand"
+      ],
+      "Resource": [
+        "arn:aws:ssm:{{REGION}}::document/AWS-RunShellScript"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "PortForwardDocument",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:StartSession"
+      ],
+      "Resource": [
+        "arn:aws:ssm:{{REGION}}::document/AWS-StartPortForwardingSession",
+        "arn:aws:ssm:{{REGION}}::document/AWS-StartSSHSession"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "BootstrapMetadata",
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:BatchGetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:DescribeTable",
+        "dynamodb:ConditionCheckItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:{{REGION}}:{{ACCOUNT_ID}}:table/{{INSTALLATION_NAME}}-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}",
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}",
+          "aws:ResourceTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "ReadTestCertificates",
+      "Effect": "Allow",
+      "Action": [
+        "acm:ListCertificates"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    },
+    {
+      "Sid": "ReadCertificateMaterial",
+      "Effect": "Allow",
+      "Action": [
+        "acm:GetCertificate"
+      ],
+      "Resource": [
+        "arn:aws:acm:{{REGION}}:{{ACCOUNT_ID}}:certificate/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    }
+  ]
+}

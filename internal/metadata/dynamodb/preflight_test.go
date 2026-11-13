@@ -15,6 +15,7 @@ import (
 	s3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
 type mockPreflightDDB struct {
 	tables map[string]*ddbtypes.TableDescription
 	tags   map[string][]ddbtypes.Tag

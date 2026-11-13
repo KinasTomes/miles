@@ -112,4 +112,16 @@ func TestSharedRuntimeIsExplicitAndPrivate(t *testing.T) {
 	if _, e := LoadStartup(strings.NewReader(edge)); e != nil {
 		t.Fatal(e)
 	}
+	custom := strings.Replace(edge, `"profile":"edge"`, `"profile":"edge","aws_profile":"member-runtime"`, 1)
+	if c, e := LoadStartup(strings.NewReader(custom)); e != nil || c.AWSProfile != "member-runtime" {
+		t.Fatal(c, e)
+	}
+	for _, bad := range []string{
+		strings.Replace(custom, "member-runtime", "bad/profile", 1),
+		strings.Replace(valid, `"profile":"cloud"`, `"profile":"cloud","aws_profile":"member-runtime"`, 1),
+	} {
+		if _, e := LoadStartup(strings.NewReader(bad)); e == nil {
+			t.Fatal("accepted invalid AWS profile", bad)
+		}
+	}
 }

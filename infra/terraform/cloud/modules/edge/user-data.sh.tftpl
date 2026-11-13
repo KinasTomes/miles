@@ -1,0 +1,39 @@
+#!/bin/bash
+set -euo pipefail
+umask 077
+# Public Edge has outbound package access. Ingress is restricted by its SG.
+dnf install -y nginx
+install -d -m 0700 /var/lib/miles-bootstrap
+cat > /var/lib/miles-bootstrap/edge.json <<'MILES_EDGE_JSON'
+${bootstrap_json}
+MILES_EDGE_JSON
+python3 - <<'MILES_EDGE_PY'
+import json, pathlib, subprocess
+p = pathlib.Path('/var/lib/miles-bootstrap')
+c = json.loads((p / 'edge.json').read_text())
+# This bootstrap program is itself versioned inside the verified release.
+import hashlib, os, tarfile
+from urllib.request import build_opener, ProxyHandler, Request
+http = build_opener(ProxyHandler({}))
+token = http.open(Request('http://169.254.169.254/latest/api/token', method='PUT', headers={'X-aws-ec2-metadata-token-ttl-seconds':'60'}), timeout=5).read().decode()
+identity = json.loads(http.open(Request('http://169.254.169.254/latest/dynamic/instance-identity/document', headers={'X-aws-ec2-metadata-token':token}), timeout=5).read())
+assert identity['accountId'] == c['account_id'] and identity['region'] == c['region']
+env = {k:v for k,v in os.environ.items() if not k.startswith('AWS_')}
+env.update(AWS_CONFIG_FILE='/dev/null', AWS_SHARED_CREDENTIALS_FILE='/dev/null', AWS_PAGER='')
+archive = p / 'edge-release.tar.gz'
+subprocess.run(['aws','s3api','get-object','--region',c['region'],'--bucket',c['bucket'],'--key',c['release_key'],'--version-id',c['release_version'],'--expected-bucket-owner',c['account_id'],str(archive)], env=env, check=True, stdout=subprocess.DEVNULL, timeout=300)
+assert hashlib.sha256(archive.read_bytes()).hexdigest() == c['release_sha256']
+bundle = p / 'edge-release'
+bundle.mkdir(mode=0o700)
+with tarfile.open(archive,'r:gz') as source:
+    members = source.getmembers()
+    assert len(members) <= 100 and sum(m.size for m in members) <= 100*1024*1024
+    for member in members:
+        name = pathlib.PurePosixPath(member.name)
+        assert member.isfile() and not name.is_absolute() and '..' not in name.parts
+        target = bundle / member.name
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with target.open('xb') as stream:
+            stream.write(source.extractfile(member).read())
+subprocess.run(['python3',str(bundle/'deploy/edge/bootstrap.py'),'--bundle',str(bundle),'--config',str(p/'edge.json')], env=env, check=True)
+MILES_EDGE_PY
