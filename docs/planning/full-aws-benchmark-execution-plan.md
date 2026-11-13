@@ -1,134 +1,171 @@
-# Kế hoạch benchmark AWS toàn ma trận trong một installation
+# Kế hoạch benchmark AWS theo từng bước do operator quyết định
 
-**Trạng thái: OFFLINE PREPARED — CHƯA ĐƯỢC PHÉP CHẠY AWS.** Đây là runbook bàn giao cho agent, không phải recipe đã có thể chạy 20/20 ca. Các bước IAM, Terraform apply, workload và cleanup đều cần approval riêng. Nguồn chuẩn: [acceptance kit](../../deploy/acceptance/README.md), [process](../testing/aws-acceptance-process.md), [operator guide](../testing/focused-aws-operator-guide.md), [matrix](../../benchmarks/benchmark-matrix.md), [thresholds](../../benchmarks/thresholds.md).
+**Trạng thái: chuẩn bị offline; chưa phê duyệt ngân sách hoặc chạy AWS.** Ma trận
+vẫn là **20 cases × 3 repetitions = 60 slots**, có tối thiểu **24 paired direct-S3
+legs**. Đây là inventory công việc; không có lệnh mặc định tự chạy toàn bộ G1–G5.
 
-## Trạng thái offline và phạm vi
+Nguồn: [acceptance kit](../../deploy/acceptance/README.md),
+[matrix](../../benchmarks/workload-matrix.json),
+[thresholds](../../benchmarks/thresholds.md),
+[hợp đồng native evidence](../testing/benchmark-native-evidence.md).
 
-- Mọi trial dùng **một source commit sạch**, được git archive khi kit init; không ghép binary/telemetry từ release khác.
-- Template hiện có focused-get-shutdown.json đã bảo vệ IAM, plan, GET Edge C1/C4, shutdown native-throttle và teardown. Nó **chưa** là full-matrix recipe.
-- Ma trận: **20 cases × 3 repetitions = 60 slots**. Có 12 cases / 36 slots đã có warmbench (chưa được nối vào process); 8 cases / 24 slots Cold/Recovery còn requires-runner. Có ít nhất **24 direct-S3 paired legs** bổ sung, chưa kể domain contrast, clone control và policy/fault comparators.
-- Offline planner ở deploy/acceptance/matrix_plan.py xác thực matrix và focused recipe, tạo 60 slot cố định cùng argv templates không thể thực thi, input hashes và danh sách evidence. Manifest luôn ghi: full_run_executable=false, aws_approval=false và benchmark_executed=false.
-- BEN-01…BEN-05 và net savings đang ở trạng thái candidate/chưa được duyệt. Không chuyển INCOMPLETE thành PASS.
+## Mô hình thực thi
 
-### Sinh manifest offline (chỉ sau khi commit và worktree sạch)
+Operator/agent chọn từng lệnh từ `run.py` sau khi đọc evidence của bước trước.
+Mỗi bước ghi input, intent trước mutation, output/receipt và lỗi vào run directory
+0700/file 0600 ngoài Git. Không cần `process.py init/run` hoặc recipe toàn ma trận.
+`process.py` chỉ là adapter tùy chọn; checkpoint của nó phải bao gồm mọi file mà
+lệnh độc lập yêu cầu review. Không tự approve, tự kéo dài cửa sổ hoặc tự tiếp tục
+cleanup khi operator đang chọn các bước thủ công.
 
-    cd /path/to/miles
-    git status --short --branch
-    make check
-    python3 -B scripts/validate_benchmark_matrix.py benchmarks/workload-matrix.json
-    umask 077
-    mkdir -p -m 0700 "$HOME/.local/state/miles/matrix-plan"
-    export OFFLINE="$HOME/.local/state/miles/matrix-plan/$(date -u +%Y%m%dT%H%M%SZ)"
-    python3 -B deploy/acceptance/matrix_plan.py --out-dir "$OFFLINE"
+Sau `init`, dùng source đã freeze:
 
-Đầu ra nằm tại $OFFLINE/offline-execution-manifest.json, mode 0600 bên trong thư mục 0700. Đây là **kế hoạch**, KHÔNG được truyền trực tiếp làm process recipe. Không commit tài liệu private chứa AWS account ID, ARN, user, key/token, state hoặc raw artifacts nhạy cảm.
+```bash
+kit() { python3 "$RUN/source/deploy/acceptance/run.py" --run-dir "$RUN" "$@"; }
+kit status
+```
 
-## Các phần agent phải hoàn thiện trước khi mở G1
+`RUN` là thư mục private tuyệt đối của lượt đã init. Lấy `RUN_ID` từ `run.json`.
+Source sạch và dependency cần có trước khi init; không trộn binary khác commit,
+không adopt installation/state đang được người khác sử dụng.
 
-### A. Tích hợp thực thi 12 cases Warm (blocker)
+## G1 — Preflight, plan và duyệt riêng
 
-1. Bổ sung subcommand exact case ID + repetition trong deploy/acceptance/run.py, allowlist explicit trong process.py, orchestration trong workload.py, client staging trong client.py/hosts.py và source/dataset pin trong prepare.py. Mutations phải bind run ID + approval checkpoint. Đưa mọi benchmark vào tập TESTS để failed trial không thể reconcile thành PASS.
-2. Đọc case từ chính workload-matrix.json đã hash (không tự suy từ chuỗi); 3 reps mỗi case, không dispatch duplicate case/rep. Tạo backup30 và boundary-8mib trên host client riêng; SHA-256 toàn file/manifest được verify trước mạng.
-3. Sử dụng các argv template trong offline manifest, bind private config 0600, HTTPS, pinned release/SDK/CA, read-repeats=3, fail-fast, bounded timeout, no SDK retry và output directory mới. Retain objects chỉ khi có approved physical accounting và cleanup.
-4. Provision per-trial identity/bucket/scope có audit. Domain cases cần hai credentials/buckets độc lập, signed debug quyền hợp lệ, header domain runtime và counter vật lý cho từng PUT, đối chiếu inter-tenant vs intra-tenant; không coi declared domain là bằng chứng backend. Clone cần source prefix đã seed, destination độc lập, GET→PUT streaming và hash receipt; same access key alias phải FAIL.
-5. Tạo paired direct-S3 baseline: tối thiểu 24 legs, với S3 identity/bucket được phê duyệt IAM và ghi vào inventory/teardown; phải trùng dataset/Region/SDK/checksum/encryption/concurrency/transport/window. Với clone cần matched client-mediated GET+PUT, không lấy CopyObject làm đối chứng. Direct S3 không thay chunk-per-object comparator BEN-04.
-6. Mỗi repetition phải chứng minh fresh backend/domain hoặc reset thực được verify; new prefix/user/bucket **không reset dedup/cache**. Chụp per-node Cloud/Edge metrics, R1/R2 state, physical inventory before/after, async debt, integrity và request IDs. Không đủ proof => INCOMPLETE.
-7. Regression offline: thiếu comparator, thiếu physical counters, wrong domain, same access key alias, source prefix chưa seed, stale/mixed manifest SHA, unknown-commit PUT, duplicate repetition, timeout, missing cache reset, file output bị ghi đè, không còn cleanup reserve. Process không chấp nhận arbitrary shell/auto-approval.
+Đăng nhập hai profile ở máy operator theo [hướng dẫn](../testing/focused-aws-operator-guide.md).
+Chạy riêng `configure`, `init`, `assets`, `preflight`, `plan foundation`, `iam-review`.
+Các lệnh read/plan không cho phép apply hoặc chi tiền.
 
-### B. Xây 8 runner Cold/Recovery chuyên biệt (blocker)
+```bash
+kit direct-plan
+kit benchmark-budget --inputs /absolute/private/benchmark-budget.json
+```
 
-Giữ requires-runner cho đến khi code+test thật tồn tại. Warmbench hiện từ chối cold/recovery; **không** sửa validator để cho runner=warmbench giả.
+Copy [budget inputs](../../deploy/acceptance/benchmark-budget.example.json) ra
+ngoài Git, điền quantities và đơn giá Singapore có nguồn/ngày kiểm tra. Các giá
+S3/DynamoDB có sẵn trong example là catalog lịch sử, `verified=false`; chưa phải
+báo giá hiện hành. Giá chưa biết không được coi là 0. `benchmark-budget.json`
+liệt kê đủ 60 slots/24 đối chứng, phí restore, bản phục hồi Standard, mọi retained
+version, tối thiểu 90 ngày IR/Flexible, phụ phí metadata Flexible và các hạng mục
+compute/network/metadata/monitoring/KMS/secrets/evidence. Không trừ credit/Free Tier.
 
-- **Cold 4 cases (Cloud/Edge × IR/Flexible):** lấy class/version backend thực tế sau policy transition, thời gian lưu tối thiểu và bill, IR GET ngay không ép RestoreObject, Flexible GET từ archive bị từ chối rồi RestoreObject202/ongoing/completed, expiry/renewal, revival, GET full SHA và inventory/retained bytes. Không tua clock giả lập thành AWS proof. Lifecycle có thể dài hơn một phiên 4 giờ.
-- **Recovery 4 cases (Cloud/Edge × R1/R2):** fault scope approved, history/epoch/lease/fence, durable journal, sealed-cut, checkpoint restore/rebuild, idempotent replay, PUT/GET SHA và native readback. Focused shutdown --native-throttle **không** thay thế 4 recovery scenarios. Failure của invocation ban đầu vẫn FAIL nếu peer hoàn thành muộn.
-- Cần harness bounded, negative tests với fake AWS, artifact trên lỗi, stopped/quiesced checks, exact resource scope, no blind retry và IAM minimum permissions.
+Không tiếp tục full benchmark khi `status=UNKNOWN`, vượt envelope hoặc
+`window_fit=false`. Example cố ý chưa đủ điều kiện phê duyệt. Dự toán thời gian là
+assumption cần review, không phải duration đã đo. Mặc định kit 4 giờ; giới hạn
+code hiện hành tối đa 12 giờ/50 USD; luôn giữ 90 phút cleanup. Không tăng các giới
+hạn này trong thay đổi này. Standard Flexible restore thường kéo dài hơn một
+trial 20 phút; timeout giữ trạng thái failed/incomplete, không sửa thành PASS.
+Nếu cần chia nhiều lượt độc lập hoặc thay đổi cách chờ restore, duyệt kế hoạch và
+chi phí đó trước; chưa có cơ chế tự gia hạn một installation qua nhiều paid windows.
 
-### C. Sửa giới hạn lifetime/cost/topology và bảo vệ cleanup (blocker)
+Đọc plan, IAM validations/simulations và chi phí. Khi chủ account đã duyệt, chạy
+lệnh approval cụ thể rồi lệnh thực hiện; approval không tự thực hiện mutation:
 
-- Kit trong common.py hiện khóa tối đa **4 giờ và 10 USD** (trước thuế) với **90 phút reserve cleanup**; còn nhiều nhất 150 phút gồm cả provisioning và workload. **Không đủ cơ sở** để cam kết 60 slots + 24 direct-S3 legs + Cold async. Đừng chỉ đổi JSON config. Agent phải thiết kế lại và review common.py, pricing.py, iam.py, process.py, IAM expiry, budget, timeout, stop logic và teardown reserve nếu muốn chạy dài hơn.
-- Bất cứ chi phí mới nào cũng cần dự toán Singapore tại ngày chạy: EC2/EBS/ALB/endpoints/NAT/IPv4, S3 state/versions/Cold min-retention/restore/get/put, DDB/PITR, KMS, logs, internet transfer và unexpired resources. Budgets là alert trễ, không phải hard cap. Phải có owner phê duyệt scope, thời gian, rollback, phí còn lại; approval cũ không tái sử dụng.
-- Nếu yêu cầu **một installation qua nhiều approved paid windows**: phải có pause/quiesce, IAM renewal/expiry, no in-flight writes, exact source/ownership, billing khi paused và deadline cleanup cuối. Kit hiện không chứng minh hỗ trợ; không tự mở thêm phiên. Nếu không đủ an toàn, phải chia nhiều lượt độc lập được duyệt.
-- AWS EC2 chạy Edge chỉ chứng minh Edge profile ở AWS, **không** thay Edge on-prem. Muốn claim Edge/on-prem cần host ngoài AWS và matching network/cost/cert/clock proof riêng.
-- Bootstrap operator/deploy role, boundary và remote state là prerequisite. Không dùng root thực thi Terraform/workload. Giữ private profiles riêng IAM và deploy.
+```bash
+kit approve --action iam-activate --confirm-run "$RUN_ID"
+kit iam-activate --confirm-run "$RUN_ID"
+kit approve --action apply:foundation --confirm-run "$RUN_ID"
+kit apply foundation --confirm-run "$RUN_ID"
+```
 
-### D. Chốt full recipe sau khi A–C có code/tests
+Receipt bind run/source/config và SHA-256 của từng artifact; thay nội dung hoặc
+quá 45 phút thì phải review lại. Quyền deploy/root vẫn theo kit; không dùng root
+để chạy workload. Các IAM template thay đổi chỉ được render/review, không tự apply.
 
-Agent tạo deploy/acceptance/templates/full-benchmark.json **mới** khi mọi command được whitelist và có implementation. Giữ các checkpoint:
-approve-foundation → approve-hosts → approve-active → approve-cleanup-grant → approve-destroy.
-Thêm review gate matrix/source/time/cost/fault/Cold nếu scope thay đổi. Không shell tùy ý, tự approve, bỏ step cleanup, tăng timeout mù hoặc sửa manifest planner thành ready không có code.
+## G2 — Provision, bootstrap và smoke riêng
 
-**Definition of offline-ready:** 20/20 case có runner thực và negative tests; 60 unique slots + comparators được binding; full recipe validate trong process; test race/expiry/fail-closed; IAM/cost/time/route và cleanup được review; make check và CI trên cùng HEAD PASS. Agent chưa được mở G1 nếu các blocker ở trên vẫn tồn tại.
+Lần lượt `plan hosts` → duyệt `apply:hosts` → `apply hosts` → duyệt `install` →
+`install`; duyệt `material`/`bootstrap` trước từng lệnh; `plan active` → duyệt
+`apply:active` → `apply active`. Không apply lại khi đã có intent chưa reconcile.
+Kiểm HTTPS/ALB/clock/readiness và source trước smoke. Lệnh `trial --concurrency 1`
+là focused smoke riêng, cần approval `trial`; nó không thay ma trận benchmark.
 
-## Trạng thái hardening sau HEAD 1bad2b8 (chưa phải full GO)
+Bucket đối chứng có lifecycle riêng:
 
-Các thay đổi bổ sung ở branch nhằm đóng lỗ hổng **PASS giả**, không khẳng định
-AWS benchmark đã chạy:
+```bash
+kit approve --action direct-provision --confirm-run "$RUN_ID"
+kit direct-provision --confirm-run "$RUN_ID"
+```
 
-- Cloud: đọc private ALB DNS từ Terraform output, bind hostname có TLS/SNI
-  certificate verification. Fail nếu ALB DNS không trỏ RFC1918 hoặc TLS không
-  xác thực. Cloud per-node telemetry vẫn cần nghiệm thu.
-- Cold/Recovery: xác minh SHA-256 dataset trước khi seed, upload với đúng class
-  (GLACIER_IR, GLACIER, STANDARD), HEAD readback class/length, giữ
-  receipts trên từng PUT. Unknown PUT không tự replay. Cold Flexible restore
-  vẫn phụ thuộc native transition/async window, không được giả lập.
-- coldbench: tách GET logical bytes khỏi retained physical. Không có native
-  inventory provider => artifact incomplete/fail-closed, không PASS.
-- recoverybench: DynamoDB dùng AWS STS session riêng, verify expected
-  account và expiry; không dùng DSG key. Checkpoint phải là native
-  RecoveryEpochs ở trạng thái Sealed (không lấy genesis làm proof).
-  Epoch tăng không tự chứng minh lease fence/seal/replay; thiếu native verifier
-  => FAIL. Client chặn trước mọi mutation nếu chưa có reviewed fault injector
-  + proof provider.
-- Direct-S3: require bucket hiện có thuộc đúng account và có Project/Environment/
-  AcceptanceRun tags của lượt hiện tại; thiếu bucket/tag/paired result =>
-  fail-closed. Kit chưa tự provision/teardown bucket đối chứng này.
+Tên bucket có account + hash run; IAM render đúng ARN đó. Không dùng bucket
+`pilot-direct` cũ. Tạo bucket, versioning, SSE-KMS cùng runtime key, public block,
+TLS-only policy và tags của run; không tự adopt tài nguyên đã tồn tại. Lost ACK
+hoặc partial configuration giữ intent/ack để operator reconcile, không tự create
+hoặc delete lại dựa vào một lần HEAD 403/404.
 
-**VẪN BLOCKED TRƯỚC G1 MUTATION:** (1) triển khai và review native
-Recovery fault injector và verifier đầy đủ ba chứng cứ, (2) provider inventory
-physical bytes được pin và snapshot hai thời điểm cho Cold, (3) approved
-provision + teardown direct-S3 bucket hiện tại, (4) đầy đủ Cloud per-node
-telemetry và proof fresh/reset trước trial, (5) chi phí mới cho 60 slots
-và async Glacier restore/minimum duration. Bộ lọc fail-closed có thể khiến
-một số slot dừng nhưng không được xử lý bằng cách nới pass conditions.
-Chỉ chuyển offline-ready khi code/tests/native evidence contracts và
-approval riêng đáp ứng tất cả gate.
+## G3 — Operator chọn từng Warm case/repetition
 
-## Thứ tự triển khai AWS sau offline-ready
+```bash
+kit approve --action benchmark-case --confirm-run "$RUN_ID"
+kit benchmark-case --case-id warm-cloud-c1 --repetition 1 --confirm-run "$RUN_ID"
+kit collect --trial warm-cloud-c1-rep1
+kit status
+```
 
-| Gate | Bước chạy | Điều kiện sang gate tiếp theo |
-|---|---|---|
-| **G1 — Preflight** | Đăng nhập hai profile qua aws login --remote; configure, init, assets, preflight, plan foundation, iam-review. | Account/Region/role/state/AMI sạch, source+recipe hash, IAM simulation/Access Analyzer và cost/plan approved; không adopt resources cũ. |
-| **G2 — Deploy + smoke** | iam-activate, apply foundation, plan+approve+apply hosts, install, material, bootstrap, plan+approve+apply active, C1 smoke. | Cloud healthy, Edge+client private TLS/SigV4, clock, backend domain header/counters và GET SHA256 verified. |
-| **G3 — Warm + comparator** | 12 cases × 3 reps, 24 direct-S3 paired legs, domain/clone baselines. | Raw samples, per-node metrics, verified isolation/reset, no false PASS. |
-| **G4 — Cold/Recovery** | 4 Cold + 4 Recovery × 3 reps bằng runner thực; fault/revival/restore/epoch proof. | 24 slots có source-bound, native real AWS evidence, không dùng simulator thay nghiệm thu. |
-| **G5 — Teardown** | collect, freeze một lần, snapshot, cleanup-review, cleanup-grant, unprotect, cleanup-plan, duyệt exact destroy.tfplan, cleanup, finish, final audit, logout. | final-absence-summary.json accepted=true; IAM rollback; chỉ pending 30 ngày của đúng KMS/secret được duyệt và ghi phí còn lại. |
+Operator xem artifact rồi mới chọn case/repetition tiếp theo. Không có loop tự
+chạy 60 slots. Approval benchmark yêu cầu budget đầy đủ, source/matrix khớp,
+cửa sổ đủ và envelope hợp lệ. Mỗi slot có intent riêng; slot đã dispatch không
+được lặp mù, kể cả chưa có `result.json`.
 
-**Stop the line:** AccessDenied, IAM/drift mismatch, stale plan, thiếu debug telemetry, SHA mismatch, unknown PUT commit, clock bất ổn, DDB read pressure ngoài dự toán, chi phí vượt mức hoặc gần 90 phút reserve, cleanup ownership uncertain => dừng, giữ receipts, đối soát rồi vào guarded cleanup path. Không force unlock/delete, -target/refresh=false, auto-retry mutation hoặc tự gỡ policy bảo vệ.
+Trước trial: domain khác giữa các slot, native Chunks scan chứng minh domain
+chưa có dữ liệu; hai tenant chỉ chia sẻ domain trong đúng shared case. Cache
+purge cluster có kết quả từng node và sample mới xác nhận memory/disk trống.
+Membership phải khớp hai target Cloud healthy và Edge; không dùng ALB scrape
+làm metric cả fleet. Bloom vẫn retained và phải công bố; không gọi đây là reset
+Bloom hoặc backend hoàn toàn mới. Hash dataset/client/route/checksum/encryption
+của cặp direct phải khớp. Không trộn Edge AWS VM với kết quả on-prem thật.
 
-## Lệnh dùng cho agent khi full recipe đã được review và chủ account duyệt
+## G4 — Operator gọi Cold/Recovery riêng
 
-    cd /path/to/miles
-    aws login --profile miles-dev --remote
-    aws login --profile miles-iam-bootstrap --remote
+Cùng `benchmark-case` với case ID Cold hoặc Recovery và repetition cụ thể; operator
+quyết định khi nào dispatch. Không tự chạy G4 sau G3.
 
-    umask 077
-    export RUN="$HOME/.local/state/miles/manual-aws/$(date -u +%Y%m%dT%H%M%SZ)"
-    export CONFIG="$HOME/.local/state/miles/acceptance-config-$(date -u +%Y%m%dT%H%M%SZ).json"
-    python3 deploy/acceptance/run.py --run-dir "$RUN" configure --config "$CONFIG"
-    python3 deploy/acceptance/run.py --run-dir "$RUN" init --config "$CONFIG"
+- Cold: inventory native toàn bucket gồm current/noncurrent versions, snapshot
+  hai thời điểm, resolve manifest → chunk → generation để kiểm class physical.
+  Logical storage-class header không thay bằng chứng pack đã transition.
+- Recovery: fault chỉ đóng lease tổng hợp của trial (`lease-revoke`), không kill
+  node hoặc sửa raw rows. Cut dùng worker R1/R2 có fencing và Chrony thật.
+  Verifier kiểm native dispatch của fence cũ bị từ chối, sealed artifact chain,
+  replay từ cùng genesis hai lần và sự hiện diện các object seed trong image.
+  Không cài image đè metadata live. Đây không phải nghiệm thu node-crash/PITR.
+- Các phép đo còn thiếu như PUT revival/UploadPart/protection-window và expiry
+  thật không được suy ra từ Restore+GET. `coldbench` chỉ chứng nhận phạm vi đọc,
+  restore và inventory; receipt revival giữ false khi chưa exercise.
 
-    kit() { python3 "$RUN/source/deploy/acceptance/run.py" --run-dir "$RUN" "$@"; }
-    proc() { python3 "$RUN/source/deploy/acceptance/process.py" --run-dir "$RUN" "$@"; }
-    export RUN_ID="$(python3 -c 'import json,os;print(json.load(open(os.environ["RUN"]+"/run.json"))["run_id"])')"
-    # Chỉ khi full-benchmark.json tồn tại và đã được review:
-    proc init --template "$RUN/source/deploy/acceptance/templates/full-benchmark.json"
-    proc status
-    proc run --confirm-run "$RUN_ID"
+Nếu recipe yêu cầu toàn bộ Cold lifecycle mà thiếu proof revival, verdict của
+case phải INCOMPLETE. Không nới điều kiện vì thiếu thời gian restore, mất session
+hoặc provider lỗi. Evidence local/fake không thay native AWS evidence.
 
-Process code 20 = needs_approval, 21 = needs_auth, 22 = needs_reconciliation, 1 = failed, 0 = finished (không tương đương benchmark PASS). Đọc pending-review.json, IAM/saved plan và cost; chỉ duyệt từng checkpoint sau review. Nếu lỗi thì giữ FAIL và dùng proc run --cleanup --confirm-run "$RUN_ID" có giám sát, không dispatch lại unknown AWS mutation.
+## G5 — Collect, review và teardown theo lệnh riêng
 
-## Evidence bàn giao và verdict
+Dừng workload, thu `collect`, `shutdown` có approval riêng và stop proof.
+Xem evidence trước khi chọn cleanup; không có timer tự xóa.
 
-Cần lưu source/release hash, pin AMI/toolchain, 60 slots (PASS/FAIL/SKIPPED/INCOMPLETE), 24 paired direct-S3 receipts, 3 độc lập repetitions, per-case full SHA256, Cloud/Edge real topology, backend domain/counter, Cold class/restore/revival/retention, R1/R2 fault/cut/checkpoint, per-node logs/clock, S3/DDB/KMS/cost windows, shutdown proof, frozen manifest, IAM rollback, final native absence audit và phí pending sau cleanup.
+```bash
+kit direct-cleanup-plan
+kit approve --action direct-cleanup --confirm-run "$RUN_ID"
+kit direct-cleanup --confirm-run "$RUN_ID"
+```
 
-**Không claim full acceptance** nếu thiếu runner/approval/samples/metric scope/comparator/clean teardown. Ngưỡng candidate cần review độc lập; đối với dữ liệu cost thiếu, verdict phải UNKNOWN, không giả 0.
+Direct cleanup kiểm ownership, client quiescence, exact versions/delete markers
+trong plan; versions mới hoặc partial errors thì dừng. Native account listing
+xác nhận bucket biến mất; không coi AccessDenied là absence. Không restore IAM
+khi direct resource còn unresolved.
+
+Sau đó gọi riêng `freeze`, `snapshot`, `cleanup-review`; duyệt `cleanup-grant` và
+`unprotect`; `cleanup-plan`; duyệt `cleanup` theo exact destroy plan rồi chạy.
+Duyệt/chạy `finish`, sau đó `audit`, `logout`. Các bước cleanup hiện có vẫn kiểm
+ownership/quiescence và giữ failed workload evidence. `final-absence-summary.json`
+phải accepted, ghi rõ bootstrap/state giữ lại và pending deletion được duyệt.
+
+## Bằng chứng và stop conditions
+
+Giữ commit/build/SDK/config/dataset hashes, slot status, raw request samples,
+full SHA-256, route/Region/encryption, per-node samples + cache reset/job ACK,
+physical snapshots, native cut/probe/checkpoint receipts, chi phí dự tính/quan
+sát và cleanup audit. Threshold vẫn provisional; không tạo số đo hoặc approvals.
+
+AccessDenied, SHA mismatch, unknown mutation, sai scope/ownership, drift, thiếu
+node/sample, reset không hoàn tất, clock lỗi, thiếu ngân sách hoặc gần reserve
+cleanup: dừng bước hiện tại, giữ FAIL/INCOMPLETE và reconcile bằng exact IDs.
+Không force unlock, tự retry mutation, tự đổi clock hay tự sửa tags để nhận tài
+nguyên của lượt khác. Merge/CI xanh không tự đồng nghĩa G1–G5 đã nghiệm thu.

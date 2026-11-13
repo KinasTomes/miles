@@ -6,6 +6,11 @@ IAM review/rollback, dựng AWS, bootstrap, benchmark, telemetry, snapshot và
 cleanup. Những gì anh cung cấp là phiên AWS đăng nhập và quyết định duyệt gói
 quyền/chi phí mới; không phải tự viết script hay policy.
 
+Mọi lệnh mutation bên dưới cần approval receipt riêng. Chỉ chạy `kit approve`
+sau khi chủ account đã đọc/duyệt các artifact của action; receipt không tự apply,
+hết hạn sau 45 phút và vô hiệu nếu input thay đổi. Không cần process controller.
+Benchmark toàn ma trận dùng [runbook theo từng bước](../planning/full-aws-benchmark-execution-plan.md).
+
 ## 1. Chạy ở đâu và cần gì?
 
 **Chạy các lệnh bên dưới trên máy điều phối, từ gốc worktree chứa bản sửa.**
@@ -124,16 +129,23 @@ Chỉ sau khi chủ tài khoản duyệt gói cụ thể mới chạy các mục
 ## 5. Dựng foundation, Edge/client, rồi Cloud
 
 ```bash
+kit approve --action iam-activate --confirm-run "$RUN_ID"
 kit iam-activate --confirm-run "$RUN_ID"
+kit approve --action apply:foundation --confirm-run "$RUN_ID"
 kit apply foundation --confirm-run "$RUN_ID"
 kit plan hosts
 # Đọc hosts-plan.json và saved plan JSON trước apply.
+kit approve --action apply:hosts --confirm-run "$RUN_ID"
 kit apply hosts --confirm-run "$RUN_ID"
+kit approve --action install --confirm-run "$RUN_ID"
 kit install --confirm-run "$RUN_ID"
+kit approve --action material --confirm-run "$RUN_ID"
 kit material --confirm-run "$RUN_ID"
+kit approve --action bootstrap --confirm-run "$RUN_ID"
 kit bootstrap --confirm-run "$RUN_ID"
 kit plan active
 # Đọc active-plan.json và saved plan JSON trước apply.
+kit approve --action apply:active --confirm-run "$RUN_ID"
 kit apply active --confirm-run "$RUN_ID"
 ```
 
@@ -155,8 +167,10 @@ private và đọc lại caps native. Proxy byte/request-ID log bật sẵn trư
 ### A. GET correlation: C1, C4
 
 ```bash
+kit approve --action trial --confirm-run "$RUN_ID"
 kit trial --concurrency 1 --confirm-run "$RUN_ID"
 # Chỉ chạy C4 nếu C1 đạt, còn đủ deadline và đã xem artifact.
+kit approve --action trial --confirm-run "$RUN_ID"
 kit trial --concurrency 4 --confirm-run "$RUN_ID"
 ```
 
@@ -177,6 +191,7 @@ có epoch cũ, có thể đợi cut tự nhiên rồi tạo thêm current events
 
 ```bash
 kit wait-cut
+kit approve --action trial --confirm-run "$RUN_ID"
 kit trial --concurrency 1 --confirm-run "$RUN_ID"
 kit freeze
 kit snapshot
@@ -193,12 +208,14 @@ trước (1.242 historical /405 current events), không tuyên bố cùng điề
 **Baseline, không gây tải đọc:**
 
 ```bash
+kit approve --action shutdown --confirm-run "$RUN_ID"
 kit shutdown --confirm-run "$RUN_ID"
 ```
 
 **Hoặc bài cần ưu tiên, native throttling:**
 
 ```bash
+kit approve --action shutdown --confirm-run "$RUN_ID"
 kit shutdown --native-throttle --confirm-run "$RUN_ID"
 ```
 
@@ -217,9 +234,12 @@ Muốn chạy baseline rồi pressure trong **cùng hạ tầng**, giữ proof �
 có chủ đích, tạo thêm current events và snapshot mới:
 
 ```bash
+kit approve --action restart --confirm-run "$RUN_ID"
 kit restart --confirm-run "$RUN_ID"
+kit approve --action trial --confirm-run "$RUN_ID"
 kit trial --concurrency 1 --confirm-run "$RUN_ID"
 kit snapshot
+kit approve --action shutdown --confirm-run "$RUN_ID"
 kit shutdown --native-throttle --confirm-run "$RUN_ID"
 ```
 
@@ -246,11 +266,15 @@ IAM/deploy còn hợp lệ cho cả cleanup và audit, reauth bằng `kit login`
 `kit login --iam` nếu lệnh thật báo hết phiên.
 
 ```bash
+kit approve --action cleanup-grant --confirm-run "$RUN_ID"
 kit cleanup-grant --confirm-run "$RUN_ID"
+kit approve --action unprotect --confirm-run "$RUN_ID"
 kit unprotect --confirm-run "$RUN_ID"
 kit cleanup-plan
 # Đọc destroy-plan.json/destroy-reviewed.json: chỉ delete đúng managed graph.
+kit approve --action cleanup --confirm-run "$RUN_ID"
 kit cleanup --confirm-run "$RUN_ID"
+kit approve --action finish --confirm-run "$RUN_ID"
 kit finish --confirm-run "$RUN_ID"
 kit status
 kit logout
