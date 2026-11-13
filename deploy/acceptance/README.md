@@ -7,6 +7,10 @@ code trong repo; không cần script hay secret của lượt cũ.
 
 Hướng dẫn từng lệnh: [operator guide](../../docs/testing/focused-aws-operator-guide.md).
 
+Chạy theo template bằng một process, có checkpoint/receipt và báo cáo gọn:
+[process guide](../../docs/testing/aws-acceptance-process.md). Bộ điều phối gọi
+lại các lệnh dưới đây, không thay runtime hoặc chính sách audit.
+
 Entry point:
 
 ```bash
