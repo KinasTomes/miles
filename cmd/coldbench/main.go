@@ -38,6 +38,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	maxPollWait := f.Duration("max-poll-wait", 15*time.Minute, "Bounded native restore completion window")
 	nativeConfig := f.String("native-config", "", "Private installation binding for native physical inventory")
 	awsCredentials := f.String("aws-credentials-file", "", "Separate private AWS temporary credentials")
+	phase := f.String("phase", "", "One independent lifecycle phase: inspect/read/restore-request/restore-status/put-cold/part-cold/put-restored/part-restored")
+	sourceSnapshot := f.String("source-snapshot", "", "Private snapshot binding from this trial (retains source generations)")
 
 	if err := f.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -75,6 +77,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		RetainObjects:      *retain,
 		PollInterval:       *pollInterval,
 		MaxPollWait:        *maxPollWait,
+	}
+	if *phase != "" {
+		res, err := coldrunner.RunPhase(ctx, c, coldrunner.PhaseOptions{Phase: *phase, Manifest: *manifest, Out: *out,
+			Variant: *variant, NativeConfig: *nativeConfig, AWSCredentialsFile: *awsCredentials, SourceSnapshot: *sourceSnapshot})
+		if err != nil {
+			fmt.Fprintln(stderr, "coldbench phase:", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "coldbench: phase=%s status=%s\n", res.Phase, res.Status)
+		return 0
 	}
 
 	res, err := coldrunner.Run(ctx, c, opt)

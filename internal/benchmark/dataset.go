@@ -38,7 +38,7 @@ func readBounded(r io.Reader, limit int64) ([]byte, error) {
 
 // Verify every local file before any request. Root prevents manifest paths or
 // symlinks from escaping the dataset directory; payloads are never held in RAM.
-func loadDataset(ctx context.Context, path string) (*os.Root, benchmarkdata.Manifest, []byte, error) {
+func LoadDataset(ctx context.Context, path string) (*os.Root, benchmarkdata.Manifest, []byte, error) {
 	var m benchmarkdata.Manifest
 	root, err := os.OpenRoot(filepath.Dir(path))
 	if err != nil {

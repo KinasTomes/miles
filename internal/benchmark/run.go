@@ -153,7 +153,7 @@ func Run(ctx context.Context, c Config, o Options) (result Result, err error) {
 	if o.Scenario == "cold" || o.Scenario == "recovery" {
 		return result, fmt.Errorf("scenario %q requires specialized benchmark runner (P2 restore/revival or R1/R2 fault contract); warmbench does not certify this scenario", o.Scenario)
 	}
-	root, manifest, raw, err := loadDataset(ctx, o.Manifest)
+	root, manifest, raw, err := LoadDataset(ctx, o.Manifest)
 	if err != nil {
 		return result, err
 	}
