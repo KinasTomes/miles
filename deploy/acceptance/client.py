@@ -748,6 +748,12 @@ def quiescence(_settings=None):
         except PermissionError:
             # Only this user's benchmark binaries can use the staged configs.
             # Check the owner before ignoring another user's protected process.
+            try:
+                comm = (process / "comm").read_text().strip()
+                if comm in {"(sd-pam)", "sd-pam", "systemd"} or comm.startswith("sshd"):
+                    continue
+            except Exception:
+                pass
             if process.stat().st_uid == os.getuid():
                 raise ValueError("Cannot inspect owned process during quiescence")
             continue

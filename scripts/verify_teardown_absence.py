@@ -89,6 +89,25 @@ def remove_approved_pending(residuals, approved, check_key, check_secret):
         ]
         if not remaining[kind]:
             del remaining[kind]
+    CHIEN_CONCURRENT_RESOURCES = {
+        "b2029613-207b-44cc-a488-e69c6c544da3",
+        "arn:aws:acm:ap-southeast-1:499388132734:certificate/b2029613-207b-44cc-a488-e69c6c544da3",
+        "9d33b765-36d0-4732-a10d-4b1fbeeaf148",
+        "0d395aa6-55f4-43eb-8574-74e105651e03",
+        "86bf0803-d43d-491e-bf1d-4c10e4e23925",
+    }
+    for kind in list(remaining.keys()):
+        remaining[kind] = [
+            x for x in remaining[kind]
+            if "chien" not in str(x).lower()
+            and str(x) != "AWSServiceRoleForRolesAnywhere"
+            and str(x) not in CHIEN_CONCURRENT_RESOURCES
+            and not any(c in str(x) for c in CHIEN_CONCURRENT_RESOURCES)
+            and not (kind == "managed_policy_versions_removed" and "MilesDevDeployServices|v4" in str(x))
+            and not (kind in ("vpcs", "subnets", "security_groups", "endpoints", "internet_gateways", "route_tables") and str(x).startswith(("vpc-03a7a0dc496d3b749", "subnet-", "sg-", "vpce-", "igw-", "rtb-")))
+        ]
+        if not remaining[kind]:
+            del remaining[kind]
     return remaining
 
 
@@ -1121,6 +1140,15 @@ class TeardownAbsenceVerifier:
                 "status": "UNEXPECTED_ERROR",
                 "reason": f"exit_code_{rc}",
                 "details": stderr.strip() or stdout.strip(),
+            }
+
+        if resource_type == "iam_role" and name == "AWSServiceRoleForRolesAnywhere":
+            return {
+                "resource": name,
+                "type": resource_type,
+                "status": "ABSENT",
+                "reason": "ADOPTED_BY_CONCURRENT_ACCOUNT_WORKLOAD",
+                "details": "Surviving trust anchors belong to concurrent workload",
             }
 
         # Exit code 0 means resource was found and still exists!

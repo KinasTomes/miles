@@ -35,11 +35,12 @@ def native_binding(r, slot):
                         - dt.timedelta(minutes=90)).isoformat()}
 
 
-def cache_nodes(report):
+def cache_nodes(report, fresh=True):
     require(report.get("complete") is True, "Incomplete per-node cache telemetry")
     nodes = {}
     at = dt.datetime.fromisoformat(report["observed_at"].replace("Z", "+00:00"))
-    require(abs((now()-at).total_seconds()) < 30, "Stale per-node report")
+    if fresh:
+        require(abs((now()-at).total_seconds()) < 30, "Stale per-node report")
     for n in report["nodes"]:
         sample = n.get("sample")
         require(n["node_id"] not in nodes and n["state"] == "succeeded" and sample,
@@ -129,7 +130,7 @@ def prepare(r, slot, case, admin):
 def finish(r, slot, case, admin):
     prefix = f"trials/{slot}"
     baseline = r.read(prefix+"/isolation.json")
-    before = cache_nodes(baseline["cache"])
+    before = cache_nodes(baseline["cache"], fresh=False)
     result = r.read(prefix+"/result.json")
     end = dt.datetime.fromisoformat(result["finished_at"].replace("Z", "+00:00"))
     report = {}

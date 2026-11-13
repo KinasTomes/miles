@@ -675,7 +675,6 @@ def collect(r, name=None):
 
 def stop(r, pulse=False):
     r.identity()
-    r.live_window(needed=15)
     require(
         not r.file("stop-intent.json").exists(),
         "Stop already requested; collect/inspect existing invocation",

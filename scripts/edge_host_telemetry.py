@@ -752,7 +752,14 @@ class HostTelemetryRecorder:
                 if end is None:
                     coverage_errors.append("invalid_window_timestamp")
                     break
-                if age + max(0.0, (end - observed).total_seconds()) > limit:
+                span = max(0.0, (end - observed).total_seconds())
+                if index + 1 < len(chrony_records):
+                    next_pt = chrony_records[index + 1].get("chrony", {}).get("parsed_tracking") or {}
+                    next_ref = next_pt.get("ref_time")
+                    curr_ref = pt.get("ref_time")
+                    if isinstance(next_ref, (int, float)) and isinstance(curr_ref, (int, float)) and next_ref > curr_ref:
+                        span = min(span, max(0.0, next_ref - curr_ref - age))
+                if age + span > limit:
                     coverage_errors.append("chrony_sample_expires_within_window")
                     break
 

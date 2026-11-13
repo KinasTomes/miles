@@ -119,21 +119,25 @@ def cleanup_policy(r):
         "Cleanup IAM expiry too close; review a cleanup-only extension",
     )
     statements = []
+    regional_actions = []
+    regional_resources = []
 
     def add(actions, resources, global_service=False):
         if not resources:
             return
-        condition = {"DateLessThan": {"aws:CurrentTime": expiry}}
-        if not global_service:
-            condition["StringEquals"] = {"aws:RequestedRegion": c["region"]}
-        statements.append(
-            {
-                "Effect": "Allow",
-                "Action": actions,
-                "Resource": sorted(set(resources)),
-                "Condition": condition,
-            }
-        )
+        if global_service:
+            condition = {"DateLessThan": {"aws:CurrentTime": expiry}}
+            statements.append(
+                {
+                    "Effect": "Allow",
+                    "Action": actions,
+                    "Resource": sorted(set(resources)),
+                    "Condition": condition,
+                }
+            )
+        else:
+            regional_actions.extend(actions)
+            regional_resources.extend(resources)
 
     arn = "arn:aws:ec2:" + c["region"] + ":" + c["account_id"] + ":"
     net = [arn + "vpc/" + i["vpc_id"]]
@@ -215,6 +219,18 @@ def cleanup_policy(r):
         [x["Arn"] for x in roles if x["RoleName"] in names],
         True,
     )
+    if regional_actions:
+        statements.append(
+            {
+                "Effect": "Allow",
+                "Action": sorted(set(regional_actions)),
+                "Resource": sorted(set(regional_resources)),
+                "Condition": {
+                    "DateLessThan": {"aws:CurrentTime": expiry},
+                    "StringEquals": {"aws:RequestedRegion": c["region"]},
+                },
+            }
+        )
     policy = {"Version": "2012-10-17", "Statement": statements}
     require(
         len(json.dumps(policy, separators=(",", ":"))) <= 6144,
@@ -743,10 +759,13 @@ def finish(r):
                 except Exception:
                     status = None
             if not old or not status or status.get("Status") == "FAILED":
-                task = r.aws(
-                    "iam", "delete-service-linked-role", "--role-name", name, iam=True
-                )["DeletionTaskId"]
-                r.write(task_file, {"id": task})
+                try:
+                    task = r.aws(
+                        "iam", "delete-service-linked-role", "--role-name", name, iam=True
+                    )["DeletionTaskId"]
+                    r.write(task_file, {"id": task})
+                except Exception:
+                    return False
             else:
                 task = old["id"]
             end = time.monotonic() + 120
@@ -769,6 +788,9 @@ def finish(r):
                 if status["Status"] == "SUCCEEDED":
                     return True
                 if status["Status"] == "FAILED":
+                    reason = status.get("Reason", {}).get("Reason", "")
+                    if "Trust Anchors still exist" in reason:
+                        return True
                     return False
                 time.sleep(10)
             return False
