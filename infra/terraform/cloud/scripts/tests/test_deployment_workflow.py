@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -81,6 +82,21 @@ class WorkflowTests(unittest.TestCase):
         with patch.object(self.app, "aws", side_effect=[{"VersionIdsToStages":{"v":["AWSCURRENT"]}}, {"SecretString":"{\"key\":\"different\"}"}]):
             with self.assertRaises(ValueError):
                 self.app.secret("test-secret", {}, "keys")
+
+    def test_terraform_uses_only_its_stack_backend_and_default_workspace(self):
+        credentials = {"AccessKeyId":"test-access", "SecretAccessKey":"test-secret", "SessionToken":"test-session"}
+        ambient = {"AWS_PROFILE":"other-installation", "TF_DATA_DIR":"/other/backend", "TF_WORKSPACE":"other",
+                   "TF_CLI_ARGS":"-chdir=/other", "TF_CLI_ARGS_plan":"-var=enable_asg=true", "TF_VAR_enable_alarms":"true"}
+        with patch.dict(os.environ, ambient), patch.object(self.app, "identity"), patch.object(self.app, "aws", return_value=credentials), patch.object(workflow, "run") as run:
+            for stage in ("operator", "state", "active", "destroy"):
+                stack = self.app.stack(stage)
+                self.app.terraform(stack, "plan", admin=stage == "operator")
+                env = run.call_args.kwargs["env"]
+                self.assertEqual(env["TF_DATA_DIR"], str(stack / ".terraform"))
+                self.assertEqual(env["TF_WORKSPACE"], "default")
+                for key in ("AWS_PROFILE", "TF_CLI_ARGS", "TF_CLI_ARGS_plan", "TF_VAR_enable_alarms"):
+                    self.assertNotIn(key, env)
+                self.assertEqual(env["AWS_ACCESS_KEY_ID"], credentials["AccessKeyId"])
 
     def test_pinned_artifact_retry_reads_exact_version_before_reuse(self):
         artifact = self.root / "artifact"
@@ -217,7 +233,12 @@ class WorkflowTests(unittest.TestCase):
             if arguments[0] == "chronyc":
                 return "A9FEA97B,169.254.169.123,3,0,0,0,0,0,0,0,0,0,10,Normal"
             return original(arguments, **options)
-        with patch.object(workflow, "run", side_effect=local_run), patch.object(workflow.shutil, "which", return_value="/usr/bin/tool"), patch.object(app, "aws") as aws:
+        source = self.root / "source-cloud"
+        shutil.copytree(CLOUD, source, ignore=shutil.ignore_patterns(".terraform", "__pycache__"))
+        dev = source / "environments/dev"
+        for name in ("terraform.tfvars", "other.auto.tfvars.json", "override.tf", "other_override.tf.json"):
+            (dev / name).write_text("private configuration from another installation")
+        with patch.object(workflow, "CLOUD", source), patch.object(workflow, "run", side_effect=local_run), patch.object(workflow.shutil, "which", return_value="/usr/bin/tool"), patch.object(app, "aws") as aws:
             app.prepare()
             app.prepare()
             aws.assert_not_called()
@@ -230,6 +251,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(inputs["enable_edge"])
         self.assertFalse(inputs["enable_asg"])
         self.assertTrue((app.private/"cloud/modules/edge/main.tf").is_file())
+        for name in ("terraform.tfvars", "other.auto.tfvars.json", "override.tf", "other_override.tf.json"):
+            self.assertFalse((app.private / "cloud/environments/dev" / name).exists())
+        self.assertTrue((app.private / "cloud/environments/dev/terraform.tfvars.example").exists())
 
     def test_protection_plan_rejects_any_unrelated_update(self):
         self.app.state.update(prepared=True, paused_applied=True)

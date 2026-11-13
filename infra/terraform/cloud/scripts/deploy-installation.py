@@ -112,10 +112,12 @@ class Installation:
     def terraform(self, stack, *arguments, admin=False):
         self.identity(admin)
         credentials = self.aws("configure", "export-credentials", "--format", "process", admin=admin)
-        env = {k:v for k,v in os.environ.items() if not k.startswith("AWS_")}
+        # Terraform backend/workspace/CLI overrides must not leak between installations.
+        env = {k:v for k,v in os.environ.items() if not k.startswith(("AWS_", "TF_"))}
         env.update(AWS_ACCESS_KEY_ID=credentials["AccessKeyId"], AWS_SECRET_ACCESS_KEY=credentials["SecretAccessKey"],
                    AWS_SESSION_TOKEN=credentials["SessionToken"], AWS_REGION=self.region, AWS_DEFAULT_REGION=self.region,
-                   AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null", TF_IN_AUTOMATION="1")
+                   AWS_CONFIG_FILE="/dev/null", AWS_SHARED_CREDENTIALS_FILE="/dev/null", TF_IN_AUTOMATION="1",
+                   TF_DATA_DIR=str(stack / ".terraform"), TF_WORKSPACE="default")
         return run(["terraform", "-chdir=" + str(stack), *arguments], env=env, timeout=3600)
 
     def stack(self, stage):
@@ -182,7 +184,9 @@ class Installation:
             for file in (CLOUD / "bootstrap" / name).glob("*.tf"):
                 shutil.copyfile(file, destination / file.name)
             shutil.copyfile(CLOUD / "bootstrap" / name / ".terraform.lock.hcl", destination / ".terraform.lock.hcl")
-        shutil.copytree(CLOUD, self.private / "cloud", dirs_exist_ok=True, ignore=shutil.ignore_patterns(".terraform", "terraform.tfstate*", "*.tfplan", "__pycache__"))
+        shutil.copytree(CLOUD, self.private / "cloud", dirs_exist_ok=True, ignore=shutil.ignore_patterns(
+            ".terraform", "terraform.tfstate*", "*.tfplan", "__pycache__", "*.tfvars", "*.tfvars.json",
+            "override.tf", "*_override.tf", "override.tf.json", "*_override.tf.json"))
         self.state.update(prepared=True, source_commit=run(["git", "rev-parse", "HEAD"], cwd=REPO).strip())
         self.persist()
 
