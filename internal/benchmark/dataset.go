@@ -63,7 +63,7 @@ func loadDataset(ctx context.Context, path string) (*os.Root, benchmarkdata.Mani
 		return nil, m, nil, err
 	}
 	if m.SchemaVersion != 1 || m.Generator == "" || m.GoVersion == "" || m.Seed == "" ||
-		(m.Profile != "smoke" && m.Profile != "backup30") || m.Versions < 1 || m.RawBytesPerVersion < 1 || len(m.Files) == 0 || len(m.Files) > 10000 {
+		(m.Profile != "smoke" && m.Profile != "backup30" && m.Profile != "boundary-8mib") || m.Versions < 1 || m.RawBytesPerVersion < 1 || len(m.Files) == 0 || len(m.Files) > 10000 {
 		return nil, m, nil, errors.New("invalid dataset manifest")
 	}
 	seen := map[string]bool{}

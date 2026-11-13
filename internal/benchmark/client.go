@@ -26,7 +26,8 @@ type Config struct {
 	Region          string      `json:"region"`
 	Bucket          string      `json:"bucket"`
 	CredentialsFile string      `json:"credentials_file"`
-	KMSKeyID        string      `json:"kms_key_id"`
+	KMSKeyID        string      `json:"kms_key_id,omitempty"`
+	StorageClass    string      `json:"storage_class,omitempty"`
 	Environment     Environment `json:"environment"`
 }
 

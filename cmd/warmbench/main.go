@@ -33,6 +33,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	repeats := f.Int("read-repeats", 3, "Additional full GET passes, 0..10 (each verifies SHA-256)")
 	failFast := f.Bool("fail-fast", false, "Halt dispatching new requests immediately on first sample failure; in-flight drain")
 	drainTimeout := f.Duration("drain-timeout", 0, "Emergency deadline for in-flight requests to drain after interruption (0 uses request timeout)")
+	scenario := f.String("scenario", "warm", "Scenario: warm, overwrite, multipart, domain, edge-clone, cold, recovery")
+	variant := f.String("variant", "", "Scenario variant (e.g. threshold-minus-one, overwrite-versions, clone-download)")
+	domain := f.String("domain", "default", "Target dedup domain: default, shared-default, separated, cross-domain")
+	sourcePrefix := f.String("source-prefix", "", "Source prefix to download from in clone-download (e.g. warmbench/<id>/)")
+	secondConfig := f.String("second-config", "", "Second tenant private config (0600) for domain isolation / cross-owner verification")
 	if err := f.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -55,7 +60,20 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "invalid config JSON or unknown field")
 		return 1
 	}
-	r, err := benchmark.Run(ctx, c, benchmark.Options{Manifest: *manifest, Out: *out, Concurrency: *concurrency, ReadRepeats: *repeats, RetainObjects: *retain, FailFast: *failFast, DrainTimeout: *drainTimeout})
+	r, err := benchmark.Run(ctx, c, benchmark.Options{
+		Manifest:      *manifest,
+		Out:           *out,
+		Concurrency:   *concurrency,
+		ReadRepeats:   *repeats,
+		RetainObjects: *retain,
+		FailFast:      *failFast,
+		DrainTimeout:  *drainTimeout,
+		Scenario:      *scenario,
+		Variant:       *variant,
+		Domain:        *domain,
+		SourcePrefix:  *sourcePrefix,
+		SecondConfig:  *secondConfig,
+	})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

@@ -57,16 +57,16 @@ def expected_fields(scenario, topology, variant):
         c = int(variant[-1])
         return c, 'default', 'verify-before-run', 'STANDARD', 'direct-s3', 'backup30', 'warmbench'
     if scenario == 'domain':
-        return 1, variant, 'not-verified', 'STANDARD', 'domain-contrast', 'backup30', 'requires-runner'
+        return 1, variant, 'not-verified', 'STANDARD', 'domain-contrast', 'backup30', 'warmbench'
     if scenario == 'cold':
         return 1, 'default', 'not-verified', 'GLACIER_IR' if variant == 'ir' else 'GLACIER', 'policy-control', 'backup30', 'requires-runner'
     if scenario == 'multipart':
-        return 1, 'default', 'not-verified', 'STANDARD', 'direct-s3', 'boundary-8mib', 'requires-runner'
+        return 1, 'default', 'not-verified', 'STANDARD', 'direct-s3', 'boundary-8mib', 'warmbench'
     if scenario == 'edge-clone':
-        return 1, 'cross-domain', 'not-verified', 'STANDARD', 'matched-get-put', 'backup30', 'requires-runner'
+        return 1, 'cross-domain', 'not-verified', 'STANDARD', 'matched-get-put', 'backup30', 'warmbench'
     if scenario == 'recovery':
         return 1, 'default', 'not-verified', 'STANDARD', 'fault-contract', 'backup30', 'requires-runner'
-    return 1, 'default', 'not-verified', 'STANDARD', 'direct-s3', 'backup30', 'requires-runner'
+    return 1, 'default', 'not-verified', 'STANDARD', 'direct-s3', 'backup30', 'warmbench'
 
 
 def validate(matrix):

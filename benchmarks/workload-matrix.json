@@ -81,7 +81,7 @@
       "storage_class": "STANDARD",
       "comparator": "direct-s3",
       "dataset": "backup30",
-      "runner": "requires-runner"
+      "runner": "warmbench"
     },
     {
       "id": "domain-shared-default",
@@ -94,7 +94,7 @@
       "storage_class": "STANDARD",
       "comparator": "domain-contrast",
       "dataset": "backup30",
-      "runner": "requires-runner"
+      "runner": "warmbench"
     },
     {
       "id": "domain-separated",
@@ -107,7 +107,7 @@
       "storage_class": "STANDARD",
       "comparator": "domain-contrast",
       "dataset": "backup30",
-      "runner": "requires-runner"
+      "runner": "warmbench"
     },
     {
       "id": "multipart-threshold-minus-one",
@@ -120,7 +120,7 @@
       "storage_class": "STANDARD",
       "comparator": "direct-s3",
       "dataset": "boundary-8mib",
-      "runner": "requires-runner"
+      "runner": "warmbench"
     },
     {
       "id": "multipart-threshold-equal",
@@ -133,7 +133,7 @@
       "storage_class": "STANDARD",
       "comparator": "direct-s3",
       "dataset": "boundary-8mib",
-      "runner": "requires-runner"
+      "runner": "warmbench"
     },
     {
       "id": "multipart-threshold-plus-one",
@@ -146,7 +146,7 @@
       "storage_class": "STANDARD",
       "comparator": "direct-s3",
       "dataset": "boundary-8mib",
-      "runner": "requires-runner"
+      "runner": "warmbench"
     },
     {
       "id": "cold-cloud-ir",
@@ -211,7 +211,7 @@
       "storage_class": "STANDARD",
       "comparator": "matched-get-put",
       "dataset": "backup30",
-      "runner": "requires-runner"
+      "runner": "warmbench"
     },
     {
       "id": "edge-clone-upload",
@@ -224,7 +224,7 @@
       "storage_class": "STANDARD",
       "comparator": "matched-get-put",
       "dataset": "backup30",
-      "runner": "requires-runner"
+      "runner": "warmbench"
     },
     {
       "id": "recovery-cloud-r1",

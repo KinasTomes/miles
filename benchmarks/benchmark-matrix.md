@@ -1,10 +1,10 @@
 # Ma trận workload cho benchmark chính thức
 
-Đây là **bản cấu hình đề xuất để nhóm review**, không phải kết quả benchmark hay sự phê duyệt chi phí AWS. Ma trận máy đọc được nằm tại [workload-matrix.json](workload-matrix.json), kiểm tra offline bằng `python3 -B scripts/validate_benchmark_matrix.py benchmarks/workload-matrix.json`. Các ca `requires-runner` **chưa có runner đo benchmark hoàn chỉnh**; test chức năng của service không thay thế kết quả thời gian/chi phí của ca đó.
+Đây là **bản cấu hình đề xuất để nhóm review**, không phải kết quả benchmark hay sự phê duyệt chi phí AWS. Ma trận máy đọc được nằm tại [workload-matrix.json](workload-matrix.json), kiểm tra offline bằng `python3 -B scripts/validate_benchmark_matrix.py benchmarks/workload-matrix.json`. 12 ca benchmark P1 (Warm, Overwrite, Multipart, Domain, Edge Clone) đã có runner tương ứng qua công cụ `warmbench`; 8 ca Cold và Recovery giữ trạng thái `requires-runner` chờ runner đo restore/revival và fault injection chuyên biệt.
 
 ## Phương pháp so sánh và run config
 
-- Bắt đầu từ [baseline](baseline.md), dùng `backup30` (30 version mỗi nhóm low-entropy/compressed-identical/random-distinct), manifest SHA-256 và full-file SHA-256. `smoke` chỉ kiểm protocol. Không tạo dataset lớn trên operator machine.
+- Bắt đầu từ [baseline](baseline.md), dùng `backup30` (30 version mỗi nhóm low-entropy/compressed-identical/random-distinct) hoặc `boundary-8mib` cho multipart, manifest SHA-256 và full-file SHA-256. `smoke` chỉ kiểm protocol. Không tạo dataset lớn trên operator machine.
 - Mỗi cặp đối chứng dùng client, manifest, thứ tự thao tác, Region, cấu hình checksum/SDK, SSE-KMS, class, concurrency, vị trí mạng, thời gian và cửa sổ accounting tương đương; pin binary hash, Go/SDK, release và policy revision thực tế. Direct S3 là baseline tổng, chunk-per-object **chỉ** đối chứng PUT reduction.
 - Warm đo C1 (single-PUT, **không multipart**) và C4 riêng cho Cloud, Edge; `read_repeats=3` là 1 GET verify sau write + 3 GET lặp. Không coi chúng là cache cold/warm nếu thiếu purge và hit/miss counters. Mỗi cấu hình đề xuất 3 trial **độc lập**; số lượt thực tế có thể ít hơn khi bị stop-the-line, phải ghi thiếu coverage.
 - Trial reset bằng fresh backend/domain có kiểm chứng hoặc công bố rõ retained roots, existing pack/cache, policy và physical inventory; prefix/bucket mới không phải domain reset. Giữ snapshot trước/sau, metrics **từng node** (không scrape ALB thay cả fleet), R1/R2 backlog, outbox/seal/checkpoint/GC và cửa sổ charging sau foreground.
@@ -20,19 +20,19 @@ Tạo các file 0600 theo [warm harness](warm-harness.md) với `target=direct-s
 ./bin/warmbench --config /private/pilot/cloud.json --manifest /private/pilot/dataset/manifest.json --out /private/pilot/trial-1-miles-cloud-c1 --concurrency 1 --read-repeats 3 --retain-objects --fail-fast
 ```
 
-Các ca C4 đổi `--concurrency 4` ở **cả hai**; Edge dùng client/route và config được pin riêng, không mượn direct baseline Cloud nếu khác topology. Mỗi trial phải có output directory mới, fresh/isolation verification và cleanup riêng. `--retain-objects` giữ keys để đọc physical stats sau thời gian collector làm mới; cần teardown được duyệt, không để lại resource vĩnh viễn. Tham số trên không áp dụng cho multipart/restore/clone đang chờ runner riêng.
+Các ca C4 đổi `--concurrency 4` ở **cả hai**; Edge dùng client/route và config được pin riêng, không mượn direct baseline Cloud nếu khác topology. Mỗi trial phải có output directory mới, fresh/isolation verification và cleanup riêng. `--retain-objects` giữ keys để đọc physical stats sau thời gian collector làm mới; cần teardown được duyệt, không để lại resource vĩnh viễn.
 
 ## Coverage và chủ sở hữu phép đo
 
 | Nhóm | Scenario trong ma trận | Cần quan sát | Trạng thái thực thi |
 |---|---|---|---|
-| WL-01/02 | Cloud/Edge × C1/C4 | PUT/s, p95/N, full GET SHA, cache hit/miss, before/after snapshots, direct S3 matched | `warmbench` có luồng Warm; **chưa chứng minh cold cache** |
-| WL-03 | Overwrite Cloud | head revision, quota live vs historical, GET SHA, retained bytes và retries | `requires-runner` |
-| WL-04 | Default/shared vs separated domains | owner/domain isolation, unique raw/stored, physical allocation, cross-owner auth | `requires-runner`; smoke service/artifacts khác benchmark |
-| WL-05 | Threshold 8MiB−1 / 8MiB / 8MiB+1 | operation dispatch, multipart part count, full checksum, part size, PUT controls | `requires-runner`; không mở UploadPartCopy |
-| WL-06 | IR và GLACIER Flexible riêng | thực tế transition, restore, expiry, `Restored` deadline, revive, retention và chi phí | `requires-runner`; Clock/simulator không thay AWS restore |
-| WL-06 Edge | Cross-domain clone-download và clone-upload | separate source/destination owner/domain, verified GET/download và PUT/upload, cold/restore state, hướng mạng S3→Edge và Edge→S3 | `requires-runner`; không được coi là same-domain metadata CopyObject |
-| Reliability | R1/R2 Cloud/Edge | lease/fence, epoch cut/seal, checkpoint/GC, orphan/retained storage, PITR và errors | `requires-runner`; không tự thay acceptance recovery |
+| WL-01/02 | Cloud/Edge × C1/C4 | PUT/s, p95/N, full GET SHA, cache hit/miss, before/after snapshots, direct S3 matched | `warmbench --scenario warm` (C1/C4 Cloud/Edge, single-PUT không multipart) |
+| WL-03 | Overwrite Cloud | head revision, quota live vs historical, GET SHA, retained bytes và retries | `warmbench --scenario overwrite` (đo live logical bytes, historical bytes, GET integrity) |
+| WL-04 | Default/shared vs separated domains | owner/domain isolation, unique raw/stored, physical allocation, cross-owner auth | `warmbench --scenario domain` (`shared-default` và `separated` qua `--second-config`, kiểm cross-owner auth) |
+| WL-05 | Threshold 8MiB−1 / 8MiB / 8MiB+1 | operation dispatch, multipart part count, full checksum, part size, PUT controls | `warmbench --scenario multipart` (boundary 8 MiB −1, equal, +1, dispatch single-put vs multipart) |
+| WL-06 | IR và GLACIER Flexible riêng | thực tế transition, restore, expiry, `Restored` deadline, revive, retention và chi phí | `requires-runner`; cần runner chuyên biệt đo restore/revival và comparator policy-control |
+| WL-06 Edge | Cross-domain clone-download và clone-upload | separate source/destination owner/domain, verified GET/download và PUT/upload, cold/restore state, hướng mạng S3→Edge và Edge→S3 | `warmbench --scenario edge-clone` (`clone-download` qua `--source-prefix` và `clone-upload`) |
+| Reliability | R1/R2 Cloud/Edge | lease/fence, epoch cut/seal, checkpoint/GC, orphan/retained storage, PITR và errors | `requires-runner`; cần runner chuyên biệt đo fault injection và lease/fence contract từ #86 |
 
 **Clone-download/upload Edge:** Với hai miền thật sự độc lập, snapshot chính xác manifest + hash; clone-download lấy từng file qua GET từ domain nguồn xuống Edge (đo S3→gateway→client và cache misses/hits); clone-upload PUT byte đã verify từ Edge sang domain đích, sau đó GET và kiểm SHA-256, đo Edge→gateway→S3 và physical destination. Đối chứng direct S3 phải dùng lịch GET/PUT tương đương, không gộp thành CopyObject server-side. So sánh thêm cùng-domain server-side CopyObject trong kết quả *khác loại phép thử*, không dùng p95 của CopyObject để kết luận client clone nhanh/chậm hơn. Không dùng `aws s3 cp` high-level nếu tự dispatch P2 GetObjectTagging/UploadPartCopy; pin S3 API primitive được phép và ghi dispatch thật.
 
@@ -40,8 +40,8 @@ Các ca C4 đổi `--concurrency 4` ở **cả hai**; Edge dùng client/route v�
 
 ## Gap và trình tự đóng
 
-1. **Có thể làm offline ngay:** xác minh manifest, matrix/validator, review fairness, negative tests, source refs và reconciliation pilot đã công bố.
-2. **Cần implementation độc lập:** runner có reset/purge được chứng minh cho cache; overwrite, multipart boundaries, default/separated domains, restore và Edge clone, có capture các request/cost route tương ứng. Không tuyên bố những thao tác này chạy được chỉ từ `warmbench`.
+1. **Đã hoàn thành offline (P1):** bộ sinh dataset boundary 8MiB (`boundary-8mib`), hoàn thiện các runner Warm C1/C4, Overwrite, Multipart boundary, Domain two-tenant isolation và Edge Clone trong `warmbench` (12/20 ca).
+2. **Cần runner chuyên biệt (P2):** 4 ca Cold (transition, restore/revival, expiry) và 4 ca Reliability (R1/R2 fault injection và journal shutdown từ #86), giữ trạng thái `requires-runner` trong ma trận cho đến khi có runner đầy đủ semantics.
 3. **Cần approval AWS riêng:** tạo môi trường, chạy pilot và thu thập immutable raw runs, budget/stop/teardown; không tái sử dụng credentials hoặc approval cũ.
 4. **Freeze sau pilot:** nhóm review matrix, sample duration/repetitions, ngưỡng [thresholds](thresholds.md) và cả workload không tiết kiệm. Benchmark chính thức chỉ bắt đầu khi runner/contract và environment gate đáp ứng.
 

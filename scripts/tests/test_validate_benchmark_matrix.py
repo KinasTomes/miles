@@ -21,8 +21,8 @@ class BenchmarkMatrixTests(unittest.TestCase):
     def test_proposed_matrix_is_complete_but_not_approved(self):
         report = validator.validate(matrix_fixture())
         self.assertEqual(report['validated_cases'], 20)
-        self.assertEqual(report['available_warm_cases'], 4)
-        self.assertEqual(report['requires_runner'], 16)
+        self.assertEqual(report['available_warm_cases'], 12)
+        self.assertEqual(report['requires_runner'], 8)
         self.assertEqual(report['benchmark_status'], 'not-executed')
         self.assertEqual(report['approval'], 'not-granted')
 
@@ -55,10 +55,11 @@ class BenchmarkMatrixTests(unittest.TestCase):
     def test_rejects_incorrect_comparators_dataset_and_methods(self):
         for case_index, field, value in [(0, 'concurrency', True), (0, 'concurrency', 4),
                                          (0, 'runner', 'requires-runner'),
-                                         (4, 'runner', 'warmbench'),
+                                         (4, 'runner', 'requires-runner'),
                                          (6, 'domain', 'shared-default'),
                                          (7, 'dataset', 'smoke'),
                                          (10, 'storage_class', 'STANDARD'),
+                                         (10, 'runner', 'warmbench'),
                                          (14, 'comparator', 'direct-s3')]:
             with self.subTest(index=case_index, field=field):
                 m = matrix_fixture()

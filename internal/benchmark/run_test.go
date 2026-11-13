@@ -28,6 +28,7 @@ import (
 type s3Fixture struct {
 	mu          sync.Mutex
 	objects     map[string][]byte
+	multiparts  map[string]map[int32][]byte
 	calls       int
 	active      int
 	maxActive   int
@@ -47,12 +48,29 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.calls++
 	f.active++
 	f.maxActive = max(f.maxActive, f.active)
-	if !strings.HasPrefix(r.Header.Get("Authorization"), "AWS4-HMAC-SHA256 ") || r.Header.Get("X-Amz-Security-Token") != "private-session" {
+	authHeader := r.Header.Get("Authorization")
+	isTenantB := strings.Contains(authHeader, "tenant-b-key") || r.Header.Get("X-Amz-Security-Token") == "tenant-b-session"
+	if isTenantB && strings.HasPrefix(r.URL.Path, "/test-bucket/") {
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusForbidden)
+		_ = xml.NewEncoder(w).Encode(struct {
+			XMLName xml.Name `xml:"Error"`
+			Code    string   `xml:"Code"`
+			Message string   `xml:"Message"`
+		}{Code: "AccessDenied", Message: "Access Denied"})
+		return
+	}
+	token := r.Header.Get("X-Amz-Security-Token")
+	if !strings.HasPrefix(authHeader, "AWS4-HMAC-SHA256 ") || (token != "private-session" && token != "tenant-b-session") {
 		f.unsigned = true
 	}
 	f.mu.Unlock()
 	defer func() { f.mu.Lock(); f.active--; f.mu.Unlock() }()
 	key := strings.TrimPrefix(r.URL.Path, "/test-bucket/")
+	if strings.HasPrefix(r.URL.Path, "/test-bucket-b/") {
+		key = strings.TrimPrefix(r.URL.Path, "/test-bucket-b/")
+	}
 	if r.URL.Query().Get("list-type") == "2" {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -92,6 +110,53 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		xml.NewEncoder(w).Encode(out)
 		return
 	}
+	if r.Method == "POST" {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		if r.URL.Query().Has("uploads") {
+			if f.multiparts == nil {
+				f.multiparts = make(map[string]map[int32][]byte)
+			}
+			uploadID := "mp-" + strconv.Itoa(len(f.multiparts)+1)
+			f.multiparts[uploadID] = make(map[int32][]byte)
+			w.Header().Set("Content-Type", "application/xml")
+			xml.NewEncoder(w).Encode(struct {
+				XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
+				Bucket   string   `xml:"Bucket"`
+				Key      string   `xml:"Key"`
+				UploadId string   `xml:"UploadId"`
+			}{Bucket: "test-bucket", Key: key, UploadId: uploadID})
+			return
+		}
+		if r.URL.Query().Has("uploadId") {
+			uploadID := r.URL.Query().Get("uploadId")
+			partsMap, ok := f.multiparts[uploadID]
+			if !ok {
+				w.WriteHeader(404)
+				return
+			}
+			var partNums []int
+			for pn := range partsMap {
+				partNums = append(partNums, int(pn))
+			}
+			slices.Sort(partNums)
+			var combined []byte
+			for _, pn := range partNums {
+				combined = append(combined, partsMap[int32(pn)]...)
+			}
+			f.objects[key] = combined
+			delete(f.multiparts, uploadID)
+			w.Header().Set("Content-Type", "application/xml")
+			xml.NewEncoder(w).Encode(struct {
+				XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
+				Location string   `xml:"Location"`
+				Bucket   string   `xml:"Bucket"`
+				Key      string   `xml:"Key"`
+				ETag     string   `xml:"ETag"`
+			}{Location: "http://localhost/" + key, Bucket: "test-bucket", Key: key, ETag: `"mp-combined-etag"`})
+			return
+		}
+	}
 	switch r.Method {
 	case "PUT":
 		time.Sleep(2 * time.Millisecond)
@@ -108,6 +173,17 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-Amz-Request-Id", "FA11AB1E1234ABCD")
 			w.WriteHeader(503)
 			io.WriteString(w, "<Error><Code>SlowDown</Code><Message>private-secret http://private-host</Message></Error>")
+			return
+		}
+		if r.URL.Query().Has("uploadId") {
+			uploadID := r.URL.Query().Get("uploadId")
+			pn, _ := strconv.Atoi(r.URL.Query().Get("partNumber"))
+			if partsMap, ok := f.multiparts[uploadID]; ok {
+				partsMap[int32(pn)] = b
+			}
+			w.Header().Set("ETag", `"part-etag-`+strconv.Itoa(pn)+`"`)
+			w.Header().Set("x-amz-checksum-sha256", base64.StdEncoding.EncodeToString(sum[:]))
+			w.WriteHeader(200)
 			return
 		}
 		f.objects[key] = b
@@ -137,6 +213,12 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case "DELETE":
 		f.mu.Lock()
+		if r.URL.Query().Has("uploadId") {
+			delete(f.multiparts, r.URL.Query().Get("uploadId"))
+			f.mu.Unlock()
+			w.WriteHeader(204)
+			return
+		}
 		f.deleteCalls++
 		delete(f.objects, key)
 		f.mu.Unlock()
@@ -157,7 +239,7 @@ func setup(t *testing.T) (Config, Options, *s3Fixture) {
 	if err := os.WriteFile(cred, []byte(`{"access_key_id":"private-access","secret_access_key":"private-secret","session_token":"private-session"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	f := &s3Fixture{objects: map[string][]byte{"outside-run/keep": []byte("unrelated")}}
+	f := &s3Fixture{objects: map[string][]byte{"outside-run/keep": []byte("unrelated")}, multiparts: make(map[string]map[int32][]byte)}
 	s := httptest.NewServer(f)
 	t.Cleanup(s.Close)
 	c := Config{Target: "local-s3-smoke", Endpoint: s.URL, Bucket: "test-bucket", Region: "us-east-1", CredentialsFile: cred,
@@ -1371,5 +1453,345 @@ func TestFailFastStopVsDispatchStress(t *testing.T) {
 			t.Fatalf("iteration %d: completed (%d) != dispatched (%d)",
 				iter, putPhase.Completed, putPhase.Dispatched)
 		}
+	}
+}
+
+func TestMultipartScenario(t *testing.T) {
+	dir := t.TempDir()
+	dataset := filepath.Join(dir, "boundary-dataset")
+	if _, err := benchmarkdata.Generate(dataset, "boundary-8mib", "mp-seed"); err != nil {
+		t.Fatal(err)
+	}
+	cred := filepath.Join(dir, "credentials.json")
+	if err := os.WriteFile(cred, []byte(`{"access_key_id":"private-access","secret_access_key":"private-secret","session_token":"private-session"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f := &s3Fixture{objects: map[string][]byte{}, multiparts: make(map[string]map[int32][]byte)}
+	s := httptest.NewServer(f)
+	defer s.Close()
+
+	c := Config{
+		Target:          "local-s3-smoke",
+		Endpoint:        s.URL,
+		Bucket:          "test-bucket",
+		Region:          "us-east-1",
+		CredentialsFile: cred,
+		Environment: Environment{
+			Topology: "loopback protocol fixture", Host: "test", CPU: "test", Disk: "test",
+			Network: "loopback", Metadata: "none", Encryption: "none", CacheState: "uncontrolled",
+			Isolation: "fixture", AsyncWork: "none",
+		},
+	}
+
+	o := Options{
+		Manifest:    filepath.Join(dataset, "manifest.json"),
+		Out:         filepath.Join(dir, "artifact-mp"),
+		Concurrency: 1,
+		ReadRepeats: 1,
+		Scenario:    "multipart",
+	}
+
+	r, err := Run(context.Background(), c, o)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+	if r.Status != "passed" {
+		t.Fatalf("expected passed, got %s", r.Status)
+	}
+	if len(r.Dataset.Files) != 3 {
+		t.Fatalf("expected 3 files, got %d", len(r.Dataset.Files))
+	}
+
+	// Verify dispatch types in PUT phase samples
+	var singlePutCount, mpCount int
+	for _, s := range r.Samples {
+		if s.Phase == "put" {
+			if s.DispatchedType == "single-put" {
+				singlePutCount++
+			} else if s.DispatchedType == "multipart" {
+				mpCount++
+				if s.PartCount != 2 {
+					t.Fatalf("expected 2 parts for 8MiB+1, got %d", s.PartCount)
+				}
+			}
+		}
+	}
+	if singlePutCount != 2 {
+		t.Fatalf("expected 2 single-put samples (minus-one and equal), got %d", singlePutCount)
+	}
+	if mpCount != 1 {
+		t.Fatalf("expected 1 multipart sample (plus-one), got %d", mpCount)
+	}
+
+	// Test variant filtering: threshold-minus-one only
+	oMinusOne := Options{
+		Manifest:    filepath.Join(dataset, "manifest.json"),
+		Out:         filepath.Join(dir, "artifact-minus-one"),
+		Concurrency: 1,
+		Scenario:    "multipart",
+		Variant:     "threshold-minus-one",
+	}
+	rMinus, err := Run(context.Background(), c, oMinusOne)
+	if err != nil {
+		t.Fatalf("Run minus-one failed: %v", err)
+	}
+	if len(rMinus.Dataset.Files) != 1 || rMinus.Dataset.Files[0].Bytes != 8*1024*1024-1 {
+		t.Fatalf("unexpected files in minus-one run: %+v", rMinus.Dataset.Files)
+	}
+
+	// Test variant filtering: threshold-plus-one only
+	oPlusOne := Options{
+		Manifest:    filepath.Join(dataset, "manifest.json"),
+		Out:         filepath.Join(dir, "artifact-plus-one"),
+		Concurrency: 1,
+		Scenario:    "multipart",
+		Variant:     "threshold-plus-one",
+	}
+	rPlus, err := Run(context.Background(), c, oPlusOne)
+	if err != nil {
+		t.Fatalf("Run plus-one failed: %v", err)
+	}
+	if len(rPlus.Dataset.Files) != 1 || rPlus.Dataset.Files[0].Bytes != 8*1024*1024+1 {
+		t.Fatalf("unexpected files in plus-one run: %+v", rPlus.Dataset.Files)
+	}
+}
+
+func TestOverwriteScenario(t *testing.T) {
+	c, o, f := setup(t)
+	o.Scenario = "overwrite"
+	o.Variant = "overwrite-versions"
+	o.Out = filepath.Join(t.TempDir(), "artifact-overwrite")
+
+	r, err := Run(context.Background(), c, o)
+	if err != nil {
+		t.Fatalf("Run overwrite failed: %v", err)
+	}
+	if r.Status != "passed" {
+		t.Fatalf("expected passed, got %s", r.Status)
+	}
+	if r.HistoricalBytes != r.Dataset.TotalBytes {
+		t.Fatalf("historical bytes %d != total %d", r.HistoricalBytes, r.Dataset.TotalBytes)
+	}
+	if r.LiveLogicalBytes <= 0 || r.LiveLogicalBytes >= r.HistoricalBytes {
+		t.Fatalf("live bytes (%d) must be positive and < historical bytes (%d)", r.LiveLogicalBytes, r.HistoricalBytes)
+	}
+
+	// Confirm that phases include overwrite-put, overwrite-head, overwrite-get
+	phaseNames := make(map[string]bool)
+	for _, p := range r.Phases {
+		phaseNames[p.Name] = true
+	}
+	for _, expected := range []string{"overwrite-put", "overwrite-head", "overwrite-get", "list", "delete"} {
+		if !phaseNames[expected] {
+			t.Fatalf("missing expected phase %s in %+v", expected, r.Phases)
+		}
+	}
+	if len(f.objects) != 1 {
+		t.Fatalf("expected 1 object remaining (outside-run), got %d", len(f.objects))
+	}
+}
+
+func TestDomainScenario(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Scenario = "domain"
+	o.Variant = "shared-default"
+	o.Domain = "shared-default"
+	o.Out = filepath.Join(t.TempDir(), "artifact-domain-no-second")
+
+	// 1. Without --second-config, domain scenario must fail closed
+	_, err := Run(context.Background(), c, o)
+	if err == nil || !strings.Contains(err.Error(), "requires --second-config") {
+		t.Fatalf("expected error about --second-config, got %v", err)
+	}
+
+	// 2. Setup Tenant B credentials and config
+	temp := t.TempDir()
+	credsBPath := filepath.Join(temp, "creds-b.json")
+	if err := os.WriteFile(credsBPath, []byte(`{"access_key_id":"tenant-b-key","secret_access_key":"tenant-b-secret","session_token":"tenant-b-session"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c2 := c
+	c2.Bucket = "test-bucket-b"
+	c2.CredentialsFile = credsBPath
+	c2Bytes, _ := json.Marshal(c2)
+	c2Path := filepath.Join(temp, "tenant2-config.json")
+	if err := os.WriteFile(c2Path, c2Bytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Run shared-default with second-config
+	oShared := o
+	oShared.SecondConfig = c2Path
+	oShared.Out = filepath.Join(t.TempDir(), "artifact-domain-shared")
+	rShared, err := Run(context.Background(), c, oShared)
+	if err != nil {
+		t.Fatalf("Run domain shared failed: %v", err)
+	}
+	if rShared.Status != "passed" || !rShared.DomainCrossOwnerRejected || !rShared.SecondTenantVerified || rShared.Cleanup != "domain_two_tenant_isolation_verified" {
+		t.Fatalf("domain shared run mismatch: %+v", rShared)
+	}
+
+	// 4. Run separated with second-config
+	oSep := oShared
+	oSep.Variant = "separated"
+	oSep.Domain = "separated"
+	oSep.Out = filepath.Join(t.TempDir(), "artifact-domain-sep")
+	rSep, err := Run(context.Background(), c, oSep)
+	if err != nil {
+		t.Fatalf("Run domain separated failed: %v", err)
+	}
+	if rSep.Status != "passed" || !rSep.DomainCrossOwnerRejected || !rSep.SecondTenantVerified || rSep.Cleanup != "domain_two_tenant_isolation_verified" {
+		t.Fatalf("domain separated run mismatch: %+v", rSep)
+	}
+}
+
+func TestEdgeCloneScenario(t *testing.T) {
+	c, o, f := setup(t)
+	o.Scenario = "edge-clone"
+	o.Variant = "clone-upload"
+	o.RetainObjects = true
+	o.Out = filepath.Join(t.TempDir(), "artifact-edge-upload")
+
+	r, err := Run(context.Background(), c, o)
+	if err != nil {
+		t.Fatalf("Run edge clone-upload failed: %v", err)
+	}
+	if r.Status != "passed" || r.Cleanup != "retained_owned_prefix_for_observation" {
+		t.Fatalf("edge clone upload mismatch: %+v", r)
+	}
+
+	// 1. clone-download without --source-prefix must fail closed
+	oNoSource := o
+	oNoSource.Variant = "clone-download"
+	oNoSource.SourcePrefix = ""
+	oNoSource.Out = filepath.Join(t.TempDir(), "artifact-edge-no-source")
+	_, err = Run(context.Background(), c, oNoSource)
+	if err == nil || !strings.Contains(err.Error(), "requires non-empty --source-prefix") {
+		t.Fatalf("expected error about --source-prefix, got %v", err)
+	}
+
+	// 2. clone-download with valid source prefix
+	oDownload := o
+	oDownload.Variant = "clone-download"
+	oDownload.RetainObjects = false
+	oDownload.SourcePrefix = r.Prefix
+	oDownload.Out = filepath.Join(t.TempDir(), "artifact-edge-download")
+	rDown, err := Run(context.Background(), c, oDownload)
+	if err != nil {
+		t.Fatalf("Run edge clone-download failed: %v", err)
+	}
+	if rDown.Status != "passed" || rDown.Cleanup != "edge_clone_download_verified" {
+		t.Fatalf("edge clone download mismatch: %+v", rDown)
+	}
+
+	// Clean up retained upload prefix
+	f.mu.Lock()
+	for k := range f.objects {
+		if strings.HasPrefix(k, r.Prefix) {
+			delete(f.objects, k)
+		}
+	}
+	f.mu.Unlock()
+}
+
+func TestWarmSinglePutNeverDispatchesMultipart(t *testing.T) {
+	dir := t.TempDir()
+	dataset := filepath.Join(dir, "boundary-dataset")
+	if _, err := benchmarkdata.Generate(dataset, "boundary-8mib", "test-seed"); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &s3Fixture{objects: make(map[string][]byte)}
+	srv := httptest.NewServer(f)
+	defer srv.Close()
+
+	credsPath := filepath.Join(dir, "creds.json")
+	if err := os.WriteFile(credsPath, []byte(`{"access_key_id":"test-key","secret_access_key":"test-secret","session_token":"private-session"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := Config{
+		Target: "local-s3-smoke", Endpoint: srv.URL, Region: "us-east-1", Bucket: "test-bucket", CredentialsFile: credsPath,
+		Environment: Environment{Topology: "cloud", Host: "test", CPU: "test", Disk: "test", Network: "test", Metadata: "badger", Encryption: "test", CacheState: "test", Isolation: "test", AsyncWork: "test"},
+	}
+
+	// Run with Scenario == "warm" on boundary dataset (which contains > 8 MiB file)
+	o := Options{
+		Manifest:    filepath.Join(dataset, "manifest.json"),
+		Out:         filepath.Join(dir, "artifact-warm-single-put"),
+		Concurrency: 1,
+		Scenario:    "warm",
+	}
+
+	r, err := Run(context.Background(), c, o)
+	if err != nil {
+		t.Fatalf("Run warm failed: %v", err)
+	}
+	if r.Status != "passed" {
+		t.Fatalf("expected passed, got %s", r.Status)
+	}
+
+	// Verify that EVERY sample in put phase is single-put, NEVER multipart (BEN-03 compliance)
+	for _, s := range r.Samples {
+		if s.Phase == "put" {
+			if s.DispatchedType != "single-put" || s.PartCount != 0 {
+				t.Fatalf("BEN-03 violation: Warm C1 dispatched type %q with part count %d (must be single-put only)", s.DispatchedType, s.PartCount)
+			}
+		}
+	}
+}
+
+func TestColdStorageClass(t *testing.T) {
+	c, o, _ := setup(t)
+	c.StorageClass = "GLACIER_IR"
+	o.Scenario = "cold"
+	o.Variant = "ir"
+	o.Out = filepath.Join(t.TempDir(), "artifact-cold-ir")
+
+	r, err := Run(context.Background(), c, o)
+	if err != nil {
+		t.Fatalf("Run cold IR failed: %v", err)
+	}
+	if r.Status != "passed" {
+		t.Fatalf("cold IR run failed: %+v", r)
+	}
+
+	cFlex := c
+	cFlex.StorageClass = "GLACIER"
+	oFlex := o
+	oFlex.Variant = "flexible"
+	oFlex.Out = filepath.Join(t.TempDir(), "artifact-cold-flex")
+	rFlex, err := Run(context.Background(), cFlex, oFlex)
+	if err != nil {
+		t.Fatalf("Run cold flexible failed: %v", err)
+	}
+	if rFlex.Status != "passed" {
+		t.Fatalf("cold flexible run failed: %+v", rFlex)
+	}
+}
+
+func TestRecoveryScenario(t *testing.T) {
+	c, o, _ := setup(t)
+	o.Scenario = "recovery"
+	o.Variant = "r1"
+	o.Out = filepath.Join(t.TempDir(), "artifact-recovery-r1")
+
+	r, err := Run(context.Background(), c, o)
+	if err != nil {
+		t.Fatalf("Run recovery r1 failed: %v", err)
+	}
+	if r.Status != "passed" || r.Scenario != "recovery" || r.Variant != "r1" {
+		t.Fatalf("unexpected recovery r1 result: %+v", r)
+	}
+
+	o2 := o
+	o2.Variant = "r2"
+	o2.Out = filepath.Join(t.TempDir(), "artifact-recovery-r2")
+	r2, err := Run(context.Background(), c, o2)
+	if err != nil {
+		t.Fatalf("Run recovery r2 failed: %v", err)
+	}
+	if r2.Status != "passed" || r2.Scenario != "recovery" || r2.Variant != "r2" {
+		t.Fatalf("unexpected recovery r2 result: %+v", r2)
 	}
 }
