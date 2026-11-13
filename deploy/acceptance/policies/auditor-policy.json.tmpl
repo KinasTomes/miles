@@ -1,0 +1,77 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:Describe*",
+        "ec2:GetConsoleOutput",
+        "elasticloadbalancing:Describe*",
+        "autoscaling:Describe*",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:DescribeAlarmHistory",
+        "cloudwatch:GetMetricData",
+        "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics",
+        "dynamodb:ListTables",
+        "dynamodb:DescribeTable",
+        "logs:DescribeLogGroups",
+        "logs:ListTagsForResource",
+        "kms:ListKeys",
+        "kms:ListAliases",
+        "kms:DescribeKey",
+        "secretsmanager:ListSecrets",
+        "secretsmanager:DescribeSecret",
+        "ssm:DescribeParameters",
+        "ssm:ListDocuments",
+        "ssm:DescribeDocument",
+        "ssm:GetDocument",
+        "acm:ListCertificates",
+        "acm:DescribeCertificate",
+        "rolesanywhere:ListTrustAnchors",
+        "rolesanywhere:ListProfiles",
+        "rolesanywhere:GetTrustAnchor",
+        "rolesanywhere:GetProfile",
+        "servicequotas:GetServiceQuota"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:ListRoles",
+        "iam:ListInstanceProfiles",
+        "iam:ListPolicies",
+        "iam:GetRole",
+        "iam:GetInstanceProfile",
+        "iam:ListRolePolicies",
+        "iam:GetRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:GetPolicy",
+        "iam:ListPolicyVersions",
+        "iam:GetPolicyVersion",
+        "iam:GetServiceLinkedRoleDeletionStatus",
+        "s3:ListAllMyBuckets",
+        "s3:ListBucket",
+        "s3:ListBucketVersions",
+        "s3:GetBucketLocation",
+        "s3:GetBucketVersioning",
+        "s3:GetBucketTagging"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    }
+  ]
+}
