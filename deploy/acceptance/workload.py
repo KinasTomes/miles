@@ -228,6 +228,167 @@ def trial(r, concurrency):
     print(name)
 
 
+def benchmark_case(r, case_id, repetition):
+    r.identity()
+    r.live_window(needed=30)
+    require(repetition in (1, 2, 3), "Repetition must be 1, 2, or 3")
+    require(r.file("active-outputs.json").exists(), "Apply active stage first")
+
+    matrix_file = ROOT / "benchmarks/workload-matrix.json"
+    require(matrix_file.is_file(), "Matrix file missing")
+    matrix = json.loads(matrix_file.read_text())
+    cases = {c["id"]: c for c in matrix.get("cases", [])}
+    require(case_id in cases, f"Unknown benchmark case ID: {case_id}")
+    case = cases[case_id]
+    require(
+        case.get("runner") == "warmbench",
+        f"Case {case_id} requires specialized runner: {case.get('runner')}",
+    )
+
+    slot_name = f"{case_id}-rep{repetition}"
+    prefix = f"trials/{slot_name}"
+    require(
+        not r.file(f"{prefix}/result.json").exists(),
+        f"Slot {slot_name} already executed; do not replay blindly",
+    )
+
+    admission(r)
+    r.file(prefix).mkdir(parents=True, mode=0o700, exist_ok=True)
+    r.write(
+        f"{prefix}/intent.json",
+        {"at": now().isoformat(), "case_id": case_id, "repetition": repetition, "slot": slot_name},
+        new=True,
+    )
+
+    scenario = case["scenario"]
+    variant = case["variant"]
+    concurrency = case["concurrency"]
+    dataset = case["dataset"]
+    domain = case["domain"]
+
+    t1_id = f"{case_id[:16]}-t1-r{repetition}-{secrets.token_hex(4)}"
+    t1_domain = "domain-a" if scenario == "domain" else ("edge-domain-source" if scenario == "edge-clone" else domain)
+    admin(r, "users", {"user_id": t1_id, "default_domain": t1_domain, "logical_limit": 10 << 30})
+    t1_keys = admin(r, "credentials", {"user_id": t1_id})
+
+    tenant1 = {
+        "user_id": t1_id,
+        "bucket": t1_id,
+        "domain": t1_domain,
+        "credentials": {k: t1_keys[k] for k in ("access_key_id", "secret_access_key")},
+    }
+
+    settings = {
+        "name": slot_name,
+        "case_id": case_id,
+        "repetition": repetition,
+        "scenario": scenario,
+        "variant": variant,
+        "domain": domain,
+        "concurrency": concurrency,
+        "dataset": dataset,
+        "region": r.c["region"],
+        "source": r.meta["source"],
+        "tenant1": tenant1,
+        "stop_at": (
+            dt.datetime.fromisoformat(r.read("paid-window.json")["cleanup_by"])
+            - dt.timedelta(minutes=90)
+        ).isoformat(),
+    }
+
+    if scenario in {"domain", "edge-clone"}:
+        t2_id = f"{case_id[:16]}-t2-r{repetition}-{secrets.token_hex(4)}"
+        if scenario == "domain":
+            t2_domain = "domain-a" if variant == "shared-default" else "domain-b"
+        else:
+            t2_domain = "edge-domain-dest"
+        admin(r, "users", {"user_id": t2_id, "default_domain": t2_domain, "logical_limit": 10 << 30})
+        t2_keys = admin(r, "credentials", {"user_id": t2_id})
+        settings["tenant2"] = {
+            "user_id": t2_id,
+            "bucket": t2_id,
+            "domain": t2_domain,
+            "credentials": {k: t2_keys[k] for k in ("access_key_id", "secret_access_key")},
+        }
+
+    if case.get("comparator") == "direct-s3":
+        s3_bucket = f"miles-acceptance-{slot_name}-{secrets.token_hex(4)}"
+        settings["direct_s3"] = {
+            "bucket": s3_bucket,
+            "credentials": tenant1["credentials"],
+        }
+
+    r.write(f"{prefix}/input.json", settings)
+    remote = "/home/ec2-user/acceptance"
+
+    r.ssh(
+        "edge",
+        "sudo",
+        "-n",
+        "python3.12",
+        "/opt/miles/current/scripts/edge_host_telemetry.py",
+        "probe",
+        log=f"{prefix}/probe.json",
+    )
+    unit = f"miles-{slot_name}"
+    r.ssh(
+        "edge",
+        "sudo",
+        "-n",
+        "systemd-run",
+        "--unit",
+        unit,
+        "--property=TimeoutStopSec=15",
+        "python3.12",
+        "/opt/miles/current/scripts/edge_host_telemetry.py",
+        "run",
+        "--output-file",
+        f"/run/miles/{slot_name}.jsonl",
+        "--duration",
+        "1800",
+    )
+    time.sleep(5)
+    r.ssh("edge", "sudo", "-n", "systemctl", "is-active", unit)
+    raw = r.ssh("edge", "sudo", "-n", "cat", f"/run/miles/{slot_name}.jsonl")
+    records = [json.loads(x) for x in raw.splitlines()]
+    require(
+        sum(bool(x.get("chrony")) for x in records) >= 2,
+        "Recorder did not acquire growing clock samples",
+    )
+
+    r.command(
+        [
+            "scp",
+            "-F",
+            r.file("ssh-config"),
+            ROOT / "deploy/acceptance/client.py",
+            f"client:{remote}/client.py",
+        ]
+    )
+    r.write(f"{prefix}/window.json", {"started_at": now().isoformat()})
+    try:
+        r.ssh(
+            "client",
+            "python3.12",
+            f"{remote}/client.py",
+            "benchmark",
+            input=json.dumps(settings).encode(),
+            timeout=1340,
+            log=f"{prefix}/dispatch.log",
+        )
+    finally:
+        collect(r, slot_name)
+
+    result = r.read(f"{prefix}/result.json")
+    summary = r.read(f"{prefix}/telemetry-summary.json")
+    require(
+        result.get("status") == "passed" and summary.get("status") == "OK",
+        "Benchmark trial failed or unverified; evidence retained, do not replay blindly",
+    )
+    r.event(f"benchmark-{slot_name}", "client and telemetry verified")
+    print(slot_name)
+
+
 def collect(r, name=None):
     require(r.file("hosts-outputs.json").exists(), "No hosts to collect")
     prefix = "evidence/" + now().strftime("%Y%m%dT%H%M%S%f")
@@ -254,7 +415,10 @@ def collect(r, name=None):
             prefix + "/" + label + (".tar.gz" if label == "chrony" else ".jsonl")
         ).write_bytes(data)
     if name:
-        require(re.fullmatch(r"get-c[14]-[a-f0-9]{8}", name), "Invalid trial name")
+        require(
+            re.fullmatch(r"(get-c[14]-[a-f0-9]{8}|[a-z0-9-]+-rep[1-3])", name),
+            "Invalid trial name",
+        )
         out = "trials/" + name
         # Obtain the remote result without dispatching another request if SSH response was lost.
         result = json.loads(
@@ -275,6 +439,27 @@ def collect(r, name=None):
             ".",
         )
         r.file(out + "/client-result.tar.gz").write_bytes(samples)
+        try:
+            direct_s3_raw = r.ssh(
+                "client",
+                "cat",
+                "/home/ec2-user/acceptance/" + name + "/direct-s3/result.json",
+                timeout=10,
+            )
+            r.write(out + "/direct-s3-result.json", json.loads(direct_s3_raw))
+            direct_samples = r.ssh(
+                "client",
+                "tar",
+                "-czf",
+                "-",
+                "-C",
+                "/home/ec2-user/acceptance/" + name + "/direct-s3",
+                ".",
+                timeout=30,
+            )
+            r.file(out + "/direct-s3-client-result.tar.gz").write_bytes(direct_samples)
+        except Exception:
+            pass
         r.ssh("edge", "sudo", "-n", "systemctl", "stop", "miles-" + name)
         raw = r.ssh("edge", "sudo", "-n", "cat", "/run/miles/" + name + ".jsonl")
         r.file(out + "/telemetry.jsonl").write_bytes(raw)

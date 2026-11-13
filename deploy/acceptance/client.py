@@ -122,6 +122,250 @@ def trial(settings):
     return p.returncode
 
 
+def benchmark(settings):
+    name = settings["name"]
+    if not re.fullmatch(r"[a-z0-9-]+-rep[1-3]", name):
+        raise ValueError("Invalid benchmark slot ID")
+    folder = BASE / name
+    folder.mkdir(mode=0o700, exist_ok=False)
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("AWS_")}
+    env.update(
+        AWS_CONFIG_FILE="/dev/null",
+        AWS_SHARED_CREDENTIALS_FILE="/dev/null",
+        AWS_EC2_METADATA_DISABLED="true",
+        AWS_MAX_ATTEMPTS="1",
+        AWS_REGION=settings["region"],
+        AWS_CA_BUNDLE=str(BASE / "tls-ca.pem"),
+        SSL_CERT_FILE=str(BASE / "tls-ca.pem"),
+    )
+
+    cred_file = folder / "credentials.json"
+    t1 = settings["tenant1"]
+    cred_file.write_text(json.dumps(t1["credentials"]))
+    os.chmod(cred_file, 0o600)
+
+    t1_keys = t1["credentials"]
+    t1_create_env = {
+        **env,
+        "AWS_ACCESS_KEY_ID": t1_keys["access_key_id"],
+        "AWS_SECRET_ACCESS_KEY": t1_keys["secret_access_key"],
+    }
+    endpoint = settings.get("endpoint", "https://edge.miles.test")
+    p1 = subprocess.run(
+        [
+            "aws",
+            "--region",
+            settings["region"],
+            "--endpoint-url",
+            endpoint,
+            "s3api",
+            "create-bucket",
+            "--bucket",
+            t1["bucket"],
+        ],
+        env=t1_create_env,
+        capture_output=True,
+        timeout=60,
+    )
+    (folder / "create-t1.out").write_bytes(p1.stdout)
+    (folder / "create-t1.err").write_bytes(p1.stderr)
+    if p1.returncode:
+        raise ValueError("Tenant 1 CreateBucket failed; retain and reconcile")
+
+    config1 = {
+        "target": "miles-warm",
+        "endpoint": endpoint,
+        "bucket": t1["bucket"],
+        "region": settings["region"],
+        "credentials_file": str(cred_file),
+        "kms_key_id": "",
+        "dedup_domain": t1.get("domain", settings.get("domain", "default")),
+        "environment": {
+            "profile": settings.get("profile", "edge"),
+            "topology": settings.get("topology", "two Cloud plus AWS Edge and client"),
+            "host": "t4g.small CPU Standard",
+            "cpu": "Graviton2 2vCPU",
+            "disk": "20GiB encrypted gp3",
+            "network": "private VPC HTTPS",
+            "metadata": "dynamodb",
+            "gateway_commit": settings["source"],
+            "policy_revision": "1",
+            "encryption": "HTTPS and SSE-KMS",
+            "cache_state": settings.get("cache_state", "verify-before-run"),
+            "isolation": "fresh synthetic user/domain/bucket",
+            "async_work": "shared journal enabled",
+        },
+    }
+    cfg_file = folder / "config.json"
+    cfg_file.write_text(json.dumps(config1))
+    os.chmod(cfg_file, 0o600)
+
+    cfg2_file = None
+    if "tenant2" in settings:
+        t2 = settings["tenant2"]
+        cred2_file = folder / "credentials-t2.json"
+        cred2_file.write_text(json.dumps(t2["credentials"]))
+        os.chmod(cred2_file, 0o600)
+        t2_keys = t2["credentials"]
+        t2_create_env = {
+            **env,
+            "AWS_ACCESS_KEY_ID": t2_keys["access_key_id"],
+            "AWS_SECRET_ACCESS_KEY": t2_keys["secret_access_key"],
+        }
+        p2 = subprocess.run(
+            [
+                "aws",
+                "--region",
+                settings["region"],
+                "--endpoint-url",
+                endpoint,
+                "s3api",
+                "create-bucket",
+                "--bucket",
+                t2["bucket"],
+            ],
+            env=t2_create_env,
+            capture_output=True,
+            timeout=60,
+        )
+        (folder / "create-t2.out").write_bytes(p2.stdout)
+        (folder / "create-t2.err").write_bytes(p2.stderr)
+        if p2.returncode:
+            raise ValueError("Tenant 2 CreateBucket failed; retain and reconcile")
+
+        config2 = {
+            "target": "miles-warm",
+            "endpoint": endpoint,
+            "bucket": t2["bucket"],
+            "region": settings["region"],
+            "credentials_file": str(cred2_file),
+            "kms_key_id": "",
+            "dedup_domain": t2.get("domain", "domain-b"),
+            "environment": config1["environment"],
+        }
+        cfg2_file = folder / "config-t2.json"
+        cfg2_file.write_text(json.dumps(config2))
+        os.chmod(cfg2_file, 0o600)
+
+    if settings.get("dataset") == "boundary-8mib":
+        manifest_path = BASE / "dataset-boundary-8mib/manifest.json"
+    else:
+        manifest_path = BASE / "dataset/manifest.json"
+
+    source_prefix = settings.get("source_prefix", "")
+    if settings.get("scenario") == "edge-clone" and not source_prefix:
+        seed_out = folder / "seed"
+        seed_cmd = [
+            str(BASE / "warmbench"),
+            "--config", str(cfg_file),
+            "--manifest", str(manifest_path),
+            "--out", str(seed_out),
+            "--scenario", "warm",
+            "--variant", "warm-c1",
+            "--concurrency", "1",
+            "--retain-objects",
+        ]
+        sp = subprocess.run(seed_cmd, env=env, capture_output=True, timeout=300)
+        (folder / "seed.out").write_bytes(sp.stdout)
+        (folder / "seed.err").write_bytes(sp.stderr)
+        if sp.returncode:
+            raise ValueError("Edge-clone seed run failed")
+        seed_res = json.loads((seed_out / "result.json").read_text())
+        source_prefix = seed_res["prefix"]
+
+    remaining = (
+        dt.datetime.fromisoformat(settings["stop_at"])
+        - dt.datetime.now(dt.timezone.utc)
+    ).total_seconds()
+    if remaining < 120:
+        raise ValueError("Insufficient trial/drain budget")
+
+    timeout_s = min(1200, int(remaining))
+    cmd = [
+        "timeout",
+        "--signal=TERM",
+        "--kill-after=125s",
+        str(timeout_s) + "s",
+        str(BASE / "warmbench"),
+        "--config", str(cfg_file),
+        "--manifest", str(manifest_path),
+        "--out", str(folder / "result"),
+        "--scenario", settings["scenario"],
+        "--variant", settings["variant"],
+        "--domain", settings.get("domain", "default"),
+        "--concurrency", str(settings["concurrency"]),
+        "--read-repeats", str(settings.get("read_repeats", 3)),
+        "--fail-fast",
+        "--drain-timeout", "120s",
+        "--retain-objects",
+    ]
+    if cfg2_file:
+        cmd.extend(["--second-config", str(cfg2_file)])
+    if source_prefix:
+        cmd.extend(["--source-prefix", source_prefix])
+
+    p = subprocess.run(
+        cmd,
+        env=env,
+        capture_output=True,
+        timeout=timeout_s + 135,
+    )
+    (folder / "stdout.log").write_bytes(p.stdout)
+    (folder / "stderr.log").write_bytes(p.stderr)
+    (folder / "exit.json").write_text(json.dumps({"code": p.returncode}))
+
+    direct_code = 0
+    if settings.get("direct_s3"):
+        ds3 = settings["direct_s3"]
+        ds3_cred = folder / "credentials-direct-s3.json"
+        ds3_cred.write_text(json.dumps(ds3["credentials"]))
+        os.chmod(ds3_cred, 0o600)
+
+        ds3_config = {
+            "target": "direct-s3",
+            "endpoint": ds3.get("endpoint", f"https://s3.{settings['region']}.amazonaws.com"),
+            "bucket": ds3["bucket"],
+            "region": settings["region"],
+            "credentials_file": str(ds3_cred),
+            "environment": config1["environment"],
+        }
+        ds3_cfg_file = folder / "config-direct-s3.json"
+        ds3_cfg_file.write_text(json.dumps(ds3_config))
+        os.chmod(ds3_cfg_file, 0o600)
+
+        ds3_cmd = [
+            "timeout",
+            "--signal=TERM",
+            "--kill-after=125s",
+            str(timeout_s) + "s",
+            str(BASE / "warmbench"),
+            "--config", str(ds3_cfg_file),
+            "--manifest", str(manifest_path),
+            "--out", str(folder / "direct-s3"),
+            "--scenario", settings["scenario"],
+            "--variant", settings["variant"],
+            "--domain", settings.get("domain", "default"),
+            "--concurrency", str(settings["concurrency"]),
+            "--read-repeats", str(settings.get("read_repeats", 3)),
+            "--fail-fast",
+            "--drain-timeout", "120s",
+            "--retain-objects",
+        ]
+        p_ds3 = subprocess.run(
+            ds3_cmd,
+            env=env,
+            capture_output=True,
+            timeout=timeout_s + 135,
+        )
+        (folder / "direct_stdout.log").write_bytes(p_ds3.stdout)
+        (folder / "direct_stderr.log").write_bytes(p_ds3.stderr)
+        (folder / "direct_exit.json").write_text(json.dumps({"code": p_ds3.returncode}))
+        direct_code = p_ds3.returncode
+
+    return p.returncode if p.returncode != 0 else direct_code
+
+
 def pulse(settings):
     credentials = settings["credentials"]
     region = settings["region"]
@@ -246,8 +490,10 @@ def pulse(settings):
 if __name__ == "__main__":
     os.umask(0o077)
     p = argparse.ArgumentParser()
-    p.add_argument("action", choices=["trial", "pulse"])
+    p.add_argument("action", choices=["trial", "pulse", "benchmark"])
     args = p.parse_args()
     raise SystemExit(
-        {"trial": trial, "pulse": pulse}[args.action](json.load(sys.stdin))
+        {"trial": trial, "pulse": pulse, "benchmark": benchmark}[args.action](
+            json.load(sys.stdin)
+        )
     )

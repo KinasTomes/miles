@@ -50,8 +50,8 @@ class KitTests(unittest.TestCase):
     def test_config_refuses_cross_account_and_oversized_budget(self):
         for patch in [
             {"deploy_role_arn": "arn:aws:iam::999999999999:role/elsewhere"},
-            {"hours": 5},
-            {"max_usd": 11},
+            {"hours": 13},
+            {"max_usd": 51},
             {"unknown": "ignored"},
             {"zones": ["ap-southeast-1a"]},
             {"ami_id": "latest"},

@@ -102,6 +102,9 @@ func newClient(c Config, concurrency int, traffic *bodyTraffic) (*awss3.Client, 
 	if err = decode(b, &cred); err != nil || cred.AccessKeyID == "" || cred.SecretAccessKey == "" {
 		return nil, nil, errors.New("invalid credential JSON")
 	}
+	if traffic == nil {
+		traffic = &bodyTraffic{}
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	transport.DisableCompression = true // never transparently decode gzip object bytes
@@ -209,6 +212,16 @@ func responseDiagnostics(err error) (status int, requestID string) {
 
 // ErrInterrupted indicates the benchmark was interrupted by signal (e.g. SIGINT).
 var ErrInterrupted = errors.New("interrupted")
+
+// NewClient exports client creation for specialized benchmark runners.
+func NewClient(c Config, concurrency int) (*awss3.Client, func(), error) {
+	return newClient(c, concurrency, nil)
+}
+
+// ErrorCode exports sanitized error classification for runners.
+func ErrorCode(err error) string {
+	return errorCode(err)
+}
 
 // Do not persist SDK error strings: they can include URLs, request IDs or bodies.
 func errorCode(err error) string {

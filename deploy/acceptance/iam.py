@@ -56,7 +56,7 @@ def review(r):
         "IAM already activated; preserve review",
     )
     expiry = (
-        (now() + dt.timedelta(hours=6))
+        (now() + dt.timedelta(hours=max(6, r.c["hours"] + 2)))
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z")
     )
@@ -208,7 +208,7 @@ def activate(r):
     require(r.file("cost-review.json").exists(), "Cost review missing")
     require(
         dt.datetime.fromisoformat(reviewed["expires_at"].replace("Z", "+00:00")) - now()
-        > dt.timedelta(hours=4.5),
+        > dt.timedelta(hours=r.c["hours"] + 0.5),
         "IAM review is stale; refresh before activation",
     )
     for name, sha in reviewed["hashes"].items():

@@ -193,21 +193,27 @@ def stage():
         hosts.write_text(text + "\n" + edge + " edge.miles.test\n")
         for n in ["warmbench", "datasetgen"]:
             (BASE / n).chmod(0o755)
-        run(
-            [
-                "runuser",
-                "-u",
-                "ec2-user",
-                "--",
-                BASE / "datasetgen",
-                "--profile",
-                "backup30",
-                "--seed",
-                "focused-acceptance",
-                "--out",
-                BASE / "dataset",
-            ]
-        )
+        for profile, dirname, seed in [
+            ("backup30", "dataset", "focused-acceptance"),
+            ("boundary-8mib", "dataset-boundary-8mib", "focused-acceptance-boundary"),
+        ]:
+            out = BASE / dirname
+            if not out.exists():
+                run(
+                    [
+                        "runuser",
+                        "-u",
+                        "ec2-user",
+                        "--",
+                        BASE / "datasetgen",
+                        "--profile",
+                        profile,
+                        "--seed",
+                        seed,
+                        "--out",
+                        out,
+                    ]
+                )
     proof = {"prepared": settings["node"], "source": release["source_commit"]}
     (BASE / "staged-proof.json").write_text(json.dumps(proof))
     print(json.dumps(proof))

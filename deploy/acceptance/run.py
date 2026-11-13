@@ -32,6 +32,7 @@ MUTATIONS = {
     "restart",
     "unprotect",
     "recover-apply",
+    "benchmark-case",
 }
 
 
@@ -82,6 +83,10 @@ def parser():
     trial = sub.add_parser("trial")
     trial.add_argument("--concurrency", type=int, choices=(1, 4), required=True)
     trial.add_argument("--confirm-run", required=True)
+    bench = sub.add_parser("benchmark-case")
+    bench.add_argument("--case-id", required=True)
+    bench.add_argument("--repetition", type=int, choices=(1, 2, 3), required=True)
+    bench.add_argument("--confirm-run", required=True)
     stop = sub.add_parser("shutdown")
     stop.add_argument("--native-throttle", action="store_true")
     stop.add_argument("--confirm-run", required=True)
@@ -288,6 +293,8 @@ def main(argv=None):
             deploy.apply(r, args.stage)
         elif args.command == "trial":
             workload.trial(r, args.concurrency)
+        elif args.command == "benchmark-case":
+            workload.benchmark_case(r, args.case_id, args.repetition)
         elif args.command == "shutdown":
             workload.stop(r, args.native_throttle)
         elif args.command == "collect":

@@ -22,6 +22,23 @@ NEEDS_AUTH = 21
 NEEDS_RECONCILIATION = 22
 FAILED = 1
 
+def _matrix_warm_cases():
+    matrix_file = ROOT / "benchmarks/workload-matrix.json"
+    if matrix_file.is_file():
+        try:
+            data = json.loads(matrix_file.read_text())
+            return [c["id"] for c in data.get("cases", []) if c.get("runner") == "warmbench"]
+        except Exception:
+            pass
+    return [
+        "warm-cloud-c1", "warm-cloud-c4", "warm-edge-c1", "warm-edge-c4",
+        "overwrite-cloud", "domain-shared-default", "domain-separated",
+        "multipart-threshold-minus-one", "multipart-threshold-equal",
+        "multipart-threshold-plus-one", "edge-clone-download", "edge-clone-upload",
+    ]
+
+_WARM_BENCHMARK_CASES = _matrix_warm_cases()
+
 # Recipes invoke only existing kit operations, never a shell or external script.
 COMMANDS = (
     {
@@ -59,9 +76,14 @@ COMMANDS = (
     | {
         ("shutdown", "--native-throttle"),
     }
+    | {
+        ("benchmark-case", "--case-id", cid, "--repetition", str(rep))
+        for cid in _WARM_BENCHMARK_CASES
+        for rep in (1, 2, 3)
+    }
 )
 WRITES = MUTATIONS | {"material", "logout"}
-TESTS = {"trial", "shutdown"}
+TESTS = {"trial", "shutdown", "benchmark-case"}
 COST_REVIEW = {"approval-review.md", "cost-review.json"}
 
 
@@ -113,7 +135,7 @@ def validate(recipe):
     seen = set()
     for section in ("steps", "cleanup_steps"):
         steps = recipe[section]
-        require(isinstance(steps, list) and 0 < len(steps) <= 64, "Invalid step list")
+        require(isinstance(steps, list) and 0 < len(steps) <= 256, "Invalid step list")
         gates = {}
         for step in steps:
             require(isinstance(step, dict), "Invalid step")
