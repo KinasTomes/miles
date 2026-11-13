@@ -48,6 +48,11 @@ type s3Fixture struct {
 	simulateNoDedup         bool
 	simulateCrossDedupLeak  bool
 	simulateZeroBytesStored bool
+	simulateZeroBoth        bool
+	omitDupCounter          bool
+	omitStoredCounter       bool
+	malformedStoredCounter  bool
+	omitSomePUTTelemetry    bool
 }
 
 func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -107,7 +112,7 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("X-Dsg-Bytes-Stored", "0")
 			} else {
 				storeVal := "1024"
-				if f.simulateZeroBytesStored {
+				if f.simulateZeroBytesStored || f.simulateZeroBoth {
 					storeVal = "0"
 				}
 				w.Header().Set("X-Dsg-Chunks-Total", "5")
@@ -118,7 +123,23 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			// Tenant A
 			w.Header().Set("X-Dsg-Chunks-Total", "5")
 			w.Header().Set("X-Dsg-Chunks-Dup", "0")
-			w.Header().Set("X-Dsg-Bytes-Stored", "1024")
+			stored := "1024"
+			if f.simulateZeroBoth {
+				stored = "0"
+			}
+			w.Header().Set("X-Dsg-Bytes-Stored", stored)
+		}
+		if f.omitDupCounter {
+			w.Header().Del("X-Dsg-Chunks-Dup")
+		}
+		if f.omitStoredCounter {
+			w.Header().Del("X-Dsg-Bytes-Stored")
+		}
+		if f.malformedStoredCounter {
+			w.Header().Set("X-Dsg-Bytes-Stored", "invalid")
+		}
+		if f.omitSomePUTTelemetry && isTenantB && f.putCalls%2 == 0 {
+			w.Header().Del("X-Dsg-Bytes-Stored")
 		}
 	}
 	token := r.Header.Get("X-Amz-Security-Token")
@@ -1890,6 +1911,28 @@ func TestDomainScenario(t *testing.T) {
 	}
 	f.omitTelemetry = false
 
+	// A valid pair is required for EVERY PUT; one present counter, malformed
+	// counter or telemetry from only some PUTs must never be treated as zero.
+	for _, tc := range []struct {
+		name string
+		set  func(bool)
+	}{
+		{"missing duplicate counter", func(v bool) { f.omitDupCounter = v }},
+		{"missing stored counter", func(v bool) { f.omitStoredCounter = v }},
+		{"malformed stored counter", func(v bool) { f.malformedStoredCounter = v }},
+		{"only some PUTs emit telemetry", func(v bool) { f.omitSomePUTTelemetry = v }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.set(true)
+			defer tc.set(false)
+			opt := oShared
+			opt.Out = filepath.Join(t.TempDir(), "artifact-domain-partial-telem")
+			if _, err := Run(context.Background(), c, opt); err == nil || !strings.Contains(err.Error(), "requires backend debug telemetry") {
+				t.Fatalf("expected fail-closed incomplete per-PUT telemetry, got %v", err)
+			}
+		})
+	}
+
 	// 9. [P1 Regression] shared-default with zero cross-tenant dedup fails closed
 	f.bucketDomains = map[string]string{
 		"test-bucket":   "domain-a",
@@ -1928,6 +1971,16 @@ func TestDomainScenario(t *testing.T) {
 		t.Fatalf("expected error about zero bytes stored in separated domain, got %v", err)
 	}
 	f.simulateZeroBytesStored = false
+
+	// Both tenants reporting 0 stored bytes must also fail; Tenant 1's
+	// baseline is not permission to accept a zero-write separated Tenant 2.
+	f.simulateZeroBoth = true
+	oBothZero := oSep
+	oBothZero.Out = filepath.Join(t.TempDir(), "artifact-domain-both-zero")
+	if _, err := Run(context.Background(), c, oBothZero); err == nil || !strings.Contains(err.Error(), "tenant 2 stored 0 physical bytes") {
+		t.Fatalf("expected physical isolation failure with both stored bytes zero, got %v", err)
+	}
+	f.simulateZeroBoth = false
 }
 
 func TestEdgeCloneScenario(t *testing.T) {
@@ -1998,6 +2051,30 @@ func TestEdgeCloneScenario(t *testing.T) {
 		t.Fatalf("expected error about same credentials, got %v", err)
 	}
 
+	// Same access key copied into a different private file also fails.
+	credAliasPath := filepath.Join(temp, "alias-credentials.json")
+	aliasBytes, err := os.ReadFile(c.CredentialsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credAliasPath, aliasBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cDestAlias := cDest
+	cDestAlias.CredentialsFile = credAliasPath
+	cDestAliasBytes, _ := json.Marshal(cDestAlias)
+	cDestAliasPath := filepath.Join(temp, "edge-dest-aliased-credential.json")
+	if err := os.WriteFile(cDestAliasPath, cDestAliasBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	oAlias := o
+	oAlias.SourcePrefix = "warmbench/test-source/"
+	oAlias.SecondConfig = cDestAliasPath
+	oAlias.Out = filepath.Join(t.TempDir(), "artifact-edge-aliased-cred")
+	if _, err := Run(context.Background(), c, oAlias); err == nil || !strings.Contains(err.Error(), "distinct access key identities") {
+		t.Fatalf("expected duplicate access key rejection despite different files, got %v", err)
+	}
+
 	// Negative 2: Same dedup domain
 	cDestSame := cDest
 	cDestSame.DedupDomain = c.DedupDomain
@@ -2054,6 +2131,17 @@ func TestEdgeCloneScenario(t *testing.T) {
 	}
 	if rUpload.CloneReceipt.FilesCloned != len(rUpload.Dataset.Files) || rUpload.CloneReceipt.ReceiptSHA256 == "" {
 		t.Fatalf("invalid clone receipt stats: %+v", rUpload.CloneReceipt)
+	}
+
+	// Destination rejects PUT without reading the stream: the pipe producer
+	// must be unblocked and return a failed artifact rather than deadlock.
+	f.failTenantB = true
+	oRejected := oUpload
+	oRejected.Out = filepath.Join(t.TempDir(), "artifact-edge-reject-dest")
+	rRejected, rejectedErr := Run(context.Background(), c, oRejected)
+	f.failTenantB = false
+	if rejectedErr == nil || rRejected.Status != "failed" || !strings.Contains(rejectedErr.Error(), "clone destination PUT failed") {
+		t.Fatalf("expected destination rejection without streaming deadlock, status=%s err=%v", rRejected.Status, rejectedErr)
 	}
 
 	// Negative 4: clone-download without --source-prefix must fail closed

@@ -975,6 +975,16 @@ func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c
 	if c1.CredentialsFile == cDest.CredentialsFile {
 		return errors.New("edge-clone requires distinct credentials files for source and destination")
 	}
+	// Different file paths can still hold the same DSG access key.
+	sourceSecrets, sourceErr := secretfile.Read(c1.CredentialsFile, 16<<10)
+	destSecrets, destErr := secretfile.Read(cDest.CredentialsFile, 16<<10)
+	var sourceIdentity, destIdentity credentials
+	if sourceErr != nil || destErr != nil || decode(sourceSecrets, &sourceIdentity) != nil || decode(destSecrets, &destIdentity) != nil || sourceIdentity.AccessKeyID == "" || destIdentity.AccessKeyID == "" {
+		return errors.New("edge-clone cannot verify both credential identities")
+	}
+	if sourceIdentity.AccessKeyID == destIdentity.AccessKeyID {
+		return errors.New("edge-clone requires distinct access key identities for source and destination")
+	}
 	if c1.DedupDomain == cDest.DedupDomain {
 		return fmt.Errorf("edge-clone requires distinct source and destination dedup domains, both are %q", c1.DedupDomain)
 	}
@@ -1144,6 +1154,12 @@ func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c
 			}
 			putCtx := WithPayloadHash(ctx, f.SHA256)
 			_, putErr := clientDest.PutObject(putCtx, putInput)
+			if putErr != nil {
+				// The remote endpoint may reject PUT before consuming the
+				// request body. Closing the reader wakes a producer blocked
+				// on the pipe, instead of deadlocking on copyErrCh.
+				_ = pr.CloseWithError(putErr)
+			}
 			copyErr := <-copyErrCh
 			putStatus, putReqID := responseDiagnostics(putErr)
 
@@ -1371,13 +1387,16 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 		}
 	}
 
-	if traffic1.telemetryResponses.Load() == 0 || traffic2.telemetryResponses.Load() == 0 {
-		return errors.New("domain scenario requires backend debug telemetry (X-Dsg-Chunks-Dup, X-Dsg-Bytes-Stored), but none was received; verify client is authenticated with debug privileges and signed x-dsg-debug: 1")
+	// Every successful PUT must supply the complete physical-counter pair;
+	// a single debug-enabled response cannot certify an entire dataset.
+	expectedPUTs := uint64(len(r.Dataset.Files))
+	if traffic1.telemetryResponses.Load() != expectedPUTs || traffic2.telemetryResponses.Load() != expectedPUTs {
+		return fmt.Errorf("domain scenario requires backend debug telemetry on every PUT (X-Dsg-Chunks-Dup and X-Dsg-Bytes-Stored): tenant 1 %d/%d, tenant 2 %d/%d; verify signed x-dsg-debug: 1 and debug permissions",
+			traffic1.telemetryResponses.Load(), expectedPUTs, traffic2.telemetryResponses.Load(), expectedPUTs)
 	}
 
 	t1Dup := traffic1.chunksDup.Load()
 	t2Dup := traffic2.chunksDup.Load()
-	t1Stored := traffic1.bytesStored.Load()
 	t2Stored := traffic2.bytesStored.Load()
 
 	switch o.Variant {
@@ -1397,8 +1416,8 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 			return fmt.Errorf("separated domain isolation failure: cross-domain deduplication was observed on backend (tenant 1 dup=%d, tenant 2 dup=%d, excess=%d)", t1Dup, t2Dup, t2Dup-t1Dup)
 		}
 		// Tenant 2 must store physical bytes in its own separated domain
-		if t2Stored == 0 && t1Stored > 0 {
-			return errors.New("separated domain isolation failure: tenant 2 stored 0 physical bytes, indicating cross-domain chunk reuse")
+		if t2Stored == 0 {
+			return errors.New("separated domain isolation failure: tenant 2 stored 0 physical bytes; cannot prove independent physical storage")
 		}
 		r.DomainPhysicalIsolation = true
 	}

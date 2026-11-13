@@ -117,22 +117,25 @@ func newClient(c Config, concurrency int, traffic *bodyTraffic) (*awss3.Client, 
 				if d := resp.Header.Get("X-Dsg-Dedup-Domain"); d != "" {
 					traffic.observedDomain.Store(&d)
 				}
-				hasTelemetry := false
-				if dupStr := resp.Header.Get("X-Dsg-Chunks-Dup"); dupStr != "" {
-					if v, err := strconv.ParseUint(dupStr, 10, 64); err == nil {
-						traffic.chunksDup.Add(v)
-						hasTelemetry = true
-					}
+				// Only successful PUT responses with BOTH valid counters
+				// provide physical dedup evidence. A missing/invalid counter
+				// must not silently become zero or count as verified telemetry.
+				if resp.Request == nil || resp.Request.Method != http.MethodPut || resp.StatusCode != http.StatusOK {
+					return
 				}
-				if storedStr := resp.Header.Get("X-Dsg-Bytes-Stored"); storedStr != "" {
-					if v, err := strconv.ParseUint(storedStr, 10, 64); err == nil {
-						traffic.bytesStored.Add(v)
-						hasTelemetry = true
-					}
+				dupStr := resp.Header.Get("X-Dsg-Chunks-Dup")
+				storedStr := resp.Header.Get("X-Dsg-Bytes-Stored")
+				if dupStr == "" || storedStr == "" {
+					return
 				}
-				if hasTelemetry {
-					traffic.telemetryResponses.Add(1)
+				dup, dupErr := strconv.ParseUint(dupStr, 10, 64)
+				stored, storedErr := strconv.ParseUint(storedStr, 10, 64)
+				if dupErr != nil || storedErr != nil {
+					return
 				}
+				traffic.chunksDup.Add(dup)
+				traffic.bytesStored.Add(stored)
+				traffic.telemetryResponses.Add(1)
 			},
 		}
 	}
