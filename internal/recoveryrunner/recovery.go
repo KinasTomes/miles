@@ -39,6 +39,7 @@ var AllowedFaultScopes = map[string]bool{
 
 // Options holds runtime options for the recovery benchmark runner.
 type Options struct {
+	NativeConfig       string // Private installation binding for the built-in native injector/verifier.
 	Manifest           string
 	Out                string
 	Variant            string // "r1" or "r2"
@@ -333,6 +334,15 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 		res.Error = err.Error()
 		return res, fmt.Errorf("load manifest: %w", err)
 	}
+	if opt.NativeConfig != "" {
+		if opt.FaultCommand != "" || opt.SimulateFault != nil || opt.VerifyNativeProof != nil {
+			return res, errors.New("native configuration cannot be mixed with external proof callbacks")
+		}
+		if err := configureNative(ctx, &opt); err != nil {
+			res.Error = err.Error()
+			return res, err
+		}
+	}
 
 	var getGate func(ctx context.Context) (*GateState, error)
 	var getCheckpoint func(ctx context.Context, historyID string, epoch int64) (string, error)
@@ -420,7 +430,7 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 	deadline := time.Now().Add(maxPollWait)
 	for {
 		a, err := getGate(ctx)
-		if err == nil && a != nil && a.Epoch > baseline.Epoch && a.State == "Open" {
+		if err == nil && a != nil && a.HistoryID == baseline.HistoryID && a.Epoch > baseline.Epoch && a.State == "Open" {
 			after = a
 			break
 		}
@@ -430,7 +440,11 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 			}
 			break
 		}
-		time.Sleep(pollInterval)
+		select {
+		case <-ctx.Done():
+			return res, ctx.Err()
+		case <-time.After(pollInterval):
+		}
 	}
 
 	if after == nil || after.Epoch <= baseline.Epoch {
@@ -442,7 +456,7 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 		res.Error = err.Error()
 		return res, err
 	}
-	if after.State != "Open" {
+	if after.State != "Open" || after.HistoryID != baseline.HistoryID {
 		err := fmt.Errorf("recovered gate state must be 'Open', got %q", after.State)
 		res.Error = err.Error()
 		return res, err

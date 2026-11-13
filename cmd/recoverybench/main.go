@@ -38,6 +38,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	faultCommand := f.String("fault-command", "", "Command to execute for fault injection")
 	awsCredentials := f.String("aws-credentials-file", "", "Separate 0600 AWS temporary credentials JSON")
 	expectedAccount := f.String("expected-aws-account", "", "Expected 12-digit AWS account ID")
+	nativeConfig := f.String("native-config", "", "Private installation binding for native lease-revoke/cut/replay")
 
 	if err := f.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -65,6 +66,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	opt := recoveryrunner.Options{
+		NativeConfig:       *nativeConfig,
 		Manifest:           *manifest,
 		Out:                *out,
 		Variant:            *variant,

@@ -21,33 +21,39 @@ import (
 
 	"github.com/KinasTomes/miles/internal/benchmark"
 	"github.com/KinasTomes/miles/internal/benchmarkdata"
+	"github.com/KinasTomes/miles/internal/benchmarknative"
 )
 
 // Options holds runtime options for the cold benchmark runner.
 type Options struct {
-	Manifest      string
-	Out           string
-	Variant       string // "ir" or "flexible"
-	Concurrency   int
-	FailFast      bool
-	RetainObjects bool
-	PollInterval  time.Duration
-	MaxPollWait   time.Duration
+	NativeConfig       string
+	AWSCredentialsFile string
+	CollectInventory   func(context.Context) (benchmarknative.Inventory, error)
+	Manifest           string
+	Out                string
+	Variant            string // "ir" or "flexible"
+	Concurrency        int
+	FailFast           bool
+	RetainObjects      bool
+	PollInterval       time.Duration
+	MaxPollWait        time.Duration
 }
 
 // ColdReceipt captures authoritative evidence for cold workload execution.
 type ColdReceipt struct {
-	StorageClass                string `json:"storage_class"`
-	ObservedBackendStorageClass string `json:"observed_backend_storage_class"`
-	ObservedVersion             string `json:"observed_version,omitempty"`
-	RestorationStatus           string `json:"restoration_status"` // "immediate", "in_progress", "completed"
-	RestorationStartedAt        string `json:"restoration_started_at,omitempty"`
-	RestorationCompletedAt      string `json:"restoration_completed_at,omitempty"`
-	RestorationExpiry           string `json:"restoration_expiry,omitempty"`
-	RevivalVerified             bool   `json:"revival_verified"`
-	RetainedPhysicalBytes       *int64 `json:"retained_physical_bytes,omitempty"`
-	VerifiedLogicalGETBytes     int64  `json:"verified_logical_get_bytes"`
-	TotalGETVerifiedSHA256      bool   `json:"total_get_verified_sha256"`
+	InventoryBefore             *benchmarknative.Inventory `json:"inventory_before,omitempty"`
+	InventoryAfter              *benchmarknative.Inventory `json:"inventory_after,omitempty"`
+	StorageClass                string                     `json:"storage_class"`
+	ObservedBackendStorageClass string                     `json:"observed_backend_storage_class"`
+	ObservedVersion             string                     `json:"observed_version,omitempty"`
+	RestorationStatus           string                     `json:"restoration_status"` // "immediate", "in_progress", "completed"
+	RestorationStartedAt        string                     `json:"restoration_started_at,omitempty"`
+	RestorationCompletedAt      string                     `json:"restoration_completed_at,omitempty"`
+	RestorationExpiry           string                     `json:"restoration_expiry,omitempty"`
+	RevivalVerified             bool                       `json:"revival_verified"`
+	RetainedPhysicalBytes       *int64                     `json:"retained_physical_bytes,omitempty"`
+	VerifiedLogicalGETBytes     int64                      `json:"verified_logical_get_bytes"`
+	TotalGETVerifiedSHA256      bool                       `json:"total_get_verified_sha256"`
 }
 
 // Sample records a single request outcome.
@@ -62,6 +68,7 @@ type Sample struct {
 
 // Result is the written evidence artifact.
 type Result struct {
+	Scope         string       `json:"scope"`
 	SchemaVersion int          `json:"schema_version"`
 	Runner        string       `json:"runner"`
 	Variant       string       `json:"variant"`
@@ -95,6 +102,7 @@ func loadManifest(path string) (*benchmarkdata.Manifest, error) {
 func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error) {
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	res := &Result{
+		Scope:         "archive-read-restore-and-physical-inventory",
 		SchemaVersion: 1,
 		Runner:        "coldbench",
 		Variant:       opt.Variant,
@@ -147,6 +155,50 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 		RetainedPhysicalBytes:  nil,
 		TotalGETVerifiedSHA256: false,
 	}
+	res.ColdReceipt = receipt
+	collector := opt.CollectInventory
+	if opt.NativeConfig != "" {
+		if collector != nil {
+			return res, errors.New("cannot mix native and injected inventory")
+		}
+		binding, err := benchmarknative.Read(opt.NativeConfig)
+		if err != nil {
+			return res, err
+		}
+		native, err := benchmarknative.Session(ctx, binding, opt.AWSCredentialsFile)
+		if err != nil {
+			return res, err
+		}
+		collector, err = nativeInventory(ctx, native, binding, cfg.Bucket, manifest, expectedClass)
+		if err != nil {
+			return res, err
+		}
+	}
+	if collector == nil {
+		res.Status = "incomplete"
+		return res, errors.New("authoritative retained physical inventory unavailable (fail-closed)")
+	}
+	before, err := collector(ctx)
+	if err != nil {
+		res.Error = err.Error()
+		return res, err
+	}
+	receipt.InventoryBefore = &before
+	defer func() {
+		if receipt.InventoryAfter != nil {
+			return
+		}
+		// Preserve physical debt even when restore/GET fails. This read cannot
+		// turn the original failure into success or extend the paid window.
+		capture, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		after, err := collector(capture)
+		if err == nil {
+			receipt.InventoryAfter = &after
+		} else {
+			res.Error = errors.Join(errors.New(res.Error), err).Error()
+		}
+	}()
 
 	if opt.Variant == "ir" {
 		if err := runIR(ctx, client, cfg, manifest, receipt, res, opt); err != nil {
@@ -161,6 +213,16 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 	}
 
 	res.ColdReceipt = receipt
+	after, err := collector(ctx)
+	if err != nil {
+		res.Error = err.Error()
+		return res, err
+	}
+	if before.Bucket != after.Bucket || before.RunID != after.RunID || before.Slot != after.Slot || before.Source != after.Source {
+		return res, errors.New("physical inventory binding changed")
+	}
+	receipt.InventoryAfter = &after
+	receipt.RetainedPhysicalBytes = &after.RetainedBytes
 	// Logical GET size is not a backend physical-inventory certificate.
 	if receipt.RetainedPhysicalBytes == nil {
 		err := errors.New("authoritative retained physical inventory unavailable (fail-closed)")
@@ -174,7 +236,7 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 
 func runIR(ctx context.Context, client *awss3.Client, cfg benchmark.Config, manifest *benchmarkdata.Manifest, receipt *ColdReceipt, res *Result, opt Options) error {
 	receipt.RestorationStatus = "immediate"
-	receipt.RevivalVerified = true
+	// IR is immediately readable; a GET is not a PUT revival test.
 
 	for _, file := range manifest.Files {
 		key := file.Path
@@ -345,7 +407,7 @@ func runFlexible(ctx context.Context, client *awss3.Client, cfg benchmark.Config
 
 	receipt.RestorationCompletedAt = time.Now().UTC().Format(time.RFC3339)
 	receipt.RestorationStatus = "completed"
-	receipt.RevivalVerified = true
+	// Restoring existing bytes does not prove re-upload revival behavior.
 
 	// Step 4: GET restored object, verify full SHA-256.
 	for _, file := range manifest.Files {

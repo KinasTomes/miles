@@ -36,6 +36,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	retain := f.Bool("retain-objects", false, "Retain objects")
 	pollInterval := f.Duration("poll-interval", 5*time.Second, "Native restore HEAD polling interval")
 	maxPollWait := f.Duration("max-poll-wait", 15*time.Minute, "Bounded native restore completion window")
+	nativeConfig := f.String("native-config", "", "Private installation binding for native physical inventory")
+	awsCredentials := f.String("aws-credentials-file", "", "Separate private AWS temporary credentials")
 
 	if err := f.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -63,14 +65,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	opt := coldrunner.Options{
-		Manifest:      *manifest,
-		Out:           *out,
-		Variant:       *variant,
-		Concurrency:   *concurrency,
-		FailFast:      *failFast,
-		RetainObjects: *retain,
-		PollInterval:  *pollInterval,
-		MaxPollWait:   *maxPollWait,
+		NativeConfig:       *nativeConfig,
+		AWSCredentialsFile: *awsCredentials,
+		Manifest:           *manifest,
+		Out:                *out,
+		Variant:            *variant,
+		Concurrency:        *concurrency,
+		FailFast:           *failFast,
+		RetainObjects:      *retain,
+		PollInterval:       *pollInterval,
+		MaxPollWait:        *maxPollWait,
 	}
 
 	res, err := coldrunner.Run(ctx, c, opt)

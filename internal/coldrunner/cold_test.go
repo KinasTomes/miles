@@ -16,6 +16,8 @@ import (
 
 	"github.com/KinasTomes/miles/internal/benchmark"
 	"github.com/KinasTomes/miles/internal/benchmarkdata"
+	"github.com/KinasTomes/miles/internal/benchmarknative"
+	s "github.com/KinasTomes/miles/internal/storage"
 )
 
 func createTestManifest(t *testing.T, dir string) (string, string, string) {
@@ -105,20 +107,21 @@ func TestColdRunnerIR(t *testing.T) {
 		Concurrency: 1,
 	}
 
+	opt.CollectInventory = testPhysicalInventory
 	res, err := Run(context.Background(), cfg, opt)
-	if err == nil || !strings.Contains(err.Error(), "authoritative retained physical inventory") {
-		t.Fatalf("expected incomplete IR without inventory, got %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if res.Status != "incomplete" {
+	if res.Status != "passed" {
 		t.Fatalf("expected incomplete, got %s", res.Status)
 	}
-	if res.ColdReceipt == nil || !res.ColdReceipt.RevivalVerified || !res.ColdReceipt.TotalGETVerifiedSHA256 {
+	if res.ColdReceipt == nil || res.ColdReceipt.RevivalVerified || !res.ColdReceipt.TotalGETVerifiedSHA256 {
 		t.Fatalf("invalid ColdReceipt: %+v", res.ColdReceipt)
 	}
 	if res.ColdReceipt.ObservedBackendStorageClass != "GLACIER_IR" {
 		t.Fatalf("expected observed class GLACIER_IR, got %s", res.ColdReceipt.ObservedBackendStorageClass)
 	}
-	if res.ColdReceipt.VerifiedLogicalGETBytes != int64(len(content)) || res.ColdReceipt.RetainedPhysicalBytes != nil {
+	if res.ColdReceipt.VerifiedLogicalGETBytes != int64(len(content)) || res.ColdReceipt.RetainedPhysicalBytes == nil || *res.ColdReceipt.RetainedPhysicalBytes != 150 {
 		t.Fatalf("expected RetainedPhysicalBytes %d, got %d", len(content), res.ColdReceipt.VerifiedLogicalGETBytes)
 	}
 	if len(res.Samples) != 1 || res.Samples[0].SHA256 != hash {
@@ -189,20 +192,21 @@ func TestColdRunnerFlexible(t *testing.T) {
 		MaxPollWait:  2 * time.Second,
 	}
 
+	opt.CollectInventory = testPhysicalInventory
 	res, err := Run(context.Background(), cfg, opt)
-	if err == nil || !strings.Contains(err.Error(), "authoritative retained physical inventory") {
-		t.Fatalf("expected incomplete Flexible without inventory, got %v", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if res.Status != "incomplete" {
+	if res.Status != "passed" {
 		t.Fatalf("expected incomplete, got %s", res.Status)
 	}
-	if res.ColdReceipt == nil || !res.ColdReceipt.RevivalVerified || res.ColdReceipt.RestorationStatus != "completed" {
+	if res.ColdReceipt == nil || res.ColdReceipt.RevivalVerified || res.ColdReceipt.RestorationStatus != "completed" {
 		t.Fatalf("invalid ColdReceipt: %+v", res.ColdReceipt)
 	}
 	if res.ColdReceipt.RestorationExpiry != "Fri, 23 Dec 2026 00:00:00 GMT" {
 		t.Fatalf("expected expiry, got %s", res.ColdReceipt.RestorationExpiry)
 	}
-	if res.ColdReceipt.VerifiedLogicalGETBytes != int64(len(content)) || res.ColdReceipt.RetainedPhysicalBytes != nil {
+	if res.ColdReceipt.VerifiedLogicalGETBytes != int64(len(content)) || res.ColdReceipt.RetainedPhysicalBytes == nil || *res.ColdReceipt.RetainedPhysicalBytes != 150 {
 		t.Fatalf("expected RetainedPhysicalBytes %d, got %d", len(content), res.ColdReceipt.VerifiedLogicalGETBytes)
 	}
 	if len(res.Samples) != 1 || res.Samples[0].SHA256 != hash {
@@ -216,6 +220,7 @@ func TestColdRunnerNegativeCases(t *testing.T) {
 	t.Run("invalid variant", func(t *testing.T) {
 		cfg, temp := setupFixture(t, nil)
 		opt := Options{Manifest: manifestPath, Out: filepath.Join(temp, "bad-var"), Variant: "unknown"}
+		opt.CollectInventory = testPhysicalInventory
 		if _, err := Run(context.Background(), cfg, opt); err == nil {
 			t.Fatal("expected error for unknown variant")
 		}
@@ -225,6 +230,7 @@ func TestColdRunnerNegativeCases(t *testing.T) {
 		cfg, temp := setupFixture(t, nil)
 		cfg.StorageClass = "STANDARD"
 		opt := Options{Manifest: manifestPath, Out: filepath.Join(temp, "bad-class"), Variant: "ir"}
+		opt.CollectInventory = testPhysicalInventory
 		if _, err := Run(context.Background(), cfg, opt); err == nil {
 			t.Fatal("expected error for storage class mismatch")
 		}
@@ -239,6 +245,7 @@ func TestColdRunnerNegativeCases(t *testing.T) {
 		cfg, temp := setupFixture(t, handler)
 		cfg.StorageClass = "GLACIER"
 		opt := Options{Manifest: manifestPath, Out: filepath.Join(temp, "access-denied"), Variant: "flexible"}
+		opt.CollectInventory = testPhysicalInventory
 		if _, err := Run(context.Background(), cfg, opt); err == nil {
 			t.Fatal("expected error when pre-restore GET returns AccessDenied instead of InvalidObjectState")
 		}
@@ -253,6 +260,7 @@ func TestColdRunnerNegativeCases(t *testing.T) {
 		cfg, temp := setupFixture(t, handler)
 		cfg.StorageClass = "GLACIER_IR"
 		opt := Options{Manifest: manifestPath, Out: filepath.Join(temp, "missing-class"), Variant: "ir"}
+		opt.CollectInventory = testPhysicalInventory
 		if _, err := Run(context.Background(), cfg, opt); err == nil {
 			t.Fatal("expected error when backend storage class is missing or not GLACIER_IR")
 		}
@@ -266,6 +274,7 @@ func TestColdRunnerNegativeCases(t *testing.T) {
 		cfg, temp := setupFixture(t, handler)
 		cfg.StorageClass = "GLACIER"
 		opt := Options{Manifest: manifestPath, Out: filepath.Join(temp, "bad-read"), Variant: "flexible"}
+		opt.CollectInventory = testPhysicalInventory
 		if _, err := Run(context.Background(), cfg, opt); err == nil {
 			t.Fatal("expected error when flexible is readable before restore")
 		}
@@ -280,8 +289,25 @@ func TestColdRunnerNegativeCases(t *testing.T) {
 		cfg, temp := setupFixture(t, handler)
 		cfg.StorageClass = "GLACIER_IR"
 		opt := Options{Manifest: manifestPath, Out: filepath.Join(temp, "corrupted"), Variant: "ir"}
+		opt.CollectInventory = testPhysicalInventory
 		if _, err := Run(context.Background(), cfg, opt); err == nil {
 			t.Fatal("expected SHA mismatch error")
 		}
 	})
+}
+
+func testPhysicalInventory(context.Context) (benchmarknative.Inventory, error) {
+	return benchmarknative.Sum(benchmarknative.Config{Bucket: "native-bucket", RunID: "fixture", Slot: "cold-rep1", Source: "source"}, s.PhysicalInventory{Complete: true, VersionScope: "all-retained", Objects: []s.PhysicalObject{
+		{Key: "pack", VersionID: "old", Size: 100, Class: "GLACIER", Category: "pack"},
+		{Key: "pack", VersionID: "new", Size: 50, Class: "GLACIER_IR", Category: "pack", Current: true},
+	}})
+}
+func TestMissingInventoryStopsBeforeAnyGET(t *testing.T) {
+	var calls atomic.Int32
+	cfg, temp := setupFixture(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1) })
+	manifest, _, _ := createTestManifest(t, t.TempDir())
+	result, err := Run(t.Context(), cfg, Options{Manifest: manifest, Out: filepath.Join(temp, "out"), Variant: "ir"})
+	if err == nil || !strings.Contains(err.Error(), "physical inventory") || calls.Load() != 0 || result.Status != "incomplete" {
+		t.Fatal(result, err, calls.Load())
+	}
 }
