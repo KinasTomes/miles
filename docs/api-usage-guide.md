@@ -164,6 +164,7 @@ aws --endpoint-url "$ENDPOINT" s3api delete-objects --bucket demo --delete '{"Ob
 
 | Header | Operation | Giá trị & ý nghĩa |
 |---|---|---|
+| `x-dsg-dedup-domain` | `PutObject`, `GetObject`, `ListObjectsV2`, `HeadBucket` thành công | Domain immutable thực tế lấy từ bucket authorization snapshot; chỉ xuất khi signed `x-dsg-debug: 1` và system-admin debug gate hợp lệ. Không cấp header trên response lỗi. |
 | `x-dsg-chunks-total` | `PutObject`, `UploadPart` | Tổng số lần xuất hiện chunk trong body logical sau decode `aws-chunked`. |
 | `x-dsg-chunks-dup` | `PutObject`, `UploadPart` | Số chunk occurrences được reuse mà request không cần ghi blob mới (gồm dedup trước đó và chunk lặp trong cùng request). |
 | `x-dsg-chunks-revived` | `PutObject`, `UploadPart` | Số identity `(domain, hash)` riêng biệt đã có ở trạng thái archive/Restored nhưng request này ghi bản `Warm` thay thế. |

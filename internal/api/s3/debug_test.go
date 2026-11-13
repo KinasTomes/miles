@@ -315,6 +315,37 @@ func assertNoDSGHeaders(t *testing.T, h http.Header) {
 	}
 }
 
+func TestDebugDomainHeaderUsesAuthorizedBucketSnapshot(t *testing.T) {
+	e := newDebugTestEnv(t)
+	seed := e.send(t, "OWNERKEY000000000001", http.MethodPut, "/demo/debug-domain.bin", []byte("domain-proof"), false, false)
+	if seed.Code != http.StatusOK {
+		t.Fatalf("seed: %d %s", seed.Code, seed.Body.String())
+	}
+	for _, tc := range []struct {
+		name, credential, method, path, domain string
+		body                                   []byte
+	}{
+		{"PUT", "ADMINGRANT0000000005", http.MethodPut, "/demo/write-domain.bin", "default", []byte("write-proof")},
+		{"GET", "ADMINGRANT0000000005", http.MethodGet, "/demo/debug-domain.bin", "default", nil},
+		{"LIST", "ADMINGRANT0000000005", http.MethodGet, "/demo?list-type=2", "default", nil},
+		{"HEAD bucket", "ADMINDEBUG0000000003", http.MethodHead, "/admin-own", "admin-domain", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := e.send(t, tc.credential, tc.method, tc.path, tc.body, true, false)
+			if rec.Code != http.StatusOK || rec.Header().Get("X-Dsg-Dedup-Domain") != tc.domain {
+				t.Fatalf("expected successful debug domain %q: status=%d headers=%v", tc.domain, rec.Code, rec.Header())
+			}
+		})
+	}
+	missing := e.send(t, "ADMINGRANT0000000005", http.MethodGet, "/demo/not-found", nil, true, false)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("expected missing object, got %d", missing.Code)
+	}
+	assertNoDSGHeaders(t, missing.Header())
+	regular := e.send(t, "OWNERKEY000000000001", http.MethodGet, "/demo/debug-domain.bin", nil, true, false)
+	assertNoDSGHeaders(t, regular.Header())
+}
+
 func TestDebugHeadersGateAndPhysicalCounts(t *testing.T) {
 	e := newDebugTestEnv(t)
 	chunkA := bytes.Repeat([]byte("chunk-alpha-"), (16<<10)/len("chunk-alpha-")+1)[:16<<10]
