@@ -1,0 +1,252 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateBoundedRuntimeRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-jobs",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-acceptance-edge",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-acceptance-client"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "${RUNTIME_BOUNDARY_ARN}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ManageRuntimeRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DeleteRole",
+        "iam:DeleteRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:GetRole",
+        "iam:GetRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:ListRoleTags",
+        "iam:PutRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-jobs",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-acceptance-edge",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-acceptance-client"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ManageRuntimeProfiles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AddRoleToInstanceProfile",
+        "iam:CreateInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:ListInstanceProfileTags",
+        "iam:ListInstanceProfilesForRole",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:TagInstanceProfile",
+        "iam:UntagInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-jobs",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-jobs",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-acceptance-edge",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-acceptance-client",
+        "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-acceptance-edge",
+        "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-acceptance-client"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "PassOnlyRuntimeRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-jobs",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-acceptance-edge",
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-acceptance-client"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "ec2.amazonaws.com"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "BoundedEdgeRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-edge"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "${RUNTIME_BOUNDARY_ARN}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ManageEdgeRole",
+      "Effect": "Allow",
+      "Action": [
+        "iam:DeleteRole",
+        "iam:DeleteRolePolicy",
+        "iam:GetRole",
+        "iam:GetRolePolicy",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListRolePolicies",
+        "iam:ListRoleTags",
+        "iam:PutRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-edge"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "PassEdgeToCertificate",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/dev/miles-dev-edge"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "rolesanywhere.amazonaws.com"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "CreateOwnScalingSLR",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateServiceLinkedRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_miles-dev"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": "autoscaling.amazonaws.com"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ReadDeleteOwnSLR",
+      "Effect": "Allow",
+      "Action": [
+        "iam:DeleteServiceLinkedRole",
+        "iam:GetRole",
+        "iam:TagRole",
+        "iam:UntagRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_miles-dev"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ReadSLRDeletion",
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetServiceLinkedRoleDeletionStatus"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "PassOwnScalingSLR",
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling_miles-dev"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "autoscaling.amazonaws.com"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "CleanupRuntimeProfiles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:DeleteInstanceProfile"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-gateway",
+        "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-jobs",
+        "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-acceptance-edge",
+        "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-acceptance-client"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    }
+  ]
+}

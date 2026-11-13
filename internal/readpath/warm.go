@@ -149,6 +149,14 @@ func (r *WarmReader) Read(ctx context.Context, q WarmRequest, emit func(context.
 		return result, err
 	}
 	defer stopHeartbeat()
+	defer func() {
+		// SDKs and admission checks return ctx.Err(), losing the renewal cause.
+		// Preserve both identities only when cancellation caused this failure;
+		// an ordinary stop must not turn a successful read into an error.
+		if err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+			err = errors.Join(err, context.Cause(ctx))
+		}
+	}()
 	head, err := o.Metadata.GetObject(ctx, object)
 	if err != nil {
 		return result, err

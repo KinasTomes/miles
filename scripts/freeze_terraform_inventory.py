@@ -118,7 +118,7 @@ def compare_inventory(state_resources, inventory):
     return errors
 
 
-def extract_resources(state):
+def extract_resources(state, *, allow_empty=False):
     """Walk terraform show -json state, including every nested managed resource."""
     if not isinstance(state, dict) or not isinstance(state.get("values"), dict):
         raise ValueError("invalid Terraform state JSON")
@@ -155,7 +155,7 @@ def extract_resources(state):
             walk(child)
 
     walk(root)
-    if not resources:
+    if not resources and not allow_empty:
         raise ValueError("empty Terraform state")
     return sorted(resources, key=lambda resource: resource["address"])
 

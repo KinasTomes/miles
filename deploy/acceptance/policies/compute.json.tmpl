@@ -1,0 +1,215 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadDevCompute",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeImages",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceAttribute",
+        "ec2:DescribeInstanceCreditSpecifications",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeVolumesModifications",
+        "ec2:DescribeIamInstanceProfileAssociations",
+        "ec2:DescribeInstanceTypes"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchPinnedImage",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}::image/${AMI_ID}"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "UseOwnedRuntimeNetwork",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:subnet/*",
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:security-group/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "PrivateRuntimeInterface",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:network-interface/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "Bool": {
+          "ec2:AssociatePublicIpAddress": "false"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "LaunchTaggedRuntime",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev",
+          "ec2:InstanceType": "t4g.small",
+          "ec2:MetadataHttpTokens": "required",
+          "ec2:InstanceProfile": [
+            "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-gateway",
+            "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-acceptance-edge",
+            "arn:aws:iam::${ACCOUNT_ID}:instance-profile/miles/dev/miles-dev-acceptance-client"
+          ]
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "EncryptedDevVolumes",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances",
+        "ec2:CreateVolume"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev",
+          "ec2:VolumeType": "gp3"
+        },
+        "Bool": {
+          "ec2:Encrypted": "true"
+        },
+        "NumericLessThanEquals": {
+          "ec2:VolumeSize": "20"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "AttachRetainedVolume",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AttachVolume",
+        "ec2:DetachVolume"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:instance/*",
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "EndDevCompute",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:TerminateInstances",
+        "ec2:StartInstances",
+        "ec2:StopInstances",
+        "ec2:ModifyInstanceCreditSpecification"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "TagNewCompute",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:instance/*",
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev",
+          "ec2:CreateAction": [
+            "RunInstances",
+            "CreateVolume"
+          ]
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    }
+  ]
+}

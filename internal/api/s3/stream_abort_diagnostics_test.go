@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -69,6 +71,14 @@ func TestGetObjectStreamAbortDiagnostics(t *testing.T) {
 		wantClass         string
 		expectPanic       bool
 	}{
+		{
+			name:             "renewal cause survives transport cancellation without leaking raw error",
+			failDuringStream: true,
+			err:              errors.Join(context.Canceled, fmt.Errorf("private-backend-message: %w", storage.ErrClockUncertain)),
+			wantStage:        "object_get_stream",
+			wantClass:        "clock_uncertainty_exceeded",
+			expectPanic:      true,
+		},
 		{
 			name:              "clock uncertainty during streaming after headers committed",
 			failBeforeHeaders: false,
@@ -188,6 +198,9 @@ func TestGetObjectStreamAbortDiagnostics(t *testing.T) {
 			}
 
 			// Verify structured diagnostic log
+			if strings.Contains(logs.String(), "private-backend-message") {
+				t.Fatal("raw renewal failure leaked into diagnostics")
+			}
 			var entry map[string]any
 			if err := json.Unmarshal(logs.Bytes(), &entry); err != nil {
 				t.Fatalf("failed to parse structured JSON log: %v (raw log: %q)", err, logs.String())

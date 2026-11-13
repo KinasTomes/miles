@@ -1,0 +1,324 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "CreateTaggedDevKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateKey"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ReadAliases",
+      "Effect": "Allow",
+      "Action": [
+        "kms:ListAliases"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ManageOwnedDevKeys",
+      "Effect": "Allow",
+      "Action": [
+        "kms:DescribeKey",
+        "kms:DisableKey",
+        "kms:DisableKeyRotation",
+        "kms:EnableKey",
+        "kms:EnableKeyRotation",
+        "kms:GetKeyPolicy",
+        "kms:GetKeyRotationStatus",
+        "kms:ListResourceTags",
+        "kms:PutKeyPolicy",
+        "kms:TagResource",
+        "kms:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:kms:${REGION}:${ACCOUNT_ID}:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "CreateRuntimeAlias",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateAlias"
+      ],
+      "Resource": [
+        "arn:aws:kms:${REGION}:${ACCOUNT_ID}:alias/miles-dev-runtime"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "BindAliasToOwnedKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateAlias"
+      ],
+      "Resource": [
+        "arn:aws:kms:${REGION}:${ACCOUNT_ID}:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "BootstrapSecretEncryption",
+      "Effect": "Allow",
+      "Action": [
+        "kms:Decrypt",
+        "kms:Encrypt",
+        "kms:GenerateDataKey"
+      ],
+      "Resource": [
+        "arn:aws:kms:${REGION}:${ACCOUNT_ID}:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev",
+          "kms:ViaService": [
+            "ssm.${REGION}.amazonaws.com",
+            "secretsmanager.${REGION}.amazonaws.com"
+          ]
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "RuntimeSecretMetadata",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetResourcePolicy",
+        "secretsmanager:PutResourcePolicy",
+        "secretsmanager:TagResource",
+        "secretsmanager:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:miles-dev/runtime-secrets-*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "RuntimeLogGroup",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:ListTagsForResource",
+        "logs:PutRetentionPolicy",
+        "logs:TagLogGroup",
+        "logs:TagResource",
+        "logs:UntagResource",
+        "logs:AssociateKmsKey",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:DescribeLogStreams"
+      ],
+      "Resource": [
+        "arn:aws:logs:${REGION}:${ACCOUNT_ID}:log-group:/miles-dev/runtime",
+        "arn:aws:logs:${REGION}:${ACCOUNT_ID}:log-group:/miles-dev/runtime:*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ReadLogGroupInventory",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogGroups"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "BootstrapParameter",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:AddTagsToResource",
+        "ssm:GetParameter",
+        "ssm:ListTagsForResource",
+        "ssm:PutParameter",
+        "ssm:RemoveTagsFromResource"
+      ],
+      "Resource": [
+        "arn:aws:ssm:${REGION}:${ACCOUNT_ID}:parameter/miles-dev/bootstrap-config"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ProvisionEncryptedDataServices",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateGrant"
+      ],
+      "Resource": [
+        "arn:aws:kms:${REGION}:${ACCOUNT_ID}:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "Bool": {
+          "kms:GrantIsForAWSResource": "true"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "UseDevSessionKey",
+      "Effect": "Allow",
+      "Action": [
+        "kms:GenerateDataKey",
+        "kms:Decrypt",
+        "kms:DescribeKey"
+      ],
+      "Resource": [
+        "arn:aws:kms:${REGION}:${ACCOUNT_ID}:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "UseOwnedEBSKeys",
+      "Effect": "Allow",
+      "Action": [
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:ReEncryptFrom",
+        "kms:ReEncryptTo"
+      ],
+      "Resource": [
+        "arn:aws:kms:${REGION}:${ACCOUNT_ID}:key/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev",
+          "kms:ViaService": "ec2.${REGION}.amazonaws.com"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "PilotAlarms",
+      "Effect": "Allow",
+      "Action": [
+        "cloudwatch:PutMetricAlarm",
+        "cloudwatch:DeleteAlarms",
+        "cloudwatch:DescribeAlarms",
+        "cloudwatch:DescribeAlarmHistory",
+        "cloudwatch:ListTagsForResource",
+        "cloudwatch:TagResource",
+        "cloudwatch:UntagResource"
+      ],
+      "Resource": [
+        "arn:aws:cloudwatch:${REGION}:${ACCOUNT_ID}:alarm:miles-dev-cloud-*",
+        "arn:aws:cloudwatch:${REGION}:${ACCOUNT_ID}:alarm:miles-dev-edge-*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ApplyApprovedInventoryEndpointPolicy",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:ModifyVpcEndpoint"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:vpc-endpoint/vpce-033557c18b426364c"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    }
+  ]
+}
