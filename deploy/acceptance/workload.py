@@ -449,6 +449,7 @@ def benchmark_case(r, case_id, repetition):
         log=f"{prefix}/probe.json",
     )
     unit = f"miles-{slot_name}"
+    r.ssh("edge", "bash", "-c", f"sudo systemctl stop {unit} 2>/dev/null || true; sudo systemctl reset-failed {unit} 2>/dev/null || true")
     r.ssh(
         "edge",
         "sudo",
