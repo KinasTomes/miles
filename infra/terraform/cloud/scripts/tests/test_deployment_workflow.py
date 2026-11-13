@@ -223,6 +223,13 @@ class WorkflowTests(unittest.TestCase):
                 self.app.closeout()
 
     def test_prepare_builds_distinct_private_pki_and_frozen_stacks_without_aws(self):
+        self.assert_prepare()
+
+    def test_existing_prepare_excludes_both_external_bootstrap_stacks(self):
+        self.config["bootstrap_mode"] = "existing"
+        self.assert_prepare()
+
+    def assert_prepare(self):
         self.config["operator"]["utc_reference"] = "169.254.169.123"
         self.file.write_text(json.dumps(self.config))
         app = workflow.Installation(self.file, self.app.private)
@@ -254,6 +261,10 @@ class WorkflowTests(unittest.TestCase):
         for name in ("terraform.tfvars", "other.auto.tfvars.json", "override.tf", "other_override.tf.json"):
             self.assertFalse((app.private / "cloud/environments/dev" / name).exists())
         self.assertTrue((app.private / "cloud/environments/dev/terraform.tfvars.example").exists())
+        for stack in ("operator", "state"):
+            self.assertEqual((app.private / stack).exists(), self.config["bootstrap_mode"] == "new")
+        if self.config["bootstrap_mode"] == "existing":
+            self.assertFalse((app.private / "cloud/bootstrap").exists())
 
     def test_protection_plan_rejects_any_unrelated_update(self):
         self.app.state.update(prepared=True, paused_applied=True)
