@@ -189,6 +189,13 @@ The offline simulation suite in `scripts/tests/test_edge_clock_rca.py` validates
 - `test_request_mapping_and_sanitization`: Verifies 100% masking of sensitive request IDs into pseudonymous tokens.
 - `test_negative_missing_and_altered_evidence_handling`: Verifies strict handling of missing IDs, unmatched records, and empty windows without fabricating fields.
 
+The default suite uses synthetic fixtures and never probes an operator's private
+home directory. To opt into the original private evidence pair, set
+`MILES_EDGE_CLOCK_EVIDENCE_DIR` to a readable directory containing
+`edge-c1-t1-result.json` and `edge-c1-t1-failed-window.json`, then run
+`python3 -B -m unittest scripts.tests.test_edge_clock_rca`. Explicitly configured
+missing or unreadable evidence fails the test instead of silently passing.
+
 ---
 
 ## 8. Epistemological Classification & Next Steps (R7)

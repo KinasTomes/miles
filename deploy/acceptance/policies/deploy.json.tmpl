@@ -1,0 +1,438 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:DescribeAutoScalingGroups",
+        "autoscaling:DescribeAutoScalingInstances",
+        "autoscaling:DescribeInstanceRefreshes",
+        "autoscaling:DescribeLifecycleHooks",
+        "autoscaling:DescribeScalingActivities",
+        "dynamodb:ListTables",
+        "ec2:DescribeLaunchTemplateVersions",
+        "ec2:DescribeLaunchTemplates",
+        "elasticloadbalancing:DescribeCapacityReservation",
+        "elasticloadbalancing:DescribeListenerAttributes",
+        "elasticloadbalancing:DescribeListeners",
+        "elasticloadbalancing:DescribeLoadBalancerAttributes",
+        "elasticloadbalancing:DescribeLoadBalancers",
+        "elasticloadbalancing:DescribeTags",
+        "elasticloadbalancing:DescribeTargetGroupAttributes",
+        "elasticloadbalancing:DescribeTargetGroups",
+        "elasticloadbalancing:DescribeTargetHealth",
+        "ec2:DescribeKeyPairs",
+        "cloudwatch:GetMetricData",
+        "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics",
+        "ssm:DescribeParameters"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:CreateAutoScalingGroup",
+        "autoscaling:CreateOrUpdateTags",
+        "autoscaling:DeleteAutoScalingGroup",
+        "autoscaling:PutLifecycleHook",
+        "autoscaling:SetInstanceProtection",
+        "autoscaling:SuspendProcesses",
+        "autoscaling:UpdateAutoScalingGroup",
+        "autoscaling:TerminateInstanceInAutoScalingGroup"
+      ],
+      "Resource": [
+        "arn:aws:autoscaling:${REGION}:${ACCOUNT_ID}:autoScalingGroup:*:autoScalingGroupName/miles-dev-gateway"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticloadbalancing:AddTags",
+        "elasticloadbalancing:CreateListener",
+        "elasticloadbalancing:CreateLoadBalancer",
+        "elasticloadbalancing:CreateTargetGroup",
+        "elasticloadbalancing:DeleteListener",
+        "elasticloadbalancing:DeleteLoadBalancer",
+        "elasticloadbalancing:DeleteTargetGroup",
+        "elasticloadbalancing:DeregisterTargets",
+        "elasticloadbalancing:ModifyListenerAttributes",
+        "elasticloadbalancing:ModifyLoadBalancerAttributes",
+        "elasticloadbalancing:ModifyTargetGroupAttributes",
+        "elasticloadbalancing:RegisterTargets",
+        "elasticloadbalancing:RemoveTags",
+        "elasticloadbalancing:SetIpAddressType",
+        "elasticloadbalancing:SetSecurityGroups",
+        "elasticloadbalancing:SetSubnets"
+      ],
+      "Resource": [
+        "arn:aws:elasticloadbalancing:${REGION}:${ACCOUNT_ID}:loadbalancer/app/miles-dev/*",
+        "arn:aws:elasticloadbalancing:${REGION}:${ACCOUNT_ID}:listener/app/miles-dev/*/*",
+        "arn:aws:elasticloadbalancing:${REGION}:${ACCOUNT_ID}:targetgroup/miles-dev-s3/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateLaunchTemplate",
+        "ec2:CreateTags"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:launch-template/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:CreateLaunchTemplateVersion",
+        "ec2:CreateTags",
+        "ec2:DeleteLaunchTemplate",
+        "ec2:ModifyLaunchTemplate",
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:launch-template/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:RunInstances"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}::image/${AMI_ID}"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ec2:GetConsoleOutput"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "rolesanywhere:CreateProfile",
+        "rolesanywhere:CreateTrustAnchor",
+        "rolesanywhere:TagResource"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "rolesanywhere:GetProfile",
+        "rolesanywhere:GetTrustAnchor",
+        "rolesanywhere:ListTagsForResource"
+      ],
+      "Resource": [
+        "arn:aws:rolesanywhere:${REGION}:${ACCOUNT_ID}:trust-anchor/*",
+        "arn:aws:rolesanywhere:${REGION}:${ACCOUNT_ID}:profile/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "rolesanywhere:DeleteProfile",
+        "rolesanywhere:DeleteTrustAnchor"
+      ],
+      "Resource": [
+        "arn:aws:rolesanywhere:${REGION}:${ACCOUNT_ID}:trust-anchor/*",
+        "arn:aws:rolesanywhere:${REGION}:${ACCOUNT_ID}:profile/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "acm:AddTagsToCertificate",
+        "acm:ImportCertificate"
+      ],
+      "Resource": [
+        "arn:aws:acm:${REGION}:${ACCOUNT_ID}:certificate/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:RequestTag/Project": "Miles",
+          "aws:RequestTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "acm:DeleteCertificate",
+        "acm:DescribeCertificate",
+        "acm:ListTagsForCertificate"
+      ],
+      "Resource": [
+        "arn:aws:acm:${REGION}:${ACCOUNT_ID}:certificate/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "aws:ResourceTag/Project": "Miles",
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::miles-dev-data-${ACCOUNT_ID}-${REGION}/*",
+        "arn:aws:s3:::miles-dev-pilot-direct-${ACCOUNT_ID}-${REGION}/*"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucketVersions",
+        "s3:ListBucketMultipartUploads"
+      ],
+      "Resource": [
+        "arn:aws:s3:::miles-dev-data-${ACCOUNT_ID}-${REGION}",
+        "arn:aws:s3:::miles-dev-pilot-direct-${ACCOUNT_ID}-${REGION}"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:BatchGetItem",
+        "dynamodb:BatchWriteItem",
+        "dynamodb:ConditionCheckItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:Query",
+        "dynamodb:Scan",
+        "dynamodb:UpdateItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:${REGION}:${ACCOUNT_ID}:table/miles-dev-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:${RUNTIME_SECRET_NAME}-*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:StartSession"
+      ],
+      "Resource": [
+        "arn:aws:ssm:${REGION}::document/AWS-StartSSHSession"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "BoolIfExists": {
+          "ssm:SessionDocumentAccessCheck": "true"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Effect": "Deny",
+      "Action": [
+        "rolesanywhere:TagResource"
+      ],
+      "Resource": [
+        "arn:aws:rolesanywhere:${REGION}:${ACCOUNT_ID}:trust-anchor/*",
+        "arn:aws:rolesanywhere:${REGION}:${ACCOUNT_ID}:profile/*"
+      ],
+      "Condition": {
+        "Null": {
+          "aws:ResourceTag/Project": "false"
+        },
+        "StringNotEquals": {
+          "aws:ResourceTag/Project": "Miles"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "2026-11-05T12:18:39Z"
+        }
+      }
+    },
+    {
+      "Effect": "Deny",
+      "Action": [
+        "rolesanywhere:TagResource"
+      ],
+      "Resource": [
+        "arn:aws:rolesanywhere:${REGION}:${ACCOUNT_ID}:trust-anchor/*",
+        "arn:aws:rolesanywhere:${REGION}:${ACCOUNT_ID}:profile/*"
+      ],
+      "Condition": {
+        "Null": {
+          "aws:ResourceTag/Environment": "false"
+        },
+        "StringNotEquals": {
+          "aws:ResourceTag/Environment": "dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "2026-11-05T12:18:39Z"
+        }
+      }
+    },
+    {
+      "Sid": "AssumeRunReadOnlyAuditor",
+      "Effect": "Allow",
+      "Action": [
+        "sts:AssumeRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::${ACCOUNT_ID}:role/miles/acceptance/${AUDIT_ROLE_NAME}"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    }
+  ]
+}
