@@ -19,8 +19,12 @@ không import, không plan/apply hoặc xóa bootstrap. Member điền config tr
 của mình, không phụ thuộc file private trên máy lead. Xem [luồng dùng tài nguyên cấp sẵn](../../../../../docs/testing/aws-personal-account-guide.md#11-dùng-iam-và-backend-đã-cấp-sẵn-trên-máy-member).
 
 Ở `existing`, renderer chỉ xuất workload tfvars, `backend.hcl`,
-`bootstrap-inventory.json` và `iam/deploy-bootstrap-read.json`. Policy đọc này
+`bootstrap-inventory.json` và `iam/deploy-bootstrap-read.json`. Policy kiểm tra này
 phải được chủ account duyệt/cấp trước nếu role còn thiếu; bộ dựng không tự attach.
+Policy chỉ cấp quyền đọc/mô phỏng và chặn `iam:PutRolePolicy` trên chính deploy role,
+để có explicit deny rõ ràng khi các policy khác chứa condition keys chưa đủ context.
+Verifier bổ sung context từ STS/IAM đã đọc, chấp nhận explicit deny đã xác nhận;
+`allowed`/`implicitDeny` còn thiếu context vẫn bị chặn, không tự gán giá trị giả.
 Role deploy cần explicit Deny cả `s3:DeleteObject` và `s3:DeleteObjectVersion` trên đúng state key;
 `implicitDeny` không đủ để chặn Allow từ bucket policy. Giữ Get/Put state và
 Get/Put/Delete `.tflock`. Chế độ `new` sinh deny này trong `deploy-state.json`;
