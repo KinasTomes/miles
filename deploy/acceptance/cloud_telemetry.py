@@ -51,7 +51,7 @@ def targets(r):
 
 def send(r, receipt, node, action, offset=0):
     doc = receipt["document"]
-    params = {"action": [action], "runid": [r.id], "slot": [receipt["slot"]],
+    params = {"action": [action], "runid": [r.id.lower()], "slot": [receipt["slot"]],
               "segment": [receipt["segment"]], "source": [r.meta["source"]], "offset": [str(offset)]}
     # Persist before dispatch, including read/control calls. No generic shell
     # document permission and no caller-provided command text.
