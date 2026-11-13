@@ -179,6 +179,12 @@ def seed_benchmark_dataset(settings, folder, env, endpoint, tenant, manifest_pat
     receipt_file = folder / "benchmark-seed-receipts.json"
     for entry in files:
         key = entry["path"]
+        if "stop_at" in settings and (dt.datetime.fromisoformat(settings["stop_at"])
+                - dt.datetime.now(dt.timezone.utc)).total_seconds() < 240:
+            raise ValueError("Stop seed before bounded AWS call can enter cleanup reserve")
+        pending = {"path": key, "sha256": entry["sha256"], "class": storage_class, "state": "dispatched-unknown"}
+        receipts.append(pending)
+        receipt_file.write_text(json.dumps(receipts, indent=2))
         command = ["aws", "--region", settings["region"], "--endpoint-url", endpoint,
                    "s3api"]
         put = subprocess.run(
@@ -202,30 +208,23 @@ def seed_benchmark_dataset(settings, folder, env, endpoint, tenant, manifest_pat
         observed_class = data.get("StorageClass") or "STANDARD"
         if observed_class != storage_class or data.get("ContentLength") != entry["bytes"]:
             raise ValueError("Cold/Recovery backend class/length not verified; no test run")
-        receipts.append({
+        pending.update({
             "path": key, "class": storage_class, "bytes": entry["bytes"],
             "version": data.get("VersionId"), "put_version": result.get("VersionId"),
             "sha256": entry["sha256"],
+            "state": "verified",
         })
         receipt_file.write_text(json.dumps(receipts, indent=2))
     return receipts
 
 def benchmark(settings):
-    if settings.get("runner") == "coldbench":
-        # A physical inventory observer MUST be staged before billed seed PUTs.
-        if not settings.get("reviewed_physical_inventory_provider"):
-            raise ValueError("Cold native physical-inventory provider not reviewed; no mutation")
-    if settings.get("runner") == "recoverybench":
-        # Reject unreviewed R1/R2 faults BEFORE creating a DSG bucket or data.
-        command = settings.get("reviewed_fault_command", "")
-        native_proof = settings.get("reviewed_native_proof_provider", "")
-        if (not isinstance(command, str)
-                or not command.startswith("/home/ec2-user/acceptance/recovery-fault ")
-                or not isinstance(native_proof, str)
-                or not native_proof.startswith("/home/ec2-user/acceptance/recovery-proof ")):
-            raise ValueError(
-                "Recovery fault injector/native proof provider not staged and reviewed; no mutation"
-            )
+    native = settings.get("native")
+    if settings.get("runner") in {"coldbench", "recoverybench"}:
+        if not isinstance(native, dict) or not settings.get("recovery_aws"):
+            raise ValueError("Native installation/provider not staged and reviewed; no mutation")
+        if (native.get("slot") != settings.get("name") or native.get("source") != settings.get("source")
+                or native.get("stop_at") != settings.get("stop_at") or not native.get("tables")):
+            raise ValueError("Native installation binding differs; no mutation")
     name = settings["name"]
     if not re.fullmatch(r"[a-z0-9-]+-rep[1-3]", name):
         raise ValueError("Invalid benchmark slot ID")
@@ -245,6 +244,19 @@ def benchmark(settings):
 
     cred_file = folder / "credentials.json"
     t1 = settings["tenant1"]
+    if settings.get("runner") in {"coldbench", "recoverybench"}:
+        temporary = settings["recovery_aws"]
+        expires = dt.datetime.fromisoformat(temporary["Expiration"].replace("Z", "+00:00"))
+        if (temporary.get("Version") != 1 or not temporary.get("AccessKeyId", "").startswith("ASIA")
+                or not temporary.get("SessionToken") or temporary.get("expected_account") != native["account"]
+                or expires <= dt.datetime.fromisoformat(settings["stop_at"])):
+            raise ValueError("AWS native session must cover this bounded trial; no mutation")
+        (folder / "native.json").write_text(json.dumps(native))
+        (folder / "native.json").chmod(0o600)
+        aws_file = folder / "recovery-aws.json"
+        aws_file.write_text(json.dumps({k: temporary[k] for k in
+            ("Version", "AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")}))
+        aws_file.chmod(0o600)
     cred_file.write_text(json.dumps(t1["credentials"]))
     os.chmod(cred_file, 0o600)
 
@@ -401,7 +413,12 @@ def benchmark(settings):
     if remaining < 120:
         raise ValueError("Insufficient trial/drain budget")
 
-    timeout_s = min(1200, int(remaining))
+    timeout_s = min(1100, int(remaining)-135)
+    if settings.get("direct_s3"):
+        # Reserve both legs and process termination inside the same window.
+        timeout_s = min(500, int((remaining-270)/2))
+    if timeout_s < 30:
+        raise ValueError("Insufficient bounded workload/comparator time")
     runner = settings.get("runner", "warmbench")
     if runner == "coldbench":
         cmd = [
@@ -425,30 +442,10 @@ def benchmark(settings):
             "--fail-fast",
             "--retain-objects",
         ]
+        cmd.extend(["--native-config", str(folder / "native.json"),
+                    "--aws-credentials-file", str(aws_file)])
     elif runner == "recoverybench":
-        temporary = settings.get("recovery_aws")
-        if not isinstance(temporary, dict) or set(temporary) != {
-            "Version", "AccessKeyId", "SecretAccessKey", "SessionToken",
-            "Expiration", "expected_account",
-        }:
-            raise ValueError("Recovery requires separate temporary AWS credentials")
-        expected_account = temporary["expected_account"]
-        if not re.fullmatch(r"[0-9]{12}", expected_account):
-            raise ValueError("Recovery expected account missing")
-        expires = dt.datetime.fromisoformat(
-            temporary["Expiration"].replace("Z", "+00:00")
-        )
-        if (temporary["Version"] != 1
-                or not temporary["AccessKeyId"].startswith("ASIA")
-                or not temporary["SessionToken"]
-                or expires <= dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)):
-            raise ValueError("Recovery AWS session missing, stale or non-temporary")
-        aws_file = folder / "recovery-aws.json"
-        aws_file.write_text(json.dumps(
-            {k: temporary[k] for k in
-             ("Version", "AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")}
-        ))
-        os.chmod(aws_file, 0o600)
+        expected_account = native["account"]
         cmd = [
             "timeout",
             "--signal=TERM",
@@ -475,15 +472,8 @@ def benchmark(settings):
             "--fail-fast",
             "--retain-objects",
         ]
-        # No implicit fault: a missing native injector is an explicit blocker.
-        fault_command = settings.get("reviewed_fault_command", "")
-        if not fault_command:
-            raise ValueError("No reviewed recovery fault injector; fail closed before dispatch")
-        if not isinstance(fault_command, str) or len(fault_command) > 512:
-            raise ValueError("Invalid fault injector")
-        if not fault_command.startswith("/home/ec2-user/acceptance/recovery-fault "):
-            raise ValueError("Recovery fault injector must be pinned to the staged verified executable")
-        cmd.extend(["--fault-command", fault_command])
+        cmd.extend(["--native-config", str(folder / "native.json"),
+                    "--system-config-table", native["tables"]["SystemConfig"]])
     else:
         cmd = [
             "timeout",
@@ -540,6 +530,7 @@ def benchmark(settings):
             "bucket": ds3["bucket"],
             "region": settings["region"],
             "credentials_file": str(ds3_cred),
+            "kms_key_id": ds3["kms_key_id"],
             "environment": config1["environment"],
         }
         ds3_cfg_file = folder / "config-direct-s3.json"
@@ -699,13 +690,34 @@ def pulse(settings):
     return 1 if counts["unexpected"] else 0
 
 
+def quiescence(_settings=None):
+    active = []
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            executable = (process / "exe").readlink().name
+        except FileNotFoundError:
+            continue
+        except PermissionError:
+            # Only this user's benchmark binaries can use the staged configs.
+            # Check the owner before ignoring another user's protected process.
+            if process.stat().st_uid == os.getuid():
+                raise ValueError("Cannot inspect owned process during quiescence")
+            continue
+        if executable in {"warmbench", "coldbench", "recoverybench", "aws"}:
+            active.append({"pid": int(process.name), "executable": executable})
+    print(json.dumps({"active": active}))
+    return 1 if active else 0
+
+
 if __name__ == "__main__":
     os.umask(0o077)
     p = argparse.ArgumentParser()
-    p.add_argument("action", choices=["trial", "pulse", "benchmark"])
+    p.add_argument("action", choices=["trial", "pulse", "benchmark", "quiescence"])
     args = p.parse_args()
     raise SystemExit(
-        {"trial": trial, "pulse": pulse, "benchmark": benchmark}[args.action](
-            json.load(sys.stdin)
+        {"trial": trial, "pulse": pulse, "benchmark": benchmark, "quiescence": quiescence}[args.action](
+            {} if args.action == "quiescence" else json.load(sys.stdin)
         )
     )

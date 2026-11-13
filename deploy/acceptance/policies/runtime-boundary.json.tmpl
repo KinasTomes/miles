@@ -297,7 +297,7 @@
         "s3:GetBucketLocation"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-pilot-direct-${ACCOUNT_ID}-${REGION}"
+        "arn:aws:s3:::${DIRECT_BUCKET_NAME}"
       ],
       "Condition": {
         "DateLessThan": {
@@ -316,7 +316,7 @@
         "s3:ListMultipartUploadParts"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-pilot-direct-${ACCOUNT_ID}-${REGION}/warmbench/*"
+        "arn:aws:s3:::${DIRECT_BUCKET_NAME}/warmbench/*"
       ],
       "Condition": {
         "DateLessThan": {

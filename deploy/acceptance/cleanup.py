@@ -19,6 +19,9 @@ from deploy.acceptance import iam
 
 def freeze(r):
     r.identity()
+    if r.file("direct-create-intent.json").exists():
+        require(r.file("direct-created.json").exists(), "Direct bucket create unresolved; reconcile ownership before freeze")
+        r.write("frozen/direct-comparator.json", r.read("direct-created.json"), new=True)
     require(
         not r.file("frozen/manifest.json").exists(),
         "Frozen ownership already recorded; do not replace it",
@@ -639,6 +642,9 @@ def execute(r):
 
 def finish(r):
     r.identity(iam=True)
+    if r.file("direct-create-intent.json").exists():
+        require(r.file("direct-absence.json").exists() and r.read("direct-absence.json").get("absent") is True,
+                "Teardown/reconcile direct comparator before restoring deploy IAM")
     require(
         r.file("destroy-complete.json").exists(),
         "Destroy workload before restoring IAM",
@@ -771,6 +777,11 @@ def finish(r):
 
 def audit(r):
     r.identity(iam=True)
+    if r.file("direct-create-intent.json").exists():
+        from deploy.acceptance import direct
+        require(r.file("direct-absence.json").exists(), "Direct comparator absence not recorded")
+        buckets = r.aws("s3api", "list-buckets", iam=True)
+        require(direct.name(r) not in {x["Name"] for x in buckets.get("Buckets", [])}, "Residual direct comparator bucket")
     require(r.file("iam-finished.json").exists(), "Finish IAM restore/removal first")
     state = r.file("frozen/state.json").read_bytes()
     runtime = r.file("frozen/runtime.json").read_bytes()

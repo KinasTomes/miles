@@ -5,6 +5,7 @@ import json
 import string
 
 from deploy.acceptance.common import ROOT, digest, load, now, require
+from deploy.acceptance import direct
 
 MANAGED = {
     "runtime-roles": "MilesDevDeployRuntimeRoles",
@@ -69,6 +70,7 @@ def review(r):
         "RUNTIME_SECRET_NAME": r.read("names.json")["secret"],
         "AUDIT_ROLE_NAME": r.read("names.json")["auditor"],
         "IAM_EXPIRY": expiry,
+        "DIRECT_BUCKET_NAME": direct.name(r),
     }
     receipts = {}
     for src in sorted((ROOT / "deploy/acceptance/policies").glob("*.tmpl")):

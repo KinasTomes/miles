@@ -230,6 +230,8 @@ class Run:
             else self.native_config,
             AWS_SHARED_CREDENTIALS_FILE=self.native_credentials,
             AWS_EC2_METADATA_DISABLED="true",
+            AWS_MAX_ATTEMPTS="1",
+            AWS_RETRY_MODE="standard",
         )
         return env
 

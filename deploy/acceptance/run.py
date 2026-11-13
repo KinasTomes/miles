@@ -18,6 +18,7 @@ from deploy.acceptance import hosts
 from deploy.acceptance import iam
 from deploy.acceptance import cleanup
 from deploy.acceptance import workload
+from deploy.acceptance import approvals, direct, budget
 
 MUTATIONS = {
     "iam-activate",
@@ -33,7 +34,15 @@ MUTATIONS = {
     "unprotect",
     "recover-apply",
     "benchmark-case",
+    "direct-provision",
+    "direct-cleanup",
 }
+
+APPROVAL_ACTIONS = (
+    "iam-activate", "apply:foundation", "apply:hosts", "apply:active", "install",
+    "bootstrap", "material", "trial", "shutdown", "restart", "benchmark-case",
+    "cleanup-grant", "unprotect", "cleanup", "finish", "direct-provision", "direct-cleanup",
+)
 
 
 def parser():
@@ -49,6 +58,11 @@ def parser():
     configure.add_argument("--iam-profile", default="miles-iam-bootstrap")
     configure.add_argument("--backend-bucket")
     configure.add_argument("--boundary-arn")
+    approve = sub.add_parser("approve")
+    approve.add_argument("--action", required=True, choices=APPROVAL_ACTIONS)
+    approve.add_argument("--confirm-run", required=True)
+    budget_cmd = sub.add_parser("benchmark-budget")
+    budget_cmd.add_argument("--inputs", required=True, type=Path)
     for name in [
         "assets",
         "preflight",
@@ -71,6 +85,10 @@ def parser():
         "logout",
         "restart",
         "wait-cut",
+        "direct-plan",
+        "direct-provision",
+        "direct-cleanup-plan",
+        "direct-cleanup",
     ]:
         cmd = sub.add_parser(name)
         if name in MUTATIONS or name == "material":
@@ -261,6 +279,15 @@ def main(argv=None):
                 "Another operation owns this run; inspect it before cleanup/rollout"
             )
     with lock:
+        if args.command == "approve":
+            print(json.dumps(approvals.record(r, args.action), indent=2))
+            return
+        if args.command == "benchmark-budget":
+            print(json.dumps(budget.write(r, args.inputs), indent=2))
+            return
+        action = "apply:"+args.stage if args.command == "apply" else args.command
+        if action in APPROVAL_ACTIONS:
+            approvals.check(r, action)
         actions = {
             "assets": prepare.assets,
             "preflight": deploy.preflight,
@@ -282,6 +309,10 @@ def main(argv=None):
             "logout": logout,
             "wait-cut": wait_cut,
             "restart": restart,
+            "direct-plan": direct.plan,
+            "direct-provision": direct.provision,
+            "direct-cleanup-plan": direct.cleanup_plan,
+            "direct-cleanup": direct.cleanup,
         }
         if args.command == "plan":
             deploy.plan(r, args.stage)

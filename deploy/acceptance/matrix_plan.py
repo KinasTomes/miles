@@ -162,8 +162,7 @@ def build(matrix, recipe_path, source_sha):
         phase = "G3" if scenario in G3_SCENARIOS else "G4"
         require(phase == "G3" or scenario in G4_SCENARIOS, "Unsupported scenario")
         for repetition in range(1, matrix["protocol"]["repetitions"] + 1):
-            # The current focused process supports only GET C1/C4 on AWS Edge;
-            # warmbench scenarios are implemented but NOT wired to this kit.
+            # Slots are operator choices, never an instruction to auto-dispatch.
             slots.append({
                 "slot": f'{case["id"]}-rep{repetition}',
                 "case_id": case["id"],
@@ -181,9 +180,14 @@ def build(matrix, recipe_path, source_sha):
                 "read_repeats": matrix["protocol"]["read_repeats"],
                 "runner": case["runner"],
                 "kit_adapter_status": (
-                    "not-integrated" if case["runner"] == "warmbench"
-                    else "specialized-runner-missing"
+                    "cold-read-inventory-only" if scenario == "cold"
+                    else "native-provider-implemented-offline" if scenario == "recovery"
+                    else "operator-command-implemented-offline"
                 ),
+                "operator_command_template": [
+                    "python3", "<FROZEN_SOURCE>/deploy/acceptance/run.py", "--run-dir", "<PRIVATE_RUN>",
+                    "benchmark-case", "--case-id", case["id"], "--repetition", str(repetition), "--confirm-run", "<RUN_ID>",
+                ],
                 "non_executable_argv_templates": planned_commands(
                     case, repetition, matrix["protocol"]["read_repeats"]
                 ),
@@ -199,12 +203,13 @@ def build(matrix, recipe_path, source_sha):
         "aws_approval": False,
         "benchmark_executed": False,
         "full_run_executable": False,
+        "execution_mode": "operator-driven",
         "matrix_validation": validation,
         "repetitions": matrix["protocol"]["repetitions"],
         "total_trial_slots": len(slots),
         "matched_direct_s3_pairs": sum(x["needs_matched_direct_s3"] for x in slots),
-        "warmbench_slots_not_integrated": sum(x["runner"] == "warmbench" for x in slots),
-        "cold_recovery_slots_blocked": sum(x["runner"] == "requires-runner" for x in slots),
+        "warmbench_slots_not_integrated": 0,
+        "cold_recovery_slots_blocked": sum(x["scenario"] == "cold" for x in slots),
         "focused_kit_supported": [
             "infrastructure-staging-with-reviewed-iam-and-saved-plans",
             "focused-edge-get-c1-and-c4",
@@ -212,9 +217,9 @@ def build(matrix, recipe_path, source_sha):
             "ownership-bound-cleanup-and-final-audit",
         ],
         "blocking_gates": [
-            "review-and-implement-all-12-matrix-case-adapters-in-process-and-client",
-            "implement-and-test-8-cold-recovery-runners-and-native-evidence",
-            "provision-scoped-direct-s3-comparators-and-per-trial-isolation",
+            "review-independent-command-modules-and-native-evidence-on-pinned-source",
+            "implement-full-cold-revival-protection-window-acceptance",
+            "approve-direct-s3-lifecycle-and-verify-live-per-node-reset-and-isolation",
             "verify-real-edge-topology-or-report-aws-edge-profile-only",
             "re-estimate-time-aws-prices-iam-expiry-and-cleanup-reserve-for-60-trials",
             "approve-source-matrix-thresholds-iam-cost-and-exact-destroy-plan",

@@ -159,6 +159,7 @@ class KitTests(unittest.TestCase):
     ):
         values = {
             "ACCOUNT_ID": "123456789012",
+            "DIRECT_BUCKET_NAME": "fixture-direct-bucket",
             "REGION": "ap-southeast-1",
             "AMI_ID": self.config["ami_id"],
             "DEPLOY_ROLE_ARN": self.config["deploy_role_arn"],
@@ -587,6 +588,7 @@ class IAMWorkflowTests(unittest.TestCase):
 
         values = {
             "ACCOUNT_ID": "123456789012",
+            "DIRECT_BUCKET_NAME": "fixture-direct-bucket",
             "REGION": "ap-southeast-1",
             "AMI_ID": self.config["ami_id"],
             "DEPLOY_ROLE_ARN": self.config["deploy_role_arn"],

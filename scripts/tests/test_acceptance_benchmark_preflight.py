@@ -52,7 +52,7 @@ class BenchmarkPreflightTests(unittest.TestCase):
 
     def test_cold_requires_native_physical_inventory_before_mutation(self):
         with mock.patch.object(client.subprocess, "run") as runner, self.assertRaisesRegex(
-            ValueError, "physical-inventory provider not reviewed"
+            ValueError, "not staged and reviewed"
         ):
             client.benchmark({"runner": "coldbench"})
         runner.assert_not_called()

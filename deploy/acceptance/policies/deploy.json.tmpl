@@ -290,7 +290,7 @@
       ],
       "Resource": [
         "arn:aws:s3:::miles-dev-data-${ACCOUNT_ID}-${REGION}/*",
-        "arn:aws:s3:::miles-dev-pilot-direct-${ACCOUNT_ID}-${REGION}/*"
+        "arn:aws:s3:::${DIRECT_BUCKET_NAME}/*"
       ],
       "Condition": {
         "DateLessThan": {
@@ -306,7 +306,7 @@
       ],
       "Resource": [
         "arn:aws:s3:::miles-dev-data-${ACCOUNT_ID}-${REGION}",
-        "arn:aws:s3:::miles-dev-pilot-direct-${ACCOUNT_ID}-${REGION}"
+        "arn:aws:s3:::${DIRECT_BUCKET_NAME}"
       ],
       "Condition": {
         "DateLessThan": {

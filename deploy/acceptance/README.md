@@ -7,15 +7,24 @@ code trong repo; không cần script hay secret của lượt cũ.
 
 Hướng dẫn từng lệnh: [operator guide](../../docs/testing/focused-aws-operator-guide.md).
 
-Chạy theo template bằng một process, có checkpoint/receipt và báo cáo gọn:
-[process guide](../../docs/testing/aws-acceptance-process.md). Bộ điều phối gọi
-lại các lệnh dưới đây, không thay runtime hoặc chính sách audit.
+**Cách vận hành chính: operator gọi từng subcommand độc lập**, xem input/output
+và evidence rồi quyết định bước tiếp theo. Không cần tạo `process/state.json`.
+`run.py approve --action … --confirm-run …` ghi approval gắn hash, source và run;
+mỗi lệnh mutation tự kiểm tra receipt, không dựa vào bộ điều phối để bảo vệ.
+[Process controller](../../docs/testing/aws-acceptance-process.md) là tùy chọn cho
+recipe đã review, không quyết định lifecycle và không tự cấp approval.
 
 Để chuẩn bị **benchmark toàn ma trận** (60 trial slots) chỉ ở mức offline,
 đọc [kế hoạch bàn giao](../../docs/planning/full-aws-benchmark-execution-plan.md)
-và sinh [execution manifest](matrix_plan.py). Full-matrix adapter và các runner
-Cold/Recovery **chưa tích hợp** vào focused process; không thay template focused
-bằng manifest planning để chạy AWS.
+và sinh [execution manifest](matrix_plan.py). Manifest là danh sách theo dõi 60
+slots, không phải lệnh thực thi. `full-benchmark.json` là recipe tùy chọn; không
+dùng làm entry point mặc định hoặc bằng chứng đã đủ điều kiện chạy AWS.
+
+Các module mới: `benchmark-budget --inputs …` (offline), `direct-plan`,
+`direct-provision`, `benchmark-case --case-id … --repetition …`,
+`direct-cleanup-plan`, `direct-cleanup`. Cold/Recovery dùng provider Go có binding
+installation và AWS session riêng, không dùng chuỗi lệnh fault hay cờ boolean
+để chứng nhận bằng chứng. Xem [hợp đồng bằng chứng](../../docs/testing/benchmark-native-evidence.md).
 
 Entry point:
 

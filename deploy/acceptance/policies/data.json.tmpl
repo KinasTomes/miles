@@ -149,10 +149,33 @@
         "s3:PutBucketPublicAccessBlock",
         "s3:PutBucketTagging",
         "s3:PutBucketVersioning",
-        "s3:PutEncryptionConfiguration"
+        "s3:PutEncryptionConfiguration",
+        "s3:ListBucketVersions",
+        "s3:ListBucketMultipartUploads",
+        "s3:DeleteBucket"
       ],
       "Resource": [
-        "arn:aws:s3:::miles-dev-pilot-direct-${ACCOUNT_ID}-${REGION}"
+        "arn:aws:s3:::${DIRECT_BUCKET_NAME}"
+      ],
+      "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "DirectComparatorObjects",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:DeleteObjectVersion",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts"
+      ],
+      "Resource": [
+        "arn:aws:s3:::${DIRECT_BUCKET_NAME}/*"
       ],
       "Condition": {
         "DateLessThan": {

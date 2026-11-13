@@ -16,6 +16,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from deploy.acceptance.common import ROOT, Run, digest, now, require
 from deploy.acceptance.run import MUTATIONS
+from deploy.acceptance.approvals import COST_REVIEW, required_review
 
 NEEDS_APPROVAL = 20
 NEEDS_AUTH = 21
@@ -87,34 +88,6 @@ COMMANDS = (
 )
 WRITES = MUTATIONS | {"material", "logout"}
 TESTS = {"trial", "shutdown", "benchmark-case"}
-COST_REVIEW = {"approval-review.md", "cost-review.json"}
-
-
-def required_review(command):
-    action = command[0]
-    if action == "apply":
-        return COST_REVIEW | {command[1] + "-plan.json"}
-    if action == "iam-activate":
-        return (
-            COST_REVIEW
-            | {"iam-review.json"}
-            | {
-                "iam/" + p.name.removesuffix(".tmpl")
-                for p in (ROOT / "deploy/acceptance/policies").glob("*.tmpl")
-            }
-        )
-    if action in {"cleanup-grant", "unprotect"}:
-        return {"cleanup-review.json", "iam/cleanup.json", "frozen/manifest.json"}
-    if action == "cleanup":
-        return {
-            "destroy-reviewed.json",
-            "destroy.tfplan",
-            "destroy-plan.json",
-            "frozen/manifest.json",
-        }
-    if action in {"finish", "logout"}:
-        return {"frozen/manifest.json", "destroy-reviewed.json"}
-    return COST_REVIEW
 
 
 def local_file(r, name):
@@ -291,7 +264,8 @@ class Process:
     def approved(self, step):
         expected = self.checkpoint(step)
         receipt = self.state["approvals"].get(step["id"])
-        if receipt and receipt["review"] == expected:
+        if (receipt and receipt["review"] == expected
+                and dt.timedelta(0) <= now()-dt.datetime.fromisoformat(receipt["at"]) < dt.timedelta(minutes=45)):
             return True
         self.r.write(
             "process/pending-review.json", {"checkpoint": step["id"], **expected}
@@ -318,6 +292,18 @@ class Process:
             "at": now().isoformat(),
             "review": review,
         }
+        # Optional orchestration issues the same command-level receipt as a
+        # standalone operator approval. No mutation relies solely on this loop.
+        from deploy.acceptance import approvals
+        from deploy.acceptance.run import APPROVAL_ACTIONS
+        for candidate in self.recipe[self.state["phase"]]:
+            if candidate.get("approval") == checkpoint:
+                command = candidate["command"]
+                action = ":".join(command) if command[0] == "apply" else command[0]
+                if action in APPROVAL_ACTIONS:
+                    require(set(approvals.files(self.r, action)) <= set(review["files"]),
+                            "Recipe checkpoint omits command review files; use explicit standalone approval")
+                    approvals.record(self.r, action)
         self.save("ready", checkpoint)
 
     def run(self, cleanup=False):

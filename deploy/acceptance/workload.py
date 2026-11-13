@@ -66,18 +66,18 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def admin(r, path, body):
+def admin(r, path, body=None):
     tunnel(r)
     # The tunnel script authenticates and owns its loopback socket before publishing readiness.
     token = r.file("system-admin-token").read_text().strip()
     request = urllib.request.Request(
         "http://127.0.0.1:19001/admin/v1/" + path,
-        data=json.dumps(body).encode(),
+        data=json.dumps(body).encode() if body is not None else None,
         headers={
             "Authorization": "Bearer " + token,
             "Content-Type": "application/json",
         },
-        method="POST",
+        method="POST" if body is not None else "GET",
     )
     with urllib.request.build_opener(NoRedirect()).open(
         request, timeout=30
@@ -229,6 +229,7 @@ def trial(r, concurrency):
 
 
 def benchmark_case(r, case_id, repetition):
+    from deploy.acceptance import approvals, direct, trial_state
     r.identity()
     r.live_window(needed=30)
     require(repetition in (1, 2, 3), "Repetition must be 1, 2, or 3")
@@ -256,6 +257,7 @@ def benchmark_case(r, case_id, repetition):
         not r.file(f"{prefix}/result.json").exists(),
         f"Slot {slot_name} already executed; do not replay blindly",
     )
+    approvals.check(r, "benchmark-case")
 
     admission(r)
     r.file(prefix).mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -264,6 +266,8 @@ def benchmark_case(r, case_id, repetition):
         {"at": now().isoformat(), "case_id": case_id, "repetition": repetition, "slot": slot_name},
         new=True,
     )
+
+    isolation = trial_state.prepare(r, slot_name, case, admin)
 
     variant = case["variant"]
     concurrency = case["concurrency"]
@@ -302,7 +306,7 @@ def benchmark_case(r, case_id, repetition):
                 "Cloud ALB certificate/route probe failed")
 
     t1_id = f"{case_id[:16]}-t1-r{repetition}-{secrets.token_hex(4)}"
-    t1_domain = "domain-a" if scenario == "domain" else ("edge-domain-source" if scenario == "edge-clone" else domain)
+    t1_domain = isolation["domains"][0]
     admin(r, "users", {"user_id": t1_id, "default_domain": t1_domain, "logical_limit": 10 << 30})
     debug_scope = scenario in {"domain", "edge-clone"}
     t1_key_request = {"user_id": t1_id}
@@ -336,13 +340,15 @@ def benchmark_case(r, case_id, repetition):
         "region": r.c["region"],
         "source": r.meta["source"],
         "tenant1": tenant1,
+        "native": trial_state.native_binding(r, slot_name),
         "stop_at": (
             dt.datetime.fromisoformat(r.read("paid-window.json")["cleanup_by"])
             - dt.timedelta(minutes=90)
         ).isoformat(),
     }
-    if scenario == "recovery":
-        settings["fault_scope"] = "node-restart" if variant == "r1" else "checkpoint-cut"
+    settings["native"]["logical_bucket"] = tenant1["bucket"]
+    if scenario in {"recovery", "cold"}:
+        settings["fault_scope"] = "lease-revoke" if variant == "r1" else "checkpoint-cut"
         # DSG access keys are not AWS IAM credentials. Export only a short-lived
         # already-verified deploy session for native DynamoDB/STS readback.
         temporary = json.loads(r.command([
@@ -362,13 +368,16 @@ def benchmark_case(r, case_id, repetition):
                ("Version", "AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration")},
             "expected_account": r.c["account_id"],
         }
+        # A role session may be shorter than the installation's paid window.
+        settings["stop_at"] = min(
+            dt.datetime.fromisoformat(settings["stop_at"]),
+            expires - dt.timedelta(minutes=1), now()+dt.timedelta(minutes=20),
+        ).isoformat()
+        settings["native"]["stop_at"] = settings["stop_at"]
 
     if scenario in {"domain", "edge-clone"}:
         t2_id = f"{case_id[:16]}-t2-r{repetition}-{secrets.token_hex(4)}"
-        if scenario == "domain":
-            t2_domain = "domain-a" if variant == "shared-default" else "domain-b"
-        else:
-            t2_domain = "edge-domain-dest"
+        t2_domain = isolation["domains"][1]
         admin(r, "users", {"user_id": t2_id, "default_domain": t2_domain, "logical_limit": 10 << 30})
         t2_keys = admin(r, "credentials", {
             "user_id": t2_id, "system_admin": True, "debug_allowed": True,
@@ -381,7 +390,8 @@ def benchmark_case(r, case_id, repetition):
         }
 
     if case.get("comparator") == "direct-s3":
-        direct_bucket = f"miles-dev-pilot-direct-{r.c['account_id']}-{r.c['region']}"
+        direct_receipt = direct.owned(r)
+        direct_bucket = direct_receipt["bucket"]
         cred_raw = json.loads(
             r.command(
                 [
@@ -414,6 +424,7 @@ def benchmark_case(r, case_id, repetition):
         settings["direct_s3"] = {
             "bucket": direct_bucket,
             "endpoint": f"https://s3.{r.c['region']}.amazonaws.com",
+            "kms_key_id": direct_receipt["kms_key"],
             "credentials": {
                 "access_key_id": cred_raw["AccessKeyId"],
                 "secret_access_key": cred_raw["SecretAccessKey"],
@@ -480,10 +491,22 @@ def benchmark_case(r, case_id, repetition):
             log=f"{prefix}/dispatch.log",
         )
     finally:
-        collect(r, slot_name)
+        try:
+            collect(r, slot_name)
+        finally:
+            trial_state.finish(r, slot_name, case, admin)
 
     result = r.read(f"{prefix}/result.json")
     summary = r.read(f"{prefix}/telemetry-summary.json")
+    if scenario == "cold":
+        receipt = result.get("cold_receipt") or {}
+        complete = receipt.get("revival_verified") is True and receipt.get("inventory_after") is not None
+        r.write(f"{prefix}/case-verdict.json", {
+            "status": "passed" if complete and result.get("status") == "passed" else "incomplete",
+            "runner_scope": result.get("scope"), "full_cold_lifecycle_verified": complete,
+            "reason": "Restore/GET and inventory alone do not prove PUT/UploadPart revival/protection windows",
+        }, new=True)
+        require(complete, "Cold read/inventory collected; full Cold lifecycle remains INCOMPLETE without revival proof")
     require(
         result.get("status") == "passed" and summary.get("status") == "OK",
         "Benchmark trial failed or unverified; evidence retained, do not replay blindly",
