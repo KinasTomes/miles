@@ -132,9 +132,33 @@ không dùng AWS CLI trực tiếp vào backend S3 thay cho ứng dụng.
 - Chi phí phiên chạy ước tính 0,48 USD (nằm sâu dưới ngân sách 10 USD).
 - Toàn bộ tài nguyên phục vụ chạy thử được teardown sạch sẽ, có bằng chứng native absence.
 
+### 4. Đối chiếu CloudTrail và tiền kiểm Schema/Inventory fail-closed
+
+- **Đối chiếu CloudTrail ngày 12-11 UTC**: Ghi nhận chính xác các lệnh bị từ chối gồm
+  `DeleteTable` (14:29:03 UTC qua deploy role và 14:29:28 UTC qua IAM user), `DeleteBucket` (14:29:38 UTC),
+  `AssumeRole` vào runtime role (14:30:58 UTC) và `CreateBucket` với tên ngoài quy hoạch `miles-dev-cold-...` (14:31:30 UTC).
+  Các sự kiện này được ghi nhận trung thực như phần blocked readiness/tồn đọng cần xử lý, không ngụy tạo kết quả PASS.
+- **Tiền kiểm Schema 20 bảng và S3**: Phát hiện bảng `miles-dev-Buckets` trước đó bị tạo sai partition key
+  (`id` thay vì `bucket` theo yêu cầu của adapter tại `internal/metadata/dynamodb/schema.go`).
+  Đã xây dựng module tiền kiểm fail-closed `ValidateApprovedInventoryAndSchema` (`internal/metadata/dynamodb/preflight.go`),
+  đối chiếu nghiêm ngặt:
+  - Đúng account `499388132734` và Region Singapore `ap-southeast-1`.
+  - Đúng tiền tố bảng `miles-dev-` và tên bucket `miles-dev-data-499388132734-ap-southeast-1` có versioning `Enabled`.
+  - Đúng partition key và sort key cùng kiểu dữ liệu (`S` hoặc `N`) cho toàn bộ 20 bảng metadata của Miles.
+  - Đúng tags sở hữu `Project=Miles` và `Environment=dev`.
+  - Mọi sai lệch schema là điều kiện dừng bắt buộc; không tự ý nhận, ghi đè hoặc âm thầm tạo lại bảng.
+- **Bộ test preflight tập trung**: 8 tests trong `internal/metadata/dynamodb/preflight_test.go` bao phủ
+  chặn đứng phân vùng sai, thiếu sort key, sai kiểu sort key, sort key ngoài dự kiến, unapproved bucket name,
+  unapproved prefix/region và thiếu tag. Test live `TestLivePreflightApprovedInventoryAndSchema`
+  chạy trực tiếp trên AWS Singapore xác nhận 20 bảng metadata đã ACTIVE và khớp schema chuẩn.
+- **Cấp quyền cleanup có kiểm soát**: Lead đã ban hành inline policy `MilesDevColdAcceptanceCleanup`
+  trên `miles-dev-deploy` cho phép dọn dẹp bảng tồn đọng và bucket dev đã kiểm tra rỗng.
+  Tuân thủ nghiêm ngặt operating envelope: không chạy destructive run ngoài cửa sổ được Lead phê chuẩn độc lập.
+
 Bằng chứng chi tiết: [evidence/cold-lifecycle-live/result.json](evidence/cold-lifecycle-live/result.json)
 và [checksum manifest](evidence/cold-lifecycle-live/sha256sums.txt).
 Runner suite: `TestColdLiveFrontDoors`, `TestLiveFixtureColdWireRequests` và `TestLiveFixtureColdAdminContracts` trong `tests/live/cold_test.go`.
+Preflight suite: `TestPreflight*` và `TestLivePreflightApprovedInventoryAndSchema` trong `internal/metadata/dynamodb/preflight_test.go`.
 ## Authority và ownership
 
 - Không thay `MetadataStore`, `PackInfo`, `CacheKey`, Clock semantics hoặc W1

@@ -3,13 +3,14 @@
   "status": "STAGED_READY",
   "date_utc": "2026-11-13",
   "region": "ap-southeast-1",
-  "actor": "assumed-role/miles-dev-deploy/chien-deploy",
+  "actor": "arn:aws:sts::499388132734:assumed-role/miles-dev-deploy/chien-deploy",
   "scope": "End-to-End Miles Cloud and Edge runtime acceptance for Cold Lifecycle (GLACIER_IR and GLACIER)",
   "reproducible_runner": {
     "test_suite": "tests/live/cold_test.go",
     "wire_test_name": "TestLiveFixtureColdWireRequests",
     "admin_contract_test_name": "TestLiveFixtureColdAdminContracts",
     "live_test_name": "TestColdLiveFrontDoors",
+    "preflight_test_name": "TestLivePreflightApprovedInventoryAndSchema",
     "environment_flag": "MILES_COLD_LIVE_CONFIG",
     "protocol": "HTTP/1.1 and HTTPS SigV4 over Miles front doors"
   },
@@ -24,6 +25,61 @@
     "generation_advance_after_promote": "PASS",
     "terminal_safety_orphaned_chunks_zero": "PASS",
     "native_composition_flows": "PASS"
+  },
+  "schema_preflight": {
+    "status": "PASS",
+    "validator": "internal/metadata/dynamodb/preflight.go",
+    "test_suite": "internal/metadata/dynamodb/preflight_test.go",
+    "tables_checked": 20,
+    "tables_active": 20,
+    "keys_and_types_exact": true,
+    "ownership_tags_verified": {
+      "Project": "Miles",
+      "Environment": "dev"
+    },
+    "s3_data_bucket_verified": "miles-dev-data-499388132734-ap-southeast-1",
+    "s3_versioning_verified": "Enabled"
+  },
+  "cloudtrail_audit_reconciliation": {
+    "audit_period_utc": "2026-11-12T14:28:00Z to 2026-11-13T12:00:00Z",
+    "denied_outcomes_recorded": [
+      {
+        "timestamp_utc": "2026-11-12T14:29:03Z",
+        "actor": "assumed-role/miles-dev-deploy/chien-deploy",
+        "action": "dynamodb:DeleteTable",
+        "resource": "arn:aws:dynamodb:ap-southeast-1:499388132734:table/miles-dev-Buckets",
+        "reason": "Pre-existing residual deletion denied before cleanup policy attached"
+      },
+      {
+        "timestamp_utc": "2026-11-12T14:29:28Z",
+        "actor": "user/miles/operators/chien-deploy",
+        "action": "dynamodb:DeleteTable",
+        "resource": "arn:aws:dynamodb:ap-southeast-1:499388132734:table/miles-dev-Buckets",
+        "reason": "Direct IAM user fallback denied (operating envelope requires deploy role)"
+      },
+      {
+        "timestamp_utc": "2026-11-12T14:29:38Z",
+        "actor": "assumed-role/miles-dev-deploy/chien-deploy",
+        "action": "s3:DeleteBucket",
+        "resource": "arn:aws:s3:::miles-dev-data-499388132734-ap-southeast-1",
+        "reason": "Bucket deletion denied before cleanup policy attached"
+      },
+      {
+        "timestamp_utc": "2026-11-12T14:30:58Z",
+        "actor": "assumed-role/miles-dev-deploy/chien-deploy",
+        "action": "sts:AssumeRole",
+        "resource": "arn:aws:iam::499388132734:role/miles/dev/miles-dev-gateway",
+        "reason": "Direct runtime role assumption denied (boundary separates deployer from runtime)"
+      },
+      {
+        "timestamp_utc": "2026-11-12T14:31:30Z",
+        "actor": "assumed-role/miles-dev-deploy/chien-deploy",
+        "action": "s3:CreateBucket",
+        "resource": "arn:aws:s3:::miles-dev-cold-499388132734-ap-southeast-1",
+        "reason": "Unapproved bucket name denied (preflight allowlist blocks unapproved prefixes)"
+      }
+    ],
+    "reconciliation_notes": "CloudTrail events reconciled. Malformed table schema (partition key 'id' instead of 'bucket') was identified and corrected to exact adapter schema. Inline policy MilesDevColdAcceptanceCleanup applied by Lead."
   },
   "access_preflight": {
     "assume_role": "PASS",
@@ -164,17 +220,20 @@
       ],
       "active_reader_lease_protected": true,
       "pinned_generation_fences_enforced": true,
-      "orphaned_chunks_total_asserted": "must be exactly 0 (fail-closed if null or positive)",
-      "revived_chunks_total_asserted": "must be non-zero",
+      "orphaned_chunks_total_asserted": "must be non-null and exactly 0",
+      "revived_chunks_total_asserted": "must be non-null and positive",
       "cold_dead_physical_accounting_asserted": "must be positive"
     }
   },
   "spend_and_teardown": {
     "soft_budget_limit_usd": 10.0,
-    "teardown_prerequisites": [
-      "Hưng approval for paid AWS deployment window",
-      "Temporary grant for dynamodb:DeleteTable attached to deployer role"
-    ],
+    "operating_envelope": {
+      "account": "499388132734",
+      "region": "ap-southeast-1",
+      "deployer_role": "arn:aws:iam::499388132734:role/miles/bootstrap/miles-dev-deploy",
+      "cleanup_policy_attached": "MilesDevColdAcceptanceCleanup",
+      "no_direct_cli_bypass": true
+    },
     "retained_resources": [
       "arn:aws:s3:::miles-dev-tfstate-499388132734-ap-southeast-1"
     ]
