@@ -375,13 +375,17 @@ class Process:
         ):
             manifest = self.r.read("frozen/manifest.json")
             require(
-                manifest["run_id"] == self.r.id
-                and manifest["account_id"] == self.r.c["account_id"]
-                and manifest["region"] == self.r.c["region"],
+                manifest.get("run_id") == self.r.id
+                and manifest.get("account_id") == self.r.c["account_id"]
+                and manifest.get("region") == self.r.c["region"],
                 "Frozen ownership differs",
             )
             result["reused_manifest_sha256"] = digest(
                 self.r.file("frozen/manifest.json")
+            )
+            self.r.write(
+                result["log"],
+                {"reused_manifest_sha256": result["reused_manifest_sha256"]},
             )
             return 0
         path = self.r.file(result["log"])

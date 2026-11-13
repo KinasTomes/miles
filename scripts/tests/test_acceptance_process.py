@@ -253,6 +253,24 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual(c.run(cleanup=True), process.FAILED)
         self.assertEqual(c.state["status"], "finished_with_failures")
 
+    def test_cleanup_reuses_only_manifest_owned_by_this_run(self):
+        c = self.controller()
+        self.r.write(
+            "frozen/manifest.json",
+            {
+                "run_id": self.r.id,
+                "account_id": self.r.c["account_id"],
+                "region": self.r.c["region"],
+            },
+        )
+        step = command("freeze-for-cleanup", ["freeze"])
+        result = {"log": "process/logs/freeze-for-cleanup.log"}
+        self.assertEqual(c.execute(step, result), 0)
+        self.assertTrue(self.r.file(result["log"]).is_file())
+        self.r.write("frozen/manifest.json", {"run_id": "another-run"})
+        with self.assertRaises(ValueError):
+            c.execute(step, result)
+
     def test_operator_reconciliation_preserves_failed_attempt_and_binds_evidence(self):
         c = self.controller()
         c.state["results"]["assets"] = {
