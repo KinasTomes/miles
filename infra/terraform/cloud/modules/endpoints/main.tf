@@ -1,5 +1,5 @@
 locals {
-  services = toset(concat(["kms", "ssm", "ssmmessages", "secretsmanager", "logs", "monitoring", "sts", "elasticloadbalancing", "autoscaling"], var.enable_roles_anywhere ? ["rolesanywhere"] : []))
+  services = toset(concat(["kms", "ssm", "ssmmessages", "secretsmanager", "logs", "monitoring", "sts", "elasticloadbalancing", "autoscaling"], (var.enable_roles_anywhere || var.enable_edge) ? ["rolesanywhere"] : []))
 }
 resource "aws_vpc_endpoint" "gateway" {
   for_each          = toset(["s3", "dynamodb"])
@@ -25,7 +25,7 @@ resource "aws_security_group" "interfaces" {
   vpc_id      = var.vpc_id
 }
 resource "aws_vpc_security_group_ingress_rule" "interfaces" {
-  for_each                     = var.enable_interfaces ? { gateway = var.gateway_sg_id, jobs = var.jobs_sg_id } : {}
+  for_each                     = var.enable_interfaces ? merge({ gateway = var.gateway_sg_id, jobs = var.jobs_sg_id }, var.enable_edge ? { edge = var.edge_sg_id } : {}) : {}
   security_group_id            = aws_security_group.interfaces[0].id
   referenced_security_group_id = each.value
   ip_protocol                  = "tcp"
@@ -38,13 +38,13 @@ resource "aws_vpc_endpoint" "interface" {
   service_name        = "com.amazonaws.${var.region}.${each.key}"
   vpc_endpoint_type   = "Interface"
   private_dns_enabled = true
-  subnet_ids          = values(var.private_subnets)
-  security_group_ids  = [aws_security_group.interfaces[0].id]
   policy = each.key == "rolesanywhere" ? jsonencode({
     Version   = "2012-10-17"
-    Statement = [{ Effect = "Allow", Principal = "*", Action = "rolesanywhere:CreateSession", Resource = var.roles_anywhere_trust_anchor_arn }]
+    Statement = [{ Effect = "Allow", Principal = "*", Action = "rolesanywhere:CreateSession", Resource = var.roles_anywhere_trust_anchor_arn, Condition = { StringEquals = { "rolesanywhere:x509Subject/CN" = var.edge_certificate_common_name } } }]
   }) : null
-  tags = { Name = "${var.name}-${each.key}" }
+  subnet_ids         = values(var.private_subnets)
+  security_group_ids = [aws_security_group.interfaces[0].id]
+  tags               = { Name = "${var.name}-${each.key}" }
 }
 output "gateway_ids" { value = { for n, e in aws_vpc_endpoint.gateway : n => e.id } }
 output "interface_ids" { value = { for n, e in aws_vpc_endpoint.interface : n => e.id } }

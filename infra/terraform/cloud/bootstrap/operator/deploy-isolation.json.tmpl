@@ -1,0 +1,209 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DoNotClaimForeignProject",
+      "Effect": "Deny",
+      "Action": [
+        "rolesanywhere:TagResource",
+        "acm:AddTagsToCertificate",
+        "kms:TagResource",
+        "dynamodb:TagResource",
+        "secretsmanager:TagResource",
+        "ssm:AddTagsToResource",
+        "logs:TagResource",
+        "logs:TagLogGroup",
+        "elasticloadbalancing:AddTags",
+        "autoscaling:CreateOrUpdateTags",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "aws:ResourceTag/Project": "false"
+        },
+        "StringNotEquals": {
+          "aws:ResourceTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "DoNotChangeOwnershipProject",
+      "Effect": "Deny",
+      "Action": [
+        "rolesanywhere:TagResource",
+        "acm:AddTagsToCertificate",
+        "kms:TagResource",
+        "dynamodb:TagResource",
+        "secretsmanager:TagResource",
+        "ssm:AddTagsToResource",
+        "logs:TagResource",
+        "logs:TagLogGroup",
+        "elasticloadbalancing:AddTags",
+        "autoscaling:CreateOrUpdateTags",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "aws:RequestTag/Project": "false"
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Project": "Miles"
+        }
+      }
+    },
+    {
+      "Sid": "DoNotClaimForeignEnvironment",
+      "Effect": "Deny",
+      "Action": [
+        "rolesanywhere:TagResource",
+        "acm:AddTagsToCertificate",
+        "kms:TagResource",
+        "dynamodb:TagResource",
+        "secretsmanager:TagResource",
+        "ssm:AddTagsToResource",
+        "logs:TagResource",
+        "logs:TagLogGroup",
+        "elasticloadbalancing:AddTags",
+        "autoscaling:CreateOrUpdateTags",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "aws:ResourceTag/Environment": "false"
+        },
+        "StringNotEquals": {
+          "aws:ResourceTag/Environment": "{{ENVIRONMENT}}"
+        }
+      }
+    },
+    {
+      "Sid": "DoNotChangeOwnershipEnvironment",
+      "Effect": "Deny",
+      "Action": [
+        "rolesanywhere:TagResource",
+        "acm:AddTagsToCertificate",
+        "kms:TagResource",
+        "dynamodb:TagResource",
+        "secretsmanager:TagResource",
+        "ssm:AddTagsToResource",
+        "logs:TagResource",
+        "logs:TagLogGroup",
+        "elasticloadbalancing:AddTags",
+        "autoscaling:CreateOrUpdateTags",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "aws:RequestTag/Environment": "false"
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Environment": "{{ENVIRONMENT}}"
+        }
+      }
+    },
+    {
+      "Sid": "DoNotClaimForeignInstallation",
+      "Effect": "Deny",
+      "Action": [
+        "rolesanywhere:TagResource",
+        "acm:AddTagsToCertificate",
+        "kms:TagResource",
+        "dynamodb:TagResource",
+        "secretsmanager:TagResource",
+        "ssm:AddTagsToResource",
+        "logs:TagResource",
+        "logs:TagLogGroup",
+        "elasticloadbalancing:AddTags",
+        "autoscaling:CreateOrUpdateTags",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "aws:ResourceTag/Installation": "false"
+        },
+        "StringNotEquals": {
+          "aws:ResourceTag/Installation": "{{INSTALLATION_NAME}}"
+        }
+      }
+    },
+    {
+      "Sid": "DoNotChangeOwnershipInstallation",
+      "Effect": "Deny",
+      "Action": [
+        "rolesanywhere:TagResource",
+        "acm:AddTagsToCertificate",
+        "kms:TagResource",
+        "dynamodb:TagResource",
+        "secretsmanager:TagResource",
+        "ssm:AddTagsToResource",
+        "logs:TagResource",
+        "logs:TagLogGroup",
+        "elasticloadbalancing:AddTags",
+        "autoscaling:CreateOrUpdateTags",
+        "ec2:CreateTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "Null": {
+          "aws:RequestTag/Installation": "false"
+        },
+        "StringNotEquals": {
+          "aws:RequestTag/Installation": "{{INSTALLATION_NAME}}"
+        }
+      }
+    },
+    {
+      "Sid": "KeepOwnershipLabels",
+      "Effect": "Deny",
+      "Action": [
+        "rolesanywhere:UntagResource",
+        "acm:RemoveTagsFromCertificate",
+        "kms:UntagResource",
+        "dynamodb:UntagResource",
+        "secretsmanager:UntagResource",
+        "ssm:RemoveTagsFromResource",
+        "logs:UntagResource",
+        "logs:UntagLogGroup",
+        "elasticloadbalancing:RemoveTags",
+        "autoscaling:DeleteTags",
+        "ec2:DeleteTags"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "ForAnyValue:StringEqualsIgnoreCase": {
+          "aws:TagKeys": [
+            "Project",
+            "Environment",
+            "Installation"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "NeverAssumeAnotherRole",
+      "Effect": "Deny",
+      "Action": "sts:AssumeRole",
+      "Resource": "*"
+    },
+    {
+      "Sid": "KeepRegionalOperationsInInstallationRegion",
+      "Effect": "Deny",
+      "NotAction": [
+        "iam:*",
+        "signin:*",
+        "sts:GetCallerIdentity"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:RequestedRegion": "{{REGION}}"
+        }
+      }
+    }
+  ]
+}

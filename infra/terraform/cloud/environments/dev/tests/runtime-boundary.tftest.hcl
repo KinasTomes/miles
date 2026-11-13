@@ -65,7 +65,7 @@ run "physical_inventory_permissions" {
   assert {
     condition = length([
       for statement in jsondecode(file("${path.module}/../../bootstrap/operator/runtime-boundary.json.tmpl")).Statement : statement
-      if statement.Sid == "ListDevData" && contains(statement.Action, "s3:ListBucketVersions") && statement.Resource == ["arn:aws:s3:::miles-dev-data-ACCOUNT_ID-ap-southeast-1"]
+      if statement.Sid == "ListDevData" && contains(statement.Action, "s3:ListBucketVersions") && statement.Resource == ["arn:aws:s3:::{{INSTALLATION_NAME}}-data-{{ACCOUNT_ID}}-{{REGION}}"]
     ]) == 1
     error_message = "The operator bootstrap boundary must permit the same bucket-scoped version inventory."
   }

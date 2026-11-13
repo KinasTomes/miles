@@ -2,8 +2,8 @@ variable "region" {
   type    = string
   default = "ap-southeast-1"
   validation {
-    condition     = var.region == "ap-southeast-1"
-    error_message = "W2 dev is pinned to Singapore; review sources/costs before changing Region."
+    condition     = can(regex("^(af|ap|ca|eu|il|me|mx|sa|us)-[a-z]+-[0-9]+$", var.region))
+    error_message = "Use a commercial AWS Region and review service availability and costs."
   }
 }
 variable "account_id" {
@@ -27,8 +27,8 @@ variable "runtime_permissions_boundary_arn" {
   default     = null
   description = "Pre-created runtime boundary; the deployment role requires it when creating EC2 roles."
   validation {
-    condition     = var.runtime_permissions_boundary_arn == null ? true : var.runtime_permissions_boundary_arn == "arn:aws:iam::${var.account_id}:policy/miles/bootstrap/MilesDevRuntimeBoundary"
-    error_message = "Use the reviewed Miles dev runtime boundary in this account."
+    condition     = var.runtime_permissions_boundary_arn == null ? true : can(regex("^arn:aws:iam::${var.account_id}:policy/[A-Za-z0-9_+=,.@/-]+$", var.runtime_permissions_boundary_arn))
+    error_message = "Use an explicitly reviewed permissions boundary in the target account."
   }
 }
 variable "vpc_cidr" {
@@ -41,10 +41,10 @@ variable "vpc_cidr" {
 }
 variable "availability_zones" {
   type    = list(string)
-  default = ["ap-southeast-1a", "ap-southeast-1b"]
+  default = null
   validation {
-    condition     = length(var.availability_zones) == 2 && length(distinct(var.availability_zones)) == 2 && alltrue([for z in var.availability_zones : can(regex("^ap-southeast-1[a-z]$", z))])
-    error_message = "Supply two distinct Singapore AZs."
+    condition     = var.availability_zones == null ? true : length(var.availability_zones) == 2 && length(distinct(var.availability_zones)) == 2 && alltrue([for z in var.availability_zones : can(regex("^${var.region}[a-z]$", z))])
+    error_message = "Supply two distinct AZs in the configured Region."
   }
 }
 variable "egress_mode" {
@@ -74,7 +74,7 @@ variable "ami_id" {
   default = null
   validation {
     condition     = var.ami_id == null ? true : can(regex("^ami-[0-9a-f]{17}$", var.ami_id))
-    error_message = "Use a pinned AMI in Singapore; single-node dev requires AL2023 ARM64, fleet architecture must match its release."
+    error_message = "Use a pinned regional AL2023 AMI matching the configured architecture."
   }
 }
 variable "nat_per_az" {
@@ -159,8 +159,8 @@ variable "certificate_arn" {
   type    = string
   default = null
   validation {
-    condition     = var.certificate_arn == null ? true : can(regex("^arn:aws:acm:ap-southeast-1:[0-9]{12}:certificate/.+", var.certificate_arn))
-    error_message = "ACM certificate must be in Singapore."
+    condition     = var.certificate_arn == null ? true : can(regex("^arn:aws:acm:${var.region}:${var.account_id}:certificate/[A-Za-z0-9-]+$", var.certificate_arn))
+    error_message = "ACM certificate must belong to the configured account and Region."
   }
 }
 variable "client_cidrs" {
@@ -193,6 +193,80 @@ variable "runtime_secret_name" {
   type        = string
   default     = null
   description = "Fresh installation secret name; null preserves the original installation name."
+}
+
+variable "installation_name" {
+  type    = string
+  default = "miles-dev"
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{1,22}[a-z0-9]$", var.installation_name)) && length("${var.installation_name}-tfstate-${var.account_id}-${var.region}") <= 63
+    error_message = "Use a unique 3..24 character lowercase name fitting the regional S3 bucket length limit."
+  }
+}
+variable "environment" {
+  type    = string
+  default = "dev"
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{0,19}$", var.environment))
+    error_message = "Use a 1..20 character environment tag."
+  }
+}
+variable "owner" {
+  type    = string
+  default = "operator"
+  validation {
+    condition     = length(trimspace(var.owner)) > 0 && length(var.owner) <= 128
+    error_message = "Supply an owner tag of 1..128 characters."
+  }
+}
+variable "runtime_iam_path" {
+  type    = string
+  default = "/miles/dev/"
+  validation {
+    condition     = can(regex("^/([A-Za-z0-9_+=,.@-]+/)*$", var.runtime_iam_path)) && length(var.runtime_iam_path) <= 128
+    error_message = "Supply an IAM path beginning and ending with a slash."
+  }
+}
+variable "edge_certificate_common_name" {
+  type    = string
+  default = "miles-edge"
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$", var.edge_certificate_common_name))
+    error_message = "Supply the exact reviewed Edge certificate common name."
+  }
+}
+variable "instance_type" {
+  type    = string
+  default = "t4g.small"
+  validation {
+    condition     = can(regex("^[a-z0-9-]+\\.[a-z0-9]+$", var.instance_type))
+    error_message = "Supply the reviewed single-node EC2 instance type."
+  }
+}
+
+variable "enable_edge" {
+  type    = bool
+  default = false
+  validation {
+    condition     = !var.enable_edge || (var.edge_ca_pem != null && var.runtime_permissions_boundary_arn != null && var.ami_id != null && length(var.client_cidrs) > 0 && can(regex("^[a-f0-9]{64}$", var.edge_helper_sha256)) && var.edge_helper_version_id != null && can(regex("^[a-f0-9]{64}$", var.release_sha256)) && var.release_version_id != null)
+    error_message = "Edge needs its public CA, reviewed boundary/AMI/client allowlist and pinned release/helper versions."
+  }
+}
+variable "edge_instance_type" {
+  type    = string
+  default = "t4g.small"
+  validation {
+    condition     = can(regex("^[a-z0-9-]+\\.[a-z0-9]+$", var.edge_instance_type))
+    error_message = "Supply the reviewed Edge instance type."
+  }
+}
+variable "edge_helper_sha256" {
+  type    = string
+  default = null
+}
+variable "edge_helper_version_id" {
+  type    = string
+  default = null
 }
 
 variable "enable_alarms" {

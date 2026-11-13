@@ -11,6 +11,22 @@ variable "alb_security_group_id" { type = string }
 variable "permissions_boundary_arn" { type = string }
 variable "kms_key_arn" { type = string }
 variable "data_bucket_name" { type = string }
+variable "runtime_iam_path" {
+  type    = string
+  default = "/miles/dev/"
+}
+variable "environment" {
+  type    = string
+  default = "dev"
+}
+variable "owner" {
+  type    = string
+  default = "operator"
+}
+variable "architecture" {
+  type    = string
+  default = "arm64"
+}
 variable "owner_ssh_public_key" {
   type    = string
   default = null
@@ -32,11 +48,11 @@ data "aws_ami" "host" {
   }
   filter {
     name   = "architecture"
-    values = ["arm64"]
+    values = [var.architecture == "amd64" ? "x86_64" : "arm64"]
   }
   filter {
     name   = "name"
-    values = ["al2023-ami-2023.*-kernel-*-arm64"]
+    values = ["al2023-ami-2023.*-kernel-*-${var.architecture == "amd64" ? "x86_64" : "arm64"}"]
   }
   filter {
     name   = "root-device-type"
@@ -46,7 +62,7 @@ data "aws_ami" "host" {
 resource "aws_iam_role" "node" {
   for_each             = local.nodes
   name                 = "${var.name}-acceptance-${each.key}"
-  path                 = "/miles/dev/"
+  path                 = var.runtime_iam_path
   permissions_boundary = var.permissions_boundary_arn
   assume_role_policy = jsonencode({ Version = "2012-10-17", Statement = [{
     Effect = "Allow", Action = "sts:AssumeRole", Principal = { Service = "ec2.amazonaws.com" }
@@ -66,7 +82,7 @@ resource "aws_iam_role_policy" "node" {
 resource "aws_iam_instance_profile" "node" {
   for_each = local.nodes
   name     = "${var.name}-acceptance-${each.key}"
-  path     = "/miles/dev/"
+  path     = var.runtime_iam_path
   role     = aws_iam_role.node[each.key].name
 }
 resource "aws_security_group" "node" {
@@ -133,20 +149,23 @@ resource "aws_instance" "node" {
     http_tokens                 = "required"
     http_put_response_hop_limit = 1
   }
-  credit_specification { cpu_credits = "standard" }
+  dynamic "credit_specification" {
+    for_each = can(regex("^t[0-9]+[a-z]*\\.", var.instance_type)) ? [true] : []
+    content { cpu_credits = "standard" }
+  }
   root_block_device {
     volume_size           = 20
     volume_type           = "gp3"
     encrypted             = true
     kms_key_id            = var.kms_key_arn
     delete_on_termination = true
-    tags                  = { Project = "Miles", Environment = "dev" }
+    tags                  = { Project = "Miles", Installation = var.name, Environment = var.environment, Owner = var.owner }
   }
   tags = { Name = "${var.name}-acceptance-${each.key}", Purpose = "EdgeAcceptance" }
   lifecycle {
     precondition {
       condition     = data.aws_ami.host[0].id == var.ami_id
-      error_message = "The pinned host image must be an Amazon Linux ARM64 EBS image."
+      error_message = "The pinned host image must be an Amazon Linux EBS image matching the selected architecture."
     }
   }
   depends_on = [aws_iam_role_policy.node, aws_vpc_security_group_ingress_rule.endpoints]
