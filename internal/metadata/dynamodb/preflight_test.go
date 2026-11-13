@@ -279,11 +279,69 @@ func TestPreflightRejectsBucketVersioningDisabled(t *testing.T) {
 	}
 }
 
+func TestPreflightRejectsNilClients(t *testing.T) {
+	cfg := defaultPreflightConfig()
+	ddbMock := valid20TablesMock(cfg.TablePrefix, cfg.AccountID, cfg.Region)
+	s3Mock := &mockPreflightS3{status: s3types.BucketVersioningStatusEnabled}
+
+	if err := dynamodb.ValidateApprovedInventoryAndSchema(context.Background(), nil, s3Mock, cfg); err == nil || !strings.Contains(err.Error(), "dynamodb client must not be nil") {
+		t.Fatalf("expected nil dynamodb client rejection, got: %v", err)
+	}
+	if err := dynamodb.ValidateApprovedInventoryAndSchema(context.Background(), ddbMock, nil, cfg); err == nil || !strings.Contains(err.Error(), "s3 client must not be nil") {
+		t.Fatalf("expected nil s3 client rejection, got: %v", err)
+	}
+}
+
+func TestPreflightRejectsNonActiveTable(t *testing.T) {
+	cfg := defaultPreflightConfig()
+	ddbMock := valid20TablesMock(cfg.TablePrefix, cfg.AccountID, cfg.Region)
+	s3Mock := &mockPreflightS3{status: s3types.BucketVersioningStatusEnabled}
+
+	// Change Users table to CREATING status
+	ddbMock.tables["miles-dev-Users"].TableStatus = ddbtypes.TableStatusCreating
+
+	err := dynamodb.ValidateApprovedInventoryAndSchema(context.Background(), ddbMock, s3Mock, cfg)
+	if err == nil || !strings.Contains(err.Error(), "status is \"CREATING\"") {
+		t.Fatalf("expected non-active table rejection, got: %v", err)
+	}
+}
+
+func TestPreflightRejectsMismatchedTableARN(t *testing.T) {
+	cfg := defaultPreflightConfig()
+	ddbMock := valid20TablesMock(cfg.TablePrefix, cfg.AccountID, cfg.Region)
+	s3Mock := &mockPreflightS3{status: s3types.BucketVersioningStatusEnabled}
+
+	// Set wrong account in ARN
+	badArn := "arn:aws:dynamodb:ap-southeast-1:000000000000:table/miles-dev-Users"
+	ddbMock.tables["miles-dev-Users"].TableArn = &badArn
+
+	err := dynamodb.ValidateApprovedInventoryAndSchema(context.Background(), ddbMock, s3Mock, cfg)
+	if err == nil || !strings.Contains(err.Error(), "table ARN mismatch") {
+		t.Fatalf("expected table ARN mismatch rejection, got: %v", err)
+	}
+
+	// Set nil ARN
+	ddbMock.tables["miles-dev-Users"].TableArn = nil
+	err = dynamodb.ValidateApprovedInventoryAndSchema(context.Background(), ddbMock, s3Mock, cfg)
+	if err == nil || !strings.Contains(err.Error(), "returned nil TableArn") {
+		t.Fatalf("expected nil TableArn rejection, got: %v", err)
+	}
+}
+
 func TestLivePreflightApprovedInventoryAndSchema(t *testing.T) {
 	if os.Getenv("MILES_AWS_DEV_PREFLIGHT") != "1" {
 		t.Skip("set MILES_AWS_DEV_PREFLIGHT=1 to run preflight check against live AWS")
 	}
-	cfg := defaultPreflightConfig()
+	cfg := dynamodb.PreflightInventoryConfig{
+		AccountID:        "499388132734",
+		Region:           "ap-southeast-1",
+		InstallationName: "miles-chien",
+		TablePrefix:      "miles-chien-",
+		BucketName:       "miles-chien-data-499388132734-ap-southeast-1",
+		RequiredTags: map[string]string{
+			"Project": "Miles",
+		},
+	}
 	ctx := context.Background()
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.Region))
 	if err != nil {

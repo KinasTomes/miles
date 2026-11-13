@@ -72,18 +72,19 @@ func ValidateApprovedInventoryAndSchema(ctx context.Context, ddbAPI PreflightDDB
 		return fmt.Errorf("%w: unapproved bucket name %q; expected %q", ErrPreflightStop, cfg.BucketName, expectedBucket)
 	}
 
-	if s3API != nil {
-		vOut, err := s3API.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{Bucket: &cfg.BucketName})
-		if err != nil {
-			return fmt.Errorf("%w: failed to read bucket versioning for %s: %v", ErrPreflightStop, cfg.BucketName, err)
-		}
-		if vOut.Status != s3types.BucketVersioningStatusEnabled {
-			return fmt.Errorf("%w: bucket %s versioning is %q, required %q", ErrPreflightStop, cfg.BucketName, vOut.Status, s3types.BucketVersioningStatusEnabled)
-		}
+	if s3API == nil {
+		return fmt.Errorf("%w: s3 client must not be nil", ErrPreflightStop)
+	}
+	vOut, err := s3API.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{Bucket: &cfg.BucketName})
+	if err != nil {
+		return fmt.Errorf("%w: failed to read bucket versioning for %s: %v", ErrPreflightStop, cfg.BucketName, err)
+	}
+	if vOut.Status != s3types.BucketVersioningStatusEnabled {
+		return fmt.Errorf("%w: bucket %s versioning is %q, required %q", ErrPreflightStop, cfg.BucketName, vOut.Status, s3types.BucketVersioningStatusEnabled)
 	}
 
 	if ddbAPI == nil {
-		return nil
+		return fmt.Errorf("%w: dynamodb client must not be nil", ErrPreflightStop)
 	}
 
 	tables := Tables()
@@ -97,7 +98,23 @@ func ValidateApprovedInventoryAndSchema(ctx context.Context, ddbAPI PreflightDDB
 		if t == nil {
 			return fmt.Errorf("%w: table %s returned empty description", ErrPreflightStop, physicalName)
 		}
-
+		if t.TableStatus != ddbtypes.TableStatusActive {
+			return fmt.Errorf("%w: table %s status is %q, required %q", ErrPreflightStop, physicalName, t.TableStatus, ddbtypes.TableStatusActive)
+		}
+		if t.TableName == nil || *t.TableName != physicalName {
+			gotName := "<nil>"
+			if t.TableName != nil {
+				gotName = *t.TableName
+			}
+			return fmt.Errorf("%w: table name mismatch: got %q, want %q", ErrPreflightStop, gotName, physicalName)
+		}
+		if t.TableArn == nil {
+			return fmt.Errorf("%w: table %s returned nil TableArn", ErrPreflightStop, physicalName)
+		}
+		expectedArn := fmt.Sprintf("arn:aws:dynamodb:%s:%s:table/%s", cfg.Region, cfg.AccountID, physicalName)
+		if *t.TableArn != expectedArn {
+			return fmt.Errorf("%w: table ARN mismatch for %s: got %q, want %q", ErrPreflightStop, physicalName, *t.TableArn, expectedArn)
+		}
 		attrTypes := make(map[string]ddbtypes.ScalarAttributeType, len(t.AttributeDefinitions))
 		for _, attr := range t.AttributeDefinitions {
 			if attr.AttributeName != nil {
@@ -141,21 +158,22 @@ func ValidateApprovedInventoryAndSchema(ctx context.Context, ddbAPI PreflightDDB
 			return fmt.Errorf("%w: table %s has unexpected sort key %q", ErrPreflightStop, physicalName, *rangeKey)
 		}
 
-		if len(cfg.RequiredTags) > 0 && t.TableArn != nil {
-			tagsOut, err := ddbAPI.ListTagsOfResource(ctx, &ddb.ListTagsOfResourceInput{ResourceArn: t.TableArn})
-			if err != nil {
-				return fmt.Errorf("%w: table %s list tags failed: %v", ErrPreflightStop, physicalName, err)
+		tagsOut, err := ddbAPI.ListTagsOfResource(ctx, &ddb.ListTagsOfResourceInput{ResourceArn: t.TableArn})
+		if err != nil {
+			return fmt.Errorf("%w: table %s list tags failed: %v", ErrPreflightStop, physicalName, err)
+		}
+		foundTags := make(map[string]string, len(tagsOut.Tags))
+		for _, tag := range tagsOut.Tags {
+			if tag.Key != nil && tag.Value != nil {
+				foundTags[*tag.Key] = *tag.Value
 			}
-			foundTags := make(map[string]string, len(tagsOut.Tags))
-			for _, tag := range tagsOut.Tags {
-				if tag.Key != nil && tag.Value != nil {
-					foundTags[*tag.Key] = *tag.Value
-				}
-			}
-			for reqKey, reqVal := range cfg.RequiredTags {
-				if gotVal, ok := foundTags[reqKey]; !ok || gotVal != reqVal {
-					return fmt.Errorf("%w: table %s missing or mismatched required tag %s=%q (got %q)", ErrPreflightStop, physicalName, reqKey, reqVal, gotVal)
-				}
+		}
+		if foundTags["Project"] != "Miles" {
+			return fmt.Errorf("%w: table %s missing or mismatched required tag Project=%q (got %q)", ErrPreflightStop, physicalName, "Miles", foundTags["Project"])
+		}
+		for reqKey, reqVal := range cfg.RequiredTags {
+			if gotVal, ok := foundTags[reqKey]; !ok || gotVal != reqVal {
+				return fmt.Errorf("%w: table %s missing or mismatched required tag %s=%q (got %q)", ErrPreflightStop, physicalName, reqKey, reqVal, gotVal)
 			}
 		}
 	}

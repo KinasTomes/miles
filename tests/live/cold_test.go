@@ -24,6 +24,11 @@ import (
 	"github.com/KinasTomes/miles/internal/api/s3"
 	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
 	"github.com/KinasTomes/miles/internal/storage"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 var (
@@ -320,24 +325,36 @@ func TestLiveFixtureColdAdminContracts(t *testing.T) {
 		_, _ = w.Write([]byte(`{"job_id":"` + r.PathValue("id") + `","state":"succeeded"}`))
 	})
 	mux.HandleFunc("GET /admin/v1/packs/{id}", func(w http.ResponseWriter, r *http.Request) {
-		gen := "gen-00000001"
-		state := "Cold"
-		class := "GLACIER_IR"
-		if promoted {
-			gen = "gen-00000002"
-			state = "Warm"
-			class = "STANDARD"
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprintf(w, `{
+		if promoted {
+			_, _ = w.Write([]byte(`{
+				"items": [
+					{
+						"pack_id": "pk-contract-test-01",
+						"generation": "gen-00000001",
+						"state": "Cold",
+						"storage_class": "GLACIER_IR",
+						"min_retention_until": "2027-02-11T00:00:00Z"
+					},
+					{
+						"pack_id": "pk-contract-test-01",
+						"generation": "gen-00000002",
+						"state": "Warm",
+						"storage_class": "STANDARD"
+					}
+				]
+			}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{
 			"items": [{
 				"pack_id": "pk-contract-test-01",
-				"generation": "%s",
-				"state": "%s",
-				"storage_class": "%s",
+				"generation": "gen-00000001",
+				"state": "Cold",
+				"storage_class": "GLACIER_IR",
 				"min_retention_until": "2027-02-11T00:00:00Z"
 			}]
-		}`, gen, state, class)
+		}`))
 	})
 	mux.HandleFunc("POST /admin/v1/packs/{id}/{generation}/promote", func(w http.ResponseWriter, r *http.Request) {
 		promoted = true
@@ -350,7 +367,7 @@ func TestLiveFixtureColdAdminContracts(t *testing.T) {
 		_, _ = w.Write([]byte(`{
 			"revived_chunks_total": 1,
 			"orphaned_chunks_total": 0,
-			"physical_lifecycle_bytes": {"cold_dead": 4480}
+			"listed_bytes_by_pack_lifecycle": {"cold_dead": 4480}
 		}`))
 	})
 
@@ -425,12 +442,34 @@ func TestLiveFixtureColdAdminContracts(t *testing.T) {
 	if len(layout.Packs) != 1 || layout.Packs[0].Generation == initialGen || layout.Packs[0].State != "Warm" {
 		t.Fatalf("generation did not advance after promotion: %+v", layout)
 	}
+	promotedGen := layout.Packs[0].Generation
+
+	// Verify multi-generation response: match exact pack_id + generation
+	f.adminRequest("GET", "packs/pk-contract-test-01", nil, f.token, 200, &packPage)
+	var sourceFound, targetFound bool
+	for _, it := range packPage.Items {
+		if it.PackID == "pk-contract-test-01" && it.Generation == initialGen {
+			if it.State != "Cold" || it.StorageClass != "GLACIER_IR" {
+				t.Fatalf("source pack gen not retained as Cold: %+v", it)
+			}
+			sourceFound = true
+		}
+		if it.PackID == "pk-contract-test-01" && it.Generation == promotedGen {
+			if it.State != "Warm" || it.StorageClass != "STANDARD" {
+				t.Fatalf("target pack gen not established as Warm: %+v", it)
+			}
+			targetFound = true
+		}
+	}
+	if !sourceFound || !targetFound {
+		t.Fatalf("multi-generation matching failed: source=%t target=%t in %+v", sourceFound, targetFound, packPage.Items)
+	}
 
 	// 7. Verify stats terminal safety assertions (fail-closed on null or positive)
 	var st struct {
-		RevivedChunks  *uint64           `json:"revived_chunks_total"`
-		OrphanedChunks *uint64           `json:"orphaned_chunks_total"`
-		Physical       map[string]uint64 `json:"physical_lifecycle_bytes"`
+		RevivedChunks  *uint64          `json:"revived_chunks_total"`
+		OrphanedChunks *uint64          `json:"orphaned_chunks_total"`
+		Physical       map[string]int64 `json:"listed_bytes_by_pack_lifecycle"`
 	}
 	f.adminRequest("GET", "stats", nil, f.token, 200, &st)
 	if st.OrphanedChunks == nil || *st.OrphanedChunks != 0 {
@@ -439,8 +478,8 @@ func TestLiveFixtureColdAdminContracts(t *testing.T) {
 	if st.RevivedChunks == nil || *st.RevivedChunks != 1 {
 		t.Fatalf("revived_chunks_total must be non-null 1: %v", st.RevivedChunks)
 	}
-	if st.Physical["cold_dead"] == 0 {
-		t.Fatalf("cold_dead physical accounting missing: %+v", st.Physical)
+	if st.Physical["cold_dead"] != 4480 {
+		t.Fatalf("listed_bytes_by_pack_lifecycle cold_dead mismatch: %v", st.Physical)
 	}
 }
 
@@ -493,8 +532,29 @@ func TestColdLiveFrontDoors(t *testing.T) {
 			"Project": "Miles",
 		},
 	}
-	if err := dynamodb.ValidateApprovedInventoryAndSchema(context.Background(), nil, nil, preflightCfg); err != nil {
-		t.Fatalf("fail-closed preflight rejected environment parameters: %v", err)
+	ctx := context.Background()
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(c.Region))
+	if err != nil {
+		t.Fatalf("cannot load AWS configuration for live preflight: %v", err)
+	}
+	stsClient := sts.NewFromConfig(awsCfg)
+	ident, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		t.Fatalf("cannot verify caller identity: %v", err)
+	}
+	if aws.ToString(ident.Account) != accountID {
+		t.Fatalf("caller account mismatch: got %s, want %s", aws.ToString(ident.Account), accountID)
+	}
+	expectedRolePrefix := fmt.Sprintf("arn:aws:sts::%s:assumed-role/%s-deploy/", accountID, installation)
+	if !strings.HasPrefix(aws.ToString(ident.Arn), expectedRolePrefix) {
+		t.Fatalf("caller role mismatch: got %s, required assumed role prefix %s", aws.ToString(ident.Arn), expectedRolePrefix)
+	}
+
+	ddbClient := ddb.NewFromConfig(awsCfg)
+	s3Client := awss3.NewFromConfig(awsCfg)
+
+	if err := dynamodb.ValidateApprovedInventoryAndSchema(ctx, ddbClient, s3Client, preflightCfg); err != nil {
+		t.Fatalf("fail-closed preflight rejected live environment: %v", err)
 	}
 	prefix := fmt.Sprintf("%s-cold-%s", installation, hex.EncodeToString(nonce[:]))
 	t.Cleanup(func() {
@@ -641,8 +701,18 @@ func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polR
 		} `json:"items"`
 	}
 	f.adminRequest("GET", "packs/"+packID, nil, f.token, 200, &packPage)
-	if len(packPage.Items) == 0 || packPage.Items[0].State != "Cold" || packPage.Items[0].StorageClass != string(class) {
-		f.t.Fatalf("pack %s state=%s class=%s, want Cold/%s", packID, packPage.Items[0].State, packPage.Items[0].StorageClass, class)
+	var foundColdSource bool
+	for _, it := range packPage.Items {
+		if it.PackID == packID && it.Generation == packGen {
+			if it.State != "Cold" || it.StorageClass != string(class) {
+				f.t.Fatalf("pack %s gen %s state=%s class=%s, want Cold/%s", packID, packGen, it.State, it.StorageClass, class)
+			}
+			foundColdSource = true
+			break
+		}
+	}
+	if !foundColdSource {
+		f.t.Fatalf("pack %s gen %s not found in pack inventory: %+v", packID, packGen, packPage.Items)
 	}
 
 	if class == storage.GlacierIR {
@@ -670,15 +740,33 @@ func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polR
 		f.adminRequest("POST", "packs/"+packID+"/"+packGen+"/promote", map[string]any{}, f.token, 202, &promJob)
 		f.awaitJob(promJob.JobID, 3*time.Minute)
 
-		f.adminRequest("GET", "packs/"+packID, nil, f.token, 200, &packPage)
-		if len(packPage.Items) == 0 || packPage.Items[0].State != "Warm" {
-			f.t.Fatalf("pack %s state=%s, want Warm after promotion", packID, packPage.Items[0].State)
-		}
-
 		// Verify layout after promotion advances generation
 		f.adminRequest("GET", "objects/layout?bucket="+url.QueryEscape(f.bucket)+"&key="+url.QueryEscape(strings.TrimPrefix(key, "/")), nil, f.token, 200, &layout)
 		if len(layout.Packs) == 0 || layout.Packs[0].Generation == packGen {
 			f.t.Fatalf("generation did not advance after promotion: %s", layout.Packs[0].Generation)
+		}
+		promotedGen := layout.Packs[0].Generation
+
+		// Fetch all generations for packID and verify both retained Cold source and new Warm target
+		f.adminRequest("GET", "packs/"+packID, nil, f.token, 200, &packPage)
+		var sourceRetained, targetWarm bool
+		for _, it := range packPage.Items {
+			if it.PackID == packID && it.Generation == packGen {
+				if it.State == "Cold" {
+					sourceRetained = true
+				}
+			}
+			if it.PackID == packID && it.Generation == promotedGen {
+				if it.State == "Warm" {
+					targetWarm = true
+				}
+			}
+		}
+		if !sourceRetained {
+			f.t.Fatalf("pack %s source gen %s not retained as Cold after promotion", packID, packGen)
+		}
+		if !targetWarm {
+			f.t.Fatalf("pack %s target gen %s not established as Warm after promotion", packID, promotedGen)
 		}
 
 		gotPromoted, _ := f.s3("IR read after promote", c, "GET", key, "", nil, nil, false, 200, "")
@@ -761,9 +849,9 @@ func (f *fixture) runColdErrorAndIsolation(c credential) {
 
 	// Fail-closed terminal safety assertions
 	var st struct {
-		RevivedChunks  *uint64           `json:"revived_chunks_total"`
-		OrphanedChunks *uint64           `json:"orphaned_chunks_total"`
-		Physical       map[string]uint64 `json:"physical_lifecycle_bytes"`
+		RevivedChunks  *uint64          `json:"revived_chunks_total"`
+		OrphanedChunks *uint64          `json:"orphaned_chunks_total"`
+		Physical       map[string]int64 `json:"listed_bytes_by_pack_lifecycle"`
 	}
 	f.adminRequest("GET", "stats", nil, f.token, 200, &st)
 	if st.OrphanedChunks == nil || *st.OrphanedChunks != 0 {
@@ -772,8 +860,8 @@ func (f *fixture) runColdErrorAndIsolation(c credential) {
 	if st.RevivedChunks == nil || *st.RevivedChunks == 0 {
 		f.t.Fatalf("expected non-zero revived chunks after revival flow")
 	}
-	if st.Physical["cold_dead"] == 0 {
-		f.t.Fatalf("expected cold_dead accounting for superseded archive pack")
+	if st.Physical["cold_dead"] <= 0 {
+		f.t.Fatalf("expected cold_dead accounting for superseded archive pack: %v", st.Physical)
 	}
 }
 
