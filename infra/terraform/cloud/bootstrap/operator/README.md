@@ -21,6 +21,10 @@ của mình, không phụ thuộc file private trên máy lead. Xem [luồng dù
 Ở `existing`, renderer chỉ xuất workload tfvars, `backend.hcl`,
 `bootstrap-inventory.json` và `iam/deploy-bootstrap-read.json`. Policy đọc này
 phải được chủ account duyệt/cấp trước nếu role còn thiếu; bộ dựng không tự attach.
+Role deploy cần explicit Deny `s3:DeleteObject` trên đúng state key;
+`implicitDeny` không đủ để chặn Allow từ bucket policy. Giữ Get/Put state và
+Get/Put/Delete `.tflock`. Chế độ `new` sinh deny này trong `deploy-state.json`;
+với `existing`, chủ account cấp trước, bộ dựng chỉ kiểm tra.
 Chạy `prepare` → đăng nhập deploy role → `verify-bootstrap` → foundation rồi
 dùng chung provision/active/verify/cleanup. Backend bucket/key đã cấp được điền
 qua `operator.state_bucket`/`state_key`; không cần đổi defaults trong source.
