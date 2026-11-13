@@ -74,7 +74,7 @@ def review(r):
     for src in sorted((ROOT / "deploy/acceptance/policies").glob("*.tmpl")):
         name = src.name.removesuffix(".json.tmpl")
         document = json.loads(string.Template(src.read_text()).substitute(values))
-        path = r.write("iam/" + name + ".json", document)
+        path = r.write("iam/" + name + ".json", document, compact=True)
         if name == "auditor-trust":
             continue
         validation = r.aws(

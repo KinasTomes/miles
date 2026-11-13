@@ -74,8 +74,12 @@ def private(path, data, *, new=False):
     return path
 
 
-def save(path, value, **kwargs):
-    return private(path, json.dumps(value, indent=2, sort_keys=True) + "\n", **kwargs)
+def save(path, value, compact=False, **kwargs):
+    if compact:
+        body = json.dumps(value, separators=(",", ":"), sort_keys=True)
+    else:
+        body = json.dumps(value, indent=2, sort_keys=True) + "\n"
+    return private(path, body, **kwargs)
 
 
 def config(value):

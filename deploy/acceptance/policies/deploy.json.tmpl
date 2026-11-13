@@ -22,7 +22,10 @@
         "elasticloadbalancing:DescribeTargetGroups",
         "elasticloadbalancing:DescribeTargetHealth",
         "ec2:DescribeKeyPairs",
-        "cloudwatch:GetMetricData"
+        "cloudwatch:GetMetricData",
+        "cloudwatch:GetMetricStatistics",
+        "cloudwatch:ListMetrics",
+        "ssm:DescribeParameters"
       ],
       "Resource": [
         "*"
@@ -413,44 +416,6 @@
         },
         "DateLessThan": {
           "aws:CurrentTime": "2026-11-05T12:18:39Z"
-        }
-      }
-    },
-    {
-      "Sid": "ReadParameterInventory",
-      "Effect": "Allow",
-      "Action": [
-        "ssm:DescribeParameters"
-      ],
-      "Resource": [
-        "*"
-      ],
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "${REGION}"
-        },
-        "DateLessThan": {
-          "aws:CurrentTime": "${IAM_EXPIRY}"
-        }
-      }
-    },
-    {
-      "Sid": "PilotMetricRead",
-      "Effect": "Allow",
-      "Action": [
-        "cloudwatch:GetMetricData",
-        "cloudwatch:GetMetricStatistics",
-        "cloudwatch:ListMetrics"
-      ],
-      "Resource": [
-        "*"
-      ],
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "${REGION}"
-        },
-        "DateLessThan": {
-          "aws:CurrentTime": "${IAM_EXPIRY}"
         }
       }
     },
