@@ -14,10 +14,20 @@ import (
 
 	"github.com/KinasTomes/miles/internal/secretfile"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
+
+type payloadHashContextKey struct{}
+
+// WithPayloadHash instructs the S3 client stack to use a precomputed SHA-256 hex digest
+// for SigV4 payload signing, allowing non-seekable streaming io.Reader bodies.
+func WithPayloadHash(ctx context.Context, hash string) context.Context {
+	return context.WithValue(ctx, payloadHashContextKey{}, hash)
+}
 
 // Config is private run input. It is deliberately not copied into the artifact:
 // endpoints, bucket names, key IDs and credential locations can identify accounts.
@@ -107,15 +117,21 @@ func newClient(c Config, concurrency int, traffic *bodyTraffic) (*awss3.Client, 
 				if d := resp.Header.Get("X-Dsg-Dedup-Domain"); d != "" {
 					traffic.observedDomain.Store(&d)
 				}
+				hasTelemetry := false
 				if dupStr := resp.Header.Get("X-Dsg-Chunks-Dup"); dupStr != "" {
 					if v, err := strconv.ParseUint(dupStr, 10, 64); err == nil {
 						traffic.chunksDup.Add(v)
+						hasTelemetry = true
 					}
 				}
 				if storedStr := resp.Header.Get("X-Dsg-Bytes-Stored"); storedStr != "" {
 					if v, err := strconv.ParseUint(storedStr, 10, 64); err == nil {
 						traffic.bytesStored.Add(v)
+						hasTelemetry = true
 					}
+				}
+				if hasTelemetry {
+					traffic.telemetryResponses.Add(1)
 				}
 			},
 		}
@@ -128,6 +144,19 @@ func newClient(c Config, concurrency int, traffic *bodyTraffic) (*awss3.Client, 
 			return aws.Credentials{AccessKeyID: cred.AccessKeyID, SecretAccessKey: cred.SecretAccessKey, SessionToken: cred.SessionToken}, nil
 		}),
 		HTTPClient: observability.CountHTTPClient(&http.Client{Transport: rt, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, func(n int) { traffic.sent.Add(uint64(n)) }, func(n int) { traffic.received.Add(uint64(n)) }),
+		APIOptions: []func(*middleware.Stack) error{
+			func(stack *middleware.Stack) error {
+				return stack.Build.Add(middleware.BuildMiddlewareFunc("MilesSignDebugHeader", func(ctx context.Context, in middleware.BuildInput, next middleware.BuildHandler) (middleware.BuildOutput, middleware.Metadata, error) {
+					if req, ok := in.Request.(*smithyhttp.Request); ok {
+						req.Header.Set("X-Dsg-Debug", "1")
+					}
+					if h, ok := ctx.Value(payloadHashContextKey{}).(string); ok && h != "" {
+						ctx = v4.SetPayloadHash(ctx, h)
+					}
+					return next.HandleBuild(ctx, in)
+				}), middleware.Before)
+			},
+		},
 	})
 	return client, transport.CloseIdleConnections, nil
 }
@@ -202,10 +231,11 @@ func errorCode(err error) string {
 const requestTimeout = 30 * time.Minute
 
 type bodyTraffic struct {
-	sent, received atomic.Uint64
-	observedDomain atomic.Pointer[string]
-	chunksDup      atomic.Uint64
-	bytesStored    atomic.Uint64
+	sent, received     atomic.Uint64
+	observedDomain     atomic.Pointer[string]
+	chunksDup          atomic.Uint64
+	bytesStored        atomic.Uint64
+	telemetryResponses atomic.Uint64
 }
 
 func (t *bodyTraffic) getObservedDomain() string {

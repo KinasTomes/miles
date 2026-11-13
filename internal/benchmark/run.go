@@ -969,11 +969,18 @@ func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c
 	if c1.DedupDomain == "" || cDest.DedupDomain == "" {
 		return errors.New("edge-clone requires dedup_domain declared in both source and destination configs")
 	}
+	if c1.Bucket == cDest.Bucket {
+		return errors.New("edge-clone requires distinct buckets for source and destination")
+	}
+	if c1.CredentialsFile == cDest.CredentialsFile {
+		return errors.New("edge-clone requires distinct credentials files for source and destination")
+	}
 	if c1.DedupDomain == cDest.DedupDomain {
 		return fmt.Errorf("edge-clone requires distinct source and destination dedup domains, both are %q", c1.DedupDomain)
 	}
 
-	clientDest, closeDest, err := newClient(cDest, o.Concurrency, traffic)
+	trafficDest := &bodyTraffic{}
+	clientDest, closeDest, err := newClient(cDest, o.Concurrency, trafficDest)
 	if err != nil {
 		return fmt.Errorf("destination client initialization failed: %w", err)
 	}
@@ -984,6 +991,14 @@ func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c
 		if o.SourcePrefix == "" {
 			return errors.New("clone-download requires non-empty --source-prefix")
 		}
+		// Preflight destination bucket connectivity and runtime domain verification
+		if _, err := clientDest.ListObjectsV2(ctx, &awss3.ListObjectsV2Input{
+			Bucket:  aws.String(cDest.Bucket),
+			MaxKeys: aws.Int32(1),
+		}); err != nil {
+			return fmt.Errorf("clone-download destination preflight failed for bucket %s: %w", cDest.Bucket, err)
+		}
+
 		var totalBytes int64
 		pipelineHasher := sha256.New()
 		var getSamples []Sample
@@ -1006,23 +1021,27 @@ func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c
 				_ = finishPhase(r, "clone-download-get", startGet, getSamples)
 				return fmt.Errorf("clone download GET failed for %s: %w", f.Path, err)
 			}
-			data, err := io.ReadAll(getOut.Body)
+			hasher := sha256.New()
+			buf := make([]byte, 64*1024)
+			mw := io.MultiWriter(hasher, pipelineHasher)
+			n, err := io.CopyBuffer(mw, getOut.Body, buf)
 			getOut.Body.Close()
 			if err != nil {
-				return err
+				return fmt.Errorf("read source GET stream failed for %s: %w", f.Path, err)
 			}
-			sum := sha256.Sum256(data)
-			hexSum := hex.EncodeToString(sum[:])
+			if n != int64(f.Bytes) {
+				return fmt.Errorf("source GET size mismatch for %s: got %d, want %d", f.Path, n, f.Bytes)
+			}
+			hexSum := hex.EncodeToString(hasher.Sum(nil))
 			if hexSum != f.SHA256 {
 				return fmt.Errorf("source GET integrity mismatch for %s: got %s, want %s", f.Path, hexSum, f.SHA256)
 			}
 			getSamples = append(getSamples, Sample{
 				Phase: "clone-download-get", Operation: "GetObject", File: f.Path, Group: f.Group,
-				PayloadBytes: int64(len(data)), SHA256: hexSum, HTTPStatus: 200,
+				PayloadBytes: n, SHA256: hexSum, HTTPStatus: 200,
 				LatencyNS: time.Since(startF).Nanoseconds(),
 			})
-			pipelineHasher.Write(data)
-			totalBytes += int64(len(data))
+			totalBytes += n
 		}
 		if err := finishPhase(r, "clone-download-get", startGet, getSamples); err != nil {
 			return err
@@ -1037,7 +1056,6 @@ func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c
 			ReceiptSHA256:     hex.EncodeToString(pipelineHasher.Sum(nil)),
 		}
 		r.Cleanup = "edge_clone_download_verified"
-		return nil
 
 	case "clone-upload":
 		if o.SourcePrefix == "" {
@@ -1070,62 +1088,90 @@ func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c
 				_ = finishPhase(r, "clone-source-get", startGet, getSamples)
 				return fmt.Errorf("clone source GET failed for %s: %w", f.Path, err)
 			}
-			data, err := io.ReadAll(getOut.Body)
-			getOut.Body.Close()
-			if err != nil {
-				return fmt.Errorf("read source GET body failed for %s: %w", f.Path, err)
-			}
-			getSum := sha256.Sum256(data)
-			getHex := hex.EncodeToString(getSum[:])
-			if getHex != f.SHA256 {
-				return fmt.Errorf("source GET integrity mismatch for %s: got %s, want %s", f.Path, getHex, f.SHA256)
-			}
-			getSamples = append(getSamples, Sample{
-				Phase: "clone-source-get", Operation: "GetObject", File: f.Path, Group: f.Group,
-				PayloadBytes: int64(len(data)), SHA256: getHex, HTTPStatus: 200,
-				LatencyNS: time.Since(startFGet).Nanoseconds(),
-			})
 
-			// 2. PUT directly into destination domain (clientDest) with bytes from source GET (never reading local disk!)
+			// Bounded streaming: stream GET body directly into PUT body via pipe using 64 KiB buffer
+			pr, pw := io.Pipe()
+			copyErrCh := make(chan error, 1)
+
+			go func(file benchmarkdata.File, srcBody io.ReadCloser) {
+				defer srcBody.Close()
+				hasher := sha256.New()
+				mw := io.MultiWriter(pw, hasher, pipelineHasher)
+				buf := make([]byte, 64*1024)
+				n, copyErr := io.CopyBuffer(mw, srcBody, buf)
+				if copyErr != nil {
+					_ = pw.CloseWithError(fmt.Errorf("read source GET stream failed for %s: %w", file.Path, copyErr))
+					copyErrCh <- copyErr
+					return
+				}
+				if n != int64(file.Bytes) {
+					errSize := fmt.Errorf("source GET size mismatch for %s: got %d, want %d", file.Path, n, file.Bytes)
+					_ = pw.CloseWithError(errSize)
+					copyErrCh <- errSize
+					return
+				}
+				hexSum := hex.EncodeToString(hasher.Sum(nil))
+				if hexSum != file.SHA256 {
+					errSha := fmt.Errorf("source GET integrity mismatch for %s: got %s, want %s", file.Path, hexSum, file.SHA256)
+					_ = pw.CloseWithError(errSha)
+					copyErrCh <- errSha
+					return
+				}
+				_ = pw.Close()
+				copyErrCh <- nil
+			}(f, getOut.Body)
+
+			// 2. PUT directly into destination domain (clientDest) with bytes from source GET
 			startFPut := time.Now()
 			sc := types.StorageClassStandard
 			if cDest.StorageClass != "" {
 				sc = types.StorageClass(cDest.StorageClass)
 			}
+			expectedSHABytes, _ := hex.DecodeString(f.SHA256)
 			putInput := &awss3.PutObjectInput{
 				Bucket:            aws.String(cDest.Bucket),
 				Key:               aws.String(destKey),
-				Body:              bytes.NewReader(data),
-				ContentLength:     aws.Int64(int64(len(data))),
+				Body:              pr,
+				ContentLength:     aws.Int64(int64(f.Bytes)),
 				StorageClass:      sc,
 				ContentType:       aws.String("application/octet-stream"),
 				ChecksumAlgorithm: types.ChecksumAlgorithmSha256,
-				ChecksumSHA256:    aws.String(base64.StdEncoding.EncodeToString(getSum[:])),
+				ChecksumSHA256:    aws.String(base64.StdEncoding.EncodeToString(expectedSHABytes)),
 			}
 			if cDest.KMSKeyID != "" {
 				putInput.ServerSideEncryption = types.ServerSideEncryptionAwsKms
 				putInput.SSEKMSKeyId = aws.String(cDest.KMSKeyID)
 			}
-			_, err = clientDest.PutObject(ctx, putInput)
-			putStatus, putReqID := responseDiagnostics(err)
-			if err != nil {
+			putCtx := WithPayloadHash(ctx, f.SHA256)
+			_, putErr := clientDest.PutObject(putCtx, putInput)
+			copyErr := <-copyErrCh
+			putStatus, putReqID := responseDiagnostics(putErr)
+
+			if putErr != nil {
 				putSamples = append(putSamples, Sample{
 					Phase: "clone-dest-put", Operation: "PutObject", File: f.Path, Group: f.Group,
-					HTTPStatus: putStatus, RequestID: putReqID, Error: errorCode(err),
+					HTTPStatus: putStatus, RequestID: putReqID, Error: errorCode(putErr),
 					LatencyNS: time.Since(startFPut).Nanoseconds(),
 				})
 				_ = finishPhase(r, "clone-source-get", startGet, getSamples)
 				_ = finishPhase(r, "clone-dest-put", startPut, putSamples)
-				return fmt.Errorf("clone destination PUT failed for %s: %w", f.Path, err)
+				return fmt.Errorf("clone destination PUT failed for %s: %w", f.Path, putErr)
 			}
+			if copyErr != nil {
+				return copyErr
+			}
+
+			getSamples = append(getSamples, Sample{
+				Phase: "clone-source-get", Operation: "GetObject", File: f.Path, Group: f.Group,
+				PayloadBytes: int64(f.Bytes), SHA256: f.SHA256, HTTPStatus: status,
+				LatencyNS: time.Since(startFGet).Nanoseconds(),
+			})
 			putSamples = append(putSamples, Sample{
 				Phase: "clone-dest-put", Operation: "PutObject", File: f.Path, Group: f.Group,
-				PayloadBytes: int64(len(data)), HTTPStatus: 200,
+				PayloadBytes: int64(f.Bytes), SHA256: f.SHA256, HTTPStatus: putStatus,
 				LatencyNS: time.Since(startFPut).Nanoseconds(),
 			})
-
-			pipelineHasher.Write(data)
-			totalBytes += int64(len(data))
+			totalBytes += int64(f.Bytes)
 		}
 		if err := finishPhase(r, "clone-source-get", startGet, getSamples); err != nil {
 			return err
@@ -1155,16 +1201,40 @@ func edgeClonePhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c
 		}
 		if o.RetainObjects {
 			r.Cleanup = "retained_owned_prefix_for_observation"
-			return nil
+		} else {
+			if err := filePhase(ctx, clientDest, root, cDest, oDest, "delete", r); err != nil {
+				return err
+			}
+			r.Cleanup = "edge_clone_upload_verified"
 		}
-		if err := filePhase(ctx, clientDest, root, cDest, oDest, "delete", r); err != nil {
-			return err
-		}
-		r.Cleanup = "edge_clone_upload_verified"
-		return nil
 	default:
 		return errors.New("unknown edge-clone variant: " + o.Variant)
 	}
+
+	// 4. Runtime domain mapping verification for both source and destination
+	obsSrc := traffic.getObservedDomain()
+	obsDest := trafficDest.getObservedDomain()
+	if obsSrc == "" {
+		return errors.New("edge-clone source runtime domain missing: backend did not return X-Dsg-Dedup-Domain")
+	}
+	if obsDest == "" {
+		return errors.New("edge-clone destination runtime domain missing: backend did not return X-Dsg-Dedup-Domain")
+	}
+	if obsSrc != c1.DedupDomain {
+		return fmt.Errorf("edge-clone source runtime domain binding mismatch: backend returned domain %q, expected %q", obsSrc, c1.DedupDomain)
+	}
+	if obsDest != cDest.DedupDomain {
+		return fmt.Errorf("edge-clone destination runtime domain binding mismatch: backend returned domain %q, expected %q", obsDest, cDest.DedupDomain)
+	}
+	if obsSrc == obsDest {
+		return fmt.Errorf("edge-clone runtime collision: both source and destination bound to identical domain %q", obsSrc)
+	}
+	r.Tenant1RuntimeDomain = obsSrc
+	r.Tenant2RuntimeDomain = obsDest
+	r.DomainContrastVerified = true
+	r.DomainPhysicalIsolation = true
+
+	return nil
 }
 
 func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 Config, o Options, r *Result, traffic1 *bodyTraffic) error {
@@ -1278,36 +1348,59 @@ func domainPhase(ctx context.Context, client1 *awss3.Client, root *os.Root, c1 C
 	r.Tenant1RuntimeDomain = obs1
 	r.Tenant2RuntimeDomain = obs2
 
-	if obs1 != "" && obs1 != c1.DedupDomain {
+	if obs1 == "" {
+		return errors.New("domain scenario tenant 1 runtime domain missing: backend did not return X-Dsg-Dedup-Domain")
+	}
+	if obs2 == "" {
+		return errors.New("domain scenario tenant 2 runtime domain missing: backend did not return X-Dsg-Dedup-Domain")
+	}
+	if obs1 != c1.DedupDomain {
 		return fmt.Errorf("tenant 1 runtime domain binding mismatch: backend returned domain %q, expected %q", obs1, c1.DedupDomain)
 	}
-	if obs2 != "" && obs2 != c2.DedupDomain {
+	if obs2 != c2.DedupDomain {
 		return fmt.Errorf("tenant 2 runtime domain binding mismatch: backend returned domain %q, expected %q", obs2, c2.DedupDomain)
 	}
-	if obs1 != "" && obs2 != "" {
-		switch o.Variant {
-		case "shared-default":
-			if obs1 != obs2 {
-				return fmt.Errorf("shared-default runtime domain mismatch: tenant 1 mapped to %q, tenant 2 mapped to %q", obs1, obs2)
-			}
-		case "separated":
-			if obs1 == obs2 {
-				return fmt.Errorf("separated variant runtime collision: backend mapped both tenants to identical domain %q", obs1)
-			}
+	switch o.Variant {
+	case "shared-default":
+		if obs1 != obs2 {
+			return fmt.Errorf("shared-default runtime domain mismatch: tenant 1 mapped to %q, tenant 2 mapped to %q", obs1, obs2)
+		}
+	case "separated":
+		if obs1 == obs2 {
+			return fmt.Errorf("separated variant runtime collision: backend mapped both tenants to identical domain %q", obs1)
 		}
 	}
 
+	if traffic1.telemetryResponses.Load() == 0 || traffic2.telemetryResponses.Load() == 0 {
+		return errors.New("domain scenario requires backend debug telemetry (X-Dsg-Chunks-Dup, X-Dsg-Bytes-Stored), but none was received; verify client is authenticated with debug privileges and signed x-dsg-debug: 1")
+	}
+
+	t1Dup := traffic1.chunksDup.Load()
+	t2Dup := traffic2.chunksDup.Load()
+	t1Stored := traffic1.bytesStored.Load()
+	t2Stored := traffic2.bytesStored.Load()
+
 	switch o.Variant {
 	case "shared-default":
-		if traffic2.chunksDup.Load() > 0 {
-			r.DomainDedupObserved = true
+		// Inter-tenant deduplication: Tenant 2 uploads the same dataset that Tenant 1 uploaded into Tenant 1's bucket.
+		// Since both tenants share the dedup domain, Tenant 2 must deduplicate against Tenant 1's already committed chunks.
+		// Tenant 2 duplicate count must strictly exceed Tenant 1's intra-dataset duplicate baseline (t2Dup > t1Dup).
+		if t2Dup <= t1Dup {
+			return fmt.Errorf("shared-default domain isolation failure: cross-tenant deduplication was not observed on backend (tenant 1 dup=%d, tenant 2 dup=%d)", t1Dup, t2Dup)
 		}
+		r.DomainDedupObserved = true
 	case "separated":
-		if traffic2.chunksDup.Load() == 0 {
-			r.DomainPhysicalIsolation = true
-		} else {
-			return errors.New("separated domain isolation failure: cross-domain deduplication was observed on physical backend")
+		// Physical isolation: Tenant 1 and Tenant 2 belong to distinct dedup domains.
+		// Tenant 2 must NOT deduplicate against Tenant 1's chunks in another domain (t2Dup <= t1Dup).
+		// Any excess duplicate chunks indicates cross-domain deduplication leakage.
+		if t2Dup > t1Dup {
+			return fmt.Errorf("separated domain isolation failure: cross-domain deduplication was observed on backend (tenant 1 dup=%d, tenant 2 dup=%d, excess=%d)", t1Dup, t2Dup, t2Dup-t1Dup)
 		}
+		// Tenant 2 must store physical bytes in its own separated domain
+		if t2Stored == 0 && t1Stored > 0 {
+			return errors.New("separated domain isolation failure: tenant 2 stored 0 physical bytes, indicating cross-domain chunk reuse")
+		}
+		r.DomainPhysicalIsolation = true
 	}
 	r.DomainContrastVerified = true
 

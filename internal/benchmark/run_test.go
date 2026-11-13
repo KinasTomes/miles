@@ -26,23 +26,28 @@ import (
 // A protocol fixture, never a Miles performance comparator. Real SDK calls run
 // over HTTP so pagination, signing, body streaming and failures are exercised.
 type s3Fixture struct {
-	mu            sync.Mutex
-	objects       map[string][]byte
-	multiparts    map[string]map[int32][]byte
-	calls         int
-	active        int
-	maxActive     int
-	putCalls      int
-	deleteCalls   int
-	listPages     int
-	corrupt       bool
-	failPut       bool
-	badPage       bool
-	extraKey      bool
-	badHead       bool
-	unsigned      bool
-	bucketDomains map[string]string
-	failTenantB   bool
+	mu                      sync.Mutex
+	objects                 map[string][]byte
+	multiparts              map[string]map[int32][]byte
+	calls                   int
+	active                  int
+	maxActive               int
+	putCalls                int
+	deleteCalls             int
+	listPages               int
+	corrupt                 bool
+	failPut                 bool
+	badPage                 bool
+	extraKey                bool
+	badHead                 bool
+	unsigned                bool
+	bucketDomains           map[string]string
+	failTenantB             bool
+	omitTelemetry           bool
+	omitDomainHeaders       bool
+	simulateNoDedup         bool
+	simulateCrossDedupLeak  bool
+	simulateZeroBytesStored bool
 }
 
 func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -54,12 +59,15 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if strings.HasPrefix(r.URL.Path, "/test-bucket-b/") || r.URL.Path == "/test-bucket-b" {
 		bucket = "test-bucket-b"
 	}
-	if f.bucketDomains != nil {
+	if f.bucketDomains != nil && !f.omitDomainHeaders {
 		if d, ok := f.bucketDomains[bucket]; ok {
 			w.Header().Set("X-Dsg-Dedup-Domain", d)
 		}
 	}
 	authHeader := r.Header.Get("Authorization")
+	debugHeader := r.Header.Get("X-Dsg-Debug") == "1"
+	signedDebug := strings.Contains(authHeader, "x-dsg-debug")
+
 	isTenantB := strings.Contains(authHeader, "tenant-b-key") || r.Header.Get("X-Amz-Security-Token") == "tenant-b-session"
 	if isTenantB && f.failTenantB && r.Method == "PUT" {
 		f.mu.Unlock()
@@ -83,11 +91,34 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}{Code: "AccessDenied", Message: "Access Denied"})
 		return
 	}
-	if r.Method == "PUT" && f.bucketDomains != nil && isTenantB {
-		if f.bucketDomains["test-bucket-b"] == f.bucketDomains["test-bucket"] {
-			w.Header().Set("X-Dsg-Chunks-Dup", "1")
+	if r.Method == "PUT" && f.bucketDomains != nil && !f.omitTelemetry && debugHeader && signedDebug {
+		if isTenantB {
+			if f.simulateCrossDedupLeak {
+				w.Header().Set("X-Dsg-Chunks-Total", "5")
+				w.Header().Set("X-Dsg-Chunks-Dup", "5")
+				w.Header().Set("X-Dsg-Bytes-Stored", "0")
+			} else if f.simulateNoDedup {
+				w.Header().Set("X-Dsg-Chunks-Total", "5")
+				w.Header().Set("X-Dsg-Chunks-Dup", "0")
+				w.Header().Set("X-Dsg-Bytes-Stored", "1024")
+			} else if f.bucketDomains["test-bucket-b"] == f.bucketDomains["test-bucket"] {
+				w.Header().Set("X-Dsg-Chunks-Total", "5")
+				w.Header().Set("X-Dsg-Chunks-Dup", "5")
+				w.Header().Set("X-Dsg-Bytes-Stored", "0")
+			} else {
+				storeVal := "1024"
+				if f.simulateZeroBytesStored {
+					storeVal = "0"
+				}
+				w.Header().Set("X-Dsg-Chunks-Total", "5")
+				w.Header().Set("X-Dsg-Chunks-Dup", "0")
+				w.Header().Set("X-Dsg-Bytes-Stored", storeVal)
+			}
 		} else {
+			// Tenant A
+			w.Header().Set("X-Dsg-Chunks-Total", "5")
 			w.Header().Set("X-Dsg-Chunks-Dup", "0")
+			w.Header().Set("X-Dsg-Bytes-Stored", "1024")
 		}
 	}
 	token := r.Header.Get("X-Amz-Security-Token")
@@ -191,7 +222,7 @@ func (f *s3Fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(2 * time.Millisecond)
 		b, _ := io.ReadAll(r.Body)
 		sum := sha256.Sum256(b)
-		if r.Header.Get("X-Amz-Checksum-Sha256") != base64.StdEncoding.EncodeToString(sum[:]) || r.ContentLength != int64(len(b)) || r.Header.Get("Content-Type") != "application/octet-stream" {
+		if r.Header.Get("X-Amz-Checksum-Sha256") != base64.StdEncoding.EncodeToString(sum[:]) || (r.ContentLength >= 0 && r.ContentLength != int64(len(b))) || r.Header.Get("Content-Type") != "application/octet-stream" {
 			w.WriteHeader(400)
 			return
 		}
@@ -1832,11 +1863,80 @@ func TestDomainScenario(t *testing.T) {
 	if resParsed.SecondTenantSamples[0].HTTPStatus != 500 || resParsed.SecondTenantSamples[0].Error != "InternalError" {
 		t.Fatalf("expected HTTP 500 InternalError in Tenant 2 sample, got %+v", resParsed.SecondTenantSamples[0])
 	}
+
+	// 7. [P1 Regression] Missing runtime domain header fails closed
+	f.bucketDomains = map[string]string{
+		"test-bucket":   "domain-a",
+		"test-bucket-b": "domain-a",
+	}
+	f.omitDomainHeaders = true
+	oNoDomainHdr := oShared
+	oNoDomainHdr.Out = filepath.Join(t.TempDir(), "artifact-domain-no-header")
+	if _, err := Run(context.Background(), c, oNoDomainHdr); err == nil || !strings.Contains(err.Error(), "runtime domain missing") {
+		t.Fatalf("expected error about missing runtime domain header, got %v", err)
+	}
+	f.omitDomainHeaders = false
+
+	// 8. [P1 Regression] Missing backend telemetry fails closed
+	f.bucketDomains = map[string]string{
+		"test-bucket":   "domain-a",
+		"test-bucket-b": "domain-a",
+	}
+	f.omitTelemetry = true
+	oNoTelem := oShared
+	oNoTelem.Out = filepath.Join(t.TempDir(), "artifact-domain-no-telem")
+	if _, err := Run(context.Background(), c, oNoTelem); err == nil || !strings.Contains(err.Error(), "requires backend debug telemetry") {
+		t.Fatalf("expected error about missing backend debug telemetry, got %v", err)
+	}
+	f.omitTelemetry = false
+
+	// 9. [P1 Regression] shared-default with zero cross-tenant dedup fails closed
+	f.bucketDomains = map[string]string{
+		"test-bucket":   "domain-a",
+		"test-bucket-b": "domain-a",
+	}
+	f.simulateNoDedup = true
+	oNoDedup := oShared
+	oNoDedup.Out = filepath.Join(t.TempDir(), "artifact-domain-nodedup")
+	if _, err := Run(context.Background(), c, oNoDedup); err == nil || !strings.Contains(err.Error(), "cross-tenant deduplication was not observed") {
+		t.Fatalf("expected error about no cross-tenant dedup observed, got %v", err)
+	}
+	f.simulateNoDedup = false
+
+	// 10. [P1 Regression] separated with cross-domain dedup leak fails closed
+	f.bucketDomains = map[string]string{
+		"test-bucket":   "domain-a",
+		"test-bucket-b": "domain-b",
+	}
+	f.simulateCrossDedupLeak = true
+	oLeak := oSep
+	oLeak.Out = filepath.Join(t.TempDir(), "artifact-domain-leak")
+	if _, err := Run(context.Background(), c, oLeak); err == nil || !strings.Contains(err.Error(), "cross-domain deduplication was observed on backend") {
+		t.Fatalf("expected error about cross-domain dedup leakage, got %v", err)
+	}
+	f.simulateCrossDedupLeak = false
+
+	// 11. [P1 Regression] separated with zero bytes stored fails closed
+	f.bucketDomains = map[string]string{
+		"test-bucket":   "domain-a",
+		"test-bucket-b": "domain-b",
+	}
+	f.simulateZeroBytesStored = true
+	oZeroStored := oSep
+	oZeroStored.Out = filepath.Join(t.TempDir(), "artifact-domain-zerostored")
+	if _, err := Run(context.Background(), c, oZeroStored); err == nil || !strings.Contains(err.Error(), "tenant 2 stored 0 physical bytes") {
+		t.Fatalf("expected error about zero bytes stored in separated domain, got %v", err)
+	}
+	f.simulateZeroBytesStored = false
 }
 
 func TestEdgeCloneScenario(t *testing.T) {
 	c, o, f := setup(t)
 	c.DedupDomain = "edge-domain-source"
+	f.bucketDomains = map[string]string{
+		"test-bucket":   "edge-domain-source",
+		"test-bucket-b": "edge-domain-dest",
+	}
 	o.Scenario = "edge-clone"
 	o.Variant = "clone-upload"
 	o.RetainObjects = true
@@ -1850,15 +1950,52 @@ func TestEdgeCloneScenario(t *testing.T) {
 		t.Fatalf("expected error about --second-config, got %v", err)
 	}
 
-	// Setup destination config
+	// Setup destination config with distinct credentials and bucket
 	temp := t.TempDir()
+	credDestPath := filepath.Join(temp, "credentials-dest.json")
+	if err := os.WriteFile(credDestPath, []byte(`{"access_key_id":"dest-access","secret_access_key":"dest-secret","session_token":"tenant-b-session"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 	cDest := c
 	cDest.Bucket = "test-bucket-b"
+	cDest.CredentialsFile = credDestPath
 	cDest.DedupDomain = "edge-domain-dest"
 	cDestBytes, _ := json.Marshal(cDest)
 	cDestPath := filepath.Join(temp, "edge-dest-config.json")
 	if err := os.WriteFile(cDestPath, cDestBytes, 0600); err != nil {
 		t.Fatal(err)
+	}
+
+	// Negative 1b: Same bucket must fail
+	cDestSameBucket := cDest
+	cDestSameBucket.Bucket = c.Bucket
+	cDestSameBucketBytes, _ := json.Marshal(cDestSameBucket)
+	cDestSameBucketPath := filepath.Join(temp, "edge-dest-same-bucket.json")
+	if err := os.WriteFile(cDestSameBucketPath, cDestSameBucketBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	oSameBucket := o
+	oSameBucket.SourcePrefix = "warmbench/test-source/"
+	oSameBucket.SecondConfig = cDestSameBucketPath
+	oSameBucket.Out = filepath.Join(t.TempDir(), "artifact-edge-same-bucket")
+	if _, err := Run(context.Background(), c, oSameBucket); err == nil || !strings.Contains(err.Error(), "requires distinct buckets for source and destination") {
+		t.Fatalf("expected error about same bucket, got %v", err)
+	}
+
+	// Negative 1c: Same credentials file must fail
+	cDestSameCreds := cDest
+	cDestSameCreds.CredentialsFile = c.CredentialsFile
+	cDestSameCredsBytes, _ := json.Marshal(cDestSameCreds)
+	cDestSameCredsPath := filepath.Join(temp, "edge-dest-same-creds.json")
+	if err := os.WriteFile(cDestSameCredsPath, cDestSameCredsBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	oSameCreds := o
+	oSameCreds.SourcePrefix = "warmbench/test-source/"
+	oSameCreds.SecondConfig = cDestSameCredsPath
+	oSameCreds.Out = filepath.Join(t.TempDir(), "artifact-edge-same-creds")
+	if _, err := Run(context.Background(), c, oSameCreds); err == nil || !strings.Contains(err.Error(), "requires distinct credentials files for source and destination") {
+		t.Fatalf("expected error about same credentials, got %v", err)
 	}
 
 	// Negative 2: Same dedup domain
@@ -1956,6 +2093,24 @@ func TestEdgeCloneScenario(t *testing.T) {
 	if rDown.CloneReceipt.ReceiptSHA256 != rUpload.CloneReceipt.ReceiptSHA256 {
 		t.Fatalf("pipeline receipt mismatch between clone-upload (%s) and clone-download (%s)", rUpload.CloneReceipt.ReceiptSHA256, rDown.CloneReceipt.ReceiptSHA256)
 	}
+
+	// Negative 5: Runtime domain collision
+	f.bucketDomains["test-bucket-b"] = "edge-domain-source"
+	oCollision := oUpload
+	oCollision.Out = filepath.Join(t.TempDir(), "artifact-edge-collision")
+	if _, err := Run(context.Background(), c, oCollision); err == nil || (!strings.Contains(err.Error(), "runtime collision") && !strings.Contains(err.Error(), "runtime domain binding mismatch")) {
+		t.Fatalf("expected error about edge clone runtime collision or mismatch, got %v", err)
+	}
+	f.bucketDomains["test-bucket-b"] = "edge-domain-dest"
+
+	// Negative 6: Missing runtime domain header
+	f.omitDomainHeaders = true
+	oNoHdr := oUpload
+	oNoHdr.Out = filepath.Join(t.TempDir(), "artifact-edge-no-header")
+	if _, err := Run(context.Background(), c, oNoHdr); err == nil || !strings.Contains(err.Error(), "runtime domain missing") {
+		t.Fatalf("expected error about missing edge clone runtime domain header, got %v", err)
+	}
+	f.omitDomainHeaders = false
 
 	// Clean up retained prefixes
 	f.mu.Lock()
