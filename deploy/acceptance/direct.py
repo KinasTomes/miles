@@ -57,7 +57,7 @@ def provision(r):
     require(not r.file("direct-create-intent.json").exists(), "Create already dispatched; reconcile unknown outcome before any retry")
     # list-buckets is the already-reviewed account baseline read. No ambiguous
     # 403/404 HeadBucket result is upgraded to absence.
-    listed = r.aws("s3api", "list-buckets")
+    listed = r.aws("s3api", "list-buckets", audit=True)
     require(name(r) not in {b["Name"] for b in listed.get("Buckets", [])}, "Direct bucket already exists; do not adopt")
     kms = r.outputs("active")["runtime_inventory"]["kms_key_arn"]
     r.write("direct-create-intent.json", {**p, "at": now().isoformat(), "kms_key": kms}, new=True)
@@ -120,6 +120,6 @@ def cleanup(r):
     require(contents(r) == [], "Direct bucket not empty after reviewed deletion")
     r.aws("s3api", "delete-bucket", "--bucket", name(r), "--expected-bucket-owner", r.c["account_id"])
     # Account listing distinguishes native absence from AccessDenied on HEAD.
-    out = r.aws("s3api", "list-buckets")
+    out = r.aws("s3api", "list-buckets", audit=True)
     require(name(r) not in {x["Name"] for x in out.get("Buckets", [])}, "Direct bucket absence not verified")
     r.write("direct-absence.json", {"bucket": name(r), "run_id": r.id, "absent": True, "at": now().isoformat()}, new=True)

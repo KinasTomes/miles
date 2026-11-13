@@ -175,7 +175,9 @@ class ModuleTests(unittest.TestCase):
         self.r.write("stop-proof.json", {"stopped": True})
         state = {"created": False, "tags": [], "versions": [{"Key": "warmbench/test", "VersionId": "v1"}]}
         def aws(service, op, *args, **kwargs):
-            if op == "list-buckets": return {"Buckets": [{"Name": direct.name(self.r)}] if state["created"] else []}
+            if op == "list-buckets":
+                self.assertTrue(kwargs.get("audit"), "Account listing belongs to the existing read-only auditor")
+                return {"Buckets": [{"Name": direct.name(self.r)}] if state["created"] else []}
             if "--bucket" in args:
                 self.assertEqual(args[args.index("--bucket")+1], direct.name(self.r))
             if op == "create-bucket": state["created"] = True; return {}
