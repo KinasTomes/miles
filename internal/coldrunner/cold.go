@@ -143,7 +143,7 @@ func Run(ctx context.Context, cfg benchmark.Config, opt Options) (*Result, error
 
 	receipt := &ColdReceipt{
 		StorageClass:           expectedClass,
-		RetainedPhysicalBytes:  manifest.TotalBytes,
+		RetainedPhysicalBytes:  0,
 		TotalGETVerifiedSHA256: false,
 	}
 
@@ -185,8 +185,8 @@ func runIR(ctx context.Context, client *awss3.Client, cfg benchmark.Config, mani
 		}
 
 		observedClass := string(out.StorageClass)
-		if observedClass == "" {
-			observedClass = "GLACIER_IR"
+		if observedClass != string(s3types.StorageClassGlacierIr) {
+			return fmt.Errorf("cold IR GET %q observed unexpected storage class %q; expected %q", file.Path, observedClass, s3types.StorageClassGlacierIr)
 		}
 		receipt.ObservedBackendStorageClass = observedClass
 		if out.VersionId != nil {
@@ -199,6 +199,10 @@ func runIR(ctx context.Context, client *awss3.Client, cfg benchmark.Config, mani
 		if copyErr != nil {
 			return fmt.Errorf("read body %q: %w", file.Path, copyErr)
 		}
+		if out.ContentLength != nil && *out.ContentLength != n {
+			return fmt.Errorf("content length mismatch for %q: header=%d, read=%d", file.Path, *out.ContentLength, n)
+		}
+		receipt.RetainedPhysicalBytes += n
 		gotSHA := hex.EncodeToString(h.Sum(nil))
 		if gotSHA != file.SHA256 {
 			return fmt.Errorf("SHA256 mismatch for %q: got %s, expected %s", file.Path, gotSHA, file.SHA256)
@@ -227,7 +231,7 @@ func runFlexible(ctx context.Context, client *awss3.Client, cfg benchmark.Config
 		maxPollWait = 30 * time.Second
 	}
 
-	// Step 1: Prove that immediate GET on archived object fails-closed before restore.
+	// Step 1: Prove that immediate GET on archived object fails-closed before restore with InvalidObjectState.
 	for _, file := range manifest.Files {
 		key := file.Path
 		_, err := client.GetObject(ctx, &awss3.GetObjectInput{
@@ -238,11 +242,8 @@ func runFlexible(ctx context.Context, client *awss3.Client, cfg benchmark.Config
 			return fmt.Errorf("Glacier flexible object %q readable before restore; expected InvalidObjectState", file.Path)
 		}
 		var apiErr smithy.APIError
-		if errors.As(err, &apiErr) {
-			code := apiErr.ErrorCode()
-			if code != "InvalidObjectState" && code != "AccessDenied" && code != "Forbidden" && !strings.Contains(apiErr.ErrorMessage(), "archive") {
-				return fmt.Errorf("unexpected error on pre-restore GET %q: %w", file.Path, err)
-			}
+		if !errors.As(err, &apiErr) || apiErr.ErrorCode() != "InvalidObjectState" {
+			return fmt.Errorf("pre-restore GET %q failed with %v; expected strictly InvalidObjectState", file.Path, err)
 		}
 	}
 
@@ -289,11 +290,11 @@ func runFlexible(ctx context.Context, client *awss3.Client, cfg benchmark.Config
 				return fmt.Errorf("HeadObject %q during restore poll: %w", file.Path, err)
 			}
 
-			if head.StorageClass != "" {
-				receipt.ObservedBackendStorageClass = string(head.StorageClass)
-			} else {
-				receipt.ObservedBackendStorageClass = "GLACIER"
+			observedClass := string(head.StorageClass)
+			if observedClass != string(s3types.StorageClassGlacier) {
+				return fmt.Errorf("cold Flexible object %q observed storage class %q; expected %q", file.Path, observedClass, s3types.StorageClassGlacier)
 			}
+			receipt.ObservedBackendStorageClass = observedClass
 			if head.VersionId != nil {
 				receipt.ObservedVersion = *head.VersionId
 			}
@@ -311,7 +312,7 @@ func runFlexible(ctx context.Context, client *awss3.Client, cfg benchmark.Config
 				break
 			}
 
-			// While ongoing, verify that direct GET is still rejected
+			// While ongoing, verify that direct GET is strictly rejected with InvalidObjectState
 			if strings.Contains(restoreHeader, `ongoing-request="true"`) {
 				_, getErr := client.GetObject(ctx, &awss3.GetObjectInput{
 					Bucket: &cfg.Bucket,
@@ -319,6 +320,10 @@ func runFlexible(ctx context.Context, client *awss3.Client, cfg benchmark.Config
 				})
 				if getErr == nil {
 					return fmt.Errorf("Glacier flexible object %q accessible while ongoing-request=true", file.Path)
+				}
+				var apiErr smithy.APIError
+				if !errors.As(getErr, &apiErr) || apiErr.ErrorCode() != "InvalidObjectState" {
+					return fmt.Errorf("ongoing restore GET %q failed with %v; expected strictly InvalidObjectState", file.Path, getErr)
 				}
 			}
 
@@ -355,6 +360,11 @@ func runFlexible(ctx context.Context, client *awss3.Client, cfg benchmark.Config
 		if gotSHA != file.SHA256 {
 			return fmt.Errorf("restored SHA256 mismatch for %q: got %s, expected %s", file.Path, gotSHA, file.SHA256)
 		}
+
+		if out.ContentLength != nil && *out.ContentLength != n {
+			return fmt.Errorf("content length mismatch for restored %q: header=%d, read=%d", file.Path, *out.ContentLength, n)
+		}
+		receipt.RetainedPhysicalBytes += n
 
 		res.Samples = append(res.Samples, Sample{
 			Operation: "GetObjectRestored",

@@ -240,10 +240,15 @@ def benchmark_case(r, case_id, repetition):
     cases = {c["id"]: c for c in matrix.get("cases", [])}
     require(case_id in cases, f"Unknown benchmark case ID: {case_id}")
     case = cases[case_id]
-    require(
-        case.get("runner") == "warmbench",
-        f"Case {case_id} requires specialized runner: {case.get('runner')}",
-    )
+    scenario = case["scenario"]
+    if scenario == "cold":
+        runner_bin = "coldbench"
+    elif scenario == "recovery":
+        runner_bin = "recoverybench"
+    elif case.get("runner") == "warmbench":
+        runner_bin = "warmbench"
+    else:
+        raise ValueError(f"Case {case_id} requires supported runner: {case.get('runner')}")
 
     slot_name = f"{case_id}-rep{repetition}"
     prefix = f"trials/{slot_name}"
@@ -260,11 +265,20 @@ def benchmark_case(r, case_id, repetition):
         new=True,
     )
 
-    scenario = case["scenario"]
     variant = case["variant"]
     concurrency = case["concurrency"]
     dataset = case["dataset"]
     domain = case["domain"]
+
+    topology = case.get("topology", "edge")
+    if topology == "cloud":
+        endpoint = "https://cloud.miles.test"
+        profile = "cloud"
+        topology_desc = "two Cloud instances behind private internal ALB"
+    else:
+        endpoint = "https://edge.miles.test"
+        profile = "edge"
+        topology_desc = "two Cloud plus AWS Edge and client"
 
     t1_id = f"{case_id[:16]}-t1-r{repetition}-{secrets.token_hex(4)}"
     t1_domain = "domain-a" if scenario == "domain" else ("edge-domain-source" if scenario == "edge-clone" else domain)
@@ -284,6 +298,11 @@ def benchmark_case(r, case_id, repetition):
         "repetition": repetition,
         "scenario": scenario,
         "variant": variant,
+        "runner": runner_bin,
+        "topology_type": topology,
+        "topology": topology_desc,
+        "endpoint": endpoint,
+        "profile": profile,
         "domain": domain,
         "concurrency": concurrency,
         "dataset": dataset,
@@ -295,6 +314,8 @@ def benchmark_case(r, case_id, repetition):
             - dt.timedelta(minutes=90)
         ).isoformat(),
     }
+    if scenario == "recovery":
+        settings["fault_scope"] = "node-restart" if variant == "r1" else "checkpoint-cut"
 
     if scenario in {"domain", "edge-clone"}:
         t2_id = f"{case_id[:16]}-t2-r{repetition}-{secrets.token_hex(4)}"
@@ -312,10 +333,31 @@ def benchmark_case(r, case_id, repetition):
         }
 
     if case.get("comparator") == "direct-s3":
-        s3_bucket = f"miles-acceptance-{slot_name}-{secrets.token_hex(4)}"
+        direct_bucket = f"miles-dev-pilot-direct-{r.c['account_id']}-{r.c['region']}"
+        cred_raw = json.loads(
+            r.command(
+                [
+                    "aws",
+                    "--profile",
+                    r.c["deploy_profile"],
+                    "--region",
+                    r.c["region"],
+                    "configure",
+                    "export-credentials",
+                    "--format",
+                    "process",
+                ],
+                env=r.environment(),
+            )
+        )
         settings["direct_s3"] = {
-            "bucket": s3_bucket,
-            "credentials": tenant1["credentials"],
+            "bucket": direct_bucket,
+            "endpoint": f"https://s3.{r.c['region']}.amazonaws.com",
+            "credentials": {
+                "access_key_id": cred_raw["AccessKeyId"],
+                "secret_access_key": cred_raw["SecretAccessKey"],
+                "session_token": cred_raw.get("SessionToken", ""),
+            },
         }
 
     r.write(f"{prefix}/input.json", settings)

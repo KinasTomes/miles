@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/KinasTomes/miles/internal/benchmark"
 	"github.com/KinasTomes/miles/internal/benchmarkdata"
@@ -114,6 +115,9 @@ func TestRecoveryRunnerR1(t *testing.T) {
 			currentEpoch.Add(1) // epoch advances
 			return nil
 		},
+		ReadCheckpoint: func(ctx context.Context, historyID string, epoch int64) (string, error) {
+			return "chk-seal-" + historyID, nil
+		},
 	}
 
 	res, err := Run(context.Background(), cfg, opt)
@@ -152,12 +156,29 @@ func TestRecoveryRunnerR2(t *testing.T) {
 
 	cfg, temp := setupFixture(t, handler)
 
+	var r2Epoch atomic.Int64
+	r2Epoch.Store(20)
+
 	opt := Options{
 		Manifest:    manifestPath,
 		Out:         filepath.Join(temp, "artifact-r2"),
 		Variant:     "r2",
 		FaultScope:  "checkpoint-cut",
 		Concurrency: 1,
+		CheckGate: func(ctx context.Context) (*GateState, error) {
+			return &GateState{
+				HistoryID: "hist-r2-test",
+				Epoch:     r2Epoch.Load(),
+				State:     "Open",
+			}, nil
+		},
+		SimulateFault: func(ctx context.Context, phase string) error {
+			r2Epoch.Add(1)
+			return nil
+		},
+		ReadCheckpoint: func(ctx context.Context, historyID string, epoch int64) (string, error) {
+			return "chk-cut-" + historyID, nil
+		},
 	}
 
 	res, err := Run(context.Background(), cfg, opt)
@@ -210,10 +231,12 @@ func TestRecoveryRunnerNegativeCases(t *testing.T) {
 	t.Run("epoch failed to advance", func(t *testing.T) {
 		cfg, temp := setupFixture(t, nil)
 		opt := Options{
-			Manifest:   manifestPath,
-			Out:        filepath.Join(temp, "stale-epoch"),
-			Variant:    "r1",
-			FaultScope: "node-restart",
+			Manifest:     manifestPath,
+			Out:          filepath.Join(temp, "stale-epoch"),
+			Variant:      "r1",
+			FaultScope:   "node-restart",
+			PollInterval: 5 * time.Millisecond,
+			MaxPollWait:  50 * time.Millisecond,
 			CheckGate: func(ctx context.Context) (*GateState, error) {
 				return &GateState{HistoryID: "h1", Epoch: 5, State: "Open"}, nil
 			},
@@ -226,17 +249,88 @@ func TestRecoveryRunnerNegativeCases(t *testing.T) {
 		}
 	})
 
+	t.Run("nil callbacks and unconfigured dynamodb fails closed", func(t *testing.T) {
+		cfg, temp := setupFixture(t, nil)
+		// Point credentials_file to non-existent file
+		cfg.CredentialsFile = filepath.Join(temp, "non-existent-creds.json")
+		opt := Options{
+			Manifest:   manifestPath,
+			Out:        filepath.Join(temp, "no-cb"),
+			Variant:    "r1",
+			FaultScope: "node-restart",
+		}
+		if _, err := Run(context.Background(), cfg, opt); err == nil {
+			t.Fatal("expected fail-closed error when callbacks are nil and dynamodb credentials unavailable")
+		}
+	})
+
+	t.Run("missing fault mechanism fails closed", func(t *testing.T) {
+		cfg, temp := setupFixture(t, nil)
+		opt := Options{
+			Manifest:   manifestPath,
+			Out:        filepath.Join(temp, "no-fault"),
+			Variant:    "r1",
+			FaultScope: "node-restart",
+			CheckGate: func(ctx context.Context) (*GateState, error) {
+				return &GateState{HistoryID: "h1", Epoch: 1, State: "Open"}, nil
+			},
+			ReadCheckpoint: func(ctx context.Context, historyID string, epoch int64) (string, error) {
+				return "chk-1", nil
+			},
+		}
+		if _, err := Run(context.Background(), cfg, opt); err == nil {
+			t.Fatal("expected error when no fault injection mechanism provided")
+		}
+	})
+
+	t.Run("checkpoint verification failure fails closed", func(t *testing.T) {
+		cfg, temp := setupFixture(t, nil)
+		var epoch atomic.Int64
+		epoch.Store(1)
+		opt := Options{
+			Manifest:   manifestPath,
+			Out:        filepath.Join(temp, "bad-chk"),
+			Variant:    "r1",
+			FaultScope: "node-restart",
+			CheckGate: func(ctx context.Context) (*GateState, error) {
+				return &GateState{HistoryID: "h1", Epoch: epoch.Load(), State: "Open"}, nil
+			},
+			SimulateFault: func(ctx context.Context, phase string) error {
+				epoch.Add(1)
+				return nil
+			},
+			ReadCheckpoint: func(ctx context.Context, historyID string, epoch int64) (string, error) {
+				return "", errors.New("checkpoint missing from durable state")
+			},
+		}
+		if _, err := Run(context.Background(), cfg, opt); err == nil {
+			t.Fatal("expected error when durable checkpoint verification fails")
+		}
+	})
+
 	t.Run("readback SHA mismatch fails closed", func(t *testing.T) {
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("corrupted-recovered-bytes"))
 		})
 		cfg, temp := setupFixture(t, handler)
+		var epoch atomic.Int64
+		epoch.Store(1)
 		opt := Options{
 			Manifest:   manifestPath,
 			Out:        filepath.Join(temp, "bad-sha"),
 			Variant:    "r1",
 			FaultScope: "node-restart",
+			CheckGate: func(ctx context.Context) (*GateState, error) {
+				return &GateState{HistoryID: "h1", Epoch: epoch.Load(), State: "Open"}, nil
+			},
+			SimulateFault: func(ctx context.Context, phase string) error {
+				epoch.Add(1)
+				return nil
+			},
+			ReadCheckpoint: func(ctx context.Context, historyID string, epoch int64) (string, error) {
+				return "chk-h1-e2", nil
+			},
 		}
 		if _, err := Run(context.Background(), cfg, opt); err == nil {
 			t.Fatal("expected error on readback SHA mismatch")

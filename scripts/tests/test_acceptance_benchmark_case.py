@@ -53,13 +53,13 @@ class BenchmarkCaseAcceptanceTests(unittest.TestCase):
         )
         self.r.write("active-outputs.json", {"fixture": True})
 
-    def test_all_12_warm_cases_and_3_reps_are_allowlisted_in_process_commands(self):
+    def test_all_20_matrix_cases_and_3_reps_are_allowlisted_in_process_commands(self):
         matrix_file = ROOT / "benchmarks/workload-matrix.json"
         matrix = json.loads(matrix_file.read_text())
-        warm_cases = [c["id"] for c in matrix["cases"] if c.get("runner") == "warmbench"]
-        self.assertEqual(len(warm_cases), 12)
+        all_cases = [c["id"] for c in matrix["cases"]]
+        self.assertEqual(len(all_cases), 20)
 
-        for case_id in warm_cases:
+        for case_id in all_cases:
             for rep in (1, 2, 3):
                 cmd = ("benchmark-case", "--case-id", case_id, "--repetition", str(rep))
                 self.assertIn(cmd, process.COMMANDS)
@@ -98,7 +98,7 @@ class BenchmarkCaseAcceptanceTests(unittest.TestCase):
     def test_recipe_validation_rejects_unallowlisted_benchmark_case_or_rep(self):
         for bad_cmd in [
             ["benchmark-case", "--case-id", "warm-cloud-c1", "--repetition", "4"],
-            ["benchmark-case", "--case-id", "cold-cloud-ir", "--repetition", "1"],
+            ["benchmark-case", "--case-id", "warm-cloud-c1", "--repetition", "0"],
             ["benchmark-case", "--case-id", "nonexistent-case", "--repetition", "1"],
         ]:
             recipe = {
@@ -137,10 +137,10 @@ class BenchmarkCaseAcceptanceTests(unittest.TestCase):
         self.assertEqual(args.repetition, 2)
         self.assertEqual(args.confirm_run, "focused-fixture")
 
-    def test_workload_benchmark_case_rejects_unsupported_runner_or_invalid_rep(self):
+    def test_workload_benchmark_case_rejects_unknown_case_or_invalid_rep(self):
         with mock.patch.object(self.r, "identity"):
             with self.assertRaises(ValueError):
-                workload.benchmark_case(self.r, "cold-cloud-ir", 1)
+                workload.benchmark_case(self.r, "nonexistent-case", 1)
             with self.assertRaises(ValueError):
                 workload.benchmark_case(self.r, "warm-cloud-c1", 0)
             with self.assertRaises(ValueError):
@@ -158,6 +158,16 @@ class BenchmarkCaseAcceptanceTests(unittest.TestCase):
         for bad_name in ["c1", "warm-cloud-c1", "warm-cloud-c1-rep4", "../escape-rep1"]:
             with self.subTest(bad_name=bad_name), self.assertRaises(ValueError):
                 client.benchmark({"name": bad_name})
+
+    def test_full_benchmark_recipe_has_60_slots(self):
+        recipe_path = ROOT / "deploy/acceptance/templates/full-benchmark.json"
+        recipe = process.read_recipe(recipe_path)
+        trial_slots = [
+            s for s in recipe["steps"]
+            if s["id"].endswith(("-rep1", "-rep2", "-rep3"))
+        ]
+        self.assertEqual(len(trial_slots), 60)
+        self.assertEqual(len(recipe["cleanup_steps"]), 12)
 
 
 if __name__ == "__main__":

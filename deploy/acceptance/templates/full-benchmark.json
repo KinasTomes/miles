@@ -499,6 +499,150 @@
       "approval": "approve-active"
     },
     {
+      "id": "cold-cloud-ir-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-ir",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-ir-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-ir",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-ir-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-ir",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-flexible-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-flexible",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-flexible-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-flexible",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-flexible-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-flexible",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-ir-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-ir",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-ir-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-ir",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-ir-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-ir",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-flexible-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-flexible",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-flexible-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-flexible",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-flexible-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-flexible",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
       "id": "edge-clone-download-rep1",
       "command": [
         "benchmark-case",
@@ -564,6 +708,150 @@
         "benchmark-case",
         "--case-id",
         "edge-clone-upload",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r1-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r1",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r1-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r1",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r1-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r1",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r2-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r2",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r2-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r2",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r2-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r2",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r1-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r1",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r1-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r1",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r1-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r1",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r2-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r2",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r2-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r2",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r2-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r2",
         "--repetition",
         "3"
       ],

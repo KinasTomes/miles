@@ -93,6 +93,8 @@ def init(directory, config_path):
     r.write("release.json", json.loads(built))
     for name, arch in [
         ("warmbench", "arm64"),
+        ("coldbench", "arm64"),
+        ("recoverybench", "arm64"),
         ("datasetgen", "arm64"),
     ]:
         env = dict(os.environ, CGO_ENABLED="0")
@@ -105,7 +107,16 @@ def init(directory, config_path):
         )
     r.write(
         "build-hashes.json",
-        {n: digest(r.file(n)) for n in ["release.tar.gz", "warmbench", "datasetgen"]},
+        {
+            n: digest(r.file(n))
+            for n in [
+                "release.tar.gz",
+                "warmbench",
+                "coldbench",
+                "recoverybench",
+                "datasetgen",
+            ]
+        },
     )
     pki(r)
     import shlex

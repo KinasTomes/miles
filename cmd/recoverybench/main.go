@@ -34,6 +34,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	concurrency := f.Int("concurrency", 1, "Concurrency (default 1)")
 	failFast := f.Bool("fail-fast", false, "Halt on first error")
 	retain := f.Bool("retain-objects", false, "Retain objects")
+	systemConfigTable := f.String("system-config-table", "miles-dev-SystemConfig", "DynamoDB SystemConfig table name")
+	faultCommand := f.String("fault-command", "", "Command to execute for fault injection")
 
 	if err := f.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -61,13 +63,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	opt := recoveryrunner.Options{
-		Manifest:      *manifest,
-		Out:           *out,
-		Variant:       *variant,
-		FaultScope:    *faultScope,
-		Concurrency:   *concurrency,
-		FailFast:      *failFast,
-		RetainObjects: *retain,
+		Manifest:          *manifest,
+		Out:               *out,
+		Variant:           *variant,
+		FaultScope:        *faultScope,
+		SystemConfigTable: *systemConfigTable,
+		FaultCommand:      *faultCommand,
+		Concurrency:       *concurrency,
+		FailFast:          *failFast,
+		RetainObjects:     *retain,
 	}
 
 	res, err := recoveryrunner.Run(ctx, c, opt)

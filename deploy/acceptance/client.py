@@ -151,7 +151,16 @@ def benchmark(settings):
         "AWS_ACCESS_KEY_ID": t1_keys["access_key_id"],
         "AWS_SECRET_ACCESS_KEY": t1_keys["secret_access_key"],
     }
-    endpoint = settings.get("endpoint", "https://edge.miles.test")
+    endpoint = settings.get("endpoint")
+    if not endpoint:
+        endpoint = "https://cloud.miles.test" if settings.get("profile") == "cloud" or settings.get("topology_type") == "cloud" else "https://edge.miles.test"
+    profile = settings.get("profile")
+    if not profile:
+        profile = "cloud" if settings.get("topology_type") == "cloud" else "edge"
+    topology = settings.get("topology")
+    if not topology:
+        topology = "two Cloud instances behind private internal ALB" if profile == "cloud" else "two Cloud plus AWS Edge and client"
+
     p1 = subprocess.run(
         [
             "aws",
@@ -182,8 +191,8 @@ def benchmark(settings):
         "kms_key_id": "",
         "dedup_domain": t1.get("domain", settings.get("domain", "default")),
         "environment": {
-            "profile": settings.get("profile", "edge"),
-            "topology": settings.get("topology", "two Cloud plus AWS Edge and client"),
+            "profile": profile,
+            "topology": topology,
             "host": "t4g.small CPU Standard",
             "cpu": "Graviton2 2vCPU",
             "disk": "20GiB encrypted gp3",
@@ -282,28 +291,84 @@ def benchmark(settings):
         raise ValueError("Insufficient trial/drain budget")
 
     timeout_s = min(1200, int(remaining))
-    cmd = [
-        "timeout",
-        "--signal=TERM",
-        "--kill-after=125s",
-        str(timeout_s) + "s",
-        str(BASE / "warmbench"),
-        "--config", str(cfg_file),
-        "--manifest", str(manifest_path),
-        "--out", str(folder / "result"),
-        "--scenario", settings["scenario"],
-        "--variant", settings["variant"],
-        "--domain", settings.get("domain", "default"),
-        "--concurrency", str(settings["concurrency"]),
-        "--read-repeats", str(settings.get("read_repeats", 3)),
-        "--fail-fast",
-        "--drain-timeout", "120s",
-        "--retain-objects",
-    ]
-    if cfg2_file:
-        cmd.extend(["--second-config", str(cfg2_file)])
-    if source_prefix:
-        cmd.extend(["--source-prefix", source_prefix])
+    runner = settings.get("runner", "warmbench")
+    if runner == "coldbench":
+        cmd = [
+            "timeout",
+            "--signal=TERM",
+            "--kill-after=125s",
+            str(timeout_s) + "s",
+            str(BASE / "coldbench"),
+            "--config",
+            str(cfg_file),
+            "--manifest",
+            str(manifest_path),
+            "--out",
+            str(folder / "result"),
+            "--variant",
+            settings["variant"],
+            "--concurrency",
+            str(settings["concurrency"]),
+            "--fail-fast",
+            "--retain-objects",
+        ]
+    elif runner == "recoverybench":
+        cmd = [
+            "timeout",
+            "--signal=TERM",
+            "--kill-after=125s",
+            str(timeout_s) + "s",
+            str(BASE / "recoverybench"),
+            "--config",
+            str(cfg_file),
+            "--manifest",
+            str(manifest_path),
+            "--out",
+            str(folder / "result"),
+            "--variant",
+            settings["variant"],
+            "--fault-scope",
+            settings.get(
+                "fault_scope",
+                "node-restart" if settings["variant"] == "r1" else "checkpoint-cut",
+            ),
+            "--concurrency",
+            str(settings["concurrency"]),
+            "--fail-fast",
+            "--retain-objects",
+        ]
+    else:
+        cmd = [
+            "timeout",
+            "--signal=TERM",
+            "--kill-after=125s",
+            str(timeout_s) + "s",
+            str(BASE / "warmbench"),
+            "--config",
+            str(cfg_file),
+            "--manifest",
+            str(manifest_path),
+            "--out",
+            str(folder / "result"),
+            "--scenario",
+            settings["scenario"],
+            "--variant",
+            settings["variant"],
+            "--domain",
+            settings.get("domain", "default"),
+            "--concurrency",
+            str(settings["concurrency"]),
+            "--read-repeats",
+            str(settings.get("read_repeats", 3)),
+            "--fail-fast",
+            "--drain-timeout",
+            "120s",
+            "--retain-objects",
+        ]
+        if cfg2_file:
+            cmd.extend(["--second-config", str(cfg2_file)])
+        if source_prefix:
+            cmd.extend(["--source-prefix", source_prefix])
 
     p = subprocess.run(
         cmd,

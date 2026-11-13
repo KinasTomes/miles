@@ -117,6 +117,9 @@ func TestColdRunnerIR(t *testing.T) {
 	if res.ColdReceipt.ObservedBackendStorageClass != "GLACIER_IR" {
 		t.Fatalf("expected observed class GLACIER_IR, got %s", res.ColdReceipt.ObservedBackendStorageClass)
 	}
+	if res.ColdReceipt.RetainedPhysicalBytes != int64(len(content)) {
+		t.Fatalf("expected RetainedPhysicalBytes %d, got %d", len(content), res.ColdReceipt.RetainedPhysicalBytes)
+	}
 	if len(res.Samples) != 1 || res.Samples[0].SHA256 != hash {
 		t.Fatalf("unexpected samples: %+v", res.Samples)
 	}
@@ -198,6 +201,9 @@ func TestColdRunnerFlexible(t *testing.T) {
 	if res.ColdReceipt.RestorationExpiry != "Fri, 23 Dec 2026 00:00:00 GMT" {
 		t.Fatalf("expected expiry, got %s", res.ColdReceipt.RestorationExpiry)
 	}
+	if res.ColdReceipt.RetainedPhysicalBytes != int64(len(content)) {
+		t.Fatalf("expected RetainedPhysicalBytes %d, got %d", len(content), res.ColdReceipt.RetainedPhysicalBytes)
+	}
 	if len(res.Samples) != 1 || res.Samples[0].SHA256 != hash {
 		t.Fatalf("unexpected samples: %+v", res.Samples)
 	}
@@ -220,6 +226,34 @@ func TestColdRunnerNegativeCases(t *testing.T) {
 		opt := Options{Manifest: manifestPath, Out: filepath.Join(temp, "bad-class"), Variant: "ir"}
 		if _, err := Run(context.Background(), cfg, opt); err == nil {
 			t.Fatal("expected error for storage class mismatch")
+		}
+	})
+
+	t.Run("flexible access denied instead of invalid object state fails closed", func(t *testing.T) {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`<Error><Code>AccessDenied</Code><Message>Access Denied</Message></Error>`))
+		})
+		cfg, temp := setupFixture(t, handler)
+		cfg.StorageClass = "GLACIER"
+		opt := Options{Manifest: manifestPath, Out: filepath.Join(temp, "access-denied"), Variant: "flexible"}
+		if _, err := Run(context.Background(), cfg, opt); err == nil {
+			t.Fatal("expected error when pre-restore GET returns AccessDenied instead of InvalidObjectState")
+		}
+	})
+
+	t.Run("backend storage class missing fails closed", func(t *testing.T) {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Don't set x-amz-storage-class (S3 Standard default)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("cold-benchmark-payload-bytes"))
+		})
+		cfg, temp := setupFixture(t, handler)
+		cfg.StorageClass = "GLACIER_IR"
+		opt := Options{Manifest: manifestPath, Out: filepath.Join(temp, "missing-class"), Variant: "ir"}
+		if _, err := Run(context.Background(), cfg, opt); err == nil {
+			t.Fatal("expected error when backend storage class is missing or not GLACIER_IR")
 		}
 	})
 

@@ -191,7 +191,7 @@ def stage():
         if "edge.miles.test" in text:
             raise ValueError("Host alias already set; reconcile installation")
         hosts.write_text(text + "\n" + edge + " edge.miles.test\n")
-        for n in ["warmbench", "datasetgen"]:
+        for n in ["warmbench", "coldbench", "recoverybench", "datasetgen"]:
             (BASE / n).chmod(0o755)
         for profile, dirname, seed in [
             ("backup30", "dataset", "focused-acceptance"),
