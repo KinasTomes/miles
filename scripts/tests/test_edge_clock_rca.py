@@ -3,9 +3,11 @@ Unit and integration tests for Edge Clock RCA Analyzer (Workstream R).
 """
 
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from scripts.edge_clock_rca import EdgeClockRCAAnalyzer
 
@@ -472,21 +474,32 @@ class EdgeClockRCATests(unittest.TestCase):
         self.assertAlmostEqual(fw["client_failed_latencies_sum_seconds"], 2.43, places=2)
         self.assertIn("Measurement boundary distinction", fw["measurement_boundary_clarification"])
 
+    def test_default_suite_does_not_probe_private_operator_evidence(self):
+        with (
+            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.object(Path, "exists", side_effect=PermissionError("private home")),
+            self.assertRaises(unittest.SkipTest),
+        ):
+            self.test_real_live_evidence_files_if_present()
+
     def test_real_live_evidence_files_if_present(self):
-        result_path = Path("/home/ubuntu/.local/state/miles/dynamodb-pilot/recheck/live-run-20261108-0345/edge-c1-t1-result.json")
-        failed_window_path = Path("/home/ubuntu/.local/state/miles/dynamodb-pilot/recheck/live-run-20261108-0345/edge-c1-t1-failed-window.json")
+        directory = os.environ.get("MILES_EDGE_CLOCK_EVIDENCE_DIR")
+        if not directory:
+            self.skipTest("Set MILES_EDGE_CLOCK_EVIDENCE_DIR to opt into private evidence")
+        result_path = Path(directory) / "edge-c1-t1-result.json"
+        failed_window_path = Path(directory) / "edge-c1-t1-failed-window.json"
 
-        if result_path.exists() and failed_window_path.exists():
-            analyzer = EdgeClockRCAAnalyzer.from_files(result_path, failed_window_path)
-            reqs = analyzer.map_requests()
-            self.assertEqual(len(reqs), 90)
-            self.assertEqual(reqs[46]["pseudonym"], "REQ-EDGE-047")
-            self.assertEqual(reqs[46]["status"], "FAIL")
-            self.assertEqual(reqs[46]["stage"], "prepare")
-            self.assertEqual(reqs[47]["stage"], "writer_admission")
+        analyzer = EdgeClockRCAAnalyzer.from_files(result_path, failed_window_path)
+        reqs = analyzer.map_requests()
+        self.assertEqual(len(reqs), 90)
+        self.assertEqual(reqs[46]["pseudonym"], "REQ-EDGE-047")
+        self.assertEqual(reqs[46]["status"], "FAIL")
+        self.assertEqual(reqs[46]["stage"], "prepare")
+        self.assertEqual(reqs[47]["stage"], "writer_admission")
 
-            inv = analyzer.build_evidence_inventory()
-            self.assertGreaterEqual(len(inv), 6)
+        inv = analyzer.build_evidence_inventory()
+        self.assertGreaterEqual(len(inv), 6)
+
 
 
 if __name__ == "__main__":
