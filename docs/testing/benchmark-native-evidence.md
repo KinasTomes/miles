@@ -32,7 +32,9 @@ Không thu hồi writer của runtime, không kill VM, không trực tiếp upda
 rows hoặc tua clock. Scope R1 là `lease-revoke`, R2 là `checkpoint-cut`.
 
 Cut dùng `recovery.Worker.CloseAndSeal`, cùng adapter DynamoDB SharedAuthority
-và Chrony như runtime. Gate/history/incarnation phải khớp; timeout hoặc unknown
+và Chrony như runtime. Worker của operator dùng supervisor để renew lease bình
+thường mỗi 15 giây, join heartbeat trước khi release; không kéo dài lifetime
+để né fencing. Gate/history/incarnation phải khớp; timeout hoặc unknown
 mutation giữ native intent cho reconciliation. Không force mở gate. Sau cut,
 verifier đọc epoch Sealed và kiểm checksum, contiguous chain, membership và mọi
 dependency qua `VerifyCut`. Epoch tăng một mình không đủ.

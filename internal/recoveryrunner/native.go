@@ -104,7 +104,7 @@ func configureNative(ctx context.Context, opt *Options) error {
 		return err
 	}
 	store, err := dynamodb.New(dynamodb.Options{API: api, Tables: c.Tables, MaxAttempts: 1,
-		Authority: &dynamodb.SharedAuthority{Time: utc, Lifetime: 5 * time.Minute}, RequireProducers: true})
+		Authority: &dynamodb.SharedAuthority{Time: utc, Lifetime: time.Minute}, RequireProducers: true})
 	if err != nil {
 		return err
 	}
@@ -190,7 +190,7 @@ func configureNative(ctx context.Context, opt *Options) error {
 		if err := os.WriteFile(filepath.Join(opt.Out, "native-cut-intent.json"), body, 0600); err != nil {
 			return err
 		}
-		evidence.Seal, err = w.CloseAndSeal(ctx, cut)
+		evidence.Seal, err = w.CloseAndSealSupervised(ctx, cut)
 		if err != nil {
 			return err
 		}
