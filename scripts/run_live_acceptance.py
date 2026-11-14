@@ -96,7 +96,16 @@ def main():
     installation.identity()
     inventory = installation.inventory()
     nodes = installation.nodes()
-    cloud = next((node for node, profile in nodes if profile == "cloud"), None)
+    cloud = None
+    for node, profile in nodes:
+        if profile == "cloud":
+            try:
+                st = installation.aws("ec2", "describe-instances", "--instance-ids", node)["Reservations"][0]["Instances"][0]["State"]["Name"]
+                if st == "running":
+                    cloud = node
+                    break
+            except Exception:
+                continue
     edge = inventory.get("edge") or {}
     if not cloud or not edge.get("instance_id") or not edge.get("public_ip") or not inventory.get("alb_dns"):
         sys.exit("refusing to run: Cloud ALB/ASG and Edge EC2 must be deployed")
