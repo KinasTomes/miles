@@ -121,12 +121,10 @@ def remove_approved_pending(
     for exc in approved_exceptions:
         if isinstance(exc, tuple) and len(exc) == 2:
             parsed_exceptions.add((str(exc[0]), str(exc[1])))
-            exact_exception_ids.add(str(exc[1]))
         elif isinstance(exc, str):
             if "=" in exc:
                 k, _, v = exc.partition("=")
                 parsed_exceptions.add((k.strip(), v.strip()))
-                exact_exception_ids.add(v.strip())
             else:
                 exact_exception_ids.add(exc.strip())
 
@@ -138,7 +136,7 @@ def remove_approved_pending(
             # Baseline removals must NEVER be filtered by unowned or generic checks.
             # Only an explicit approval targeting this exact removal allows exemption.
             if kind.endswith("_removed"):
-                if (kind, x_str) in parsed_exceptions or x_str in exact_exception_ids:
+                if (kind, x_str) in parsed_exceptions:
                     continue  # explicitly approved baseline removal
                 filtered.append(x)
                 continue
@@ -1204,43 +1202,46 @@ class TeardownAbsenceVerifier:
             }
 
         if resource_type == "iam_role" and name == "AWSServiceRoleForRolesAnywhere":
-            # The role exists (exit code 0). Verify whether it is retained by concurrent workloads
-            # that have active trust anchors in the account not belonging to our inventory.
+            # Retention requires a complete native inventory, including owned anchor absence.
             rc_ta, stdout_ta, stderr_ta = self._runner([
                 "rolesanywhere", "list-trust-anchors", "--output", "json"
             ])
-            external_anchors = []
-            if rc_ta == 0:
-                try:
-                    data = json.loads(stdout_ta)
-                    anchors = data.get("trustAnchors", [])
-                    active_ids = [
-                        a.get("trustAnchorId")
-                        for a in anchors
-                        if isinstance(a, dict) and a.get("trustAnchorId")
-                    ]
-                    owned_anchors = set(self.inventory.get("trust_anchors", []))
-                    external_anchors = [aid for aid in active_ids if aid not in owned_anchors]
-                except Exception as exc:
-                    return {
-                        "resource": name,
-                        "type": resource_type,
-                        "status": "UNEXPECTED_ERROR",
-                        "reason": f"trust_anchor_discovery_failed: {exc}",
-                        "details": stderr_ta.strip() or stdout_ta.strip(),
-                    }
+            try:
+                if rc_ta != 0:
+                    raise ValueError(f"trust anchor discovery exit code {rc_ta}")
+                data = json.loads(stdout_ta)
+                anchors = data["trustAnchors"]
+                if not isinstance(anchors, list) or data.get("nextToken") or any(
+                    not isinstance(a, dict) or not isinstance(a.get("trustAnchorId"), str)
+                    or not a["trustAnchorId"] for a in anchors
+                ):
+                    raise ValueError("incomplete or malformed trust anchor inventory")
+                observed_anchors = {a["trustAnchorId"] for a in anchors}
+                owned_anchors = set(self.inventory.get("trust_anchors", []))
+                owned_present = sorted(observed_anchors & owned_anchors)
+                external_anchors = sorted(observed_anchors - owned_anchors)
+            except (ValueError, TypeError, KeyError) as exc:
+                return {
+                    "resource": name,
+                    "type": resource_type,
+                    "status": "UNEXPECTED_ERROR",
+                    "reason": f"trust_anchor_discovery_failed: {exc}",
+                    "details": stderr_ta.strip() or stdout_ta.strip(),
+                }
 
-            if external_anchors:
+            evidence = {
+                "external_trust_anchors": external_anchors,
+                "owned_trust_anchors_present": owned_present,
+                "owned_trust_anchors_absent": not owned_present,
+            }
+            if external_anchors and not owned_present:
                 return {
                     "resource": name,
                     "type": resource_type,
                     "status": "RETAINED",
                     "reason": "ADOPTED_BY_CONCURRENT_ACCOUNT_WORKLOAD",
-                    "details": f"Role retained by concurrent workload; active external trust anchors: {sorted(external_anchors)}",
-                    "evidence": {
-                        "external_trust_anchors": sorted(external_anchors),
-                        "owned_trust_anchors_absent": True,
-                    },
+                    "details": f"Role retained by concurrent workload; surviving external trust anchors: {external_anchors}",
+                    "evidence": evidence,
                 }
 
             # If no external trust anchors exist, keeping the role is unverified / leak
@@ -1249,7 +1250,8 @@ class TeardownAbsenceVerifier:
                 "type": resource_type,
                 "status": "STILL_PRESENT",
                 "reason": "RESOURCE_EXISTS_LEAK",
-                "details": f"AWSServiceRoleForRolesAnywhere exists without verified external trust anchors: {stdout.strip()}",
+                "details": "Shared role retention unverified: owned anchors remain or no external anchors exist",
+                "evidence": evidence,
             }
 
         # Exit code 0 means resource was found and still exists!

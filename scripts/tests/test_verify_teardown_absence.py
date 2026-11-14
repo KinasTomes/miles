@@ -1622,6 +1622,89 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         )
         self.assertEqual(res3, {})
 
+    def test_concurrent_exceptions_do_not_approve_baseline_removals(self):
+        for kind, identity in (
+            ("roles", "shared-deploy"),
+            ("managed_policy_versions", "DeployServices|v4"),
+        ):
+            for approval in (f"{kind}={identity}", (kind, identity), identity):
+                with self.subTest(kind=kind, approval=approval):
+                    residuals = {kind + "_removed": [identity]}
+                    self.assertEqual(
+                        remove_approved_pending(
+                            residuals, set(), lambda _: {}, lambda _: {},
+                            inventory={}, approved_exceptions=[approval],
+                        ),
+                        residuals,
+                    )
+            self.assertEqual(
+                remove_approved_pending(
+                    {kind: [identity], kind + "_removed": [identity]},
+                    set(), lambda _: {}, lambda _: {}, inventory={},
+                    approved_exceptions=[f"{kind}={identity}"],
+                ),
+                {kind + "_removed": [identity]},
+            )
+            self.assertEqual(
+                remove_approved_pending(
+                    {kind + "_removed": [identity]}, set(), lambda _: {}, lambda _: {},
+                    inventory={}, approved_exceptions=[f"{kind}_removed={identity}"],
+                ),
+                {},
+            )
+
+        self.assertEqual(
+            remove_approved_pending(
+                {"roles": ["shared"], "instance_profiles": ["shared"]},
+                set(), lambda _: {}, lambda _: {}, inventory={},
+                approved_exceptions=["roles=shared"],
+            ),
+            {"instance_profiles": ["shared"]},
+        )
+
+    def test_retained_role_requires_owned_anchors_absent(self):
+        def runner(cmd):
+            if "get-role" in cmd:
+                return 0, json.dumps({"Role": {"RoleName": "AWSServiceRoleForRolesAnywhere"}}), ""
+            return 0, json.dumps({"trustAnchors": [
+                {"trustAnchorId": "owned", "enabled": True},
+                {"trustAnchorId": "external", "enabled": True},
+            ]}), ""
+
+        verifier = TeardownAbsenceVerifier(
+            inventory={"iam_roles": ["AWSServiceRoleForRolesAnywhere"], "trust_anchors": ["owned"]},
+            cli_runner=runner,
+        )
+        result = verifier.check_resource_absent(
+            "AWSServiceRoleForRolesAnywhere", "iam_role", ["iam", "get-role"],
+            EXPECTED_ABSENCE_ERRORS["iam_role"],
+        )
+        self.assertEqual(result["status"], "STILL_PRESENT")
+        self.assertFalse(result["evidence"]["owned_trust_anchors_absent"])
+        self.assertEqual(result["evidence"]["owned_trust_anchors_present"], ["owned"])
+
+    def test_retained_role_rejects_unverified_anchor_inventory(self):
+        for response in (
+            (255, "", "AccessDeniedException"),
+            (0, "not-json", ""),
+            (0, "{}", ""),
+            (0, json.dumps({"trustAnchors": [{"name": "missing-id"}]}), ""),
+            (0, json.dumps({"trustAnchors": [{"trustAnchorId": "external"}], "nextToken": "more"}), ""),
+        ):
+            with self.subTest(response=response):
+                def runner(cmd):
+                    if "get-role" in cmd:
+                        return 0, "{}", ""
+                    return response
+
+                verifier = TeardownAbsenceVerifier(inventory={}, cli_runner=runner)
+                result = verifier.check_resource_absent(
+                    "AWSServiceRoleForRolesAnywhere", "iam_role", ["iam", "get-role"],
+                    EXPECTED_ABSENCE_ERRORS["iam_role"],
+                )
+                self.assertEqual(result["status"], "UNEXPECTED_ERROR")
+                self.assertNotIn("evidence", result)
+
     def test_p1_rolesanywhere_slr_retained_with_evidence_not_absent(self):
         """
         Regression test for P1:
