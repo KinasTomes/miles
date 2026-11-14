@@ -170,7 +170,7 @@ func configureNative(ctx context.Context, opt *Options) error {
 			return err
 		}
 		evidence.LeaseRejected, evidence.DispatchRejected, err = InjectLeaseFault(ctx, store, s.R1Acquire{
-			Fence: evidence.Probe, Owner: c.RunID, Kind: "control", Deadline: time.Now().Add(4 * time.Minute)})
+			Fence: evidence.Probe, Owner: c.RunID, Kind: "control", Deadline: time.Now().Add(10 * time.Minute)})
 		if err != nil {
 			return err
 		}
@@ -179,7 +179,7 @@ func configureNative(ctx context.Context, opt *Options) error {
 			return err
 		}
 		fence := s.WriterFence{ServiceIncarnation: g.Incarnation, LeaseID: "benchmark-cut-" + workerID, Epoch: 1}
-		if _, err := store.AcquireR1(ctx, s.R1Acquire{Fence: fence, Owner: c.RunID, Kind: "recovery", Deadline: time.Now().Add(4 * time.Minute)}); err != nil {
+		if _, err := store.AcquireR1(ctx, s.R1Acquire{Fence: fence, Owner: c.RunID, Kind: "recovery", Deadline: time.Now().Add(10 * time.Minute)}); err != nil {
 			return err
 		}
 		// Worker closure uses ordinary R1/R2 fencing. Errors retain authority and
