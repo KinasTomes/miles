@@ -80,6 +80,17 @@ chưa terminal trực tiếp trong DynamoDB, Cloud là process local thay vì đ
 ALB/EC2, và Edge chạy bằng credential của deploy role. Artifact của lượt đó đã
 bị gỡ; code bypass đã được xóa, fencing R1/lifecycle trở lại hợp đồng gốc.
 
+Lần deploy ngày 2026-11-14 (installation riêng, runtime release cùng code
+production với nhánh này) dừng trước khi chạy test: ALB và Edge EC2 được tạo,
+nhưng Cloud ASG bị từ chối vì deploy role thiếu `ec2:RunInstances` trên
+`launch-template` của installation. Edge không lên được: credential helper của
+Roles Anywhere báo `could not parse PEM data`, process Miles chưa từng start (không
+request, không lease). Session đã pause bằng saved plan; datastore, state và IAM
+được giữ nguyên. Backend còn tồn đọng từ lượt 2026-11-13: R1 gate
+`active=2/resolving=2`, lease và lifecycle action không có job (do script cũ
+reset gate và xóa job). Các tồn đọng này cần xử lý qua đường reconcile được
+review, không sửa trực tiếp.
+
 ### Runner
 
 `TestColdLiveFrontDoors` chỉ chạy khi có `MILES_COLD_LIVE_CONFIG` và
