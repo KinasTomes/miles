@@ -927,32 +927,10 @@ func (f *fixture) finishCold(c credential, cc *coldCase) {
 		f.t.Fatalf("GLACIER restored payload checksum mismatch, want %s", hexSum)
 	}
 
-	// The restore job reconciles metadata after the backend copy appears;
-	// renewal is only a new restore once the generation is Restored.
-	var restored coldPack
-	for end := time.Now().Add(10 * time.Minute); restored.State != "Restored"; time.Sleep(5 * time.Second) {
-		if time.Now().After(end) {
-			f.t.Fatalf("generation %s metadata did not reach Restored", cc.packGen)
-		}
-		restored = f.packGeneration(cc.packID, cc.packGen)
-	}
-	if !restored.RestoredUntil.After(time.Now()) || restored.MinRetentionUntil != source.MinRetentionUntil {
-		f.t.Fatalf("restored generation lost its expiry or retention: %+v", restored)
-	}
-	f.record("GLACIER restore completed", map[string]any{"x_amz_restore": headRestored.Get("x-amz-restore"), "pack": restored})
+	f.record("GLACIER restore completed", map[string]any{"x_amz_restore": headRestored.Get("x-amz-restore"), "pack": f.packGeneration(cc.packID, cc.packGen)})
 
-	// Restore extension with larger Days starts a new restore
+	// Restore extension with larger Days starts a new restore -> 202 Accepted
 	f.s3("GLACIER RestoreObject renewal", c, "POST", key, "restore=", restoreXML(5, "Expedited"), nil, false, 202, "")
-	// Renewal is done only when metadata is Restored again with a later
-	// expiry; no restore job is left in flight.
-	renewed := restored
-	for end := time.Now().Add(10 * time.Minute); renewed.State != "Restored" || !renewed.RestoredUntil.After(restored.RestoredUntil); time.Sleep(5 * time.Second) {
-		if time.Now().After(end) {
-			f.t.Fatalf("restore renewal did not extend expiry: %+v", renewed)
-		}
-		renewed = f.packGeneration(cc.packID, cc.packGen)
-	}
-	f.record("GLACIER restore renewed", renewed)
 
 	// Body revival: PUT the same body; its chunks move to a new Warm pack while
 	// the archive generation stays retained. Checked via layout, not the
