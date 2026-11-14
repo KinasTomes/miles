@@ -10,6 +10,8 @@ Mọi lệnh mutation bên dưới cần approval receipt riêng. Chỉ chạy `
 sau khi chủ account đã đọc/duyệt các artifact của action; receipt không tự apply,
 hết hạn sau 45 phút và vô hiệu nếu input thay đổi. Không cần process controller.
 Benchmark toàn ma trận dùng [runbook theo từng bước](../planning/full-aws-benchmark-execution-plan.md).
+Tiếp tục sau Warm pilot: giao [Plan A](../planning/aws-benchmark-plan-a.md)
+trước, review report rồi mới giao [Plan B](../planning/aws-benchmark-plan-b.md).
 
 ## 1. Chạy ở đâu và cần gì?
 
@@ -52,7 +54,11 @@ account đó. Lấy code trả về và dán vào prompt CLI, không vào chat/G
 
 Với IAM: browser session riêng đăng nhập root/MFA, dùng URL của phiên
 `miles-iam-bootstrap`. Phiên này chỉ IAM/audit; workload không chạy bằng root.
-Nếu nhờ agent tạo phiên, agent gửi link và chờ code như quy trình trước.
+Nếu nhờ agent tạo phiên qua SSH, agent phải in URL đầy đủ để copy sang browser
+cá nhân. Root/IAM dùng file `$HOME/.local/state/miles/iam-login-code.txt`;
+deploy dùng `$HOME/.local/state/miles/cli-login-code.txt`, đều 0600. Không gửi
+mã qua chat/log/Git; tắt echo khi nhập vào CLI, xóa mã đã dùng và kiểm lại STS
+identity. Không ghi đè profile root bằng danh tính deploy khi chọn nhầm phiên.
 
 ```bash
 umask 077
@@ -106,8 +112,9 @@ khác. Bootstrap/state, role ASG có sẵn và key/secret pending của lượt 
 preserve. Không dùng namespace `miles-dev` cho hai lượt song song cùng account/Region.
 
 Plan ghi saved plan, JSON và baseline Autopilot. IAM review render expiry mới,
-đọc default policy versions để rollback, validate/simulate native scopes và lấy
-regional prices. **Chưa attach grant, apply hoặc tạo VM.**
+đọc default policy versions để rollback và validate/simulate native scopes.
+Cost review ghi operator envelope, không cần Pricing API hoặc dự toán chi tiết.
+**Chưa attach grant, apply hoặc tạo VM.**
 
 Đọc trước khi chốt:
 
@@ -120,8 +127,10 @@ cat "$RUN/foundation-plan.json"
 Review cả plan JSON, `iam/*.json`, validation/simulation và baseline Autopilot
 trong `plans/`. Gói mô tả tối đa5 VM/root disposable, hai Cloud + Edge + client,
 private ALB/endpoints, shared S3/20tables, cap Chunks512/Outbox và bảng khác128,
-write128. Mặc định tối đa4giờ và envelope10USD trước thuế gồm cleanup, **không phải
-hard cap billing**. Lượt cũ không cấp phép cho lượt mới.
+write128. Config mặc định4giờ, envelope20USD gồm cleanup; có thể chọn window
+tối đa12giờ trước init, giữ90phút cleanup. Đây **không phải hard cap billing**.
+Plan A/B dùng tổng envelope đã chốt, không tự reset20USD cho mỗi plan.
+Lượt cũ không cấp phép cho lượt mới.
 
 Chỉ sau khi chủ tài khoản duyệt gói cụ thể mới chạy các mục mutate tiếp theo.
 `--confirm-run` buộc lệnh bind đúng lượt; nó không thay bước đọc và duyệt gói.

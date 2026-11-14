@@ -1,8 +1,11 @@
 # Kế hoạch benchmark AWS theo từng bước do operator quyết định
 
-**Trạng thái: chuẩn bị offline; chưa chạy AWS cho thay đổi này.** Ma trận
-vẫn là **20 cases × 3 repetitions = 60 slots**, có tối thiểu **24 paired direct-S3
-legs**. Đây là inventory công việc; không có lệnh mặc định tự chạy toàn bộ G1–G5.
+Đã có một Warm pilot; chưa nghiệm thu toàn ma trận. Ma trận vẫn là **20 cases ×
+3 repetitions = 60 slots**, có tối thiểu **24 paired direct-S3 legs**. Đây là
+runbook theo từng lệnh, không có lệnh mặc định tự chạy toàn bộ G1–G5.
+Phần tiếp tục được giao riêng qua [Plan A](aws-benchmark-plan-a.md) (47 slots)
+và [Plan B](aws-benchmark-plan-b.md) (12 slots), với
+[quyết định audit và phạm vi chung](remaining-aws-benchmark-slots.md).
 
 Nguồn: [acceptance kit](../../deploy/acceptance/README.md),
 [matrix](../../benchmarks/workload-matrix.json),
