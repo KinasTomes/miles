@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -38,9 +39,17 @@ class EdgeBootstrapTests(unittest.TestCase):
                 if arguments[:3] == ["aws","secretsmanager","get-secret-value"]:
                     return SimpleNamespace(returncode=0, stdout=json.dumps({"SecretString":json.dumps({"tls_certificate":"test-tls", "tls_private_key":"test-tls-secret", "provider_certificate":"test-provider", "provider_private_key":"test-provider-secret"})}))
                 return SimpleNamespace(returncode=0,stdout="")
-            with patch.object(bootstrap, "Path", side_effect=mapped), patch.object(bootstrap.subprocess, "run", side_effect=run):
-                bootstrap.bootstrap(ROOT, config)
-                bootstrap.bootstrap(ROOT, config)  # Retrying setup must retain valid paths/users.
+            # Edge user-data runs bootstrap under umask 077; the serving user must
+            # still traverse the provider directory or the helper cannot read its PEM.
+            previous = os.umask(0o077)
+            try:
+                with patch.object(bootstrap, "Path", side_effect=mapped), patch.object(bootstrap.subprocess, "run", side_effect=run):
+                    bootstrap.bootstrap(ROOT, config)
+                    bootstrap.bootstrap(ROOT, config)  # Retrying setup must retain valid paths/users.
+            finally:
+                os.umask(previous)
+            for name in ("etc/miles/tls", "etc/miles/rolesanywhere"):
+                self.assertEqual((base/name).stat().st_mode & 0o777, 0o750)
             startup = json.loads((base/"etc/miles/startup.json").read_text())
             self.assertEqual(startup["region"], "ap-southeast-2")
             self.assertEqual(startup["ddb_table_prefix"], "member-")

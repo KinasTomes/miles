@@ -81,15 +81,26 @@ ALB/EC2, và Edge chạy bằng credential của deploy role. Artifact của lư
 bị gỡ; code bypass đã được xóa, fencing R1/lifecycle trở lại hợp đồng gốc.
 
 Lần deploy ngày 2026-11-14 (installation riêng, runtime release cùng code
-production với nhánh này) dừng trước khi chạy test: ALB và Edge EC2 được tạo,
-nhưng Cloud ASG bị từ chối vì deploy role thiếu `ec2:RunInstances` trên
-`launch-template` của installation. Edge không lên được: credential helper của
-Roles Anywhere báo `could not parse PEM data`, process Miles chưa từng start (không
-request, không lease). Session đã pause bằng saved plan; datastore, state và IAM
-được giữ nguyên. Backend còn tồn đọng từ lượt 2026-11-13: R1 gate
-`active=2/resolving=2`, lease và lifecycle action không có job (do script cũ
-reset gate và xóa job). Các tồn đọng này cần xử lý qua đường reconcile được
-review, không sửa trực tiếp.
+production với nhánh này) dừng trước khi chạy test, rồi pause bằng saved plan;
+datastore, state và IAM được giữ nguyên. Trạng thái các blocker:
+
+- Cloud ASG: deploy role thiếu `ec2:RunInstances` trên `launch-template`. Quyền đã
+  được cấp (scope installation/Region), template `deploy-fleet.json.tmpl` đã đồng
+  bộ. Dry-run `RunInstances` qua launch template có tag đúng installation: cho
+  phép với AMI trong allowlist của role; AMI trong installation inputs vẫn bị từ
+  chối.
+- Edge: helper Roles Anywhere báo `could not parse PEM data` khi không đọc được
+  file (helper gộp lỗi đọc file vào thông báo này). User-data chạy bootstrap với
+  `umask 077`, nên `/etc/miles/rolesanywhere` được tạo `0700` và user `miles`
+  không vào được. Bootstrap giờ đặt `0750` tường minh; test chạy bootstrap dưới
+  `umask 077`. Cùng material đó lấy được credential khi đọc được file. Bản sửa
+  cần release mới cho Edge.
+- R1: backend còn tồn đọng từ lượt 2026-11-13 (script cũ reset gate và xóa job):
+  recovery epoch đang `Closing` trong khi gate `Open` không có cut, gate
+  `active=2/resolving=2`, lease producer Active của process đã chết, lifecycle
+  action (restore `Waiting`/`Prepared`, tiering `Ready`/`Applied`) không còn job.
+  Code không có đường reconcile cho trạng thái này; cần phương án được Lead duyệt,
+  không sửa trực tiếp.
 
 ### Runner
 

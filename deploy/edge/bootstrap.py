@@ -34,7 +34,8 @@ def bootstrap(bundle, config):
     helper.chmod(0o755)
     material = json.loads(aws("secretsmanager", "get-secret-value", "--secret-id", config["bootstrap_secret_arn"])["SecretString"])
     for directory in (Path("/etc/miles/tls"), Path("/etc/miles/rolesanywhere")):
-        directory.mkdir(mode=0o750, exist_ok=True)
+        directory.mkdir(exist_ok=True)
+        directory.chmod(0o750)  # user-data umask 077 would leave 0700, unreadable to the serving user
         run("chown", "root:miles", str(directory))
     for name, key, mode in [("tls/fullchain.pem", "tls_certificate", 0o644),
                             ("tls/private-key.pem", "tls_private_key", 0o600),
