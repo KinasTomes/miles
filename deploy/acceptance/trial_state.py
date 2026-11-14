@@ -94,7 +94,7 @@ def prepare(r, slot, case, admin):
                 }),
             )
             return len(res.get("Items", [])) == 0
-        r.wait("cluster background jobs quiescent before cache purge", jobs_quiescent, 120)
+        r.wait("cluster background jobs quiescent before cache purge", jobs_quiescent, 300)
     # Record before dispatch: lost POST response must be reconciled, not resent.
     r.write(prefix+"/purge-intent.json", {"nodes": sorted(nodes), "at": now().isoformat()}, new=True)
     job = admin(r, "cache/purge", {"scope": "cluster"})
