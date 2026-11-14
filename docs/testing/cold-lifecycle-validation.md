@@ -98,22 +98,27 @@ SKIP/FAIL, không phải PASS. Trước mọi request front door:
 - Admin chỉ nhận địa chỉ IP loopback literal (không nhận hostname).
 
 Mỗi endpoint: ghi `cluster/nodes` làm topology thực tế, PUT payload IR và
-GLACIER, đặt policy pinned theo revision rồi tạo job `tiering` exact generation.
-Trong cửa sổ `ProtectedUntil`, job phải chưa terminal và generation vẫn `Warm`
-(protection hoãn chuyển tầng). Runner chờ tới hết `ProtectedUntil` thật (cộng
-1 phút cho UTC bound, khoảng 45–50 phút, dùng chung cho mọi endpoint), rồi chính
-các job đó phải `succeeded` với generation `Cold`, đúng class và min-retention
-≥ 89 ngày. Sau đó:
+GLACIER, bật tiering cho class tương ứng rồi tạo job `tiering` exact generation
+pin revision đó, sau đó tắt tiering global ở revision mới. Job giữ revision đã
+pin; periodic discovery (vẫn bật) chỉ thấy policy tắt nên không tạo job cạnh
+tranh. Trong cửa sổ `ProtectedUntil`, job phải được worker claim, chưa terminal
+và generation vẫn `Warm` (protection hoãn chuyển tầng). Runner chờ tới hết
+`ProtectedUntil` thật (cộng 1 phút cho UTC bound, khoảng 45–50 phút, dùng chung
+cho mọi endpoint), rồi chính các job đó phải `succeeded` với generation `Cold`,
+đúng class và min-retention ≥ 89 ngày. Sau đó:
 
 - GLACIER_IR: RestoreObject 400, GET trực tiếp khớp SHA-256, reuse, promote exact
   generation; layout canonical chuyển sang generation mới `Warm`, source giữ
   `Cold` cùng retention.
 - GLACIER: GET/HEAD trước restore, RestoreObject 202 rồi 409, HEAD pending, GET
   403 khi pending, chờ restore S3 thật, GET khớp SHA-256, metadata `Restored`
-  với `restored_until`, gia hạn 202, body revival.
-- Stats: `physical_complete` phải true, `orphaned_chunks_total` = 0,
-  `revived_chunks_total` > 0, `cold_dead` > 0. Các số liệu này bổ sung, không
-  thay thế trạng thái terminal từng job và bản ghi generation ở trên.
+  với `restored_until`; gia hạn 202 phải đưa generation về `Restored` với expiry
+  muộn hơn (không để job restore dở); body revival phải bind chunk sang pack
+  `Warm` mới trong layout, archive giữ class và retention.
+- Stats của node Admin: `physical_complete` true, `orphaned_chunks_total` = 0,
+  `cold_dead` > 0. Write counter chỉ đếm trên từng node (ALB có thể route PUT sang
+  Cloud node khác), nên revival được kiểm qua layout chứ không qua counter. Các
+  số liệu này bổ sung, không thay thế trạng thái job và bản ghi generation.
 
 Result file (mới, 0600) ghi commit, installation, tên deploy role, thời điểm
 bắt đầu/kết thúc, mọi observation S3 và Admin event (job, pack generation,
@@ -121,14 +126,14 @@ protection/retention, restore, stats).
 
 ### Chạy
 
-`scripts/run_live_acceptance.py --private DIR [--local-edge]` từ chối chạy khi
-worktree bẩn hoặc result file đã tồn tại; lấy credential deploy role từ
-`operator.login_profile` chỉ cho process test. Với `--local-edge`, script chỉ
-khởi động Edge runtime (credential runtime riêng qua `aws_config_file`, không kế
-thừa credential deploy) và front door TLS của nó, rồi dừng đúng các process đó.
-Edge local tắt periodic jobs (`MILES_DISABLE_PERIODIC=1`); lượt chạy vì vậy
-không kiểm chứng periodic scheduling. Cloud phải là front door ALB/EC2 đã deploy.
-Script không sửa R1, không xóa job và không ghi vào repository.
+Cloud (ASG sau ALB) và Edge (EC2) đều deploy bằng `deploy-installation.py`.
+`scripts/run_live_acceptance.py --config installation.json --private DIR --result FILE`
+từ chối chạy khi worktree bẩn hoặc result file đã tồn tại. Script lấy node từ
+inventory của installation, mở tunnel Admin SSH-over-SSM (host key pin qua SSM)
+tới một Cloud node và Edge node trên `127.0.0.1`, sinh live config private
+(Cloud qua DNS ALB, Edge qua IP public, CA test của installation), chỉ đưa
+credential deploy role cho process test. Script không sửa R1, không xóa job,
+không dừng process nào ngoài tunnel của nó và không ghi vào repository.
 
 Điều kiện trước khi chạy: Lead duyệt run window/ngân sách và Terraform plan;
 workload Cloud/Edge của installation riêng đã deploy. Sau khi chạy: drain, dọn

@@ -733,45 +733,43 @@ func (f *fixture) putCold(c credential, class storage.StorageClass) *coldCase {
 }
 
 // startTiering pins a policy revision for the class and enqueues an exact
-// tiering job, then proves protection defers it: the job stays open and the
-// generation stays Warm while ProtectedUntil is ahead.
+// tiering job, then disables tiering globally so periodic discovery cannot
+// race it (the job keeps its pinned revision). It then proves protection
+// defers the job: claimed by a worker, still open, generation still Warm,
+// while ProtectedUntil is ahead.
 func (f *fixture) startTiering(cc *coldCase) {
 	f.t.Helper()
-	var current, updated struct {
-		Revision int `json:"revision"`
+	if time.Until(cc.protectedUntil) < 5*time.Minute {
+		f.t.Fatalf("protection window ends at %s, too soon to observe deferral", cc.protectedUntil)
 	}
-	f.adminRequest("GET", "policy", nil, f.token, 200, &current)
-	f.adminRequest("PUT", "policy", map[string]any{
-		"expected_revision": current.Revision,
-		"tiering": map[string]any{
-			"cold_after_days":     0,
-			"min_pack_live_ratio": 0,
-			"cold_storage_class":  string(cc.class),
-			"auto_restore":        false,
-		},
-	}, f.token, 200, &updated)
-	if updated.Revision <= current.Revision {
-		f.t.Fatalf("policy revision did not advance: %d -> %d", current.Revision, updated.Revision)
-	}
+	pinned := f.putTiering(map[string]any{
+		"enabled":             true,
+		"cold_after_days":     0,
+		"min_pack_live_ratio": 0,
+		"cold_storage_class":  string(cc.class),
+		"auto_restore":        false,
+	})
 	var job struct {
 		JobID string `json:"job_id"`
 	}
 	f.adminRequest("POST", "jobs", map[string]any{
 		"type":            "tiering",
 		"params":          map[string]any{"pack_id": cc.packID, "generation": cc.packGen},
-		"policy_revision": updated.Revision,
+		"policy_revision": pinned,
 	}, f.token, 202, &job)
 	if job.JobID == "" {
 		f.t.Fatal("tiering job response missing job_id")
 	}
 	cc.tierJob = job.JobID
-	if time.Until(cc.protectedUntil) < 2*time.Minute {
-		f.t.Fatalf("protection window ends at %s, too soon to observe deferral", cc.protectedUntil)
-	}
-	var state string
+	disabled := f.putTiering(map[string]any{"enabled": false})
+
 	var detail json.RawMessage
 	var p coldPack
-	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(2 * time.Second) {
+	for end := time.Now().Add(3 * time.Minute); ; time.Sleep(2 * time.Second) {
+		if time.Now().After(end) {
+			f.t.Fatalf("tiering job %s was not claimed by a worker inside the protection window", cc.tierJob)
+		}
+		var state string
 		state, detail = f.job(cc.tierJob)
 		if state == "succeeded" || state == "failed" || state == "cancelled" {
 			f.t.Fatalf("tiering job %s settled as %s inside the protection window", cc.tierJob, state)
@@ -779,11 +777,32 @@ func (f *fixture) startTiering(cc *coldCase) {
 		if p = f.packGeneration(cc.packID, cc.packGen); p.State != "Warm" {
 			f.t.Fatalf("protected pack left Warm before ProtectedUntil: %+v", p)
 		}
+		var claimed struct {
+			StartedAt *time.Time `json:"started_at"`
+		}
+		if json.Unmarshal(detail, &claimed) == nil && claimed.StartedAt != nil && time.Since(*claimed.StartedAt) > 20*time.Second {
+			break
+		}
 	}
 	if !time.Now().Before(cc.protectedUntil) {
 		f.t.Fatal("deferral observation overran ProtectedUntil")
 	}
-	f.record(string(cc.class)+" tiering deferred by protection", map[string]any{"job": detail, "pack": p, "policy_revision": updated.Revision})
+	f.record(string(cc.class)+" tiering deferred by protection", map[string]any{"job": detail, "pack": p, "pinned_policy_revision": pinned, "discovery_disabled_revision": disabled})
+}
+
+// putTiering merges tiering fields into the global policy with CAS on the
+// current revision and returns the resulting revision.
+func (f *fixture) putTiering(tiering map[string]any) int {
+	f.t.Helper()
+	var current, updated struct {
+		Revision int `json:"revision"`
+	}
+	f.adminRequest("GET", "policy", nil, f.token, 200, &current)
+	f.adminRequest("PUT", "policy", map[string]any{"expected_revision": current.Revision, "tiering": tiering}, f.token, 200, &updated)
+	if updated.Revision < current.Revision || updated.Revision == 0 {
+		f.t.Fatalf("policy revision regressed: %d -> %d", current.Revision, updated.Revision)
+	}
+	return updated.Revision
 }
 
 func (f *fixture) finishCold(c credential, cc *coldCase) {
@@ -869,7 +888,9 @@ func (f *fixture) finishCold(c credential, cc *coldCase) {
 
 	// HEAD during pending shows ongoing-request="true"
 	var headPending http.Header
-	for end := time.Now().Add(15 * time.Second); ; time.Sleep(500 * time.Millisecond) {
+	// x-amz-restore reflects the backend copy, so pending appears once a
+	// worker has dispatched the restore job to S3.
+	for end := time.Now().Add(3 * time.Minute); ; time.Sleep(2 * time.Second) {
 		_, headPending = f.s3("GLACIER HEAD pending", c, "HEAD", key, "", nil, nil, false, 200, "")
 		if strings.Contains(headPending.Get("x-amz-restore"), `ongoing-request="true"`) || time.Now().After(end) {
 			break
@@ -920,14 +941,38 @@ func (f *fixture) finishCold(c credential, cc *coldCase) {
 
 	// Restore extension with larger Days starts a new restore
 	f.s3("GLACIER RestoreObject renewal", c, "POST", key, "restore=", restoreXML(5, "Expedited"), nil, false, 202, "")
+	// Renewal is done only when metadata is Restored again with a later
+	// expiry; no restore job is left in flight.
+	renewed := restored
+	for end := time.Now().Add(10 * time.Minute); renewed.State != "Restored" || !renewed.RestoredUntil.After(restored.RestoredUntil); time.Sleep(5 * time.Second) {
+		if time.Now().After(end) {
+			f.t.Fatalf("restore renewal did not extend expiry: %+v", renewed)
+		}
+		renewed = f.packGeneration(cc.packID, cc.packGen)
+	}
+	f.record("GLACIER restore renewed", renewed)
 
-	// Body revival: PUT same body into Warm generation, old archive kept for retention
+	// Body revival: PUT the same body; its chunks move to a new Warm pack while
+	// the archive generation stays retained. Checked via layout, not the
+	// node-local revival counter (the ALB may route the PUT to any Cloud node).
 	f.s3("GLACIER body revival PUT", c, "PUT", key+"-revived", "", data, nil, false, 200, "")
 	gotRevived, _ := f.s3("GLACIER revived GET", c, "GET", key+"-revived", "", nil, nil, false, 200, "")
 	if !bytes.Equal(gotRevived, data) {
 		f.t.Fatalf("GLACIER revived payload mismatch")
 	}
-	f.record("GLACIER archive after revival", f.packGeneration(cc.packID, cc.packGen))
+	revived := f.layout(key + "-revived")
+	if len(revived) != 1 || revived[0].PackID == cc.packID && revived[0].Generation == cc.packGen {
+		f.t.Fatalf("revival did not bind chunks to a new pack: %+v", revived)
+	}
+	warm := f.packGeneration(revived[0].PackID, revived[0].Generation)
+	if warm.State != "Warm" {
+		f.t.Fatalf("revived chunks are not in a Warm generation: %+v", warm)
+	}
+	archive := f.packGeneration(cc.packID, cc.packGen)
+	if archive.StorageClass != string(storage.Glacier) || archive.MinRetentionUntil != source.MinRetentionUntil {
+		f.t.Fatalf("archive generation not retained after revival: %+v", archive)
+	}
+	f.record("GLACIER revival", map[string]any{"warm_target": warm, "retained_archive": archive})
 }
 
 func (f *fixture) runColdErrorAndIsolation(c credential) {
@@ -939,12 +984,12 @@ func (f *fixture) runColdErrorAndIsolation(c credential) {
 	f.s3("zero days restore 400", c, "POST", "/cold-glacier.bin", "restore=", restoreXML(0, "Expedited"), nil, false, 400, "InvalidRequest")
 	f.s3("invalid tier restore 400", c, "POST", "/cold-glacier.bin", "restore=", restoreXML(2, "NonExistent"), nil, false, 400, "InvalidRequest")
 
-	// Accounting observations. These complement, not replace, the per-job
-	// terminal states and exact-generation records captured above.
+	// Accounting observations from this endpoint's Admin node. Write counters
+	// are node-local; they complement, not replace, the per-job terminal
+	// states and exact-generation records captured above.
 	var raw json.RawMessage
 	var st struct {
 		PhysicalComplete bool             `json:"physical_complete"`
-		RevivedChunks    *uint64          `json:"revived_chunks_total"`
 		OrphanedChunks   *uint64          `json:"orphaned_chunks_total"`
 		Physical         map[string]int64 `json:"listed_bytes_by_pack_lifecycle"`
 	}
@@ -953,7 +998,7 @@ func (f *fixture) runColdErrorAndIsolation(c credential) {
 		if json.Unmarshal(raw, &st) != nil {
 			f.t.Fatal("invalid stats response")
 		}
-		if st.PhysicalComplete && st.RevivedChunks != nil && *st.RevivedChunks > 0 && st.Physical["cold_dead"] > 0 || time.Now().After(end) {
+		if st.PhysicalComplete && st.Physical["cold_dead"] > 0 || time.Now().After(end) {
 			break
 		}
 	}
@@ -963,9 +1008,6 @@ func (f *fixture) runColdErrorAndIsolation(c credential) {
 	}
 	if st.OrphanedChunks == nil || *st.OrphanedChunks != 0 {
 		f.t.Fatalf("terminal safety failure: orphaned chunks must be non-null and exactly 0, got %v", st.OrphanedChunks)
-	}
-	if st.RevivedChunks == nil || *st.RevivedChunks == 0 {
-		f.t.Fatalf("expected non-zero revived chunks after revival flow")
 	}
 	if st.Physical["cold_dead"] <= 0 {
 		f.t.Fatalf("expected cold_dead accounting for superseded archive pack: %v", st.Physical)
