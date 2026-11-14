@@ -225,7 +225,7 @@ func (w *Worker) Step(ctx context.Context, j jobs.Job, snapshot config.GlobalSna
 			}
 			return jobs.Step{Settled: !errors.Is(e, s.ErrUnavailable) && ctx.Err() == nil}, e
 		}
-	} else {
+	} else if a.JobID != j.ID {
 		// Only a checkpointed Waiting restore may be adopted by a newer worker.
 		a, e = w.Store.PrepareLifecycle(ctx, j, p, a.Chunks, a.Digest)
 		if e != nil {

@@ -11,11 +11,11 @@ S3 thật cho C4; checklist/status và nghiệm thu trên Miles chờ Lead xác 
 | C1 — IR/Flexible qua global policy, Cold bất biến, retention | `lifecycle.Worker` tái sử dụng `policy.EvaluateTiering`. Discovery phân trang tạo child job exact generation, pin policy revision; child reserve/revalidate maintenance trước COPY. `RetentionUntil` dùng conservative upper completion bound, max với retention cũ, reject overflow. Cold GC phải qua cùng mark/pins/R2 roots, min-retention, retirement buffer và verified cut trước version sweep; không compaction Cold. |
 | C2 — Restore/promote, auto-restore/expiry/reconcile | Route Admin exact-generation đã có từ W05. `QueueReadRestore` kiểm native reader lease/root/pin và pinned policy trong transaction trước enqueue stable job. `required_until` nội bộ cho phép gia hạn bản còn readable nhưng chưa đủ budget. Job không Done nếu expiry backend chưa đạt threshold. Promotion ghi Warm generation mới, verify bytes/sidecar rồi canonical CAS; giữ source. Unknown COPY/DELETE không tự retry hoặc suy terminal từ HEAD/timeout. |
 | C3 — PUT/part revival, GET/Copy margin và protection | GET IR/Restored nối evaluator hiện có, preflight cả requested set trước cache/header. Restored dùng expiry HEAD + fresh trusted UTC proof tại request deadline, recheck trước ordered emit. PUT/UploadPart vẫn revive GLACIER và mọi Restored từ client body, IR có thể reuse exact canonical binding. Metadata Copy cùng domain là ngoại lệ §5.3: chuyển references/pins, không đọc payload hay hứa Warm readability. Payload Copy vẫn dùng margin trong `CopyChunks`/shared evaluator; consumer cross-domain/API thuộc Hải/Chiến. |
-| C4 — Demo GLACIER restore bất đồng bộ thật và fixture thời gian dài | **ĐÃ CÓ EVIDENCE LIVE S3, CHỜ REVIEW.** Ngày 2026-11-10, profile AssumeRole có MFA chạy tại Sydney: upload GLACIER, GET trước/trong pending bị từ chối, HEAD chuyển từ pending sang completed có expiry, download 54 bytes với SHA-256 và nội dung khớp. Fixture Virtual Clock/Moto đã PASS. Demo live này dùng AWS CLI với object synthetic; chưa chạy endpoint Miles trên AWS. |
+| C4 — Demo GLACIER restore bất đồng bộ thật và fixture thời gian dài | Demo backend S3 thật ngày 2026-11-10 (AWS CLI, không qua Miles). Runner live qua front door Miles (`tests/live/cold_test.go`) đã có; **nghiệm thu AWS end-to-end qua Miles Cloud + Edge CHƯA ĐẠT**, xem mục nghiệm thu live bên dưới. |
 
-C1–C3 có implementation và bằng chứng test local để reviewer đối chiếu. C4 đã có
-demo backend S3 thật và fixture thời gian dài. Lead/reviewer xác nhận phạm vi
-nghiệm thu, gồm việc có yêu cầu thêm demo qua endpoint Miles trên AWS hay không.
+C1–C3 có implementation và bằng chứng test local để reviewer đối chiếu. C4 có
+demo backend S3 thật ngày 2026-11-10; nghiệm thu qua API/runtime Miles trên AWS
+đang chờ một lượt chạy được duyệt trên installation riêng.
 
 ## Demo GLACIER thật ngày 2026-11-10
 
@@ -71,6 +71,102 @@ Quy tắc `DenyGlacierStorageClasses` trong SCP Free Tier được AWS công b�
 Việc có thêm credit không thay đổi SCP Free Tier. Lần thử bị chặn chỉ là bằng
 chứng blocker của môi trường trước đó. Demo thành công ngày 2026-11-10 dùng
 project/bucket đã được admin cấp quyền riêng.
+
+## Nghiệm thu live end-to-end qua API/runtime Miles (AWS)
+
+**Trạng thái: CHƯA ĐẠT (NOT RUN).** Lượt chạy ngày 2026-11-13 bị hủy làm bằng
+chứng: runtime bật cờ bỏ qua `ProtectedUntil`, script reset R1 gate và xóa job
+chưa terminal trực tiếp trong DynamoDB, Cloud là process local thay vì đường
+ALB/EC2, và Edge chạy bằng credential của deploy role. Artifact của lượt đó đã
+bị gỡ; code bypass đã được xóa, fencing R1/lifecycle trở lại hợp đồng gốc.
+
+Lần deploy ngày 2026-11-14 (installation riêng, runtime release cùng code
+production với nhánh này) dừng trước khi chạy test, rồi pause bằng saved plan;
+datastore, state và IAM được giữ nguyên. Trạng thái các blocker:
+
+- Cloud ASG: deploy role thiếu `ec2:RunInstances` trên `launch-template`. Quyền đã
+  được cấp (scope installation/Region), template `deploy-fleet.json.tmpl` đã đồng
+  bộ. Dry-run `RunInstances` qua launch template có tag đúng installation: cho
+  phép với AMI trong allowlist của role; AMI trong installation inputs vẫn bị từ
+  chối.
+- Edge: helper Roles Anywhere báo `could not parse PEM data` khi không đọc được
+  file (helper gộp lỗi đọc file vào thông báo này). User-data chạy bootstrap với
+  `umask 077`, nên `/etc/miles/rolesanywhere` được tạo `0700` và user `miles`
+  không vào được. Bootstrap giờ đặt `0750` tường minh; test chạy bootstrap dưới
+  `umask 077`. Cùng material đó lấy được credential khi đọc được file. Bản sửa
+  cần release mới cho Edge.
+- R1: backend còn tồn đọng từ lượt 2026-11-13 (script cũ reset gate và xóa job):
+  recovery epoch đang `Closing` trong khi gate `Open` không có cut, gate
+  `active=2/resolving=2`, lease producer Active của process đã chết, lifecycle
+  action (restore `Waiting`/`Prepared`, tiering `Ready`/`Applied`) không còn job.
+  Code không có đường reconcile cho trạng thái này; cần phương án được Lead duyệt,
+  không sửa trực tiếp.
+
+### Runner
+
+`TestColdLiveFrontDoors` chỉ chạy khi có `MILES_COLD_LIVE_CONFIG` và
+`MILES_RUN_COMMIT` (SHA đầy đủ của commit sạch đang test); thiếu một trong hai là
+SKIP/FAIL, không phải PASS. Trước mọi request front door:
+
+- Đọc inventory private (`installation_file` trỏ tới `installation.json` theo
+  [hướng dẫn installation](aws-personal-account-guide.md)). Không có installation
+  mặc định; tên bảng `<installation>-<Logical>` và bucket
+  `<installation>-data-<account>-<region>` suy ra đúng như Terraform.
+- `ValidateApprovedInventoryAndSchema` (fail-closed): STS phải là assumed-role
+  session của `operator.deploy_role_arn` đúng account (root, IAM user, role dùng
+  chung hoặc runtime role đều dừng); bucket versioning `Enabled` với
+  `ExpectedBucketOwner`; 20 bảng `ACTIVE`, đúng tên/ARN/key schema/kiểu và đủ tag
+  `Project`, `Installation`, `Environment`, `Owner` theo inventory.
+- Admin chỉ nhận địa chỉ IP loopback literal (không nhận hostname).
+
+Mỗi endpoint: ghi `cluster/nodes` làm topology thực tế, PUT payload IR và
+GLACIER, bật tiering cho class tương ứng rồi tạo job `tiering` exact generation
+pin revision đó, sau đó tắt tiering global ở revision mới. Job giữ revision đã
+pin; periodic discovery (vẫn bật) chỉ thấy policy tắt nên không tạo job cạnh
+tranh. Trong cửa sổ `ProtectedUntil`, job phải được worker claim, chưa terminal
+và generation vẫn `Warm` (protection hoãn chuyển tầng). Runner chờ tới hết
+`ProtectedUntil` thật (cộng 1 phút cho UTC bound, khoảng 45–50 phút, dùng chung
+cho mọi endpoint), rồi chính các job đó phải `succeeded` với generation `Cold`,
+đúng class và min-retention ≥ 89 ngày. Sau đó:
+
+- GLACIER_IR: RestoreObject 400, GET trực tiếp khớp SHA-256, reuse, promote exact
+  generation; layout canonical chuyển sang generation mới `Warm`, source giữ
+  `Cold` cùng retention.
+- GLACIER: GET/HEAD trước restore, RestoreObject 202 rồi 409, HEAD pending, GET
+  403 khi pending, chờ restore S3 thật, GET khớp SHA-256, metadata `Restored`
+  với `restored_until`; gia hạn 202 phải đưa generation về `Restored` với expiry
+  muộn hơn (không để job restore dở); body revival phải bind chunk sang pack
+  `Warm` mới trong layout, archive giữ class và retention.
+- Stats của node Admin: `physical_complete` true, `orphaned_chunks_total` = 0,
+  `cold_dead` > 0. Write counter chỉ đếm trên từng node (ALB có thể route PUT sang
+  Cloud node khác), nên revival được kiểm qua layout chứ không qua counter. Các
+  số liệu này bổ sung, không thay thế trạng thái job và bản ghi generation.
+
+Result file (mới, 0600) ghi commit, installation, tên deploy role, thời điểm
+bắt đầu/kết thúc, mọi observation S3 và Admin event (job, pack generation,
+protection/retention, restore, stats).
+
+### Chạy
+
+Cloud (ASG sau ALB) và Edge (EC2) đều deploy bằng `deploy-installation.py`.
+`scripts/run_live_acceptance.py --config installation.json --private DIR --result FILE`
+từ chối chạy khi worktree bẩn hoặc result file đã tồn tại. Script lấy node từ
+inventory của installation, mở tunnel Admin SSH-over-SSM (host key pin qua SSM)
+tới một Cloud node và Edge node trên `127.0.0.1`, sinh live config private
+(Cloud qua DNS ALB, Edge qua IP public, CA test của installation), chỉ đưa
+credential deploy role cho process test. Script không sửa R1, không xóa job,
+không dừng process nào ngoài tunnel của nó và không ghi vào repository.
+
+Điều kiện trước khi chạy: Lead duyệt run window/ngân sách và Terraform plan;
+workload Cloud/Edge của installation riêng đã deploy. Sau khi chạy: drain, dọn
+tài nguyên do lượt chạy tạo, chụp inventory native baseline/final, tách riêng tài
+nguyên được giữ lại (archive còn min-retention, state). Raw result và inventory
+giữ private; chỉ commit bản tóm tắt đã sanitize kèm checksum.
+
+Suite: `TestColdLiveFrontDoors`, `TestLiveFixtureColdWireRequests`,
+`TestLiveFixtureColdAdminContracts` (`tests/live/cold_test.go`);
+`TestPreflight*`, `TestLivePreflightApprovedInventoryAndSchema` (opt-in qua
+`MILES_INSTALLATION_JSON`, `internal/metadata/dynamodb/preflight_test.go`).
 
 ## Authority và ownership
 
@@ -237,9 +333,9 @@ GitHub CI PASS khi chưa push/tạo PR và kiểm tra check runs.
    fault tests cho lost ACK/takeover, xác nhận chỉ release maintenance/protection
    khi đã có terminal và isolation proof theo contract.
 2. C4 đã có demo backend S3 thật, pending/completed và checksum, kèm fixture thời
-   gian dài. Demo qua endpoint Miles trên AWS chưa chạy; Lead xác nhận có cần
-   bổ sung bằng chứng này trước nghiệm thu. Không đo billing hoặc retention
-   thực 90 ngày và không coi Moto completion là bằng chứng live AWS.
+   gian dài. Nghiệm thu qua endpoint Miles trên AWS chưa đạt; runner và điều kiện
+   chạy ở mục nghiệm thu live. Không đo billing hoặc retention thực 90 ngày và
+   không coi Moto completion là bằng chứng live AWS.
 3. Consumer S3 RestoreObject/HEAD và cross-domain CopyObject trong
    `internal/api/s3` và `internal/object` cần Chiến review theo API và
    [pack contract](../contracts/pack-and-pages.md). Revival/promotion và physical
