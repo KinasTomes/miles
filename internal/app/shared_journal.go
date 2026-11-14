@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/clock"
@@ -52,6 +53,10 @@ func (j *journalRuntime) once(ctx context.Context, flush bool) (workErr, cleanup
 }
 
 func (j *journalRuntime) run(ctx context.Context) error {
+	if os.Getenv("MILES_DISABLE_PERIODIC") == "1" {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	for ctx.Err() == nil {
 		_, _ = j.once(ctx, false)
 		if err := j.clock.Sleep(ctx, time.Second); err != nil {
