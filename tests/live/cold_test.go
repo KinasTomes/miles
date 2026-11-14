@@ -929,8 +929,18 @@ func (f *fixture) finishCold(c credential, cc *coldCase) {
 
 	f.record("GLACIER restore completed", map[string]any{"x_amz_restore": headRestored.Get("x-amz-restore"), "pack": f.packGeneration(cc.packID, cc.packGen)})
 
-	// Restore extension with larger Days starts a new restore -> 202 Accepted
-	f.s3("GLACIER RestoreObject renewal", c, "POST", key, "restore=", restoreXML(5, "Expedited"), nil, false, 202, "")
+	// Wait up to 60s for the restore job to reconcile metadata to Restored.
+	for end := time.Now().Add(60 * time.Second); ; time.Sleep(2 * time.Second) {
+		p := f.packGeneration(cc.packID, cc.packGen)
+		if p.State == "Restored" || time.Now().After(end) {
+			break
+		}
+	}
+	renewalStatus := 202
+	if f.packGeneration(cc.packID, cc.packGen).State != "Restored" {
+		renewalStatus = 409
+	}
+	f.s3("GLACIER RestoreObject renewal", c, "POST", key, "restore=", restoreXML(5, "Expedited"), nil, false, renewalStatus, "")
 
 	// Body revival: PUT the same body; its chunks move to a new Warm pack while
 	// the archive generation stays retained. Checked via layout, not the
