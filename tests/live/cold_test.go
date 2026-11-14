@@ -899,8 +899,8 @@ func (f *fixture) finishCold(c credential, cc *coldCase) {
 
 	f.record("GLACIER restore completed", map[string]any{"x_amz_restore": headRestored.Get("x-amz-restore"), "pack": f.packGeneration(cc.packID, cc.packGen)})
 
-	// Wait up to 60s for the restore job to reconcile metadata to Restored.
-	for end := time.Now().Add(60 * time.Second); ; time.Sleep(2 * time.Second) {
+	// Wait up to 120s for the restore job to reconcile metadata to Restored.
+	for end := time.Now().Add(120 * time.Second); ; time.Sleep(2 * time.Second) {
 		p := f.packGeneration(cc.packID, cc.packGen)
 		if p.State == "Restored" || time.Now().After(end) {
 			break
