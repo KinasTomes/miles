@@ -136,6 +136,10 @@ func (r *Runner) Tick(ctx context.Context) error {
 		}
 		if old.State.Terminal() {
 			if err = r.Authority.Close(ctx, f); err != nil {
+				if errors.Is(err, storage.ErrFenced) || errors.Is(err, storage.ErrNotFound) {
+					delete(r.leases, id)
+					continue
+				}
 				return err
 			}
 			delete(r.leases, id)
@@ -161,6 +165,10 @@ func (r *Runner) Tick(ctx context.Context) error {
 					continue
 				}
 				if e = r.Authority.Close(ctx, f); e != nil {
+					if errors.Is(e, storage.ErrFenced) || errors.Is(e, storage.ErrNotFound) {
+						delete(r.leases, j.ID)
+						continue
+					}
 					return e
 				}
 				delete(r.leases, j.ID)
@@ -361,6 +369,9 @@ func (r *Runner) Close(ctx context.Context) error {
 		j, e := r.Service.Store.GetJob(ctx, id)
 		if e == nil && j.Worker == f {
 			e = r.Authority.Close(ctx, f)
+		}
+		if errors.Is(e, storage.ErrFenced) || errors.Is(e, storage.ErrNotFound) {
+			e = nil
 		}
 		out = errors.Join(out, e)
 		if e == nil {
