@@ -236,11 +236,6 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 				if e != nil {
 					return e
 				}
-				if owner.ID == j.ID {
-					a.Source = source
-					a.State = "Waiting"
-					break
-				}
 				previous, e := r1Read[lifecycle.Action](t, lifecycleKey(owner.ID))
 				if e != nil {
 					return e
