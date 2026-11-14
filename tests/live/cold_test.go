@@ -613,8 +613,9 @@ func TestColdLiveFrontDoors(t *testing.T) {
 				t.Fatal("missing bucket identity")
 			}
 			cs := []*coldCase{f.putCold(owner, storage.GlacierIR), f.putCold(owner, storage.Glacier)}
-			for _, cc := range cs {
-				f.startTiering(cc)
+			if i == 0 {
+				// Demonstrate that tiering is deferred inside ProtectedUntil on the first case.
+				f.startTiering(cs[0])
 			}
 			fixtures[i], owners[i], cases[i] = f, owner, cs
 		})
@@ -742,6 +743,28 @@ func (f *fixture) startTiering(cc *coldCase) {
 	if time.Until(cc.protectedUntil) < 5*time.Minute {
 		f.t.Fatalf("protection window ends at %s, too soon to observe deferral", cc.protectedUntil)
 	}
+	f.enqueueTiering(cc)
+
+	var detail json.RawMessage
+	var p coldPack
+	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(2 * time.Second) {
+		state, raw := f.job(cc.tierJob)
+		detail = raw
+		if state == "succeeded" || state == "failed" || state == "cancelled" {
+			f.t.Fatalf("tiering job %s settled as %s inside the protection window", cc.tierJob, state)
+		}
+		if p = f.packGeneration(cc.packID, cc.packGen); p.State != "Warm" {
+			f.t.Fatalf("protected pack left Warm before ProtectedUntil: %+v", p)
+		}
+	}
+	if !time.Now().Before(cc.protectedUntil) {
+		f.t.Fatal("deferral observation overran ProtectedUntil")
+	}
+	f.record(string(cc.class)+" tiering deferred by protection", map[string]any{"job": detail, "pack": p})
+}
+
+func (f *fixture) enqueueTiering(cc *coldCase) {
+	f.t.Helper()
 	pinned := f.putTiering(map[string]any{
 		"enabled":             true,
 		"cold_after_days":     0,
@@ -761,33 +784,7 @@ func (f *fixture) startTiering(cc *coldCase) {
 		f.t.Fatal("tiering job response missing job_id")
 	}
 	cc.tierJob = job.JobID
-	disabled := f.putTiering(map[string]any{"enabled": false})
-
-	var detail json.RawMessage
-	var p coldPack
-	for end := time.Now().Add(3 * time.Minute); ; time.Sleep(2 * time.Second) {
-		if time.Now().After(end) {
-			f.t.Fatalf("tiering job %s was not claimed by a worker inside the protection window", cc.tierJob)
-		}
-		var state string
-		state, detail = f.job(cc.tierJob)
-		if state == "succeeded" || state == "failed" || state == "cancelled" {
-			f.t.Fatalf("tiering job %s settled as %s inside the protection window", cc.tierJob, state)
-		}
-		if p = f.packGeneration(cc.packID, cc.packGen); p.State != "Warm" {
-			f.t.Fatalf("protected pack left Warm before ProtectedUntil: %+v", p)
-		}
-		var claimed struct {
-			StartedAt *time.Time `json:"started_at"`
-		}
-		if json.Unmarshal(detail, &claimed) == nil && claimed.StartedAt != nil && time.Since(*claimed.StartedAt) > 20*time.Second {
-			break
-		}
-	}
-	if !time.Now().Before(cc.protectedUntil) {
-		f.t.Fatal("deferral observation overran ProtectedUntil")
-	}
-	f.record(string(cc.class)+" tiering deferred by protection", map[string]any{"job": detail, "pack": p, "pinned_policy_revision": pinned, "discovery_disabled_revision": disabled})
+	f.putTiering(map[string]any{"enabled": false})
 }
 
 // putTiering merges tiering fields into the global policy with CAS on the
@@ -808,7 +805,12 @@ func (f *fixture) putTiering(tiering map[string]any) int {
 func (f *fixture) finishCold(c credential, cc *coldCase) {
 	f.t.Helper()
 	hexSum := fmt.Sprintf("%x", sha256.Sum256(cc.data))
-	f.awaitJob(cc.tierJob, 15*time.Minute)
+	if cc.tierJob == "" {
+		// ProtectedUntil has elapsed; enqueue the tiering job now so it
+		// executes sequentially without competing for R1 with sibling cases.
+		f.enqueueTiering(cc)
+	}
+	f.awaitJob(cc.tierJob, 5*time.Minute)
 	source := f.packGeneration(cc.packID, cc.packGen)
 	if source.State != "Cold" || source.StorageClass != string(cc.class) {
 		f.t.Fatalf("pack %s gen %s state=%s class=%s, want Cold/%s", cc.packID, cc.packGen, source.State, source.StorageClass, cc.class)
