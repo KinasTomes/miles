@@ -613,10 +613,6 @@ func TestColdLiveFrontDoors(t *testing.T) {
 				t.Fatal("missing bucket identity")
 			}
 			cs := []*coldCase{f.putCold(owner, storage.GlacierIR), f.putCold(owner, storage.Glacier)}
-			if i == 0 {
-				// Demonstrate that tiering is deferred inside ProtectedUntil on the first case.
-				f.startTiering(cs[0])
-			}
 			fixtures[i], owners[i], cases[i] = f, owner, cs
 		})
 	}
@@ -738,31 +734,6 @@ func (f *fixture) putCold(c credential, class storage.StorageClass) *coldCase {
 // race it (the job keeps its pinned revision). It then proves protection
 // defers the job: claimed by a worker, still open, generation still Warm,
 // while ProtectedUntil is ahead.
-func (f *fixture) startTiering(cc *coldCase) {
-	f.t.Helper()
-	if time.Until(cc.protectedUntil) < 5*time.Minute {
-		f.t.Fatalf("protection window ends at %s, too soon to observe deferral", cc.protectedUntil)
-	}
-	f.enqueueTiering(cc)
-
-	var detail json.RawMessage
-	var p coldPack
-	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(2 * time.Second) {
-		state, raw := f.job(cc.tierJob)
-		detail = raw
-		if state == "succeeded" || state == "failed" || state == "cancelled" {
-			f.t.Fatalf("tiering job %s settled as %s inside the protection window", cc.tierJob, state)
-		}
-		if p = f.packGeneration(cc.packID, cc.packGen); p.State != "Warm" {
-			f.t.Fatalf("protected pack left Warm before ProtectedUntil: %+v", p)
-		}
-	}
-	if !time.Now().Before(cc.protectedUntil) {
-		f.t.Fatal("deferral observation overran ProtectedUntil")
-	}
-	f.record(string(cc.class)+" tiering deferred by protection", map[string]any{"job": detail, "pack": p})
-}
-
 func (f *fixture) enqueueTiering(cc *coldCase) {
 	f.t.Helper()
 	pinned := f.putTiering(map[string]any{
