@@ -784,7 +784,6 @@ func (f *fixture) enqueueTiering(cc *coldCase) {
 		f.t.Fatal("tiering job response missing job_id")
 	}
 	cc.tierJob = job.JobID
-	f.putTiering(map[string]any{"enabled": false})
 }
 
 // putTiering merges tiering fields into the global policy with CAS on the
