@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"time"
+
 	"github.com/KinasTomes/miles/internal/clock"
 	"github.com/KinasTomes/miles/internal/config"
 	"github.com/KinasTomes/miles/internal/storage"

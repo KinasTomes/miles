@@ -33,8 +33,7 @@ import (
 // operator provisions infrastructure and approves its teardown independently.
 type liveConfig struct {
 	Region           string     `json:"region"`
-	InstallationName string     `json:"installation_name,omitempty"`
-	AccountID        string     `json:"account_id,omitempty"`
+	InstallationFile string     `json:"installation_file,omitempty"`
 	CAFile           string     `json:"ca_file"`
 	TokenFile        string     `json:"token_file"`
 	Result           string     `json:"result_file"`
@@ -57,6 +56,15 @@ type observation struct {
 	Bytes     int    `json:"bytes"`
 	SHA256    string `json:"sha256"`
 }
+
+// adminEvent records an Admin-side lifecycle observation (job, pack
+// generation, protection/retention, stats) for the run evidence.
+type adminEvent struct {
+	Case     string          `json:"case"`
+	Endpoint string          `json:"endpoint"`
+	At       time.Time       `json:"at"`
+	Data     json.RawMessage `json:"data"`
+}
 type fixture struct {
 	t        *testing.T
 	config   liveConfig
@@ -68,6 +76,7 @@ type fixture struct {
 	bucket   string
 	bucketID string
 	results  *[]observation
+	events   *[]adminEvent
 }
 type credential struct {
 	ID     string `json:"access_key_id"`
@@ -99,7 +108,12 @@ func validateEndpoint(ep endpoint) error {
 		return fmt.Errorf("connect requires a host and port 443")
 	}
 	a, err := url.Parse(ep.Admin)
-	if err != nil || a.Scheme != "http" || !strings.HasPrefix(a.Hostname(), "127.0.0.") || a.Port() == "" || a.User != nil || a.Path != "" || a.RawQuery != "" || a.Fragment != "" {
+	if err != nil || a.Scheme != "http" || a.Port() == "" || a.User != nil || a.Path != "" || a.RawQuery != "" || a.Fragment != "" {
+		return fmt.Errorf("Admin requires an operator-owned loopback HTTP tunnel")
+	}
+	// The bearer token travels over plain HTTP: require a literal loopback IP,
+	// never a hostname that DNS could resolve elsewhere.
+	if ip := net.ParseIP(a.Hostname()); ip == nil || !ip.IsLoopback() {
 		return fmt.Errorf("Admin requires an operator-owned loopback HTTP tunnel")
 	}
 	return nil
@@ -525,12 +539,24 @@ func TestLiveEndpointTrustBoundaries(t *testing.T) {
 	if err := validateEndpoint(valid); err != nil {
 		t.Fatal(err)
 	}
+	second := valid
+	second.Admin = "http://127.0.0.2:9001" // a second local tunnel on another loopback IP
+	if err := validateEndpoint(second); err != nil {
+		t.Fatal(err)
+	}
 	for _, modify := range []func(*endpoint){
 		func(e *endpoint) { e.URL = "http://cloud.example:443" },
 		func(e *endpoint) { e.URL = "https://cloud.example" },
 		func(e *endpoint) { e.Admin = "http://external.example:9001" },
 		func(e *endpoint) { e.Admin = "http://127.0.0.1:9001?redirect=1" },
 		func(e *endpoint) { e.Connect = "alb.example:80" },
+		// Hostnames that look loopback but resolve through DNS.
+		func(e *endpoint) { e.Admin = "http://127.0.0.evil:9001" },
+		func(e *endpoint) { e.Admin = "http://127.0.0.1.attacker.example:9001" },
+		func(e *endpoint) { e.Admin = "http://127.0.0.1.nip.io:9001" },
+		func(e *endpoint) { e.Admin = "http://localhost:9001" },
+		func(e *endpoint) { e.Admin = "http://0x7f000001:9001" },
+		func(e *endpoint) { e.Admin = "http://10.0.0.1:9001" },
 	} {
 		ep := valid
 		modify(&ep)

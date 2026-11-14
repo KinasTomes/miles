@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +25,6 @@ import (
 	"github.com/KinasTomes/miles/internal/api/s3"
 	"github.com/KinasTomes/miles/internal/metadata/dynamodb"
 	"github.com/KinasTomes/miles/internal/storage"
-	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	ddb "github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
@@ -485,129 +485,125 @@ func TestLiveFixtureColdAdminContracts(t *testing.T) {
 
 // Live end-to-end acceptance suite executing against deployed Miles Cloud and Edge front doors.
 // All requests are routed through Miles endpoints; no direct AWS CLI S3 bypass is used.
+// Pack protection is enforced: every tiering job is first observed deferred
+// inside the real ProtectedUntil window, then completes after it elapses.
 func TestColdLiveFrontDoors(t *testing.T) {
 	path := os.Getenv("MILES_COLD_LIVE_CONFIG")
 	if path == "" {
 		t.Skip("set MILES_COLD_LIVE_CONFIG only after live test approval and deployment")
 	}
-	var c liveConfig
-	body := privateFile(t, path)
-	if err := json.Unmarshal(body, &c); err != nil || c.Region == "" || c.Result == "" || len(c.Endpoints) < 1 {
-		t.Fatal("fixture requires a region, a fresh result path and front doors")
+	commit := os.Getenv("MILES_RUN_COMMIT")
+	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(commit) {
+		t.Fatal("MILES_RUN_COMMIT must be the full SHA of the clean tested commit")
 	}
+	var c liveConfig
+	if err := json.Unmarshal(privateFile(t, path), &c); err != nil || c.InstallationFile == "" || c.Result == "" || len(c.Endpoints) < 1 {
+		t.Fatal("fixture requires an installation inventory, a fresh result path and front doors")
+	}
+	inv, err := dynamodb.LoadPreflightInventory(c.InstallationFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Region != inv.Region {
+		t.Fatal("live config region must match the installation inventory")
+	}
+	names := map[string]bool{}
 	for _, ep := range c.Endpoints {
 		if err := validateEndpoint(ep); err != nil {
 			t.Fatal(err)
 		}
+		if names[ep.Name] {
+			t.Fatal("front doors require distinct labels")
+		}
+		names[ep.Name] = true
 	}
 	ca, err := os.ReadFile(c.CAFile)
 	roots := x509.NewCertPool()
 	if err != nil || !roots.AppendCertsFromPEM(ca) {
 		t.Fatal("cannot load reviewed TLS trust")
 	}
+	token := strings.TrimSpace(string(privateFile(t, c.TokenFile)))
+	if token == "" {
+		t.Fatal("empty system Admin token")
+	}
 	out, err := os.OpenFile(c.Result, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		t.Fatal("result path must be new")
 	}
-	results := []observation{}
+	started := time.Now().UTC()
+	results, events := []observation{}, []adminEvent{}
 	var nonce [6]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		t.Fatal(err)
 	}
-	installation := c.InstallationName
-	if installation == "" {
-		installation = "miles-chien"
-	}
-	accountID := c.AccountID
-	if accountID == "" {
-		accountID = "499388132734"
-	}
-	preflightCfg := dynamodb.PreflightInventoryConfig{
-		AccountID:        accountID,
-		Region:           c.Region,
-		InstallationName: installation,
-		TablePrefix:      installation + "-",
-		BucketName:       fmt.Sprintf("%s-data-%s-%s", installation, accountID, c.Region),
-		RequiredTags: map[string]string{
-			"Project": "Miles",
-		},
-	}
-	ctx := context.Background()
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(c.Region))
-	if err != nil {
-		t.Fatalf("cannot load AWS configuration for live preflight: %v", err)
-	}
-	stsClient := sts.NewFromConfig(awsCfg)
-	ident, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
-	if err != nil {
-		t.Fatalf("cannot verify caller identity: %v", err)
-	}
-	if aws.ToString(ident.Account) != accountID {
-		t.Fatalf("caller account mismatch: got %s, want %s", aws.ToString(ident.Account), accountID)
-	}
-	expectedRolePrefix := fmt.Sprintf("arn:aws:sts::%s:assumed-role/%s-deploy/", accountID, installation)
-	if !strings.HasPrefix(aws.ToString(ident.Arn), expectedRolePrefix) {
-		t.Fatalf("caller role mismatch: got %s, required assumed role prefix %s", aws.ToString(ident.Arn), expectedRolePrefix)
-	}
-
-	ddbClient := ddb.NewFromConfig(awsCfg)
-	s3Client := awss3.NewFromConfig(awsCfg)
-
-	if err := dynamodb.ValidateApprovedInventoryAndSchema(ctx, ddbClient, s3Client, preflightCfg); err != nil {
-		t.Fatalf("fail-closed preflight rejected live environment: %v", err)
-	}
-	prefix := fmt.Sprintf("%s-cold-%s", installation, hex.EncodeToString(nonce[:]))
+	prefix := fmt.Sprintf("%s-cold-%s", inv.InstallationName, hex.EncodeToString(nonce[:]))
 	t.Cleanup(func() {
 		defer out.Close()
+		role := inv.Operator.DeployRoleARN[strings.LastIndex(inv.Operator.DeployRoleARN, "/")+1:]
 		err := json.NewEncoder(out).Encode(struct {
+			Commit       string        `json:"commit"`
+			Installation string        `json:"installation"`
+			DeployRole   string        `json:"deploy_role"`
+			StartedAt    time.Time     `json:"started_at"`
+			FinishedAt   time.Time     `json:"finished_at"`
 			Prefix       string        `json:"resource_prefix"`
 			Passed       bool          `json:"passed"`
 			Observations []observation `json:"observations"`
-		}{prefix, !t.Failed(), results})
+			AdminEvents  []adminEvent  `json:"admin_events"`
+		}{commit, inv.InstallationName, role, started, time.Now().UTC(), prefix, !t.Failed(), results, events})
 		if err != nil {
 			t.Error("cannot save sanitized evidence")
 		}
 	})
 
-	token := strings.TrimSpace(string(privateFile(t, c.TokenFile)))
-	if token == "" {
-		t.Fatal("empty system Admin token")
+	// Fail closed before any front-door request: caller must be this
+	// installation's assumed deploy role and inventory must match exactly.
+	ctx := context.Background()
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(inv.Region))
+	if err != nil {
+		t.Fatalf("cannot load AWS configuration for live preflight: %v", err)
+	}
+	if err := dynamodb.ValidateApprovedInventoryAndSchema(ctx, sts.NewFromConfig(awsCfg), ddb.NewFromConfig(awsCfg), awss3.NewFromConfig(awsCfg), inv); err != nil {
+		t.Fatalf("fail-closed preflight rejected live environment: %v", err)
 	}
 
-	for _, ep := range c.Endpoints {
-		t.Run(ep.Name, func(t *testing.T) {
-			epPrefix := prefix + "-" + ep.Name
-			transport := &http.Transport{
-				Proxy:              nil,
-				DisableCompression: true,
-				TLSClientConfig:    &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
-				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
-					return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, ep.Connect)
-				},
-			}
-			defer transport.CloseIdleConnections()
-
-			adminTransport := &http.Transport{Proxy: nil}
-			defer adminTransport.CloseIdleConnections()
-			noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-
-			f := &fixture{
-				t:       t,
-				config:  c,
-				ep:      ep,
-				client:  &http.Client{Transport: transport, Timeout: 180 * time.Second, CheckRedirect: noRedirect},
-				admin:   &http.Client{Transport: adminTransport, Timeout: 30 * time.Second, CheckRedirect: noRedirect},
-				token:   token,
-				prefix:  epPrefix,
-				bucket:  epPrefix,
-				results: &results,
-			}
-
-			// Create dedicated user and logical bucket via S3 API
+	fixtures := make([]*fixture, len(c.Endpoints))
+	owners := make([]credential, len(c.Endpoints))
+	cases := make([][]*coldCase, len(c.Endpoints))
+	for i, ep := range c.Endpoints {
+		transport := &http.Transport{
+			Proxy:              nil,
+			DisableCompression: true,
+			TLSClientConfig:    &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
+			DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, ep.Connect)
+			},
+		}
+		adminTransport := &http.Transport{Proxy: nil}
+		t.Cleanup(transport.CloseIdleConnections)
+		t.Cleanup(adminTransport.CloseIdleConnections)
+		noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+		epPrefix := prefix + "-" + ep.Name
+		f := &fixture{
+			config:  c,
+			ep:      ep,
+			client:  &http.Client{Transport: transport, Timeout: 180 * time.Second, CheckRedirect: noRedirect},
+			admin:   &http.Client{Transport: adminTransport, Timeout: 30 * time.Second, CheckRedirect: noRedirect},
+			token:   token,
+			prefix:  epPrefix,
+			bucket:  epPrefix,
+			results: &results,
+			events:  &events,
+		}
+		// Phase 1: publish both payloads, then observe protection deferring
+		// each tiering job. Both endpoints share one protection wait.
+		t.Run(ep.Name+"/protected", func(t *testing.T) {
+			f.t = t
+			var nodes json.RawMessage
+			f.adminRequest("GET", "cluster/nodes", nil, token, 200, &nodes)
+			f.record("runtime topology", nodes)
 			owner := f.createUser("owner")
 			f.s3("create bucket", owner, "PUT", "", "", nil, nil, false, 200, "")
-
-			// Resolve bucket identity from Admin API
 			var bucketPolicy struct {
 				BucketID string `json:"bucket_id"`
 			}
@@ -616,252 +612,326 @@ func TestColdLiveFrontDoors(t *testing.T) {
 			if f.bucketID == "" {
 				t.Fatal("missing bucket identity")
 			}
-
-			// Discover current global policy revision dynamically
-			var curPolicy struct {
-				Revision int `json:"revision"`
+			cs := []*coldCase{f.putCold(owner, storage.GlacierIR), f.putCold(owner, storage.Glacier)}
+			for _, cc := range cs {
+				f.startTiering(cc)
 			}
-			f.adminRequest("GET", "policy", nil, token, 200, &curPolicy)
+			fixtures[i], owners[i], cases[i] = f, owner, cs
+		})
+	}
+	if t.Failed() {
+		return
+	}
 
-			// Scenario 1: GLACIER_IR flow with pack physical transition & promotion
-			f.runColdScenario(owner, storage.GlacierIR, &curPolicy.Revision)
+	// Phase 2: wait for the real protection deadline. R1 admits the
+	// transition only once its lower UTC bound passes ProtectedUntil.
+	var until time.Time
+	for _, cs := range cases {
+		for _, cc := range cs {
+			if cc.protectedUntil.After(until) {
+				until = cc.protectedUntil
+			}
+		}
+	}
+	if wait := time.Until(until.Add(time.Minute)); wait > 0 {
+		t.Logf("waiting %v for pack protection to expire", wait.Round(time.Second))
+		time.Sleep(wait)
+	}
 
-			// Scenario 2: GLACIER flow with async S3 restore observation & body revival
-			f.runColdScenario(owner, storage.Glacier, &curPolicy.Revision)
-
-			// Scenario 3: Error & terminal isolation validation (0 unknown writes, 0 protection leaks)
-			f.runColdErrorAndIsolation(owner)
+	// Phase 3: the same deferred jobs now transition; continue each flow.
+	for i, ep := range c.Endpoints {
+		t.Run(ep.Name+"/lifecycle", func(t *testing.T) {
+			f := fixtures[i]
+			f.t = t
+			for _, cc := range cases[i] {
+				f.finishCold(owners[i], cc)
+			}
+			f.runColdErrorAndIsolation(owners[i])
 		})
 	}
 }
 
-func (f *fixture) runColdScenario(c credential, class storage.StorageClass, polRev *int) {
-	f.t.Helper()
-	var data []byte
-	uniqueSeed := fmt.Sprintf("%s-%s-payload-seed\n", f.prefix, class)
-	if class == storage.GlacierIR {
-		data = append([]byte(uniqueSeed), coldIRPayload...)
-	} else {
-		data = append([]byte(uniqueSeed), coldGlacierPayload...)
+type coldCase struct {
+	class           storage.StorageClass
+	key             string
+	data            []byte
+	packID, packGen string
+	protectedUntil  time.Time
+	tierJob         string
+}
+
+// coldPack decodes both layout packs[] and pack inventory items[].
+type coldPack struct {
+	PackID            string    `json:"pack_id"`
+	Generation        string    `json:"generation"`
+	State             string    `json:"state"`
+	StorageClass      string    `json:"storage_class"`
+	StateRevision     uint64    `json:"state_revision"`
+	ProtectedUntil    time.Time `json:"protected_until"`
+	MinRetentionUntil time.Time `json:"min_retention_until"`
+	RestoredUntil     time.Time `json:"restored_until"`
+}
+
+func (f *fixture) record(label string, v any) {
+	if f.events == nil {
+		return
 	}
-	sum := sha256.Sum256(data)
-	hexSum := hex.EncodeToString(sum[:])
-	key := fmt.Sprintf("/cold-%s.bin", strings.ToLower(string(class)))
+	data, err := json.Marshal(v)
+	if err != nil {
+		f.t.Fatal("cannot record Admin evidence")
+	}
+	*f.events = append(*f.events, adminEvent{label, f.ep.Name, time.Now().UTC(), data})
+}
 
-	// 1. PUT synthetic object through Miles S3 API
-	f.s3("PUT cold object", c, "PUT", key, "", data, map[string]string{
-		"Content-Type": "application/octet-stream",
-	}, false, 200, "")
-
-	// 2. Discover physical pack and generation via object layout (packs[].pack_id)
+func (f *fixture) layout(key string) []coldPack {
+	f.t.Helper()
 	var layout struct {
-		Packs []struct {
-			PackID       string `json:"pack_id"`
-			Generation   string `json:"generation"`
-			State        string `json:"state"`
-			StorageClass string `json:"storage_class"`
-		} `json:"packs"`
+		Packs []coldPack `json:"packs"`
 	}
 	f.adminRequest("GET", "objects/layout?bucket="+url.QueryEscape(f.bucket)+"&key="+url.QueryEscape(strings.TrimPrefix(key, "/")), nil, f.token, 200, &layout)
-	if len(layout.Packs) == 0 {
-		f.t.Fatal("no physical pack mapped for object")
-	}
-	packID := layout.Packs[0].PackID
-	packGen := layout.Packs[0].Generation
+	return layout.Packs
+}
 
-	// 3. Configure tiering policy using current pinned revision
-	var polResp struct {
+// packGeneration selects the exact pack_id + generation from the inventory,
+// which lists every retained generation of the pack.
+func (f *fixture) packGeneration(id, gen string) coldPack {
+	f.t.Helper()
+	var page struct {
+		Items []coldPack `json:"items"`
+	}
+	f.adminRequest("GET", "packs/"+url.PathEscape(id), nil, f.token, 200, &page)
+	for _, it := range page.Items {
+		if it.PackID == id && it.Generation == gen {
+			return it
+		}
+	}
+	f.t.Fatalf("pack %s generation %s not found in pack inventory", id, gen)
+	return coldPack{}
+}
+
+func (f *fixture) putCold(c credential, class storage.StorageClass) *coldCase {
+	f.t.Helper()
+	payload := coldIRPayload
+	if class == storage.Glacier {
+		payload = coldGlacierPayload
+	}
+	cc := &coldCase{class: class, key: fmt.Sprintf("/cold-%s.bin", strings.ToLower(string(class)))}
+	cc.data = append([]byte(fmt.Sprintf("%s-%s-payload-seed\n", f.prefix, class)), payload...)
+	f.s3("PUT cold object", c, "PUT", cc.key, "", cc.data, map[string]string{"Content-Type": "application/octet-stream"}, false, 200, "")
+	packs := f.layout(cc.key)
+	if len(packs) != 1 || packs[0].PackID == "" || packs[0].Generation == "" {
+		f.t.Fatalf("expected one physical pack for %s, got %+v", cc.key, packs)
+	}
+	cc.packID, cc.packGen = packs[0].PackID, packs[0].Generation
+	p := f.packGeneration(cc.packID, cc.packGen)
+	if p.State != "Warm" || p.ProtectedUntil.IsZero() {
+		f.t.Fatalf("published pack must be Warm with protection: %+v", p)
+	}
+	cc.protectedUntil = p.ProtectedUntil
+	f.record(string(class)+" published pack", p)
+	return cc
+}
+
+// startTiering pins a policy revision for the class and enqueues an exact
+// tiering job, then proves protection defers it: the job stays open and the
+// generation stays Warm while ProtectedUntil is ahead.
+func (f *fixture) startTiering(cc *coldCase) {
+	f.t.Helper()
+	var current, updated struct {
 		Revision int `json:"revision"`
 	}
+	f.adminRequest("GET", "policy", nil, f.token, 200, &current)
 	f.adminRequest("PUT", "policy", map[string]any{
-		"expected_revision": *polRev,
+		"expected_revision": current.Revision,
 		"tiering": map[string]any{
 			"cold_after_days":     0,
 			"min_pack_live_ratio": 0,
-			"cold_storage_class":  string(class),
+			"cold_storage_class":  string(cc.class),
 			"auto_restore":        false,
 		},
-	}, f.token, 200, &polResp)
-	if polResp.Revision > 0 {
-		*polRev = polResp.Revision
+	}, f.token, 200, &updated)
+	if updated.Revision <= current.Revision {
+		f.t.Fatalf("policy revision did not advance: %d -> %d", current.Revision, updated.Revision)
 	}
-
-	// 4. Enqueue tiering job with object params and await physical transition
-	var tierJob struct {
+	var job struct {
 		JobID string `json:"job_id"`
 	}
 	f.adminRequest("POST", "jobs", map[string]any{
 		"type":            "tiering",
-		"params":          map[string]any{"pack_id": packID, "generation": packGen},
-		"policy_revision": *polRev,
-	}, f.token, 202, &tierJob)
-	f.awaitJob(tierJob.JobID, 3*time.Minute)
-
-	// 5. Inspect physical pack state after tiering (items array)
-	var packPage struct {
-		Items []struct {
-			PackID       string `json:"pack_id"`
-			Generation   string `json:"generation"`
-			State        string `json:"state"`
-			StorageClass string `json:"storage_class"`
-		} `json:"items"`
+		"params":          map[string]any{"pack_id": cc.packID, "generation": cc.packGen},
+		"policy_revision": updated.Revision,
+	}, f.token, 202, &job)
+	if job.JobID == "" {
+		f.t.Fatal("tiering job response missing job_id")
 	}
-	f.adminRequest("GET", "packs/"+packID, nil, f.token, 200, &packPage)
-	var foundColdSource bool
-	for _, it := range packPage.Items {
-		if it.PackID == packID && it.Generation == packGen {
-			if it.State != "Cold" || it.StorageClass != string(class) {
-				f.t.Fatalf("pack %s gen %s state=%s class=%s, want Cold/%s", packID, packGen, it.State, it.StorageClass, class)
-			}
-			foundColdSource = true
-			break
+	cc.tierJob = job.JobID
+	if time.Until(cc.protectedUntil) < 2*time.Minute {
+		f.t.Fatalf("protection window ends at %s, too soon to observe deferral", cc.protectedUntil)
+	}
+	var state string
+	var detail json.RawMessage
+	var p coldPack
+	for end := time.Now().Add(30 * time.Second); time.Now().Before(end); time.Sleep(2 * time.Second) {
+		state, detail = f.job(cc.tierJob)
+		if state == "succeeded" || state == "failed" || state == "cancelled" {
+			f.t.Fatalf("tiering job %s settled as %s inside the protection window", cc.tierJob, state)
+		}
+		if p = f.packGeneration(cc.packID, cc.packGen); p.State != "Warm" {
+			f.t.Fatalf("protected pack left Warm before ProtectedUntil: %+v", p)
 		}
 	}
-	if !foundColdSource {
-		f.t.Fatalf("pack %s gen %s not found in pack inventory: %+v", packID, packGen, packPage.Items)
+	if !time.Now().Before(cc.protectedUntil) {
+		f.t.Fatal("deferral observation overran ProtectedUntil")
 	}
+	f.record(string(cc.class)+" tiering deferred by protection", map[string]any{"job": detail, "pack": p, "policy_revision": updated.Revision})
+}
 
-	if class == storage.GlacierIR {
-		// 6. GLACIER_IR: RestoreObject must return 400 InvalidRequest (not archived)
+func (f *fixture) finishCold(c credential, cc *coldCase) {
+	f.t.Helper()
+	hexSum := fmt.Sprintf("%x", sha256.Sum256(cc.data))
+	f.awaitJob(cc.tierJob, 15*time.Minute)
+	source := f.packGeneration(cc.packID, cc.packGen)
+	if source.State != "Cold" || source.StorageClass != string(cc.class) {
+		f.t.Fatalf("pack %s gen %s state=%s class=%s, want Cold/%s", cc.packID, cc.packGen, source.State, source.StorageClass, cc.class)
+	}
+	if source.MinRetentionUntil.Before(time.Now().Add(89 * 24 * time.Hour)) {
+		f.t.Fatalf("Cold generation lacks the 90-day minimum retention: %s", source.MinRetentionUntil)
+	}
+	f.record(string(cc.class)+" tiered pack", source)
+	key, data := cc.key, cc.data
+
+	if cc.class == storage.GlacierIR {
+		// GLACIER_IR: RestoreObject must return 400 InvalidRequest (not archived)
 		f.s3("IR RestoreObject rejected", c, "POST", key, "restore=", restoreXML(1, "Expedited"), nil, false, 400, "InvalidRequest")
 
-		// 7. Direct GET succeeds without restore, SHA-256 matches
+		// Direct GET succeeds without restore, SHA-256 matches
 		got, _ := f.s3("IR direct GET", c, "GET", key, "", nil, nil, false, 200, "")
-		gotSum := sha256.Sum256(got)
-		if hex.EncodeToString(gotSum[:]) != hexSum {
-			f.t.Fatalf("GLACIER_IR payload checksum mismatch: got %x, want %s", gotSum, hexSum)
+		if fmt.Sprintf("%x", sha256.Sum256(got)) != hexSum {
+			f.t.Fatalf("GLACIER_IR payload checksum mismatch, want %s", hexSum)
 		}
 
-		// 8. Duplicate PUT reuses existing canonical IR chunk
+		// Duplicate PUT reuses existing canonical IR chunk
 		f.s3("IR reuse PUT", c, "PUT", key+"-reuse", "", data, nil, false, 200, "")
 		gotReuse, _ := f.s3("IR reuse GET", c, "GET", key+"-reuse", "", nil, nil, false, 200, "")
 		if !bytes.Equal(gotReuse, data) {
 			f.t.Fatalf("GLACIER_IR reuse payload mismatch")
 		}
 
-		// 9. Admin promote pack back to Warm generation
+		// Admin promote of the exact generation back to Warm
 		var promJob struct {
 			JobID string `json:"job_id"`
 		}
-		f.adminRequest("POST", "packs/"+packID+"/"+packGen+"/promote", map[string]any{}, f.token, 202, &promJob)
-		f.awaitJob(promJob.JobID, 3*time.Minute)
+		f.adminRequest("POST", "packs/"+url.PathEscape(cc.packID)+"/"+url.PathEscape(cc.packGen)+"/promote", map[string]any{}, f.token, 202, &promJob)
+		f.awaitJob(promJob.JobID, 5*time.Minute)
 
-		// Verify layout after promotion advances generation
-		var promotedGen string
-		layoutDeadline := time.Now().Add(60 * time.Second)
-		for time.Now().Before(layoutDeadline) {
-			f.adminRequest("GET", "objects/layout?bucket="+url.QueryEscape(f.bucket)+"&key="+url.QueryEscape(strings.TrimPrefix(key, "/")), nil, f.token, 200, &layout)
-			if len(layout.Packs) > 0 && layout.Packs[0].Generation != packGen {
-				promotedGen = layout.Packs[0].Generation
+		// Canonical layout must move to a new generation of the same pack
+		var promoted coldPack
+		for end := time.Now().Add(60 * time.Second); time.Now().Before(end); time.Sleep(500 * time.Millisecond) {
+			if packs := f.layout(key); len(packs) == 1 && packs[0].PackID == cc.packID && packs[0].Generation != cc.packGen {
+				promoted = packs[0]
 				break
 			}
-			time.Sleep(500 * time.Millisecond)
 		}
-		if promotedGen == "" {
-			f.t.Fatalf("generation did not advance after promotion: %s", layout.Packs[0].Generation)
+		if promoted.Generation == "" {
+			f.t.Fatalf("canonical layout did not move off generation %s after promotion", cc.packGen)
 		}
 
-		// Fetch all generations for packID and verify both retained Cold source and new Warm target
-		f.adminRequest("GET", "packs/"+packID, nil, f.token, 200, &packPage)
-		var sourceRetained, targetWarm bool
-		for _, it := range packPage.Items {
-			if it.PackID == packID && it.Generation == packGen {
-				if it.State == "Cold" {
-					sourceRetained = true
-				}
-			}
-			if it.PackID == packID && it.Generation == promotedGen {
-				if it.State == "Warm" {
-					targetWarm = true
-				}
-			}
+		// Inventory lists both: the retained Cold source and the new Warm target
+		retained := f.packGeneration(cc.packID, cc.packGen)
+		if retained.State != "Cold" || retained.MinRetentionUntil != source.MinRetentionUntil {
+			f.t.Fatalf("source generation not retained as Cold with its retention: %+v", retained)
 		}
-		if !sourceRetained {
-			f.t.Fatalf("pack %s source gen %s not retained as Cold after promotion", packID, packGen)
+		target := f.packGeneration(cc.packID, promoted.Generation)
+		if target.State != "Warm" {
+			f.t.Fatalf("promoted generation is not Warm: %+v", target)
 		}
-		if !targetWarm {
-			f.t.Fatalf("pack %s target gen %s not established as Warm after promotion", packID, promotedGen)
-		}
+		f.record("GLACIER_IR promotion", map[string]any{"job_id": promJob.JobID, "retained_source": retained, "warm_target": target})
 
 		gotPromoted, _ := f.s3("IR read after promote", c, "GET", key, "", nil, nil, false, 200, "")
 		if !bytes.Equal(gotPromoted, data) {
 			f.t.Fatalf("promoted object payload mismatch")
 		}
-	} else if class == storage.Glacier {
-		// 6. GLACIER: GET before restore must be rejected with 403 InvalidObjectState
-		f.s3("GLACIER GET before restore rejected", c, "GET", key, "", nil, nil, false, 403, "InvalidObjectState")
+		return
+	}
 
-		// 7. HEAD before restore has no x-amz-restore header
-		_, headBefore := f.s3("GLACIER HEAD before restore", c, "HEAD", key, "", nil, nil, false, 200, "")
-		if headBefore.Get("x-amz-restore") != "" {
-			f.t.Fatalf("HEAD before restore had unexpected x-amz-restore: %s", headBefore.Get("x-amz-restore"))
-		}
+	// GLACIER: GET before restore must be rejected with 403 InvalidObjectState
+	f.s3("GLACIER GET before restore rejected", c, "GET", key, "", nil, nil, false, 403, "InvalidObjectState")
 
-		// 8. RestoreObject starts async restore -> 202 Accepted
-		f.s3("GLACIER RestoreObject initiate", c, "POST", key, "restore=", restoreXML(2, "Expedited"), nil, false, 202, "")
+	// HEAD before restore has no x-amz-restore header
+	_, headBefore := f.s3("GLACIER HEAD before restore", c, "HEAD", key, "", nil, nil, false, 200, "")
+	if headBefore.Get("x-amz-restore") != "" {
+		f.t.Fatalf("HEAD before restore had unexpected x-amz-restore: %s", headBefore.Get("x-amz-restore"))
+	}
 
-		// 9. Concurrent RestoreObject returns 409 RestoreAlreadyInProgress
-		f.s3("GLACIER RestoreObject conflict", c, "POST", key, "restore=", restoreXML(2, "Expedited"), nil, false, 409, "RestoreAlreadyInProgress")
+	// RestoreObject starts async restore -> 202 Accepted; a concurrent one is 409
+	f.s3("GLACIER RestoreObject initiate", c, "POST", key, "restore=", restoreXML(2, "Expedited"), nil, false, 202, "")
+	f.s3("GLACIER RestoreObject conflict", c, "POST", key, "restore=", restoreXML(2, "Expedited"), nil, false, 409, "RestoreAlreadyInProgress")
 
-		// 10. HEAD during pending shows ongoing-request="true"
-		headDeadline := time.Now().Add(15 * time.Second)
-		var headPending http.Header
-		for {
-			_, headPending = f.s3("GLACIER HEAD pending", c, "HEAD", key, "", nil, nil, false, 200, "")
-			if strings.Contains(headPending.Get("x-amz-restore"), `ongoing-request="true"`) || time.Now().After(headDeadline) {
-				break
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		if !strings.Contains(headPending.Get("x-amz-restore"), `ongoing-request="true"`) {
-			f.t.Fatalf("HEAD pending expected ongoing-request=true, got: %s", headPending.Get("x-amz-restore"))
-		}
-
-		// 11. GET while pending is rejected with 403 InvalidObjectState
-		f.s3("GLACIER GET while pending rejected", c, "GET", key, "", nil, nil, false, 403, "InvalidObjectState")
-
-		// 12. Wait for async restore completion on backend S3
-		deadline := time.Now().Add(10 * time.Minute)
-		restored := false
-		var headRestored http.Header
-		for time.Now().Before(deadline) {
-			time.Sleep(5 * time.Second)
-			_, h := f.s3("GLACIER HEAD poll", c, "HEAD", key, "", nil, nil, false, 200, "")
-			if strings.Contains(h.Get("x-amz-restore"), `ongoing-request="false"`) {
-				restored = true
-				headRestored = h
-				break
-			}
-		}
-		if !restored {
-			f.t.Fatal("asynchronous S3 restore timed out after 10 minutes")
-		}
-		if !strings.Contains(headRestored.Get("x-amz-restore"), `expiry-date="`) {
-			f.t.Fatalf("completed restore header missing expiry-date: %s", headRestored.Get("x-amz-restore"))
-		}
-
-		// 13. GET on restored object succeeds, payload and SHA-256 match exactly
-		gotRestored, _ := f.s3("GLACIER GET restored", c, "GET", key, "", nil, nil, false, 200, "")
-		gotRestoredSum := sha256.Sum256(gotRestored)
-		if hex.EncodeToString(gotRestoredSum[:]) != hexSum {
-			f.t.Fatalf("GLACIER restored payload checksum mismatch: got %x, want %s", gotRestoredSum, hexSum)
-		}
-
-		// 14. Restore extension with larger Days succeeds
-		f.s3("GLACIER RestoreObject renewal", c, "POST", key, "restore=", restoreXML(5, "Expedited"), nil, false, 202, "")
-
-		// 15. Body revival: PUT same body into Warm generation, old archive kept for retention
-		f.s3("GLACIER body revival PUT", c, "PUT", key+"-revived", "", data, nil, false, 200, "")
-		gotRevived, _ := f.s3("GLACIER revived GET", c, "GET", key+"-revived", "", nil, nil, false, 200, "")
-		if !bytes.Equal(gotRevived, data) {
-			f.t.Fatalf("GLACIER revived payload mismatch")
+	// HEAD during pending shows ongoing-request="true"
+	var headPending http.Header
+	for end := time.Now().Add(15 * time.Second); ; time.Sleep(500 * time.Millisecond) {
+		_, headPending = f.s3("GLACIER HEAD pending", c, "HEAD", key, "", nil, nil, false, 200, "")
+		if strings.Contains(headPending.Get("x-amz-restore"), `ongoing-request="true"`) || time.Now().After(end) {
+			break
 		}
 	}
+	if !strings.Contains(headPending.Get("x-amz-restore"), `ongoing-request="true"`) {
+		f.t.Fatalf("HEAD pending expected ongoing-request=true, got: %s", headPending.Get("x-amz-restore"))
+	}
+	f.record("GLACIER restore pending", map[string]any{"x_amz_restore": headPending.Get("x-amz-restore"), "pack": f.packGeneration(cc.packID, cc.packGen)})
+
+	// GET while pending is rejected with 403 InvalidObjectState
+	f.s3("GLACIER GET while pending rejected", c, "GET", key, "", nil, nil, false, 403, "InvalidObjectState")
+
+	// Wait for async restore completion on backend S3
+	var headRestored http.Header
+	for end := time.Now().Add(10 * time.Minute); headRestored == nil; {
+		if time.Now().After(end) {
+			f.t.Fatal("asynchronous S3 restore timed out after 10 minutes")
+		}
+		time.Sleep(5 * time.Second)
+		if _, h := f.s3("GLACIER HEAD poll", c, "HEAD", key, "", nil, nil, false, 200, ""); strings.Contains(h.Get("x-amz-restore"), `ongoing-request="false"`) {
+			headRestored = h
+		}
+	}
+	if !strings.Contains(headRestored.Get("x-amz-restore"), `expiry-date="`) {
+		f.t.Fatalf("completed restore header missing expiry-date: %s", headRestored.Get("x-amz-restore"))
+	}
+
+	// GET on restored object succeeds, payload and SHA-256 match exactly
+	gotRestored, _ := f.s3("GLACIER GET restored", c, "GET", key, "", nil, nil, false, 200, "")
+	if fmt.Sprintf("%x", sha256.Sum256(gotRestored)) != hexSum {
+		f.t.Fatalf("GLACIER restored payload checksum mismatch, want %s", hexSum)
+	}
+
+	// The restore job reconciles metadata after the backend copy appears;
+	// renewal is only a new restore once the generation is Restored.
+	var restored coldPack
+	for end := time.Now().Add(10 * time.Minute); restored.State != "Restored"; time.Sleep(5 * time.Second) {
+		if time.Now().After(end) {
+			f.t.Fatalf("generation %s metadata did not reach Restored", cc.packGen)
+		}
+		restored = f.packGeneration(cc.packID, cc.packGen)
+	}
+	if !restored.RestoredUntil.After(time.Now()) || restored.MinRetentionUntil != source.MinRetentionUntil {
+		f.t.Fatalf("restored generation lost its expiry or retention: %+v", restored)
+	}
+	f.record("GLACIER restore completed", map[string]any{"x_amz_restore": headRestored.Get("x-amz-restore"), "pack": restored})
+
+	// Restore extension with larger Days starts a new restore
+	f.s3("GLACIER RestoreObject renewal", c, "POST", key, "restore=", restoreXML(5, "Expedited"), nil, false, 202, "")
+
+	// Body revival: PUT same body into Warm generation, old archive kept for retention
+	f.s3("GLACIER body revival PUT", c, "PUT", key+"-revived", "", data, nil, false, 200, "")
+	gotRevived, _ := f.s3("GLACIER revived GET", c, "GET", key+"-revived", "", nil, nil, false, 200, "")
+	if !bytes.Equal(gotRevived, data) {
+		f.t.Fatalf("GLACIER revived payload mismatch")
+	}
+	f.record("GLACIER archive after revival", f.packGeneration(cc.packID, cc.packGen))
 }
 
 func (f *fixture) runColdErrorAndIsolation(c credential) {
 	f.t.Helper()
-	// Unrestored archive read must be refused before any header/payload commit
 	f.s3("non-existent key 404", c, "GET", "/cold-nonexistent.bin", "", nil, nil, false, 404, "NoSuchKey")
 
 	// Invalid restore bodies
@@ -869,22 +939,27 @@ func (f *fixture) runColdErrorAndIsolation(c credential) {
 	f.s3("zero days restore 400", c, "POST", "/cold-glacier.bin", "restore=", restoreXML(0, "Expedited"), nil, false, 400, "InvalidRequest")
 	f.s3("invalid tier restore 400", c, "POST", "/cold-glacier.bin", "restore=", restoreXML(2, "NonExistent"), nil, false, 400, "InvalidRequest")
 
-	// Fail-closed terminal safety assertions
+	// Accounting observations. These complement, not replace, the per-job
+	// terminal states and exact-generation records captured above.
+	var raw json.RawMessage
 	var st struct {
-		RevivedChunks  *uint64          `json:"revived_chunks_total"`
-		OrphanedChunks *uint64          `json:"orphaned_chunks_total"`
-		Physical       map[string]int64 `json:"listed_bytes_by_pack_lifecycle"`
+		PhysicalComplete bool             `json:"physical_complete"`
+		RevivedChunks    *uint64          `json:"revived_chunks_total"`
+		OrphanedChunks   *uint64          `json:"orphaned_chunks_total"`
+		Physical         map[string]int64 `json:"listed_bytes_by_pack_lifecycle"`
 	}
-	deadline := time.Now().Add(45 * time.Second)
-	for {
-		f.adminRequest("GET", "stats", nil, f.token, 200, &st)
-		if st.RevivedChunks != nil && *st.RevivedChunks > 0 && st.Physical != nil && st.Physical["cold_dead"] > 0 {
+	for end := time.Now().Add(45 * time.Second); ; time.Sleep(time.Second) {
+		f.adminRequest("GET", "stats", nil, f.token, 200, &raw)
+		if json.Unmarshal(raw, &st) != nil {
+			f.t.Fatal("invalid stats response")
+		}
+		if st.PhysicalComplete && st.RevivedChunks != nil && *st.RevivedChunks > 0 && st.Physical["cold_dead"] > 0 || time.Now().After(end) {
 			break
 		}
-		if time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(1 * time.Second)
+	}
+	f.record("stats", raw)
+	if !st.PhysicalComplete {
+		f.t.Fatal("physical listing incomplete: accounting evidence unavailable")
 	}
 	if st.OrphanedChunks == nil || *st.OrphanedChunks != 0 {
 		f.t.Fatalf("terminal safety failure: orphaned chunks must be non-null and exactly 0, got %v", st.OrphanedChunks)
@@ -897,22 +972,33 @@ func (f *fixture) runColdErrorAndIsolation(c credential) {
 	}
 }
 
+func (f *fixture) job(id string) (string, json.RawMessage) {
+	f.t.Helper()
+	var raw json.RawMessage
+	f.adminRequest("GET", "jobs/"+url.PathEscape(id), nil, f.token, 200, &raw)
+	var j struct {
+		State string `json:"state"`
+	}
+	if json.Unmarshal(raw, &j) != nil {
+		f.t.Fatal("invalid job response")
+	}
+	return j.State, raw
+}
+
 func (f *fixture) awaitJob(id string, timeout time.Duration) {
 	f.t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		var j struct {
-			JobID string `json:"job_id"`
-			State string `json:"state"`
-		}
-		f.adminRequest("GET", "jobs/"+id, nil, f.token, 200, &j)
-		switch j.State {
+	if id == "" {
+		f.t.Fatal("missing job_id")
+	}
+	for deadline := time.Now().Add(timeout); time.Now().Before(deadline); time.Sleep(500 * time.Millisecond) {
+		state, raw := f.job(id)
+		switch state {
 		case "succeeded":
+			f.record("job "+id, raw)
 			return
 		case "failed", "cancelled":
-			f.t.Fatalf("job %s entered terminal state: %s", id, j.State)
-		default:
-			time.Sleep(500 * time.Millisecond)
+			f.record("job "+id, raw)
+			f.t.Fatalf("job %s entered terminal state: %s", id, state)
 		}
 	}
 	f.t.Fatalf("job %s did not settle within %v", id, timeout)

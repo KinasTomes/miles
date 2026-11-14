@@ -8,15 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"slices"
-	"time"
-
 	"github.com/KinasTomes/miles/internal/jobs"
 	"github.com/KinasTomes/miles/internal/lifecycle"
 	"github.com/KinasTomes/miles/internal/metadata/operations"
 	format "github.com/KinasTomes/miles/internal/recovery/format"
 	s "github.com/KinasTomes/miles/internal/storage"
+	"slices"
+	"time"
 )
 
 func lifecycleKey(id string) Key {
@@ -213,7 +211,7 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 			if e != nil {
 				return e
 			}
-			if g.State != "Open" || g.Active < 1 {
+			if g.State != "Open" || g.Active != 1 || g.Resolving > 1 {
 				return s.ErrR1Busy
 			}
 			pins, e := r1Read[r1Pins](t, r1PinKey(source.Ref))
@@ -223,7 +221,7 @@ func (m *Store) PrepareLifecycle(ctx context.Context, j jobs.Job, p lifecycle.Pa
 			if pins.Count != 0 {
 				return s.ErrR1Busy
 			}
-			if source.State != "Warm" || source.ProtectedUntil.IsZero() || (os.Getenv("MILES_BYPASS_PROTECTION") != "1" && b.Lower.Before(source.ProtectedUntil)) || !source.MinRetentionUntil.IsZero() && b.Lower.Before(source.MinRetentionUntil) {
+			if source.State != "Warm" || source.ProtectedUntil.IsZero() || b.Lower.Before(source.ProtectedUntil) || !source.MinRetentionUntil.IsZero() && b.Lower.Before(source.MinRetentionUntil) {
 				return s.ErrR1Busy
 			}
 			g.State = "Maintenance"
@@ -514,7 +512,7 @@ func (m *Store) FinishLifecycle(ctx context.Context, j jobs.Job, physical s.Pack
 			if e != nil {
 				return e
 			}
-			if g.State != "Maintenance" || g.Revision < a.GateRevision {
+			if g.State != "Maintenance" || g.Revision != a.GateRevision {
 				return s.ErrFenced
 			}
 			g.State = "Open"
@@ -614,7 +612,7 @@ func (m *Store) SkipLifecycle(ctx context.Context, j jobs.Job) (out lifecycle.Ac
 			if e != nil {
 				return e
 			}
-			if g.Revision < a.GateRevision || g.State != "Maintenance" {
+			if g.Revision != a.GateRevision || g.State != "Maintenance" {
 				return s.ErrFenced
 			}
 			g.State = "Open"

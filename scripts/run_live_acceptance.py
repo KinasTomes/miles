@@ -1,146 +1,105 @@
 #!/usr/bin/env python3
-import subprocess
-import time
-import os
-import sys
-import json
-import shutil
+"""Run TestColdLiveFrontDoors against an approved, already deployed installation.
+
+The runner never edits Miles coordination state, deletes jobs or kills
+processes it did not start. Cloud must be the deployed ALB/EC2 front door named
+in the private live config; with --local-edge the runner starts only an Edge
+runtime and its TLS front door and stops exactly those processes afterwards.
+
+Private directory (outside Git):
+  installation.json      reviewed installation inventory (operator.login_profile)
+  miles-cold-live.json   live config; its installation_file points at installation.json
+  edge-runtime.json      --local-edge only: Edge runtime config (runtime role via aws_config_file)
+  edge-nginx.conf        --local-edge only: Edge TLS front door
+"""
+import argparse
 import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PRIVATE = Path("/home/nmc27705/miles-chien-private")
+# Credentials a child must never inherit: the Edge runtime uses its own
+# bounded role, never the deploy session used for the preflight.
+CREDENTIAL_ENV = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_CREDENTIAL_EXPIRATION")
 
-def get_aws_env():
-    cmd = ["/usr/local/bin/aws", "configure", "export-credentials", "--profile", "miles-chien-deploy", "--format", "env"]
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    env = {}
-    for line in res.stdout.strip().splitlines():
-        line = line.strip().replace("export ", "")
-        if "=" in line:
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip().strip("'").strip('"')
-    env["AWS_REGION"] = "ap-southeast-1"
+
+def clean_commit():
+    if subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip():
+        sys.exit("refusing to run: working tree is not clean, evidence must bind to one commit")
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def deploy_credentials(profile):
+    out = subprocess.run(["aws", "configure", "export-credentials", "--profile", profile, "--format", "process"],
+                         capture_output=True, text=True, check=True).stdout
+    c = json.loads(out)
+    env = {"AWS_ACCESS_KEY_ID": c["AccessKeyId"], "AWS_SECRET_ACCESS_KEY": c["SecretAccessKey"]}
+    if c.get("SessionToken"):
+        env["AWS_SESSION_TOKEN"] = c["SessionToken"]
     return env
 
-def reset_r1_gate():
-    cmd = [
-        "/usr/local/bin/aws", "dynamodb", "update-item",
-        "--table-name", "miles-chien-SystemConfig",
-        "--key", '{"config_id":{"S":"coordination/r1/current"}}',
-        "--update-expression", "SET #a = :z, #r = :z, #s = :open, #c = :empty",
-        "--expression-attribute-names", '{"#a":"active","#r":"resolving","#s":"state","#c":"recovery_cut_id"}',
-        "--expression-attribute-values", '{":z":{"N":"0"},":open":{"S":"Open"},":empty":{"S":""}}',
-        "--profile", "miles-chien-deploy",
-        "--region", "ap-southeast-1"
-    ]
-    subprocess.run(cmd, capture_output=True, check=True)
-    print("Reset R1Gate state to Open, active=0")
 
-def clean_old_jobs():
-    try:
-        cmd = ["/usr/local/bin/aws", "dynamodb", "scan", "--table-name", "miles-chien-Jobs", "--projection-expression", "job_id, #s", "--expression-attribute-names", '{"#s":"state"}', "--profile", "miles-chien-deploy", "--region", "ap-southeast-1"]
-        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        items = json.loads(res.stdout).get("Items", [])
-        non_term = [it for it in items if it.get("state", {}).get("S") not in ("succeeded", "failed", "cancelled")]
-        for it in non_term:
-            jid = it.get("job_id", {}).get("S")
-            subprocess.run([
-                "/usr/local/bin/aws", "dynamodb", "delete-item",
-                "--table-name", "miles-chien-Jobs",
-                "--key", json.dumps({"job_id": {"S": jid}}),
-                "--profile", "miles-chien-deploy",
-                "--region", "ap-southeast-1"
-            ], check=True)
-        if non_term:
-            print(f"Cleaned {len(non_term)} non-terminal old jobs.")
-    except Exception as e:
-        print(f"Warning cleaning old jobs: {e}")
+def stop(processes):
+    for p in processes:
+        if p.poll() is None:
+            p.terminate()
+    for p in processes:
+        try:
+            p.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+
+
 def main():
-    print("=== Starting Miles Live Acceptance Runner ===")
-    
-    # Clean previous processes
-    subprocess.run(["pkill", "-9", "-f", "nginx"], check=False)
-    subprocess.run(["pkill", "-9", "-f", "bin/miles"], check=False)
-    time.sleep(1)
-    
-    # Reset R1Gate and clean old jobs
-    reset_r1_gate()
-    clean_old_jobs()
-    # 1. Clean old result file if exists
-    result_path = PRIVATE / "live-result.json"
-    if result_path.exists():
-        result_path.unlink()
-        
-    # 2. Start nginx
-    print("[1/5] Starting nginx front doors on 127.0.0.1:443 and 127.0.0.2:443...")
-    p_nginx = subprocess.Popen(["nginx", "-c", str(PRIVATE / "nginx.conf"), "-g", "daemon off;"])
-    
-    # 3. Start Cloud and Edge runtime nodes with MILES_BYPASS_PROTECTION=1 and MILES_DISABLE_PERIODIC=1
-    print("[2/5] Starting Miles Cloud and Edge runtime nodes...")
-    aws_env = get_aws_env()
-    node_env = dict(os.environ, **aws_env, MILES_BYPASS_PROTECTION="1", MILES_DISABLE_PERIODIC="1")
-    p_cloud = subprocess.Popen([str(ROOT / "bin/miles"), "--config", str(PRIVATE / "cloud-runtime.json")], env=node_env)
-    p_edge = subprocess.Popen([str(ROOT / "bin/miles"), "--config", str(PRIVATE / "edge-runtime.json")], env=node_env)
-    
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--private", required=True, type=Path)
+    parser.add_argument("--local-edge", action="store_true", help="start a local Edge runtime and front door for this run")
+    parser.add_argument("--timeout", default="150m", help="go test timeout; covers the real protection wait")
+    args = parser.parse_args()
+
+    private = args.private.resolve()
+    inventory = json.loads((private / "installation.json").read_text())
+    live_config = private / "miles-cold-live.json"
+    result = Path(json.loads(live_config.read_text())["result_file"])
+    if result.exists():
+        sys.exit(f"refusing to run: result file already exists: {result}")
+    commit = clean_commit()
+
+    processes = []
     try:
-        time.sleep(3)
-        if p_nginx.poll() is not None:
-            raise RuntimeError(f"Nginx exited prematurely with code {p_nginx.poll()}")
-        if p_cloud.poll() is not None:
-            raise RuntimeError(f"Cloud node exited prematurely with code {p_cloud.poll()}")
-        if p_edge.poll() is not None:
-            raise RuntimeError(f"Edge node exited prematurely with code {p_edge.poll()}")
-            
-        print("[3/5] Front doors and runtime nodes listening. Running TestColdLiveFrontDoors...")
-        aws_env = get_aws_env()
-        test_env = dict(os.environ, **aws_env,
-            MILES_COLD_LIVE_CONFIG=str(PRIVATE / "miles-cold-live.json")
-        )
-        go_cmd = [
-            "/home/nmc27705/.local/go/bin/go", "test", "-v",
-            "-timeout", "25m",
-            "-run", "^TestColdLiveFrontDoors$",
-            "./tests/live"
-        ]
-        test_res = subprocess.run(go_cmd, cwd=str(ROOT), env=test_env)
-        print("Go test exit code:", test_res.returncode)
-        
-        if test_res.returncode != 0:
-            raise RuntimeError(f"Live acceptance test failed with exit code {test_res.returncode}")
-            
+        if args.local_edge:
+            node_env = {k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV}
+            # Disclosed in the evidence: periodic jobs off on this Edge node only.
+            node_env["MILES_DISABLE_PERIODIC"] = "1"
+            processes.append(subprocess.Popen(["nginx", "-c", str(private / "edge-nginx.conf"), "-g", "daemon off;"]))
+            processes.append(subprocess.Popen([str(ROOT / "bin/miles"), "--config", str(private / "edge-runtime.json")], env=node_env))
+            time.sleep(3)
+            for p in processes:
+                if p.poll() is not None:
+                    raise RuntimeError(f"{p.args[0]} exited early with code {p.returncode}")
+
+        test_env = {k: v for k, v in os.environ.items() if k not in CREDENTIAL_ENV}
+        test_env.update(deploy_credentials(inventory["operator"]["login_profile"]))
+        test_env.update(AWS_REGION=inventory["region"], MILES_COLD_LIVE_CONFIG=str(live_config), MILES_RUN_COMMIT=commit)
+        code = subprocess.run(["go", "test", "-v", "-count=1", "-timeout", args.timeout, "-run", "^TestColdLiveFrontDoors$", "./tests/live"],
+                              cwd=ROOT, env=test_env).returncode
     finally:
-        print("[4/5] Stopping runtime nodes and nginx...")
-        for p in [p_cloud, p_edge, p_nginx]:
-            try:
-                p.terminate()
-                p.wait(timeout=5)
-            except Exception:
-                try:
-                    p.kill()
-                except Exception:
-                    pass
-        
-    print("[5/5] Processing evidence artifacts...")
-    if not result_path.exists():
-        raise RuntimeError("Result file was not produced")
-        
-    data = json.loads(result_path.read_text())
-    print("Result passed:", data.get("passed"))
-    print("Observations count:", len(data.get("observations", [])))
-    
-    evidence_dir = ROOT / "docs/testing/evidence/cold-lifecycle-live"
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    target_result = evidence_dir / "result.json"
-    shutil.copy(result_path, target_result)
-    print("Copied result.json to", target_result)
-    
-    # Update sha256sums.txt
-    sha = hashlib.sha256(target_result.read_bytes()).hexdigest()
-    sums_file = evidence_dir / "sha256sums.txt"
-    sums_file.write_text(f"{sha}  result.json\n")
-    print(f"Updated sha256sums.txt: {sha}")
-    print("=== LIVE ACCEPTANCE RUN COMPLETED SUCCESSFULLY ===")
+        stop(processes)
+
+    if not result.exists():
+        sys.exit("result file was not produced")
+    data = json.loads(result.read_text())
+    print(f"commit={commit} passed={data.get('passed')} observations={len(data.get('observations', []))} "
+          f"admin_events={len(data.get('admin_events', []))}")
+    print(f"private result {result} sha256={hashlib.sha256(result.read_bytes()).hexdigest()}")
+    print("Review and sanitize before committing any evidence; raw results stay private.")
+    sys.exit(code)
+
 
 if __name__ == "__main__":
     main()
