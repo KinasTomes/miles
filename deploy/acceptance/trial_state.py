@@ -28,7 +28,7 @@ def native_binding(r, slot):
         mapped[name] = matches[0]
     return {"account": r.c["account_id"], "role_arn": r.c["deploy_role_arn"], "region": r.c["region"],
             "bucket": inv["data_bucket_name"], "kms_key": inv["kms_key_arn"], "tables": mapped,
-            "tags": {"Project": "Miles", "Environment": "dev"}, "run_id": r.id, "slot": slot,
+            "tags": {"Project": "Miles", "Environment": "dev"}, "run_id": r.id.lower(), "slot": slot,
             "source": r.meta["source"], "history": gate["history_id"]["S"],
             "incarnation": gate["incarnation"]["S"],
             "stop_at": (dt.datetime.fromisoformat(r.read("paid-window.json")["cleanup_by"])

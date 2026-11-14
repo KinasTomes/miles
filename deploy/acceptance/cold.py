@@ -24,7 +24,7 @@ def slot(r, case_id, repetition):
     require(len(cases) == 1 and repetition in (1, 2, 3), "Not a Cold matrix slot")
     name = f"{case_id}-rep{repetition}"
     state = r.read(f"trials/{name}/cold-state.json")
-    require(state["source"] == r.meta["source"] and state["run_id"] == r.id,
+    require(state["source"] == r.meta["source"] and state["run_id"] in {r.id, r.id.lower()},
             "Cold state belongs to another source/run")
     return name, state
 
@@ -151,7 +151,7 @@ def reconcile(r, case_id, repetition):
     if pending == "prepare":
         value = json.loads(r.ssh("client", "cat", f"{REMOTE}/{name}/result/result.json"))
         require(value["phase"] == "inspect" and value["status"] == "observed", "Seed still unresolved")
-        require(value["snapshot"]["binding"]["run_id"] == r.id
+        require(value["snapshot"]["binding"]["run_id"] in {r.id, r.id.lower()}
                 and value["snapshot"]["binding"]["source"] == r.meta["source"]
                 and value["snapshot"]["binding"]["slot"] == name, "Foreign seed receipt")
         r.write(f"trials/{name}/seed.json", value, new=True)
