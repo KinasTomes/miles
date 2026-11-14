@@ -1565,6 +1565,210 @@ class VerifyTeardownAbsenceTests(unittest.TestCase):
         self.assertEqual(res5["total_checked"], 14)
         self.assertEqual(res5["absent_count"], 14)
 
+    def test_p1_residuals_preserves_owned_leaks_and_baseline_removals(self):
+        """
+        Regression test for P1:
+        Ensure that unapproved subnets, security groups, and baseline removals (even with 'chien')
+        are NEVER silently stripped or turned into empty residuals.
+        """
+        pending = lambda resource: {"status": "PENDING_DELETION"}
+        active = lambda resource: {"status": "STILL_PRESENT"}
+
+        # 1. Exact offline reproduction from user:
+        residuals = {
+            "subnets": ["subnet-owned-leak"],
+            "security_groups": ["sg-owned-leak"],
+            "roles_removed": ["miles-chien-deploy"],
+        }
+        res = remove_approved_pending(residuals, set(), pending, pending)
+        self.assertEqual(
+            res,
+            {
+                "subnets": ["subnet-owned-leak"],
+                "security_groups": ["sg-owned-leak"],
+                "roles_removed": ["miles-chien-deploy"],
+            },
+            "Owned subnet/SG leaks and deleted baseline roles must be strictly preserved"
+        )
+
+        # 2. Owned resource integrity: an owned resource in inventory CANNOT be exempted
+        # even if an exception is requested.
+        owned_inv = {"subnets": ["subnet-owned-leak"]}
+        res2 = remove_approved_pending(
+            residuals,
+            set(),
+            pending,
+            pending,
+            inventory=owned_inv,
+            approved_exceptions=["subnet-owned-leak"],
+        )
+        self.assertIn("subnet-owned-leak", res2.get("subnets", []))
+
+        # 3. Baseline loss prevention: roles_removed is a deleted baseline resource.
+        # It cannot be removed by an unapproved exception.
+        self.assertIn("miles-chien-deploy", res2.get("roles_removed", []))
+
+        # 4. Valid unowned concurrent resource with exact approved exception:
+        concurrent_residuals = {
+            "certificates": ["arn:aws:acm:ap-southeast-1:123456789012:certificate/chien-cert"],
+        }
+        res3 = remove_approved_pending(
+            concurrent_residuals,
+            set(),
+            pending,
+            pending,
+            inventory={},
+            approved_exceptions=["arn:aws:acm:ap-southeast-1:123456789012:certificate/chien-cert"],
+        )
+        self.assertEqual(res3, {})
+
+    def test_concurrent_exceptions_do_not_approve_baseline_removals(self):
+        for kind, identity in (
+            ("roles", "shared-deploy"),
+            ("managed_policy_versions", "DeployServices|v4"),
+        ):
+            for approval in (f"{kind}={identity}", (kind, identity), identity):
+                with self.subTest(kind=kind, approval=approval):
+                    residuals = {kind + "_removed": [identity]}
+                    self.assertEqual(
+                        remove_approved_pending(
+                            residuals, set(), lambda _: {}, lambda _: {},
+                            inventory={}, approved_exceptions=[approval],
+                        ),
+                        residuals,
+                    )
+            self.assertEqual(
+                remove_approved_pending(
+                    {kind: [identity], kind + "_removed": [identity]},
+                    set(), lambda _: {}, lambda _: {}, inventory={},
+                    approved_exceptions=[f"{kind}={identity}"],
+                ),
+                {kind + "_removed": [identity]},
+            )
+            self.assertEqual(
+                remove_approved_pending(
+                    {kind + "_removed": [identity]}, set(), lambda _: {}, lambda _: {},
+                    inventory={}, approved_exceptions=[f"{kind}_removed={identity}"],
+                ),
+                {},
+            )
+
+        self.assertEqual(
+            remove_approved_pending(
+                {"roles": ["shared"], "instance_profiles": ["shared"]},
+                set(), lambda _: {}, lambda _: {}, inventory={},
+                approved_exceptions=["roles=shared"],
+            ),
+            {"instance_profiles": ["shared"]},
+        )
+
+    def test_retained_role_requires_owned_anchors_absent(self):
+        def runner(cmd):
+            if "get-role" in cmd:
+                return 0, json.dumps({"Role": {"RoleName": "AWSServiceRoleForRolesAnywhere"}}), ""
+            return 0, json.dumps({"trustAnchors": [
+                {"trustAnchorId": "owned", "enabled": True},
+                {"trustAnchorId": "external", "enabled": True},
+            ]}), ""
+
+        verifier = TeardownAbsenceVerifier(
+            inventory={"iam_roles": ["AWSServiceRoleForRolesAnywhere"], "trust_anchors": ["owned"]},
+            cli_runner=runner,
+        )
+        result = verifier.check_resource_absent(
+            "AWSServiceRoleForRolesAnywhere", "iam_role", ["iam", "get-role"],
+            EXPECTED_ABSENCE_ERRORS["iam_role"],
+        )
+        self.assertEqual(result["status"], "STILL_PRESENT")
+        self.assertFalse(result["evidence"]["owned_trust_anchors_absent"])
+        self.assertEqual(result["evidence"]["owned_trust_anchors_present"], ["owned"])
+
+    def test_retained_role_rejects_unverified_anchor_inventory(self):
+        for response in (
+            (255, "", "AccessDeniedException"),
+            (0, "not-json", ""),
+            (0, "{}", ""),
+            (0, json.dumps({"trustAnchors": [{"name": "missing-id"}]}), ""),
+            (0, json.dumps({"trustAnchors": [{"trustAnchorId": "external"}], "nextToken": "more"}), ""),
+        ):
+            with self.subTest(response=response):
+                def runner(cmd):
+                    if "get-role" in cmd:
+                        return 0, "{}", ""
+                    return response
+
+                verifier = TeardownAbsenceVerifier(inventory={}, cli_runner=runner)
+                result = verifier.check_resource_absent(
+                    "AWSServiceRoleForRolesAnywhere", "iam_role", ["iam", "get-role"],
+                    EXPECTED_ABSENCE_ERRORS["iam_role"],
+                )
+                self.assertEqual(result["status"], "UNEXPECTED_ERROR")
+                self.assertNotIn("evidence", result)
+
+    def test_p1_rolesanywhere_slr_retained_with_evidence_not_absent(self):
+        """
+        Regression test for P1:
+        AWSServiceRoleForRolesAnywhere must NOT be returned as ABSENT if it exists.
+        If surviving external trust anchors exist, it must be reported as RETAINED with evidence.
+        If no external trust anchors exist, it must be reported as STILL_PRESENT (leak).
+        """
+        # Case A: External trust anchor exists -> RETAINED with evidence
+        def runner_with_external_anchor(cmd):
+            if "get-role" in cmd:
+                return 0, json.dumps({"Role": {"RoleName": "AWSServiceRoleForRolesAnywhere"}}), ""
+            if "list-trust-anchors" in cmd:
+                return 0, json.dumps({"trustAnchors": [{"trustAnchorId": "external-anchor-123"}]}), ""
+            return 255, "", "ResourceNotFoundException"
+
+        verifier = TeardownAbsenceVerifier(
+            inventory={"iam_roles": ["AWSServiceRoleForRolesAnywhere"], "trust_anchors": ["owned-anchor-456"]},
+            cli_runner=runner_with_external_anchor,
+        )
+        role_res = verifier.check_resource_absent(
+            "AWSServiceRoleForRolesAnywhere",
+            "iam_role",
+            ["iam", "get-role", "--role-name", "AWSServiceRoleForRolesAnywhere"],
+            EXPECTED_ABSENCE_ERRORS["iam_role"],
+        )
+        self.assertEqual(role_res["status"], "RETAINED")
+        self.assertEqual(role_res["reason"], "ADOPTED_BY_CONCURRENT_ACCOUNT_WORKLOAD")
+        self.assertIn("external-anchor-123", role_res["evidence"]["external_trust_anchors"])
+        self.assertTrue(role_res["evidence"]["owned_trust_anchors_absent"])
+
+        summary = verifier.verify_all()
+        self.assertFalse(summary["all_absent"], "Retained resource must mean all_absent is False")
+        self.assertTrue(summary["accepted"])
+        self.assertEqual(summary["status"], "PASS_WITH_PENDING")
+        self.assertEqual(summary["absent_count"], 1, "Owned trust anchor is absent, role is NOT absent")
+        self.assertEqual(summary["retained_count"], 1)
+        self.assertEqual(summary["retained"], ["AWSServiceRoleForRolesAnywhere"])
+        self.assertEqual(summary["still_present_count"], 0)
+
+        # Case B: No external trust anchor -> STILL_PRESENT (leak)
+        def runner_no_external_anchor(cmd):
+            if "get-role" in cmd:
+                return 0, json.dumps({"Role": {"RoleName": "AWSServiceRoleForRolesAnywhere"}}), ""
+            if "list-trust-anchors" in cmd:
+                return 0, json.dumps({"trustAnchors": []}), ""
+            return 255, "", "NoSuchEntity"
+
+        verifier_leak = TeardownAbsenceVerifier(
+            inventory={"iam_roles": ["AWSServiceRoleForRolesAnywhere"]},
+            cli_runner=runner_no_external_anchor,
+        )
+        role_res_leak = verifier_leak.check_resource_absent(
+            "AWSServiceRoleForRolesAnywhere",
+            "iam_role",
+            ["iam", "get-role", "--role-name", "AWSServiceRoleForRolesAnywhere"],
+            EXPECTED_ABSENCE_ERRORS["iam_role"],
+        )
+        self.assertEqual(role_res_leak["status"], "STILL_PRESENT")
+        self.assertEqual(role_res_leak["reason"], "RESOURCE_EXISTS_LEAK")
+
+        summary_leak = verifier_leak.verify_all()
+        self.assertFalse(summary_leak["accepted"])
+        self.assertEqual(summary_leak["status"], "FAIL")
+        self.assertIn("AWSServiceRoleForRolesAnywhere", summary_leak["still_present"])
 
 
 if __name__ == "__main__":

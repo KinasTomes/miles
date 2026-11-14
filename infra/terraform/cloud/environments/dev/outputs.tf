@@ -33,6 +33,7 @@ output "runtime_inventory" {
     target_group_arn          = module.alb.target_group_arn
     alb_name                  = module.alb.alb_name
     alb_arn                   = module.alb.alb_arn
+    telemetry_document        = module.acceptance.telemetry_document
   }
 }
 output "alb_contract" { value = module.alb.contract }

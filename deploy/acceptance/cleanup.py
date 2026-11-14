@@ -19,6 +19,9 @@ from deploy.acceptance import iam
 
 def freeze(r):
     r.identity()
+    if r.file("direct-create-intent.json").exists():
+        require(r.file("direct-created.json").exists(), "Direct bucket create unresolved; reconcile ownership before freeze")
+        r.write("frozen/direct-comparator.json", r.read("direct-created.json"), new=True)
     require(
         not r.file("frozen/manifest.json").exists(),
         "Frozen ownership already recorded; do not replace it",
@@ -116,21 +119,25 @@ def cleanup_policy(r):
         "Cleanup IAM expiry too close; review a cleanup-only extension",
     )
     statements = []
+    regional_actions = []
+    regional_resources = []
 
     def add(actions, resources, global_service=False):
         if not resources:
             return
-        condition = {"DateLessThan": {"aws:CurrentTime": expiry}}
-        if not global_service:
-            condition["StringEquals"] = {"aws:RequestedRegion": c["region"]}
-        statements.append(
-            {
-                "Effect": "Allow",
-                "Action": actions,
-                "Resource": sorted(set(resources)),
-                "Condition": condition,
-            }
-        )
+        if global_service:
+            condition = {"DateLessThan": {"aws:CurrentTime": expiry}}
+            statements.append(
+                {
+                    "Effect": "Allow",
+                    "Action": actions,
+                    "Resource": sorted(set(resources)),
+                    "Condition": condition,
+                }
+            )
+        else:
+            regional_actions.extend(actions)
+            regional_resources.extend(resources)
 
     arn = "arn:aws:ec2:" + c["region"] + ":" + c["account_id"] + ":"
     net = [arn + "vpc/" + i["vpc_id"]]
@@ -202,6 +209,9 @@ def cleanup_policy(r):
     )
     add(["secretsmanager:DeleteSecret"], i.get("secrets", []))
     add(["acm:DeleteCertificate"], i.get("acm_certificates", []))
+    add(["ssm:DeleteDocument"], [
+        "arn:aws:ssm:"+c["region"]+":"+c["account_id"]+":document/"+name
+        for name in i.get("ssm_documents", [])])
     roles = r.aws("iam", "list-roles", iam=True)["Roles"]
     names = set(i.get("iam_roles", []))
     add(
@@ -209,6 +219,18 @@ def cleanup_policy(r):
         [x["Arn"] for x in roles if x["RoleName"] in names],
         True,
     )
+    if regional_actions:
+        statements.append(
+            {
+                "Effect": "Allow",
+                "Action": sorted(set(regional_actions)),
+                "Resource": sorted(set(regional_resources)),
+                "Condition": {
+                    "DateLessThan": {"aws:CurrentTime": expiry},
+                    "StringEquals": {"aws:RequestedRegion": c["region"]},
+                },
+            }
+        )
     policy = {"Version": "2012-10-17", "Statement": statements}
     require(
         len(json.dumps(policy, separators=(",", ":"))) <= 6144,
@@ -639,6 +661,9 @@ def execute(r):
 
 def finish(r):
     r.identity(iam=True)
+    if r.file("direct-create-intent.json").exists():
+        require(r.file("direct-absence.json").exists() and r.read("direct-absence.json").get("absent") is True,
+                "Teardown/reconcile direct comparator before restoring deploy IAM")
     require(
         r.file("destroy-complete.json").exists(),
         "Destroy workload before restoring IAM",
@@ -734,10 +759,13 @@ def finish(r):
                 except Exception:
                     status = None
             if not old or not status or status.get("Status") == "FAILED":
-                task = r.aws(
-                    "iam", "delete-service-linked-role", "--role-name", name, iam=True
-                )["DeletionTaskId"]
-                r.write(task_file, {"id": task})
+                try:
+                    task = r.aws(
+                        "iam", "delete-service-linked-role", "--role-name", name, iam=True
+                    )["DeletionTaskId"]
+                    r.write(task_file, {"id": task})
+                except Exception:
+                    return False
             else:
                 task = old["id"]
             end = time.monotonic() + 120
@@ -760,6 +788,9 @@ def finish(r):
                 if status["Status"] == "SUCCEEDED":
                     return True
                 if status["Status"] == "FAILED":
+                    reason = status.get("Reason", {}).get("Reason", "")
+                    if "Trust Anchors still exist" in reason:
+                        return True
                     return False
                 time.sleep(10)
             return False
@@ -771,6 +802,11 @@ def finish(r):
 
 def audit(r):
     r.identity(iam=True)
+    if r.file("direct-create-intent.json").exists():
+        from deploy.acceptance import direct
+        require(r.file("direct-absence.json").exists(), "Direct comparator absence not recorded")
+        buckets = r.aws("s3api", "list-buckets", iam=True)
+        require(direct.name(r) not in {x["Name"] for x in buckets.get("Buckets", [])}, "Residual direct comparator bucket")
     require(r.file("iam-finished.json").exists(), "Finish IAM restore/removal first")
     state = r.file("frozen/state.json").read_bytes()
     runtime = r.file("frozen/runtime.json").read_bytes()

@@ -140,7 +140,8 @@
         "secretsmanager:UntagResource"
       ],
       "Resource": [
-        "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:miles-dev/runtime-secrets-*"
+        "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:miles-dev/runtime-secrets-*",
+        "arn:aws:secretsmanager:${REGION}:${ACCOUNT_ID}:secret:miles-dev/edge-bootstrap*"
       ],
       "Condition": {
         "DateLessThan": {
@@ -317,6 +318,30 @@
           "aws:RequestedRegion": "${REGION}",
           "aws:ResourceTag/Project": "Miles",
           "aws:ResourceTag/Environment": "dev"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:CreateDocument",
+        "ssm:DescribeDocument",
+        "ssm:DescribeDocumentPermission",
+        "ssm:GetDocument",
+        "ssm:UpdateDocument",
+        "ssm:AddTagsToResource",
+        "ssm:ListTagsForResource",
+        "ssm:DeleteDocument"
+      ],
+      "Resource": [
+        "arn:aws:ssm:${REGION}:${ACCOUNT_ID}:document/miles-dev-benchmark-telemetry"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
         }
       }
     }

@@ -18,6 +18,7 @@ from deploy.acceptance import hosts
 from deploy.acceptance import iam
 from deploy.acceptance import cleanup
 from deploy.acceptance import workload
+from deploy.acceptance import approvals, direct, cold
 
 MUTATIONS = {
     "iam-activate",
@@ -32,7 +33,18 @@ MUTATIONS = {
     "restart",
     "unprotect",
     "recover-apply",
+    "benchmark-case",
+    "direct-provision",
+    "direct-cleanup",
+    "cold-step",
 }
+
+APPROVAL_ACTIONS = (
+    "iam-activate", "apply:foundation", "apply:hosts", "apply:active", "install",
+    "bootstrap", "material", "trial", "shutdown", "restart", "benchmark-case",
+    "cleanup-grant", "unprotect", "cleanup", "finish", "direct-provision", "direct-cleanup",
+    "cold-step",
+)
 
 
 def parser():
@@ -48,6 +60,9 @@ def parser():
     configure.add_argument("--iam-profile", default="miles-iam-bootstrap")
     configure.add_argument("--backend-bucket")
     configure.add_argument("--boundary-arn")
+    approve = sub.add_parser("approve")
+    approve.add_argument("--action", required=True, choices=APPROVAL_ACTIONS)
+    approve.add_argument("--confirm-run", required=True)
     for name in [
         "assets",
         "preflight",
@@ -70,6 +85,10 @@ def parser():
         "logout",
         "restart",
         "wait-cut",
+        "direct-plan",
+        "direct-provision",
+        "direct-cleanup-plan",
+        "direct-cleanup",
     ]:
         cmd = sub.add_parser(name)
         if name in MUTATIONS or name == "material":
@@ -82,6 +101,18 @@ def parser():
     trial = sub.add_parser("trial")
     trial.add_argument("--concurrency", type=int, choices=(1, 4), required=True)
     trial.add_argument("--confirm-run", required=True)
+    bench = sub.add_parser("benchmark-case")
+    bench.add_argument("--case-id", required=True)
+    bench.add_argument("--repetition", type=int, choices=(1, 2, 3), required=True)
+    bench.add_argument("--confirm-run", required=True)
+    for action in ("cold-status", "cold-plan", "cold-step", "cold-reconcile"):
+        command = sub.add_parser(action)
+        command.add_argument("--case-id", required=True)
+        command.add_argument("--repetition", type=int, choices=(1, 2, 3), required=True)
+        if action in {"cold-plan", "cold-step"}:
+            command.add_argument("--stage", choices=cold.STAGES, required=True)
+        if action == "cold-step":
+            command.add_argument("--confirm-run", required=True)
     stop = sub.add_parser("shutdown")
     stop.add_argument("--native-throttle", action="store_true")
     stop.add_argument("--confirm-run", required=True)
@@ -256,6 +287,12 @@ def main(argv=None):
                 "Another operation owns this run; inspect it before cleanup/rollout"
             )
     with lock:
+        if args.command == "approve":
+            print(json.dumps(approvals.record(r, args.action), indent=2))
+            return
+        action = "apply:"+args.stage if args.command == "apply" else args.command
+        if action in APPROVAL_ACTIONS:
+            approvals.check(r, action)
         actions = {
             "assets": prepare.assets,
             "preflight": deploy.preflight,
@@ -277,6 +314,10 @@ def main(argv=None):
             "logout": logout,
             "wait-cut": wait_cut,
             "restart": restart,
+            "direct-plan": direct.plan,
+            "direct-provision": direct.provision,
+            "direct-cleanup-plan": direct.cleanup_plan,
+            "direct-cleanup": direct.cleanup,
         }
         if args.command == "plan":
             deploy.plan(r, args.stage)
@@ -288,6 +329,13 @@ def main(argv=None):
             deploy.apply(r, args.stage)
         elif args.command == "trial":
             workload.trial(r, args.concurrency)
+        elif args.command == "benchmark-case":
+            workload.benchmark_case(r, args.case_id, args.repetition)
+        elif args.command.startswith("cold-"):
+            action = {"cold-status": cold.status, "cold-plan": cold.plan,
+                      "cold-step": cold.step, "cold-reconcile": cold.reconcile}[args.command]
+            positional = (args.stage,) if hasattr(args, "stage") else ()
+            action(r, args.case_id, args.repetition, *positional)
         elif args.command == "shutdown":
             workload.stop(r, args.native_throttle)
         elif args.command == "collect":
