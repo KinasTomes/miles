@@ -21,6 +21,18 @@ def require(pattern, value, name):
     return value
 
 
+def deployment_profiles(configuration):
+    deployment = configuration.get("deployment", {})
+    if not isinstance(deployment, dict) or deployment.keys() - {"profile", "max_cost_usd", "max_active_minutes"}:
+        raise ValueError("Unknown deployment field")
+    profile = deployment.get("profile", "both")
+    if profile not in ("cloud", "edge", "both"):
+        raise ValueError("deployment.profile must be cloud, edge or both")
+    if profile != "both" and configuration.get("enable_acceptance_nodes"):
+        raise ValueError("Single-profile deployment cannot enable acceptance nodes")
+    return ("cloud", "edge") if profile == "both" else (profile,)
+
+
 def render(configuration):
     if not isinstance(configuration, dict) or not isinstance(configuration.get("operator"), dict):
         raise ValueError("Installation and operator must be objects")
@@ -32,9 +44,10 @@ def render(configuration):
         raise ValueError("Existing bootstrap needs explicit installation ownership and IAM path")
     operator = values.pop("operator")
     deployment = values.pop("deployment", {})
-    if not isinstance(deployment, dict) or deployment.keys() - {"max_cost_usd", "max_active_minutes"}:
-        raise ValueError("Unknown deployment field")
+    deployment_profiles(configuration)
     for key, value in deployment.items():
+        if key == "profile":
+            continue
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError("Deployment limits must be positive numbers")
     known_variables = set(re.findall(r'variable "([a-z0-9_]+)"', (CLOUD / "environments/dev/variables.tf").read_text()))

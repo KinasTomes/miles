@@ -99,9 +99,16 @@ def verify(installation, nodes, inventory):
         installation.state["test_bucket"] = "installation-test-" + secrets.token_hex(8)
         installation.persist()
     user, bucket = installation.state["test_user"], installation.state["test_bucket"]
-    cloud = next(node for node, profile in nodes if profile == "cloud")
+    profiles = installation.profiles
+    endpoints = []
+    for profile in profiles:
+        destination = inventory.get("alb_dns") if profile == "cloud" else (inventory.get("edge") or {}).get("public_ip")
+        if not destination:
+            raise ValueError("Missing HTTPS endpoint for " + profile)
+        endpoints.append((profile + "." + installation.name + ".test", destination))
+    admin_node = next(node for node, profile in nodes if profile == profiles[0])
     credential_file = installation.private / "test-credential.json"
-    with admin(installation, cloud) as request:
+    with admin(installation, admin_node) as request:
         status, _ = request("GET", "/admin/v1/users/" + user)
         if status == 404:
             status, _ = request("POST", "/admin/v1/users", {"user_id":user, "logical_limit":1 << 30})
@@ -137,9 +144,8 @@ def verify(installation, nodes, inventory):
         empty = installation.private / "empty-body"
         empty.write_bytes(b"")
         output = installation.private / "s3-response"
-        cloud_host = "cloud." + installation.name + ".test"
-        edge_host = "edge." + installation.name + ".test"
-        status = signed(installation, credentials, cloud_host, inventory["alb_dns"], "PUT", "/" + bucket, output, empty)
+        hostname, destination = endpoints[0]
+        status = signed(installation, credentials, hostname, destination, "PUT", "/" + bucket, output, empty)
         if status == 409:
             error = ElementTree.fromstring(output.read_bytes())
             if error.findtext("Code") != "BucketAlreadyOwnedByYou":
@@ -154,18 +160,20 @@ def verify(installation, nodes, inventory):
         payload.write_bytes(secrets.token_bytes(256*1024))
         payload.chmod(0o600)
     expected = hashlib.sha256(payload.read_bytes()).hexdigest()
-    endpoints = [(cloud_host, inventory["alb_dns"]), (edge_host, inventory["edge"]["public_ip"])]
+    directions = []
     for index, (hostname, destination) in enumerate(endpoints):
         path = "/" + bucket + "/cross-node-" + str(index)
         if signed(installation, credentials, hostname, destination, "PUT", path, output, payload) != 200:
             raise RuntimeError("Signed PUT failed")
-        other_host, other_destination = endpoints[1-index]
+        other_index = (index + 1) % len(endpoints)
+        other_host, other_destination = endpoints[other_index]
         if signed(installation, credentials, other_host, other_destination, "GET", path, output) != 200:
-            raise RuntimeError("Cross-node GET failed")
+            raise RuntimeError("Signed GET failed")
         if hashlib.sha256(output.read_bytes()).hexdigest() != expected:
-            raise RuntimeError("Cross-node object hash mismatch")
+            raise RuntimeError("Object hash mismatch")
+        directions.append(profiles[index] + "-to-" + profiles[other_index])
     installation_save(installation.private / "signed-data-evidence.json", {"source_commit":installation.state["source_commit"],
-                      "bucket":bucket, "sha256":expected, "directions":["cloud-to-edge", "edge-to-cloud"], "tls_verified":True}, replace=True)
+                      "bucket":bucket, "sha256":expected, "profiles":list(profiles), "directions":directions, "tls_verified":True}, replace=True)
 
 
 def installation_save(file, value, replace=False):

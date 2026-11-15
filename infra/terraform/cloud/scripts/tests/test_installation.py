@@ -21,6 +21,23 @@ def fixture():
 
 
 class InstallationTests(unittest.TestCase):
+    def test_deployment_profile_is_bounded_and_stays_out_of_terraform_inputs(self):
+        config = fixture()
+        config["deployment"].pop("profile", None)
+        self.assertEqual(installation.deployment_profiles(config), ("cloud", "edge"))
+        for profile, expected in (("cloud", ("cloud",)), ("edge", ("edge",)), ("both", ("cloud", "edge"))):
+            config["deployment"]["profile"] = profile
+            self.assertEqual(installation.deployment_profiles(config), expected)
+            self.assertNotIn("deployment", installation.render(config)["installation.tfvars.json"])
+        for invalid in (None, [], {}, True, "Cloud", ""):
+            config["deployment"]["profile"] = invalid
+            with self.assertRaises(ValueError):
+                installation.render(config)
+        config["deployment"]["profile"] = "cloud"
+        config["enable_acceptance_nodes"] = True
+        with self.assertRaisesRegex(ValueError, "acceptance nodes"):
+            installation.render(config)
+
     def test_explicit_state_deletion_deny_preserves_lock_and_state_writes(self):
         config = fixture()
         rendered = installation.render(config)

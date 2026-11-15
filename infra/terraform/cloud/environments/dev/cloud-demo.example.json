@@ -31,6 +31,7 @@
     "utc_reference": "REPLACE_WITH_CHRONY_SOURCE_IP"
   },
   "deployment": {
+    "profile": "cloud",
     "max_cost_usd": 5,
     "max_active_minutes": 150
   }

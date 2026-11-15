@@ -36,6 +36,7 @@
   "fleet_instance_type": "t4g.small",
   "enable_edge": false,
   "deployment": {
+    "profile": "both",
     "max_cost_usd": 5,
     "max_active_minutes": 150
   }

@@ -1,6 +1,7 @@
 """Offline proofs for installation identity, retries, secrets and destructive gates."""
 from datetime import datetime, timedelta, timezone
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -8,8 +9,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import tarfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from test_installation import fixture, installation as renderer
 
@@ -62,6 +65,13 @@ class WorkflowTests(unittest.TestCase):
         self.config["operator"]["cleanup_expires_at"] = (datetime.now(timezone.utc)+timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.file.write_text(json.dumps(self.config))
         workflow.Installation(self.file, self.app.private)
+
+    def test_switching_profile_cannot_reuse_an_existing_installation(self):
+        self.app.persist()
+        self.config["deployment"]["profile"] = "cloud"
+        self.file.write_text(json.dumps(self.config))
+        with self.assertRaisesRegex(ValueError, "Configuration changed"):
+            workflow.Installation(self.file, self.app.private)
 
     def test_aws_removes_ambient_credentials_and_redacts_error_material(self):
         result = subprocess.CompletedProcess([], 1, "", "An error occurred (AccessDenied) secret=do-not-print")
@@ -229,6 +239,30 @@ class WorkflowTests(unittest.TestCase):
         self.config["bootstrap_mode"] = "existing"
         self.assert_prepare()
 
+    def test_cloud_prepare_omits_edge_identity_and_bootstrap_secret(self):
+        self.config["deployment"]["profile"] = "cloud"
+        self.assert_prepare()
+        inputs = json.loads((self.app.private/"rendered/installation.tfvars.json").read_text())
+        self.assertIsNone(inputs["edge_ca_pem"])
+        self.assertFalse(inputs["enable_edge_private_endpoint"])
+        self.assertEqual(inputs["monitored_profiles"], ["cloud"])
+        for name in ("identity-ca.key", "provider.key", "edge.pem"):
+            self.assertFalse((self.app.private/"pki"/name).exists())
+        app = workflow.Installation(self.file, self.app.private)
+        def terraform(stack, *arguments, **options):
+            if arguments[0] == "plan":
+                (app.private/"operator.tfplan").write_bytes(b"fixture plan")
+                return ""
+            return json.dumps({"format_version":"1.2", "complete":True, "errored":False, "resource_changes":[]})
+        with patch.object(app, "initialize"), patch.object(app, "terraform", side_effect=terraform), patch("builtins.print"):
+            app.plan("operator")
+        self.assertTrue((app.private/"rendered/operator.tfvars.json").is_file())
+
+    def test_edge_prepare_omits_cloud_certificate(self):
+        self.config["deployment"]["profile"] = "edge"
+        self.assert_prepare()
+        self.assertFalse((self.app.private/"pki/cloud.pem").exists())
+
     def assert_prepare(self):
         self.config["operator"]["utc_reference"] = "169.254.169.123"
         self.file.write_text(json.dumps(self.config))
@@ -249,10 +283,12 @@ class WorkflowTests(unittest.TestCase):
             app.prepare()
             app.prepare()
             aws.assert_not_called()
-        self.assertNotEqual((app.private/"pki/tls-ca.pem").read_bytes(), (app.private/"pki/identity-ca.pem").read_bytes())
-        for leaf, authority in [("cloud","tls"), ("edge","tls"), ("provider","identity")]:
+        if "edge" in app.profiles:
+            self.assertNotEqual((app.private/"pki/tls-ca.pem").read_bytes(), (app.private/"pki/identity-ca.pem").read_bytes())
+            self.assertEqual((app.private/"pki/provider.key").stat().st_mode & 0o777, 0o600)
+        leaves = [(profile,"tls") for profile in app.profiles] + ([("provider","identity")] if "edge" in app.profiles else [])
+        for leaf, authority in leaves:
             subprocess.run(["openssl", "verify", "-CAfile", str(app.private/"pki"/(authority+"-ca.pem")), str(app.private/"pki"/(leaf+".pem"))], check=True, capture_output=True)
-        self.assertEqual((app.private/"pki/provider.key").stat().st_mode & 0o777, 0o600)
         inputs = json.loads((app.private/"rendered/installation.tfvars.json").read_text())
         self.assertTrue(inputs["paused"])
         self.assertFalse(inputs["enable_edge"])
@@ -265,6 +301,87 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual((app.private / stack).exists(), self.config["bootstrap_mode"] == "new")
         if self.config["bootstrap_mode"] == "existing":
             self.assertFalse((app.private / "cloud/bootstrap").exists())
+
+    def test_provision_selects_compute_artifacts_without_unused_tls_or_helper(self):
+        for profile in ("cloud", "edge", "both"):
+            with self.subTest(profile=profile):
+                self.config["deployment"]["profile"] = profile
+                self.file.write_text(json.dumps(self.config))
+                app = workflow.Installation(self.file, self.root / profile)
+                app.state.update(source_commit="a"*40, foundation_applied=True, metadata_provisioned=True)
+                rendered = app.private / "rendered"
+                rendered.mkdir()
+                workflow.save(rendered / "installation.tfvars.json", {"enable_compute":False})
+                pki = app.private / "pki"
+                pki.mkdir()
+                if "edge" in app.profiles:
+                    for name in ("edge.pem", "tls-ca.pem", "edge.key", "provider.pem", "provider.key"):
+                        (pki/name).write_text("fixture")
+                helper_bytes = b"fixture helper"
+                helper_hash = hashlib.sha256(helper_bytes).hexdigest()
+                (app.private/"aws_signing_helper").write_bytes(helper_bytes)
+                manifest = json.dumps({"source_commit":"a"*40, "arch":"arm64", "files":{}}).encode()
+                with tarfile.open(app.private/"miles-linux-arm64.tar.gz", "w:gz") as archive:
+                    member = tarfile.TarInfo("manifest.json")
+                    member.size = len(manifest)
+                    archive.addfile(member, io.BytesIO(manifest))
+                def certificate():
+                    app.state["certificate_arn"] = "fixture-acm"
+                inventory = {"secret_metadata_arn":"runtime-secret", "edge_bootstrap_secret_arn":"edge-secret" if "edge" in app.profiles else None}
+                with patch.object(app, "check_source"), patch.object(app, "identity"), patch.object(app, "inventory", return_value=inventory), patch.object(app, "secret") as secret, patch.object(app, "upload", return_value="version") as upload, patch.object(app, "import_certificate", side_effect=certificate) as acm, patch.dict(workflow.HELPERS, arm64=("Aarch64", helper_hash)), patch.object(workflow, "urlopen") as download, patch("builtins.print"):
+                    app.provision()
+                    active = workflow.read(app.private/"active.tfvars.json")
+                    self.assertEqual(active["enable_asg"], "cloud" in app.profiles)
+                    self.assertEqual(active["enable_alb"], "cloud" in app.profiles)
+                    self.assertEqual(active["enable_edge"], "edge" in app.profiles)
+                    self.assertFalse(active["enable_compute"])
+                    self.assertEqual(acm.call_count, int("cloud" in app.profiles))
+                    self.assertEqual(secret.call_count, 1 + int("edge" in app.profiles))
+                    self.assertEqual(upload.call_count, 1 + int("edge" in app.profiles))
+                    self.assertEqual(active["edge_helper_sha256"], helper_hash if "edge" in app.profiles else None)
+                    self.assertEqual(active["certificate_arn"], "fixture-acm" if "cloud" in app.profiles else None)
+                    download.assert_not_called()
+
+    def test_verify_matches_selected_nodes_and_cloud_targets_before_data_probe(self):
+        self.app.state["source_commit"] = "a"*40
+        for profiles in (("cloud",), ("edge",), ("cloud", "edge")):
+            with self.subTest(profiles=profiles):
+                self.app.profiles = profiles
+                nodes = ([("c1","cloud"),("c2","cloud")] if "cloud" in profiles else []) + ([("e1","edge")] if "edge" in profiles else [])
+                targets = [{"Target":{"Id":node}, "TargetHealth":{"State":"healthy"}} for node, kind in nodes if kind == "cloud"]
+                probe = SimpleNamespace(verify=Mock())
+                with patch.object(self.app, "check_source"), patch.object(self.app, "identity"), patch.object(self.app, "nodes", return_value=nodes), patch.object(self.app, "inventory", return_value={"target_group_arn":"tg"}), patch.object(self.app, "command", return_value="ready"), patch.object(self.app, "aws", return_value={"TargetHealthDescriptions":targets}) as aws, patch.object(workflow.importlib.util, "spec_from_file_location", return_value=SimpleNamespace(loader=Mock())), patch.object(workflow.importlib.util, "module_from_spec", return_value=probe), patch("builtins.print"):
+                    self.app.verify()
+                    probe.verify.assert_called_once_with(self.app, nodes, {"target_group_arn":"tg"})
+                    self.assertEqual(aws.call_count, int("cloud" in profiles))
+                    probe.verify.reset_mock()
+                    if "cloud" in profiles:
+                        targets[0]["Target"]["Id"] = "foreign-node"
+                        with self.assertRaisesRegex(RuntimeError, "healthy Cloud targets"):
+                            self.app.verify()
+                        probe.verify.assert_not_called()
+                    nodes.append(("unexpected", "edge"))
+                    with self.assertRaisesRegex(ValueError, "inventory differs"):
+                        self.app.verify()
+                    probe.verify.assert_not_called()
+
+    def test_edge_nodes_discovery_does_not_query_a_cloud_fleet(self):
+        self.app.profiles = ("edge",)
+        with patch.object(self.app, "inventory", return_value={"edge":{"instance_id":"e1"}}), patch.object(self.app, "aws") as aws:
+            self.assertEqual(self.app.nodes(), [("e1", "edge")])
+            aws.assert_not_called()
+
+    def test_cloud_closeout_never_describes_null_edge_secret(self):
+        self.app.state.update(destroy_applied=True, source_commit="a"*40)
+        workflow.save(self.app.private/"runtime-inventory.json", {"data_bucket_name":"owned", "expected_tables":["owned-Buckets"], "kms_key_arn":"key", "secret_metadata_arn":"secret", "edge_bootstrap_secret_arn":None})
+        def aws(service, operation, *arguments):
+            self.assertNotIn(None, arguments)
+            if operation in ("head-bucket", "describe-table"):
+                raise workflow.AWSFailure("404" if service == "s3api" else "ResourceNotFoundException")
+            return {"Reservations":[], "Volumes":[], "Vpcs":[], "AutoScalingGroups":[], "KeyMetadata":{"KeyState":"PendingDeletion"}, "DeletedDate":"pending"}
+        with patch.object(self.app, "identity"), patch.object(self.app, "terraform", return_value="{}"), patch.object(self.app, "aws", side_effect=aws), patch("builtins.print"):
+            self.app.closeout()
+        self.assertTrue(workflow.read(self.app.private/"cleanup-evidence.json")["datastores_absent"])
 
     def test_protection_plan_rejects_any_unrelated_update(self):
         self.app.state.update(prepared=True, paused_applied=True)

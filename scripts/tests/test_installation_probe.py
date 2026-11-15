@@ -23,7 +23,7 @@ class ProbeTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.app = SimpleNamespace(private=self.root, name="member", region="ap-southeast-2", state={"source_commit":"a"*40}, persist=Mock())
+        self.app = SimpleNamespace(private=self.root, name="member", region="ap-southeast-2", profiles=("cloud", "edge"), state={"source_commit":"a"*40}, persist=Mock())
         self.inventory = {"alb_dns":"fixture-alb", "edge":{"public_ip":"192.0.2.1"}}
         self.nodes = [("i-0123456789abcdef0", "cloud"), ("i-0123456789abcdef1", "edge")]
 
@@ -85,6 +85,25 @@ class ProbeTests(unittest.TestCase):
         with patch.object(probe, "admin", self.admin), patch.object(probe, "signed", side_effect=corrupt):
             with self.assertRaisesRegex(RuntimeError, "hash mismatch"):
                 probe.verify(self.app, self.nodes, self.inventory)
+
+    def test_single_profile_uses_only_its_endpoint_and_records_actual_scope(self):
+        for profile in ("cloud", "edge"):
+            with self.subTest(profile=profile):
+                self.app.profiles = (profile,)
+                inventory = {"alb_dns":"fixture-alb", "edge":None} if profile == "cloud" else {"alb_dns":None, "edge":{"public_ip":"192.0.2.1"}}
+                nodes = [(node, kind) for node, kind in self.nodes if kind == profile]
+                with patch.object(probe, "admin", self.admin), patch.object(probe, "signed", side_effect=self.signed) as signed:
+                    probe.verify(self.app, nodes, inventory)
+                self.assertEqual(signed.call_count, 3)  # Bucket creation, PUT, GET.
+                self.assertTrue(all(call.args[2] == profile + ".member.test" for call in signed.call_args_list))
+                evidence = json.loads((self.root/"signed-data-evidence.json").read_text())
+                self.assertEqual(evidence["profiles"], [profile])
+                self.assertEqual(evidence["directions"], [profile + "-to-" + profile])
+                self.assertTrue(evidence["tls_verified"])
+        with patch.object(probe, "admin") as admin:
+            with self.assertRaisesRegex(ValueError, "Missing HTTPS endpoint"):
+                probe.verify(self.app, self.nodes, {"edge":None})
+            admin.assert_not_called()
 
     def test_edge_drain_requires_current_boot_and_invocation_shutdown_proof(self):
         mapping = {"/var/lib/miles-bootstrap/drain-proof.json":self.root/"proof.json", "/proc/sys/kernel/random/boot_id":self.root/"boot-id"}
