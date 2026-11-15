@@ -32,12 +32,14 @@ import (
 // This opt-in fixture mutates only fresh logical identities and buckets. The
 // operator provisions infrastructure and approves its teardown independently.
 type liveConfig struct {
-	Region    string     `json:"region"`
-	CAFile    string     `json:"ca_file"`
-	TokenFile string     `json:"token_file"`
-	Result    string     `json:"result_file"`
-	SlowState string     `json:"slow_state_directory"`
-	Endpoints []endpoint `json:"endpoints"`
+	Region           string     `json:"region"`
+	InstallationName string     `json:"installation_name,omitempty"`
+	AccountID        string     `json:"account_id,omitempty"`
+	CAFile           string     `json:"ca_file"`
+	TokenFile        string     `json:"token_file"`
+	Result           string     `json:"result_file"`
+	SlowState        string     `json:"slow_state_directory"`
+	Endpoints        []endpoint `json:"endpoints"`
 }
 type endpoint struct {
 	Name    string `json:"name"`
