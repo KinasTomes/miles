@@ -93,6 +93,34 @@ Account/assumed-role ARN phải khớp JSON. Một phiên IAM user hoặc root k
 gate workload. CLI login này cấp quyền thao tác AWS, **khác** Miles credential
 để client gọi S3 API và **khác** Admin bearer token của Miles.
 
+### Setup CloudWatch cho demo
+
+Không cần cài CloudWatch Agent hoặc dựng Prometheus/Grafana: Miles đã có
+exporter gọi CloudWatch SDK. Với installation mới, làm đủ ba phần sau:
+
+1. Trong JSON trước `prepare`, giữ `deployment.profile="cloud"` và
+   `enable_dashboard=true`. Bước `prepare` sinh cả Terraform inputs và đề xuất
+   quyền private `rendered/iam/deploy-dashboard.json`.
+2. Với `existing`, chủ account mở IAM → Roles → **đúng deploy role trong JSON**
+   → Add permissions → Create inline policy, review rồi cấp nội dung JSON của
+   file đề xuất trên. Đây là policy bổ sung, không thay các policy đã có. Nếu
+   role có boundary/SCP hạn chế, chủ account kiểm effective permissions trước
+   apply. Với `new`, quyền này nằm trong IAM plan operator ở installation guide;
+   không cần thêm thủ công lần nữa. Phiên Console dùng để xem phải có quyền
+   GetDashboard và đọc metrics; việc CLI đăng nhập không tự đăng nhập trình duyệt.
+3. Giữ network `egress_mode="interface"`: stack tạo endpoint `monitoring` và
+   đường private CloudWatch cho gateway. Runtime role **và** boundary cần cho
+   phép `cloudwatch:PutMetricData` vào `Miles/DSG`; cấu hình trong repo đã có.
+   Không copy credential operator lên gateway hoặc public cổng metrics.
+
+Dashboard được tạo khi `apply active`, không phải ở `prepare` hay foundation
+đang paused. Kiểm active plan có
+`module.observability.aws_cloudwatch_dashboard.runtime[0]`, tên đúng
+`<installation>-<region>-runtime`. Không tạo dashboard bằng tay trước Terraform.
+File quyền cấp sẵn chỉ là đề xuất; renderer không tự gắn nó vào role AWS.
+`ListDashboards` không nằm trong quyền tối thiểu này: dùng URL trực tiếp trong
+inventory nếu trang liệt kê bị AccessDenied.
+
 ## 3. Foundation, release và bật Cloud
 
 Với IAM/backend đã cấp (`existing`):
@@ -192,6 +220,20 @@ cmp "$MILES_PRIVATE/demo-input.txt" "$MILES_PRIVATE/demo-output.txt"
 curl --config "$MILES_PRIVATE/client.curl" --request PUT \
   --data-binary "@$MILES_PRIVATE/demo-input.txt" "$MILES_DEMO_URL/demo-copy.txt"
 ```
+
+### Xác minh biểu đồ sau khi demo chạy
+
+Đây là smoke cho telemetry, không chạy lại benchmark: ghi nhận thời điểm,
+PUT một file nhỏ và GET lại vài lần; sau đó kiểm CloudWatch có **sample mới**
+đúng dimensions, mở dashboard đối chiếu cùng khoảng thời gian. Làm theo
+[các lệnh xác minh dashboard](../runbooks/cloudwatch-dashboard.md#xác-minh-ingestion-và-biểu-đồ-bằng-một-smoke-nhỏ).
+
+PASS khi có sample readiness mới, traffic/read events của lượt thử, và các điểm
+trên biểu đồ khớp metric/statistic/time range đang truy vấn. Screenshot chỉ có
+khung biểu đồ hoặc dữ liệu lịch sử không đủ. Nếu `Datapoints=[]` hoặc API báo
+AccessDenied thì ghi chưa xác minh, xử lý IAM/exporter/network; không tự đổi
+missing thành 0. Cache có thể hit ngay do admit-on-write; không ép cache miss
+hoặc yêu cầu hit ratio đạt ngưỡng benchmark trong lượt demo này.
 
 Hai SHA-256 phải khớp và `cmp` exit 0. User synthetic sở hữu bucket demo;
 `system_admin` không có quyền đọc/ghi object ngầm định. Admin token bootstrap
