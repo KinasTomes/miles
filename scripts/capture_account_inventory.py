@@ -13,7 +13,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.capture_runtime_inventory import aws_json, utc_timestamp
 
-SCHEMA_VERSION = "miles-account-inventory/v2"
+SCHEMA_VERSION = "miles-account-inventory/v3"
 
 # List APIs are intentionally account-wide: concurrent resources produce a
 # conservative residual, never permission to delete them.
@@ -45,6 +45,7 @@ SPECS = {
     "certificates": (("acm", "list-certificates"), "CertificateSummaryList", "CertificateArn"),
     "trust_anchors": (("rolesanywhere", "list-trust-anchors"), "trustAnchors", "trustAnchorId"),
     "rolesanywhere_profiles": (("rolesanywhere", "list-profiles"), "profiles", "profileId"),
+    "dashboards": (("cloudwatch", "list-dashboards"), "DashboardEntries", "DashboardName"),
 }
 
 # Every directly checked Terraform identity must also have an account-wide
@@ -61,6 +62,7 @@ INVENTORY_COVERAGE = {
     "target_groups": "target_groups", "trust_anchors": "trust_anchors", "rolesanywhere_profiles": "rolesanywhere_profiles",
     "kms_keys": "kms_keys", "secrets": "secrets",
     "acm_certificates": "certificates", "key_pairs": "key_pairs",
+    "cloudwatch_dashboards": "dashboards",
 }
 
 

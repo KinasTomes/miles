@@ -30,6 +30,27 @@ from scripts.capture_account_inventory import SCHEMA_VERSION, SPECS, role_policy
 
 class VerifyTeardownAbsenceTests(unittest.TestCase):
 
+    def test_runtime_dashboard_is_extracted_and_native_absence_fails_closed(self):
+        name = "miles-demo-ap-southeast-1-runtime"
+        outputs = {"runtime_inventory":{"value":{"dashboard":{"name":name}}}}
+        inventory = TeardownAbsenceVerifier.extract_inventory_from_outputs(outputs)
+        self.assertEqual(inventory["cloudwatch_dashboards"], [name])
+        cases = [
+            ((0, json.dumps({"DashboardName":name}), ""), "STILL_PRESENT"),
+            ((254, "", "An error occurred (ResourceNotFound) when calling the GetDashboard operation: missing"), "ABSENT"),
+            ((254, "", "An error occurred (AccessDenied) when calling the GetDashboard operation"), "UNEXPECTED_ERROR"),
+            ((254, "", "An error occurred (Throttling) when calling the GetDashboard operation"), "UNEXPECTED_ERROR"),
+            ((254, "", "ResourceNotFound in an unrelated response"), "UNEXPECTED_ERROR"),
+        ]
+        for response, expected in cases:
+            with self.subTest(expected=expected, response=response):
+                def runner(args):
+                    self.assertEqual(args, ["cloudwatch", "get-dashboard", "--dashboard-name", name])
+                    return response
+                summary = TeardownAbsenceVerifier(inventory={"cloudwatch_dashboards":[name]}, cli_runner=runner).verify_all()
+                self.assertEqual(summary["resources"]["dashboard_"+name]["status"], expected)
+                self.assertEqual(summary["all_absent"], expected == "ABSENT")
+
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.tmppath = Path(self.tmpdir.name)

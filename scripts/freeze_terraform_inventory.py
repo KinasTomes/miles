@@ -26,6 +26,7 @@ STATE_TYPES = {
     "aws_ssm_document": "ssm_documents",
     "aws_ssm_parameter": "ssm_parameters",
     "aws_cloudwatch_metric_alarm": "cloudwatch_alarms",
+    "aws_cloudwatch_dashboard": "cloudwatch_dashboards",
     "aws_cloudwatch_log_group": "cloudwatch_log_groups",
     "aws_launch_template": "launch_templates",
     "aws_kms_alias": "kms_aliases",

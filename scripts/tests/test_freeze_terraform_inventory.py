@@ -9,6 +9,13 @@ from scripts.freeze_terraform_inventory import augment_inventory, compare_invent
 
 
 class FreezeInventoryTests(unittest.TestCase):
+    def test_dashboard_is_frozen_by_exact_name_and_cannot_be_omitted(self):
+        resources = [{"address":"module.observability.aws_cloudwatch_dashboard.runtime[0]", "type":"aws_cloudwatch_dashboard", "id":"miles-demo-ap-southeast-1-runtime"}]
+        self.assertTrue(compare_inventory(resources, {}))
+        inventory = augment_inventory(resources, {})
+        self.assertEqual(inventory["cloudwatch_dashboards"], [resources[0]["id"]])
+        self.assertEqual(compare_inventory(resources, inventory), [])
+
     def test_nested_managed_resources_and_no_secret_values(self):
         state = {"values": {"root_module": {"resources": [
             {"mode": "data", "address": "data.aws_x.a", "type": "aws_x", "values": {"id": "shared"}},
