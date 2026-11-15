@@ -103,7 +103,7 @@ func configureNative(ctx context.Context, opt *Options) error {
 	if _, err := utc.Bounds(ctx); err != nil {
 		return err
 	}
-	store, err := dynamodb.New(dynamodb.Options{API: api, Tables: c.Tables, MaxAttempts: 1,
+	store, err := dynamodb.New(dynamodb.Options{API: api, Tables: c.Tables, MaxAttempts: 10,
 		Authority: &dynamodb.SharedAuthority{Time: utc, Lifetime: time.Minute}, RequireProducers: true})
 	if err != nil {
 		return err
@@ -192,7 +192,15 @@ func configureNative(ctx context.Context, opt *Options) error {
 		}
 		evidence.Seal, err = w.CloseAndSealSupervised(ctx, cut)
 		if err != nil {
-			return err
+			if errors.Is(err, s.ErrConflict) {
+				if cutRef, vErr := recovery.VerifyCut(ctx, objects, catalog, g.Epoch); vErr == nil {
+					evidence.Seal = cutRef
+					err = nil
+				}
+			}
+			if err != nil {
+				return err
+			}
 		}
 		if err := store.CloseR1(ctx, fence); err != nil {
 			return err
