@@ -18,6 +18,7 @@
   "enable_alb": true,
   "enable_edge": false,
   "enable_acceptance_nodes": false,
+  "enable_dashboard": true,
   "egress_mode": "interface",
   "alb_deregistration_delay_seconds": 300,
   "client_cidrs": ["192.0.2.1/32"],

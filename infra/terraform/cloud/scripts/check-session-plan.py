@@ -15,7 +15,8 @@ SESSION_RESOURCES = re.compile(
     r'|module\.alb\.(?:aws_lb\.this|aws_lb_target_group\.s3|aws_lb_listener\.https)\[0\]'
     r'|module\.compute\.(?:aws_instance\.runtime|aws_volume_attachment\.data)\[0\]'
     r'|module\.fleet\.(?:aws_autoscaling_group\.gateway|aws_launch_template\.gateway)\[0\]'
-    r'|module\.edge\[0\]\.aws_instance\.runtime\[0\])'
+    r'|module\.edge\[0\]\.aws_instance\.runtime\[0\]'
+    r'|module\.observability\.aws_cloudwatch_dashboard\.runtime\[0\])'
 )
 
 
@@ -68,6 +69,11 @@ def check_plan(plan, action, account, region='ap-southeast-1', installation_name
             raise ValueError(f'Session plan changes a retained resource or needs separate review: {address} ({actions}).')
         if address.startswith('module.fleet.') and not values.get('enable_asg'):
             raise ValueError('Fleet transition requires the reviewed ASG configuration.')
+        if address == 'module.observability.aws_cloudwatch_dashboard.runtime[0]':
+            identity = change.get('before' if action == 'pause' else 'after') or {}
+            if (not values.get('enable_dashboard')
+                    or identity.get('dashboard_name') != f'{installation_name}-{region}-runtime'):
+                raise ValueError('Dashboard transition requires the exact reviewed installation dashboard.')
         zone = re.search(r'\["([a-z0-9-]+[a-z])"\]$', address)
         if address.startswith('module.network.') and zone and not re.fullmatch(re.escape(region) + '[a-z]', zone[1]):
             raise ValueError('Session resource belongs to another Region.')
@@ -82,8 +88,9 @@ def check_plan(plan, action, account, region='ap-southeast-1', installation_name
                 or runtime.get('compute', {}).get('instance_id', 'unknown') is not None
                 or runtime.get('edge') is not None and runtime['edge'].get('instance_id', 'unknown') is not None
                 or outputs.get('fleet_contract', {}).get('value') is not None
+                or runtime.get('dashboard') is not None
                 or values.get('enable_asg') and 'value' not in outputs.get('fleet_contract', {})):
-            raise ValueError('Paused outputs must show no EC2, NAT, interface endpoints or ALB.')
+            raise ValueError('Paused outputs must show no EC2, NAT, interface endpoints, ALB or dashboard.')
     return changes
 
 

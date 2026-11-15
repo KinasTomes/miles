@@ -36,6 +36,11 @@ artifacts private; không chạy gateway/cache. Edge trên máy local hoặc VM 
 dùng runbook Edge riêng. Không đổi profile giữa một lượt triển khai đã chuẩn bị;
 dùng installation mới hoặc migration được review.
 
+Bật `enable_dashboard=true` trước `prepare` để Terraform tạo giao diện theo dõi
+trên CloudWatch Console cho các profile đã chọn. Xem
+[dashboard runbook](../docs/runbooks/cloudwatch-dashboard.md) về quyền, cách đọc
+metrics và cleanup. Dashboard không yêu cầu thêm EC2/Grafana hoặc public Admin.
+
 CLI hiện tại là `infra/terraform/cloud/scripts/deploy-installation.py`; từng
 subcommand độc lập, không tự chạy toàn bộ lifecycle. Lấy command wrapper, file
 JSON private, prerequisites và login từ [installation guide](../docs/testing/aws-personal-account-guide.md).

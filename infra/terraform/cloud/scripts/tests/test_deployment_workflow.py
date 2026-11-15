@@ -373,15 +373,33 @@ class WorkflowTests(unittest.TestCase):
 
     def test_cloud_closeout_never_describes_null_edge_secret(self):
         self.app.state.update(destroy_applied=True, source_commit="a"*40)
+        self.app.configuration["enable_dashboard"] = True
         workflow.save(self.app.private/"runtime-inventory.json", {"data_bucket_name":"owned", "expected_tables":["owned-Buckets"], "kms_key_arn":"key", "secret_metadata_arn":"secret", "edge_bootstrap_secret_arn":None})
         def aws(service, operation, *arguments):
             self.assertNotIn(None, arguments)
+            if operation == "get-dashboard":
+                self.assertEqual(arguments, ("--dashboard-name", self.app.name + "-" + self.app.region + "-runtime"))
+                raise workflow.AWSFailure("ResourceNotFound")
             if operation in ("head-bucket", "describe-table"):
                 raise workflow.AWSFailure("404" if service == "s3api" else "ResourceNotFoundException")
             return {"Reservations":[], "Volumes":[], "Vpcs":[], "AutoScalingGroups":[], "KeyMetadata":{"KeyState":"PendingDeletion"}, "DeletedDate":"pending"}
         with patch.object(self.app, "identity"), patch.object(self.app, "terraform", return_value="{}"), patch.object(self.app, "aws", side_effect=aws), patch("builtins.print"):
             self.app.closeout()
         self.assertTrue(workflow.read(self.app.private/"cleanup-evidence.json")["datastores_absent"])
+        self.assertTrue(workflow.read(self.app.private/"cleanup-evidence.json")["dashboard_absent"])
+
+    def test_closeout_rejects_present_dashboard_and_unverifiable_absence(self):
+        self.app.state["destroy_applied"] = True
+        self.app.configuration["enable_dashboard"] = True
+        workflow.save(self.app.private/"runtime-inventory.json", {})
+        with patch.object(self.app, "identity"), patch.object(self.app, "terraform", return_value="{}"):
+            with patch.object(self.app, "aws", return_value={"DashboardName":"present"}):
+                with self.assertRaisesRegex(ValueError, "dashboard remains"):
+                    self.app.closeout()
+            for code in ("AccessDenied", "Throttling", "Unclassified"):
+                with patch.object(self.app, "aws", side_effect=workflow.AWSFailure(code)):
+                    with self.assertRaises(workflow.AWSFailure):
+                        self.app.closeout()
 
     def test_protection_plan_rejects_any_unrelated_update(self):
         self.app.state.update(prepared=True, paused_applied=True)

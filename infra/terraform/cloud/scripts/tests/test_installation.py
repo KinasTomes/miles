@@ -21,6 +21,32 @@ def fixture():
 
 
 class InstallationTests(unittest.TestCase):
+    def test_dashboard_permissions_are_opt_in_and_bind_exact_global_name(self):
+        config = fixture()
+        self.assertNotIn("iam/deploy-dashboard.json", installation.render(config))
+        config["enable_dashboard"] = True
+        config["region"] = "ap-southeast-2"
+        output = installation.render(config)
+        statements = output["iam/deploy-dashboard.json"]["Statement"]
+        manage = statements[0]
+        self.assertEqual(set(manage["Action"]), {"cloudwatch:PutDashboard", "cloudwatch:GetDashboard", "cloudwatch:DeleteDashboards"})
+        arn = "arn:aws:cloudwatch::123456789012:dashboard/miles-member-test-ap-southeast-2-runtime"
+        self.assertEqual(manage["Resource"], arn)
+        for other in (arn.replace("member-test", "another"), arn.replace("123456789012", "210987654321"), arn.replace("southeast-2", "southeast-1")):
+            self.assertFalse(fnmatchcase(other, manage["Resource"]))
+        self.assertEqual(statements[1]["Condition"], {"StringEquals":{"aws:RequestedRegion":"ap-southeast-2"}})
+        self.assertTrue(all(action.startswith("cloudwatch:Get") or action == "cloudwatch:ListMetrics" for action in statements[1]["Action"]))
+        shards = [json.loads(document) for document in output["operator.tfvars.json"]["deploy_documents"].values()]
+        self.assertIn(manage, [s for document in shards for s in document["Statement"]])
+        self.assertLessEqual(len(shards), 9)
+        config["bootstrap_mode"] = "existing"
+        output = installation.render(config)
+        self.assertIn("iam/deploy-dashboard.json", output)
+        self.assertNotIn("operator.tfvars.json", output)
+        config["enable_dashboard"] = "true"
+        with self.assertRaisesRegex(ValueError, "boolean"):
+            installation.render(config)
+
     def test_deployment_profile_is_bounded_and_stays_out_of_terraform_inputs(self):
         config = fixture()
         config["deployment"].pop("profile", None)

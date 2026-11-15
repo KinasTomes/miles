@@ -1,6 +1,11 @@
 variable "name" { type = string }
 variable "table_prefix" { type = string }
 variable "enabled" { type = bool }
+variable "region" { type = string }
+variable "dashboard_enabled" {
+  type    = bool
+  default = false
+}
 variable "profiles" {
   type    = set(string)
   default = ["cloud", "edge"]

@@ -243,6 +243,7 @@ SUPPORTED_RESOURCE_TYPES = frozenset({
     "acm_certificates",
     "ssm_documents",
     "key_pairs",
+    "cloudwatch_dashboards",
     "cloudwatch_alarms",
     "cloudwatch_log_groups",
     "launch_templates",
@@ -875,6 +876,7 @@ class TeardownAbsenceVerifier:
             "ssm_documents": [],
             "ssm_parameters": [],
             "key_pairs": [],
+            "cloudwatch_dashboards": [],
             "cloudwatch_alarms": [],
             "cloudwatch_log_groups": [],
             "launch_templates": [],
@@ -971,6 +973,11 @@ class TeardownAbsenceVerifier:
                         if candidate_name:
                             _dedup_add("alb_names", [candidate_name])
 
+            # Runtime dashboard
+            dashboard = rt.get("dashboard")
+            if isinstance(dashboard, dict) and dashboard.get("name"):
+                _dedup_add("cloudwatch_dashboards", [str(dashboard["name"]).strip()])
+
             # IAM Roles
             roles_val = rt.get("iam_roles")
             if roles_val:
@@ -1049,7 +1056,7 @@ class TeardownAbsenceVerifier:
             _dedup_add("dynamodb_tables", _extract_id_list(_unwrap_val(data["dynamodb_tables"])))
         if data.get("cloudwatch_alarms"):
             _dedup_add("cloudwatch_alarms", _extract_id_list(_unwrap_val(data["cloudwatch_alarms"])))
-        for key in ("cloudwatch_log_groups", "launch_templates", "kms_aliases", "internet_gateways", "route_tables"):
+        for key in ("cloudwatch_dashboards", "cloudwatch_log_groups", "launch_templates", "kms_aliases", "internet_gateways", "route_tables"):
             if data.get(key):
                 _dedup_add(key, _extract_id_list(_unwrap_val(data[key])))
         if data.get("acm_certificates"):
@@ -2084,6 +2091,14 @@ class TeardownAbsenceVerifier:
             results[f"alarm_{alarm}"] = self.check_cloudwatch_alarm_absent(alarm)
             checked_resources.add(("cloudwatch_alarms", alarm))
 
+        for dashboard in self.inventory.get("cloudwatch_dashboards", []):
+            results[f"dashboard_{dashboard}"] = self.check_resource_absent(
+                dashboard, "cloudwatch_dashboard",
+                ["cloudwatch", "get-dashboard", "--dashboard-name", dashboard],
+                ["(ResourceNotFound) when calling the GetDashboard operation"],
+            )
+            checked_resources.add(("cloudwatch_dashboards", dashboard))
+
         # 21. KMS Keys (PendingDeletion check)
         for kms_key in self.inventory.get("kms_keys", []):
             results[f"kms_{kms_key}"] = self.check_kms_key_pending_deletion(kms_key)
@@ -2367,6 +2382,8 @@ def main():
                 return 0, json.dumps({"DeletedDate": "2026-11-10T05:00:00Z"}), ""
             if "describe-alarms" in cmd:
                 return 0, json.dumps({"MetricAlarms": [], "CompositeAlarms": []}), ""
+            if "get-dashboard" in cmd:
+                return 254, "", "An error occurred (ResourceNotFound) when calling the GetDashboard operation: dashboard absent"
             if "describe-auto-scaling-groups" in cmd:
                 return 0, json.dumps({"AutoScalingGroups": []}), ""
             if "describe-nat-gateways" in cmd:

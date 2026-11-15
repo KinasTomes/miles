@@ -53,6 +53,8 @@ def render(configuration):
     known_variables = set(re.findall(r'variable "([a-z0-9_]+)"', (CLOUD / "environments/dev/variables.tf").read_text()))
     if values.keys() - known_variables or operator.keys() - {"user_arn", "mfa_arn", "deploy_role_arn", "terraform_profile", "state_key", "state_bucket", "audit_expires_at", "cleanup_expires_at", "utc_reference", "login_profile", "admin_profile"}:
         raise ValueError("Unknown installation/operator field")
+    if "enable_dashboard" in values and type(values["enable_dashboard"]) is not bool:
+        raise ValueError("enable_dashboard must be boolean")
     account = require(r"[0-9]{12}", values["account_id"], "account_id")
     region = require(r"(af|ap|ca|eu|il|me|mx|sa|us)-[a-z]+-[0-9]+", values.get("region", "ap-southeast-1"), "region")
     name = require(r"[a-z][a-z0-9-]{1,22}[a-z0-9]", values.get("installation_name", "miles-dev"), "installation_name")
@@ -134,6 +136,8 @@ def render(configuration):
             "tags": {"Project": "Miles", "Installation": name, "Environment": environment, "Owner": owner}},
     }
     for template in sorted((CLOUD / "bootstrap/operator").glob("*.json.tmpl")):
+        if template.name == "deploy-dashboard.json.tmpl" and not values.get("enable_dashboard"):
+            continue
         if template.name == "teardown-audit.json.tmpl" and expires is None:
             continue
         if template.name == "deploy-cleanup.json.tmpl" and cleanup_expires is None:
@@ -168,7 +172,7 @@ def render(configuration):
     )
     if mode == "existing":
         return {key: value for key, value in output.items()
-                if key in ("installation.tfvars.json", "bootstrap-inventory.json", "backend.hcl", "iam/deploy-bootstrap-read.json")}
+                if key in ("installation.tfvars.json", "bootstrap-inventory.json", "backend.hcl", "iam/deploy-bootstrap-read.json", "iam/deploy-dashboard.json")}
     # Shard complete deploy permissions within default IAM attachment/document quotas.
     documents = {}
     statements = []

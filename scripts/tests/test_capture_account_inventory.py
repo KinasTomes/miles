@@ -61,6 +61,12 @@ class AccountInventoryTests(unittest.TestCase):
             "vpcs_removed": ["vpc-existing"], "vpcs": ["vpc-new"],
         })
 
+    def test_dashboard_leaks_and_baseline_removals_are_reported(self):
+        self.assertEqual(compare_baseline({"dashboards":["other-runtime"]}, {"dashboards":["miles-demo-runtime"]}), {
+            "dashboards":["miles-demo-runtime"], "dashboards_removed":["other-runtime"]})
+        with self.assertRaises(ValueError):
+            identifiers({}, "DashboardEntries", "DashboardName")
+
     def test_all_managed_policy_versions_are_audited(self):
         def fetch(profile, region, service, operation, *args):
             if operation == "list-policy-versions":

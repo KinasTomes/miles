@@ -172,13 +172,15 @@ module "edge" {
 }
 
 module "observability" {
-  source           = "../../modules/observability"
-  name             = local.name
-  table_prefix     = "${local.name}-"
-  enabled          = var.enable_alarms && !var.paused
-  profiles         = var.monitored_profiles
-  alarm_actions    = var.alarm_actions
-  deep_observation = var.deep_observation
+  source            = "../../modules/observability"
+  name              = local.name
+  region            = var.region
+  table_prefix      = "${local.name}-"
+  enabled           = var.enable_alarms && !var.paused
+  dashboard_enabled = var.enable_dashboard && !var.paused
+  profiles          = var.monitored_profiles
+  alarm_actions     = var.alarm_actions
+  deep_observation  = var.deep_observation
 }
 
 module "acceptance" {
