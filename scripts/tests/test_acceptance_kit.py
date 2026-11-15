@@ -50,8 +50,8 @@ class KitTests(unittest.TestCase):
     def test_config_refuses_cross_account_and_oversized_budget(self):
         for patch in [
             {"deploy_role_arn": "arn:aws:iam::999999999999:role/elsewhere"},
-            {"hours": 5},
-            {"max_usd": 11},
+            {"hours": 13},
+            {"max_usd": 51},
             {"unknown": "ignored"},
             {"zones": ["ap-southeast-1a"]},
             {"ami_id": "latest"},
@@ -159,6 +159,7 @@ class KitTests(unittest.TestCase):
     ):
         values = {
             "ACCOUNT_ID": "123456789012",
+            "DIRECT_BUCKET_NAME": "fixture-direct-bucket",
             "REGION": "ap-southeast-1",
             "AMI_ID": self.config["ami_id"],
             "DEPLOY_ROLE_ARN": self.config["deploy_role_arn"],
@@ -587,6 +588,7 @@ class IAMWorkflowTests(unittest.TestCase):
 
         values = {
             "ACCOUNT_ID": "123456789012",
+            "DIRECT_BUCKET_NAME": "fixture-direct-bucket",
             "REGION": "ap-southeast-1",
             "AMI_ID": self.config["ami_id"],
             "DEPLOY_ROLE_ARN": self.config["deploy_role_arn"],
@@ -604,7 +606,7 @@ class IAMWorkflowTests(unittest.TestCase):
             {
                 "at": common.now().isoformat(),
                 "estimate_usd": "1.0",
-                "envelope_usd": 10,
+                "envelope_usd": self.r.c["max_usd"],
                 "hours": 4,
             },
         )

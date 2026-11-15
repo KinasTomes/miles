@@ -717,6 +717,7 @@ Presigned GET/PUT dùng query SigV4, expiry/credential scope được kiểm tra
 
 | Header | Operation | Định nghĩa |
 |---|---|---|
+| x-dsg-dedup-domain | PutObject/GetObject/ListObjectsV2/HeadBucket thành công | Domain bất biến thực tế của bucket từ authorization snapshot; chỉ cấp khi có signed debug gate hợp lệ và quyền truy cập dữ liệu; không trả trên lỗi |
 | x-dsg-chunks-total | PUT/UploadPart | Số lần xuất hiện chunk trong body logical |
 | x-dsg-chunks-dup | PUT/UploadPart | Số chunk occurrences được reuse mà request không cần ghi blob mới; định nghĩa race/winner báo theo kết quả xử lý request |
 | x-dsg-chunks-revived | PUT/UploadPart | Số distinct domain/hash đã có, nhưng request ghi bản Warm thay archive/Restored; không cộng lặp hash cùng request |

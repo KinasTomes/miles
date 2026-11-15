@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "runs": [
+    {
+      "id": "pr76-early-edge-c1",
+      "source": "pr76-early",
+      "result": "edge-c1-result.json",
+      "clock": "edge-c1-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-early-edge-c4",
+      "source": "pr76-early",
+      "result": "edge-c4-result.json",
+      "clock": "edge-c4-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-early-edge-c4-replay",
+      "source": "pr76-early",
+      "result": "edge-c4-replay-result.json",
+      "clock": "edge-c4-replay-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-mid-edge-c1",
+      "source": "pr76-mid",
+      "result": "edge-c1-result.json",
+      "clock": "edge-c1-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-mid-edge-c1-diagnostic",
+      "source": "pr76-mid",
+      "result": "edge-c1-diagnostic-result.json",
+      "clock": "edge-c1-diagnostic-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-mid-edge-c4-diagnostic",
+      "source": "pr76-mid",
+      "result": "edge-c4-diagnostic-result.json",
+      "clock": "edge-c4-diagnostic-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-mid-edge-c1-cleanup",
+      "source": "pr76-mid",
+      "result": "edge-c1-cleanup-result.json",
+      "clock": "edge-c1-cleanup-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-late-edge-baseline-c1-r2",
+      "source": "pr76-late",
+      "result": "edge-baseline-c1-r2-result.json",
+      "clock": "edge-baseline-c1-r2-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-late-edge-burst-c1-r1",
+      "source": "pr76-late",
+      "result": "edge-burst-c1-r1-result.json",
+      "clock": "edge-burst-c1-r1-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-late-edge-burst-c4-r1",
+      "source": "pr76-late",
+      "result": "edge-burst-c4-r1-result.json",
+      "clock": "edge-burst-c4-r1-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-late-edge-burst-c1-r2",
+      "source": "pr76-late",
+      "result": "edge-burst-c1-r2-result.json",
+      "clock": "edge-burst-c1-r2-telemetry-summary.json"
+    },
+    {
+      "id": "pr76-late-edge-final-c1-r1",
+      "source": "pr76-late",
+      "result": "edge-final-c1-r1-result.json",
+      "clock": "edge-final-c1-r1-telemetry-summary.json"
+    },
+    {
+      "id": "pr86-edge-baseline-c1-r1",
+      "source": "pr86",
+      "result": "edge-baseline-c1-r1-result.json",
+      "clock": "edge-baseline-c1-r1-telemetry-summary.json"
+    },
+    {
+      "id": "pr86-edge-four-c1-r1",
+      "source": "pr86",
+      "result": "edge-four-c1-r1-result.json",
+      "clock": "edge-four-c1-r1-telemetry-summary.json"
+    },
+    {
+      "id": "pr86-edge-four-c4-r1",
+      "source": "pr86",
+      "result": "edge-four-c4-r1-result.json",
+      "clock": "edge-four-c4-r1-telemetry-summary.json"
+    },
+    {
+      "id": "pr86-edge-four-c1-r2",
+      "source": "pr86",
+      "result": "edge-four-c1-r2-result.json",
+      "clock": null
+    }
+  ]
+}

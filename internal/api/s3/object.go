@@ -149,6 +149,7 @@ func (o *Objects) PutObject(w http.ResponseWriter, r *Request) error {
 	}
 	if r.Caller.Debug {
 		WriteDebugHeaders(w.Header(), result.Debug)
+		writeDebugDomain(w.Header(), r)
 	}
 	w.WriteHeader(http.StatusOK)
 	return nil
@@ -187,8 +188,11 @@ func (o *Objects) GetObject(w http.ResponseWriter, r *Request) error {
 		if hasRange {
 			h.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", result.Range.Offset, result.Range.Offset+result.Range.Length-1, result.Info.Size))
 		}
-		if r.Caller.Debug && result.CacheStatus != "" {
-			h.Set("X-Dsg-Cache", result.CacheStatus)
+		if r.Caller.Debug {
+			writeDebugDomain(h, r)
+			if result.CacheStatus != "" {
+				h.Set("X-Dsg-Cache", result.CacheStatus)
+			}
 		}
 		w.WriteHeader(status)
 		wrote = true
@@ -351,6 +355,15 @@ func writeResponseChecksum(h http.Header, mode string, checksum storage.Checksum
 		kind = "FULL_OBJECT"
 	}
 	h.Set("x-amz-checksum-type", kind)
+}
+
+// writeDebugDomain exposes the actual bucket-scoped domain only to signed,
+// authorized system-admin debug requests. Call after the operation succeeds:
+// handler-level errors must not emit debug telemetry.
+func writeDebugDomain(h http.Header, r *Request) {
+	if r.Caller.Debug && r.Access.Bucket.ID != "" && r.Access.Bucket.Domain != "" {
+		h.Set("X-Dsg-Dedup-Domain", r.Access.Bucket.Domain)
+	}
 }
 
 // WriteDebugHeaders writes the physical write/dedup debug headers (API v2 5).

@@ -10,7 +10,7 @@ import (
 
 func main() {
 	out := flag.String("out", "", "New output directory (must not exist)")
-	profile := flag.String("profile", "smoke", "smoke or backup30; generate backup30 only on a dedicated test host")
+	profile := flag.String("profile", "smoke", "smoke, backup30, or boundary-8mib; generate backup30 only on a dedicated test host")
 	seed := flag.String("seed", "miles-w02-v1", "Reproducible synthetic-data seed")
 	flag.Parse()
 	if flag.NArg() != 0 {

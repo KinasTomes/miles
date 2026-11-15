@@ -113,3 +113,35 @@ func TestPinnedSmokeManifest(t *testing.T) {
 		t.Fatal("smoke fixture changed; review generator version, Go version and hashes before regenerating")
 	}
 }
+
+func TestBoundary8MiB(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "boundary")
+	m, err := Generate(out, "boundary-8mib", "test-boundary-seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(m.Files) != 3 {
+		t.Fatalf("expected 3 files, got %d", len(m.Files))
+	}
+	const base = 8 * 1024 * 1024
+	expectedSizes := []int{base - 1, base, base + 1}
+	for i, f := range m.Files {
+		if f.Bytes != expectedSizes[i] {
+			t.Fatalf("file %d size %d, want %d", i, f.Bytes, expectedSizes[i])
+		}
+		data, err := os.ReadFile(filepath.Join(out, f.Path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(data) != expectedSizes[i] {
+			t.Fatalf("file on disk size %d, want %d", len(data), expectedSizes[i])
+		}
+		sum := sha256.Sum256(data)
+		if f.SHA256 != hex.EncodeToString(sum[:]) {
+			t.Fatalf("sha256 mismatch for %s", f.Path)
+		}
+	}
+	if m.TotalBytes != int64((base-1)+base+(base+1)) {
+		t.Fatalf("total bytes mismatch: %d", m.TotalBytes)
+	}
+}

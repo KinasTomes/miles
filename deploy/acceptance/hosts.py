@@ -142,7 +142,14 @@ def install(r):
                 local_data_path="/var/lib/miles-bootstrap",
             )
             r.write("operator-startup.json", startup)
-            extra = ["operator-startup.json", "warmbench", "datasetgen", "tls-ca.pem"]
+            extra = [
+                "operator-startup.json",
+                "warmbench",
+                "coldbench",
+                "recoverybench",
+                "datasetgen",
+                "tls-ca.pem",
+            ]
         else:
             r.write("edge-startup.json", startup)
             command = shlex.join(

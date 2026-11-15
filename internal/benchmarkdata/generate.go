@@ -37,14 +37,6 @@ type Manifest struct {
 // Generate refuses an existing output path so it cannot overwrite user data.
 // backup30 must be generated on a dedicated test machine, not the developer host.
 func Generate(out, profile, seed string) (manifest Manifest, err error) {
-	versions, size := 3, 64*1024
-	switch profile {
-	case "smoke":
-	case "backup30":
-		versions, size = 30, 8*1024*1024
-	default:
-		return manifest, fmt.Errorf("unknown dataset profile %q", profile)
-	}
 	if out == "" || seed == "" {
 		return manifest, fmt.Errorf("out and seed are required")
 	}
@@ -57,6 +49,62 @@ func Generate(out, profile, seed string) (manifest Manifest, err error) {
 			_ = os.RemoveAll(out)
 		}
 	}()
+
+	if profile == "boundary-8mib" {
+		const baseSize = 8 * 1024 * 1024
+		specs := []struct {
+			name    string
+			size    int
+			version int
+		}{
+			{"boundary-8mib-minus-one.bin", baseSize - 1, 0},
+			{"boundary-8mib-equal.bin", baseSize, 1},
+			{"boundary-8mib-plus-one.bin", baseSize + 1, 2},
+		}
+		manifest = Manifest{
+			SchemaVersion:      1,
+			Generator:          "miles-aesctr-gzip-v1",
+			GoVersion:          runtime.Version(),
+			Profile:            profile,
+			Seed:               seed,
+			Versions:           len(specs),
+			RawBytesPerVersion: baseSize,
+			Files:              []File{},
+		}
+		for _, sp := range specs {
+			body := randomBytes(seed, sp.name, sp.size)
+			if err = os.WriteFile(filepath.Join(out, sp.name), body, 0600); err != nil {
+				return manifest, err
+			}
+			sum := sha256.Sum256(body)
+			manifest.Files = append(manifest.Files, File{
+				Path:    sp.name,
+				Group:   "random-distinct",
+				Version: sp.version,
+				Bytes:   len(body),
+				SHA256:  hex.EncodeToString(sum[:]),
+			})
+			manifest.TotalBytes += int64(len(body))
+		}
+		encoded, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return manifest, err
+		}
+		if err = os.WriteFile(filepath.Join(out, "manifest.json"), append(encoded, '\n'), 0600); err != nil {
+			return manifest, err
+		}
+		complete = true
+		return manifest, nil
+	}
+
+	versions, size := 3, 64*1024
+	switch profile {
+	case "smoke":
+	case "backup30":
+		versions, size = 30, 8*1024*1024
+	default:
+		return manifest, fmt.Errorf("unknown dataset profile %q", profile)
+	}
 	manifest = Manifest{SchemaVersion: 1, Generator: "miles-aesctr-gzip-v1", GoVersion: runtime.Version(), Profile: profile, Seed: seed, Versions: versions, RawBytesPerVersion: size, Files: []File{}}
 	// Pseudorandom, not production key material. Gzip's bytes are reused unchanged.
 	original := randomBytes(seed, "compressed-source", size)

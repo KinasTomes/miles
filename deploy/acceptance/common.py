@@ -34,7 +34,7 @@ DEFAULTS = {
     "deploy_profile": "miles-dev",
     "iam_profile": "miles-iam-bootstrap",
     "hours": 4,
-    "max_usd": 10,
+    "max_usd": 20,
 }
 
 
@@ -116,8 +116,8 @@ def config(value):
         "Invalid backend key",
     )
     require(
-        0 < c["hours"] <= 4 and 0 < c["max_usd"] <= 10,
-        "This focused kit supports at most four hours / 10 USD",
+        0 < c["hours"] <= 12 and 0 < c["max_usd"] <= 20,
+        "Acceptance run supports at most 12 hours / 20 USD",
     )
     require(
         re.fullmatch(r"ami-[0-9a-f]{8,17}", c.get("ami_id", "")),
@@ -230,6 +230,8 @@ class Run:
             else self.native_config,
             AWS_SHARED_CREDENTIALS_FILE=self.native_credentials,
             AWS_EC2_METADATA_DISABLED="true",
+            AWS_MAX_ATTEMPTS="1",
+            AWS_RETRY_MODE="standard",
         )
         return env
 

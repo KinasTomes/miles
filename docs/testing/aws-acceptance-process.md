@@ -1,5 +1,10 @@
 # Chạy AWS acceptance bằng process và template
 
+**Bộ điều phối này là tùy chọn.** Cách vận hành chính là gọi từng subcommand
+độc lập theo [runbook](../planning/full-aws-benchmark-execution-plan.md).
+Process dùng cùng approval receipt gắn hash với lệnh độc lập; recipe/checkpoint
+phải bao gồm mọi file action yêu cầu. Không cần chạy full G1–G5 qua một process.
+
 Bộ điều phối dùng lại [các lệnh kit](../../deploy/acceptance/README.md). Một
 process chạy nhiều bước, ghi tiến trình/log ra disk và chỉ trả quyền điều khiển
 khi cần duyệt, cần đăng nhập, có lỗi hoặc hoàn tất. Không cần agent dựng lại các

@@ -24,6 +24,13 @@ run "private_disposable_nodes" {
     owner_ssh_public_key       = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixture"
   }
   assert {
+    condition = (length(aws_ssm_document.telemetry) == 1 && aws_ssm_document.telemetry[0].document_type == "Command" && alltrue([
+      for parameter in values(jsondecode(aws_ssm_document.telemetry[0].content).parameters) : parameter.interpolationType == "ENV_VAR"
+      ]) && !contains(keys(jsondecode(aws_ssm_document.telemetry[0].content).parameters), "commands") &&
+    aws_ssm_document.telemetry[0].tags["Installation"] == "miles-fixture")
+    error_message = "Telemetry must use the installation-owned fixed diagnostic document with ENV_VAR inputs, never arbitrary commands."
+  }
+  assert {
     condition = length(aws_instance.node) == 2 && alltrue([for node in aws_instance.node :
       !node.associate_public_ip_address && node.metadata_options[0].http_tokens == "required" &&
       node.credit_specification[0].cpu_credits == "standard" && node.root_block_device[0].encrypted &&
@@ -63,7 +70,7 @@ run "disabled_has_no_resources" {
     data_bucket_name           = "miles-fixture"
   }
   assert {
-    condition     = length(aws_instance.node) == 0 && length(aws_iam_role.node) == 0 && length(aws_security_group.node) == 0
+    condition     = length(aws_instance.node) == 0 && length(aws_iam_role.node) == 0 && length(aws_security_group.node) == 0 && length(aws_ssm_document.telemetry) == 0
     error_message = "Disabling acceptance must remove the temporary nodes and identities."
   }
 }

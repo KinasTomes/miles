@@ -1,0 +1,979 @@
+{
+  "version": 1,
+  "steps": [
+    {
+      "id": "assets",
+      "command": [
+        "assets"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "preflight",
+      "command": [
+        "preflight"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "plan-foundation",
+      "command": [
+        "plan",
+        "foundation"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "iam-review",
+      "command": [
+        "iam-review"
+      ],
+      "timeout_seconds": 1800
+    },
+    {
+      "id": "approve-foundation",
+      "review": [
+        "approval-review.md",
+        "cost-review.json",
+        "foundation-plan.json",
+        "iam-review.json",
+        "iam/auditor-policy.json",
+        "iam/auditor-trust.json",
+        "iam/compute.json",
+        "iam/data.json",
+        "iam/deploy.json",
+        "iam/runtime-boundary.json",
+        "iam/runtime-roles.json",
+        "iam/services.json"
+      ]
+    },
+    {
+      "id": "activate-iam",
+      "command": [
+        "iam-activate"
+      ],
+      "timeout_seconds": 900,
+      "approval": "approve-foundation"
+    },
+    {
+      "id": "apply-foundation",
+      "command": [
+        "apply",
+        "foundation"
+      ],
+      "timeout_seconds": 1800,
+      "approval": "approve-foundation"
+    },
+    {
+      "id": "plan-hosts",
+      "command": [
+        "plan",
+        "hosts"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "approve-hosts",
+      "review": [
+        "approval-review.md",
+        "cost-review.json",
+        "hosts-plan.json"
+      ]
+    },
+    {
+      "id": "apply-hosts",
+      "command": [
+        "apply",
+        "hosts"
+      ],
+      "timeout_seconds": 1800,
+      "approval": "approve-hosts"
+    },
+    {
+      "id": "install",
+      "command": [
+        "install"
+      ],
+      "timeout_seconds": 1800,
+      "approval": "approve-hosts"
+    },
+    {
+      "id": "material",
+      "command": [
+        "material"
+      ],
+      "timeout_seconds": 1200,
+      "approval": "approve-hosts"
+    },
+    {
+      "id": "bootstrap",
+      "command": [
+        "bootstrap"
+      ],
+      "timeout_seconds": 900,
+      "approval": "approve-hosts"
+    },
+    {
+      "id": "plan-active",
+      "command": [
+        "plan",
+        "active"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "approve-active",
+      "review": [
+        "active-plan.json",
+        "approval-review.md",
+        "cost-review.json"
+      ]
+    },
+    {
+      "id": "apply-active",
+      "command": [
+        "apply",
+        "active"
+      ],
+      "timeout_seconds": 1800,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-cloud-c1-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-cloud-c1",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-cloud-c1-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-cloud-c1",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-cloud-c1-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-cloud-c1",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-cloud-c4-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-cloud-c4",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-cloud-c4-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-cloud-c4",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-cloud-c4-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-cloud-c4",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-edge-c1-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-edge-c1",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-edge-c1-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-edge-c1",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-edge-c1-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-edge-c1",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-edge-c4-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-edge-c4",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-edge-c4-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-edge-c4",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "warm-edge-c4-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "warm-edge-c4",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "overwrite-cloud-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "overwrite-cloud",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "overwrite-cloud-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "overwrite-cloud",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "overwrite-cloud-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "overwrite-cloud",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "domain-shared-default-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "domain-shared-default",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "domain-shared-default-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "domain-shared-default",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "domain-shared-default-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "domain-shared-default",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "domain-separated-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "domain-separated",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "domain-separated-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "domain-separated",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "domain-separated-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "domain-separated",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "multipart-threshold-minus-one-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "multipart-threshold-minus-one",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "multipart-threshold-minus-one-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "multipart-threshold-minus-one",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "multipart-threshold-minus-one-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "multipart-threshold-minus-one",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "multipart-threshold-equal-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "multipart-threshold-equal",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "multipart-threshold-equal-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "multipart-threshold-equal",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "multipart-threshold-equal-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "multipart-threshold-equal",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "multipart-threshold-plus-one-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "multipart-threshold-plus-one",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "multipart-threshold-plus-one-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "multipart-threshold-plus-one",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "multipart-threshold-plus-one-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "multipart-threshold-plus-one",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-ir-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-ir",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-ir-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-ir",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-ir-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-ir",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-flexible-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-flexible",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-flexible-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-flexible",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-cloud-flexible-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-cloud-flexible",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-ir-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-ir",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-ir-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-ir",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-ir-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-ir",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-flexible-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-flexible",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-flexible-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-flexible",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "cold-edge-flexible-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "cold-edge-flexible",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "edge-clone-download-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "edge-clone-download",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "edge-clone-download-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "edge-clone-download",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "edge-clone-download-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "edge-clone-download",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "edge-clone-upload-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "edge-clone-upload",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "edge-clone-upload-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "edge-clone-upload",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "edge-clone-upload-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "edge-clone-upload",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r1-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r1",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r1-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r1",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r1-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r1",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r2-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r2",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r2-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r2",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-cloud-r2-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-cloud-r2",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r1-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r1",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r1-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r1",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r1-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r1",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r2-rep1",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r2",
+        "--repetition",
+        "1"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r2-rep2",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r2",
+        "--repetition",
+        "2"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "recovery-edge-r2-rep3",
+      "command": [
+        "benchmark-case",
+        "--case-id",
+        "recovery-edge-r2",
+        "--repetition",
+        "3"
+      ],
+      "timeout_seconds": 1500,
+      "approval": "approve-active"
+    },
+    {
+      "id": "freeze-for-shutdown",
+      "command": [
+        "freeze"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "snapshot-for-shutdown",
+      "command": [
+        "snapshot"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "shutdown-pressure",
+      "command": [
+        "shutdown",
+        "--native-throttle"
+      ],
+      "timeout_seconds": 900,
+      "approval": "approve-active"
+    }
+  ],
+  "cleanup_steps": [
+    {
+      "id": "collect-before-cleanup",
+      "command": [
+        "collect"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "freeze-for-cleanup",
+      "command": [
+        "freeze"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "snapshot-before-cleanup",
+      "command": [
+        "snapshot"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "review-cleanup",
+      "command": [
+        "cleanup-review"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "approve-cleanup-grant",
+      "review": [
+        "cleanup-review.json",
+        "frozen/manifest.json",
+        "iam/cleanup.json"
+      ]
+    },
+    {
+      "id": "cleanup-grant",
+      "command": [
+        "cleanup-grant"
+      ],
+      "timeout_seconds": 900,
+      "approval": "approve-cleanup-grant"
+    },
+    {
+      "id": "unprotect",
+      "command": [
+        "unprotect"
+      ],
+      "timeout_seconds": 900,
+      "approval": "approve-cleanup-grant"
+    },
+    {
+      "id": "plan-destroy",
+      "command": [
+        "cleanup-plan"
+      ],
+      "timeout_seconds": 900
+    },
+    {
+      "id": "approve-destroy",
+      "review": [
+        "destroy-plan.json",
+        "destroy-reviewed.json",
+        "destroy.tfplan",
+        "frozen/manifest.json"
+      ]
+    },
+    {
+      "id": "destroy",
+      "command": [
+        "cleanup"
+      ],
+      "timeout_seconds": 5400,
+      "approval": "approve-destroy"
+    },
+    {
+      "id": "finish-iam",
+      "command": [
+        "finish"
+      ],
+      "timeout_seconds": 3600,
+      "approval": "approve-destroy"
+    },
+    {
+      "id": "close",
+      "command": [
+        "logout"
+      ],
+      "timeout_seconds": 900,
+      "approval": "approve-destroy"
+    }
+  ]
+}
