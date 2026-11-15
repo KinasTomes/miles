@@ -5,13 +5,22 @@ Không tạo stack/VPC/datastore thứ hai. Mẫu ở
 [`cloud-fleet.tfvars.example`](../../infra/terraform/cloud/environments/dev/cloud-fleet.tfvars.example)
 phải copy ra thư mục riêng và thay mọi placeholder trước plan.
 
+Muốn dựng mới từ một installation JSON, dùng
+[installation guide](../../docs/testing/aws-personal-account-guide.md). Bộ dựng
+đó hỗ trợ `deployment.profile="cloud"` để chỉ dựng Cloud; xem
+[hướng dẫn Cloud-only](../../docs/planning/cloud-demo-deployment.md). Đường
+Terraform trực tiếp bên dưới vẫn dùng `enable_edge=false`.
+
 Hai private subnet khác AZ, desired/min/max=2, ELB health `/readyz:9100`, HTTPS ACM
 443 → S3 8080. Tái dùng SG hiện có: 8080/9100 chỉ từ ALB (metrics thêm jobs/admin),
 9000 chỉ từ admin SG; không public Admin/metrics. App idle 150s, ALB idle 120s,
 target deregistration mặc định 1800s. ALB giữ Host và không có URL/Host rewrite rule.
 Launch template dùng AL2023 Amazon pin AMI/kiến trúc, IMDSv2, private ENI, encrypted
 gp3 20 GiB **disposable**. Không mount EBS data của single-node dev. Metadata phải
-shared DDB, không dùng Badger node-local thay thế. ASG dùng custom service-linked
+shared DDB, không dùng Badger node-local thay thế. Cache hiện tại là RAM LRU 64 MiB và
+disk cache tối đa 1 GiB tại `/var/lib/miles/cache` trên **từng EC2 Gateway**;
+không cần máy Edge hay máy cache riêng. Mất node làm cache lạnh lại; dữ liệu
+bền vững vẫn ở S3/DynamoDB. ASG dùng custom service-linked
 role `AWSServiceRoleForAutoScaling_<installation_name>`; KMS grant chỉ role đó, điều kiện
 `kms:GrantIsForAWSResource=true`.
 
@@ -31,10 +40,11 @@ shutdown/flush của app hay điều kiện controller phải xác nhận shutdo
    khớp `arm64`/`amd64`. AMI data lookup kiểm owner/name/arch/root EBS; không chứng
    minh image đã boot hay mọi dependency đã chạy. Không `dnf install` lúc bootstrap
    trong mạng chỉ có interface endpoints.
-3. Review IAM của operator và runtime boundary, ACM ISSUED/DNS/allowlist, budget.
-   Deploy role hiện **chưa có đủ quyền ALB/ASG/LT/service-linked role**; policy draft
-   boundary không tự cập nhật AWS. Generate baseline từ private plan, review scope
-   và native Access Analyzer/simulator trước khi gắn. Xem [operator](../../infra/terraform/cloud/bootstrap/operator/README.md).
+3. Review quyền thực tế của operator/runtime boundary, ACM ISSUED/DNS/allowlist
+   và budget. Template IAM trong source không chứng minh policy đang có trên
+   account. Kiểm quyền ALB/ASG/launch template/service-linked role theo saved
+   plan; nếu thiếu thì review policy scope và native validation trước khi cấp.
+   Xem [operator](../../infra/terraform/cloud/bootstrap/operator/README.md).
 4. Build release sạch; upload vào bucket data versioned bằng publisher được duyệt,
    key `releases/<archive-sha256>/miles-linux-<architecture>.tar.gz`; pin VersionId
    khác `null` và SHA-256. Gateway chỉ thêm `GetObjectVersion` ở prefix SHA đã pin,
@@ -80,7 +90,7 @@ process fixture/mock control plane là bằng chứng flush dữ liệu thật.
 
 `paused=true` bỏ ASG/LT, ALB, NAT/interface endpoints; giữ data/key/release/SLR và
 runtime IAM để hook vẫn có quyền trong lúc xóa fleet. Đợi lifecycle/replacement kết
-thúc, kiểm active jobs/R2 theo W5 rồi review pause plan. Giữ `enable_asg=true` và
+thúc, kiểm active jobs và R2 flush của đúng invocation rồi review pause plan. Giữ `enable_asg=true` và
 release pin qua pause/resume. Không dùng `force_delete`/kill để thay graceful drain;
 Terraform ASG delete timeout45m đủ chờ budget controller35m (provider default10m
 ngắn hơn drain). Retained storage/key vẫn có phí. Full destroy cần data review riêng.

@@ -1,8 +1,8 @@
 # Dựng một installation Miles trên AWS
 
-Member dùng một file cấu hình private trên máy của mình và CLI login tạm thời. Chọn `bootstrap_mode: "new"` để tạo IAM operator/state backend mới, hoặc `"existing"` để dùng IAM/backend đã được chủ account cấp sẵn. Hai chế độ dùng chung luồng dựng shared storage, hai Cloud node sau ALB và một Edge EC2. Tất cả runtime đặt trên AWS. Máy đang thao tác chỉ giữ công cụ, source và artifacts private.
+Member dùng một file cấu hình private trên máy của mình và CLI login tạm thời. Chọn `bootstrap_mode: "new"` để tạo IAM operator/state backend mới, hoặc `"existing"` để dùng IAM/backend đã được chủ account cấp sẵn. Hai chế độ dùng chung luồng dựng shared storage và profile đã chọn qua `deployment.profile`: `cloud` dựng hai Cloud EC2 sau ALB; `edge` dựng một Edge EC2; `both` dựng cả hai (mặc định khi bỏ trường này). Tất cả runtime đặt trên AWS. Máy đang thao tác chỉ giữ công cụ, source và artifacts private.
 
-Luồng dưới dành cho **dev/test có dữ liệu synthetic**. Bộ dựng tạo CA TLS riêng, certificate Cloud nhập ACM và certificate Edge cấp cho Nginx. Client xác minh bằng CA của installation, không cần domain có sẵn. Đây chưa phải cấu hình certificate công khai và vận hành production. Certificate TLS và certificate Roles Anywhere dùng hai CA/key riêng.
+Luồng dưới dành cho **dev/test có dữ liệu synthetic**. Bộ dựng tạo CA TLS riêng; khi chọn Cloud, certificate Cloud nhập ACM; khi chọn Edge, certificate Edge cấp cho Nginx. Client xác minh bằng CA của installation, không cần domain có sẵn. Đây chưa phải cấu hình certificate công khai và vận hành production. Certificate TLS và certificate Roles Anywhere dùng hai CA/key riêng.
 
 Code và mock/local tests kiểm tra luồng dựng, cấp quyền, retry và cleanup. Cần một lượt AWS trên account đích để xác nhận IAM/quota/network thực tế. Không dùng evidence cũ của account khác thay cho lượt này.
 
@@ -42,6 +42,7 @@ cp infra/terraform/cloud/environments/dev/installation.example.json \
 | `operator.login_profile`, `admin_profile` | Profile CLI cho deploy role; admin profile chỉ dùng trong chế độ `new` |
 | `operator.state_bucket`, `state_key` | Với `existing`, tên bucket/key đã cấp; nếu bỏ trống dùng `<installation>-tfstate-<account>-<region>` và `cloud/<environment>/terraform.tfstate`. `new` không nhận override bucket |
 | `operator.utc_reference` | Nguồn chrony IPv4 trên máy operator |
+| `deployment.profile` | `cloud`, `edge` hoặc `both`; chọn trước `prepare`. Không cần sửa các serving flags thủ công; bộ dựng sinh foundation dừng và active theo profile. Single-profile không nhận `enable_acceptance_nodes=true` |
 | `deployment.max_cost_usd`, `max_active_minutes` | Envelope và thời hạn của lượt đã được chủ account duyệt |
 
 `operator.terraform_profile` dùng khi render và chạy Terraform trực tiếp. Bộ dựng xuất credential tạm vào môi trường của Terraform cho cả backend/provider. `deploy_role_arn` ở cấp installation giữ `null` vì CLI đã đăng nhập role.
@@ -181,24 +182,24 @@ deploy provision
 Lệnh này thực hiện các việc sau bằng deploy role.
 
 - Tạo sealing/cursor key một lần và put qua Secrets Manager. Retry dùng lại key/request token, từ chối ghi đè secret khác.
-- Put TLS và Roles Anywhere material của Edge vào secret bootstrap riêng.
+- Nếu có Edge: put TLS và Roles Anywhere material vào secret bootstrap riêng. Cloud-only không tạo identity CA/trust anchor hay secret Edge.
 - Dùng `dsgctl admin-token bootstrap` để tạo user/token, policy, R1 history và genesis trên backend mới. Runtime đang dừng, backend phải rỗng.
 - Build shared release từ SHA đã pin, kiểm manifest/hash và upload vào S3 versioned bằng SSE-KMS.
-- Download Roles Anywhere helper có version/SHA pin trong source, verify rồi upload một version riêng.
-- Import Cloud test certificate vào ACM và tạo `active.tfvars.json` với các ARN/S3 VersionId/hash thực.
+- Nếu có Edge: download Roles Anywhere helper có version/SHA pin trong source, verify rồi upload một version riêng.
+- Nếu có Cloud: import Cloud test certificate vào ACM. Tạo `active.tfvars.json` với các ARN/S3 VersionId/hash thực và chỉ bật serving flags của profile đã chọn; alarm profiles cũng theo lựa chọn này.
 
 Secret value/key/token không nằm trong Terraform, user-data hoặc release. User-data chỉ chứa ARN và public bootstrap references. Token Miles được giữ tại `system-admin-token` trong private directory.
 
 Khi metadata bootstrap báo lỗi nhưng token đã tồn tại, lệnh dừng để reconcile kết quả chưa chắc chắn. Không xóa token rồi bootstrap lại backend đã có dữ liệu. ACM import mất ACK được đối chiếu bằng domain/tag/nội dung certificate trước khi reuse. Outcome chưa xác định phải được xử lý trước retry.
 
-## 7. Bật hai Cloud node và một Edge trên AWS
+## 7. Bật profile đã chọn trên AWS
 
 ```bash
 deploy plan active
 deploy apply active --plan-sha256 REPLACE_WITH_ACTIVE_PLAN_SHA256
 ```
 
-Review plan active, IAM và chi phí cập nhật trước apply. Cloud dùng ASG hai AZ, private subnet, ALB HTTPS và interface endpoints. Edge EC2 nằm public subnet với cổng 443 giới hạn `client_cidrs`, không mở SSH/Admin/health ra Internet.
+Review plan active, IAM và chi phí cập nhật trước apply. Khi chọn Cloud, ASG hai AZ dùng private subnet, ALB HTTPS và interface endpoints. Khi chọn Edge, Edge EC2 nằm public subnet với cổng 443 giới hạn `client_cidrs`, không mở SSH/Admin/health ra Internet. Profile không được chọn không có serving VM/front door.
 
 Edge bootstrap dùng instance profile riêng để lấy release/helper/material đã pin. Process Miles dùng Roles Anywhere `credential_process`, bị chặn truy cập IMDS bootstrap identity. Nginx giữ nguyên signed Host/path và streaming. Module endpoints bổ sung Roles Anywhere PrivateLink và ingress từ SG Edge.
 
@@ -210,7 +211,7 @@ Chờ bootstrap/SSM/ALB healthy, rồi chạy.
 deploy verify
 ```
 
-Bộ probe kiểm readiness của ba node, hai ALB target healthy, TLS verify và signed PUT Cloud → GET Edge rồi PUT Edge → GET Cloud, đối chiếu SHA256. Nó tạo riêng user/credential/bucket synthetic, materialize policy trước payload I/O và lưu evidence private. Admin đi qua SSH over SSM có host key pin và Unix socket riêng, token không được gửi trước khi forwarding được xác nhận.
+Bộ probe kiểm đúng số node đã chọn (Cloud: hai, Edge: một), hai ALB target đúng instance và healthy nếu có Cloud, TLS verify và signed PUT/GET đối chiếu SHA256. Single-profile ghi/đọc qua chính front door của profile đó; `both` kiểm Cloud → Edge và Edge → Cloud. Evidence ghi đúng profile và hướng đã chạy, không coi Cloud-only là đã kiểm tra cross-profile hoặc cả hai Cloud node đều phục vụ data request. Nó tạo riêng user/credential/bucket synthetic, materialize policy trước payload I/O và lưu evidence private. Admin đi qua SSH over SSM có host key pin và Unix socket riêng, token không được gửi trước khi forwarding được xác nhận.
 
 Probe chạy từ máy operator nên `client_cidrs` cần chứa IP egress của máy này. `.test` hostnames được nối tới ALB/Edge bằng curl `connect-to`, vẫn giữ Host/SNI và TLS verification. Không dùng `-k`.
 
@@ -227,7 +228,7 @@ deploy plan paused
 deploy apply paused --plan-sha256 REPLACE_WITH_PAUSE_PLAN_SHA256
 ```
 
-Gate chỉ cho xóa tài nguyên phiên, giữ nguyên datastore/IAM/KMS/topology. Apply chờ Edge Miles stop sạch theo journal đúng invocation và Nginx graceful stop trước Terraform. Cloud tiếp tục chạy tới khi ASG termination hook bắt đầu, để lifecycle controller bind đúng invocation rồi kiểm shutdown/ALB drain. Pause xóa cả Cloud/Edge serving VM, ALB và interface endpoints, giữ dữ liệu/key/secret/bootstrap/state. Những phần giữ lại tiếp tục có chi phí.
+Gate chỉ cho xóa tài nguyên phiên, giữ nguyên datastore/IAM/KMS/topology. Apply chờ Edge Miles stop sạch theo journal đúng invocation và Nginx graceful stop trước Terraform. Cloud tiếp tục chạy tới khi ASG termination hook bắt đầu, để lifecycle controller bind đúng invocation rồi kiểm shutdown/ALB drain. Pause xóa serving VM của profile đã chọn, ALB nếu có và interface endpoints, giữ dữ liệu/key/secret/bootstrap/state. Những phần giữ lại tiếp tục có chi phí.
 
 Nếu bootstrap lỗi và không có shutdown proof, dừng cleanup tự động để kiểm node qua SSM. Xác nhận không có request/worker và xin quyết định xử lý node lỗi trước khi bỏ qua proof. Không coi service bị kill là drain thành công.
 
@@ -264,7 +265,8 @@ Giữ bootstrap local state và evidence private đã lọc. Thu hồi/xóa cred
 
 ```text
 Dựng Miles commit [SHA] trên AWS account của tôi [account ID], Region [Region].
-Cloud và Edge đều chạy trên AWS. Dùng docs/testing/aws-personal-account-guide.md
+Chọn deployment.profile=[cloud|edge|both]; các gateway được chọn chạy trên AWS.
+Dùng docs/testing/aws-personal-account-guide.md
 và deploy-installation.py của cùng commit.
 
 Kiểm installation JSON, công cụ, chrony, quota và IAM trước apply.

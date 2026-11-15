@@ -6,6 +6,11 @@ Cấu hình account/Region/prefix/owner/operator theo từng installation bằng
 installation mới yêu cầu điền owner riêng. Installation cũ nên pin `owner` trong
 private inputs để giữ nguyên tag phục vụ theo dõi chi phí.
 Xem [quy trình cho account cá nhân](../../../docs/testing/aws-personal-account-guide.md).
+Trong bộ dựng một-file, chọn `deployment.profile="cloud"` để dựng ALB + hai EC2
+Gateway có cache, `"edge"` để dựng một Edge EC2, hoặc `"both"` để giữ cả hai.
+Xem [hướng dẫn Cloud-only](../../../docs/planning/cloud-demo-deployment.md).
+Các cờ `enable_*` bên dưới dành cho Terraform trực tiếp; bộ dựng tự sinh chúng
+theo profile khi provision active.
 
 Môi trường dev một node ở Singapore. Hạ tầng đã
 kiểm trên AWS ngày 25/10/2026 với pause/resume; full teardown đã nghiệm thu ngày
@@ -34,7 +39,7 @@ Nguồn: kiến trúc §10.1/11/19, API §1/8/13 và
 - Network: VPC riêng, hai AZ, S3/DDB gateway endpoints. Chọn một NAT cho dev hoặc
   9 interface services (có ssmmessages) × hai AZ. Single NAT không HA và có thể có
   phí cross-AZ. Admin/metrics chỉ private. Session Manager là đường quản trị dev
-  không cần bastion/SSH; Cloud/Edge deployment đầy đủ vẫn thuộc các task sau.
+  không cần bastion; shared deployment dùng SSH over SSM tới loopback Admin.
 - Security/IAM: gateway/jobs instance profiles, KMS/key policy, secret metadata,
   SSM config, log group mã hóa KMS. Không tạo secret value hoặc SystemConfig trong TF.
 - ALB vẫn tùy chọn, cần certificate ACM ISSUED cùng account/Region và client CIDRs.

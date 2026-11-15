@@ -64,6 +64,7 @@ class Installation:
         self.configuration = read(config)
         self.bootstrap_mode = self.configuration.get("bootstrap_mode", "new")
         inputs.render(self.configuration)  # Validate identities before producing artifacts or calling AWS.
+        self.profiles = inputs.deployment_profiles(self.configuration)
         self.private = directory.resolve()
         if self.private.is_relative_to(REPO) or directory.is_symlink():
             raise ValueError("Installation state must be outside the checkout")
@@ -152,7 +153,7 @@ class Installation:
         pki.mkdir(mode=0o700, exist_ok=True)
         def openssl(*arguments):
             run(["openssl", *arguments], cwd=pki)
-        for authority in ("tls", "identity"):
+        for authority in (("tls", "identity") if "edge" in self.profiles else ("tls",)):
             key, certificate = pki / (authority + "-ca.key"), pki / (authority + "-ca.pem")
             if not key.exists():
                 openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "30", "-sha256",
@@ -160,9 +161,10 @@ class Installation:
                         "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign")
             elif not certificate.exists():
                 raise ValueError("Incomplete CA artifacts. Reconcile the private PKI directory")
-        for leaf, authority, cn in [("cloud", "tls", "cloud." + self.name + ".test"),
-                                    ("edge", "tls", "edge." + self.name + ".test"),
-                                    ("provider", "identity", self.configuration.get("edge_certificate_common_name", "miles-edge"))]:
+        leaves = [(profile, "tls", profile + "." + self.name + ".test") for profile in self.profiles]
+        if "edge" in self.profiles:
+            leaves.append(("provider", "identity", self.configuration.get("edge_certificate_common_name", "miles-edge")))
+        for leaf, authority, cn in leaves:
             if (pki / (leaf + ".pem")).exists():
                 continue
             extension = pki / (leaf + ".ext")
@@ -173,8 +175,12 @@ class Installation:
                     "-set_serial", str(secrets.randbits(120)), "-days", "14", "-sha256", "-extfile", leaf + ".ext", "-out", leaf + ".pem")
         for file in pki.iterdir():
             file.chmod(0o600)
-        configuration = dict(self.configuration, owner_ssh_public_key=(self.private / "owner-key.pub").read_text().strip(), edge_ca_pem=(pki / "identity-ca.pem").read_text(),
-                             paused=True, enable_compute=False, enable_asg=False, enable_edge=False, enable_alb=False)
+        configuration = dict(self.configuration, owner_ssh_public_key=(self.private / "owner-key.pub").read_text().strip(),
+                             edge_ca_pem=(pki / "identity-ca.pem").read_text() if "edge" in self.profiles else None,
+                             paused=True, enable_compute=False, enable_asg=False, enable_edge=False, enable_alb=False,
+                             monitored_profiles=list(self.profiles))
+        if "edge" not in self.profiles:
+            configuration["enable_edge_private_endpoint"] = False
         if not (self.private / "rendered").exists():
             inputs.write(configuration, self.private / "rendered")
         elif read(self.private / "rendered/installation.tfvars.json") != inputs.render(configuration)["installation.tfvars.json"]:
@@ -250,7 +256,7 @@ class Installation:
         if stage in ("unprotect", "destroy"):
             self.prepare_cleanup()
         if stage == "operator":
-            configuration = dict(self.configuration, edge_ca_pem=(self.private / "pki/identity-ca.pem").read_text())
+            configuration = dict(self.configuration, edge_ca_pem=(self.private / "pki/identity-ca.pem").read_text() if "edge" in self.profiles else None)
             save(self.private / "rendered/operator.tfvars.json", inputs.render(configuration)["operator.tfvars.json"])
         self.initialize(stage)
         file = self.private / (stage + ".tfplan")
@@ -421,10 +427,11 @@ class Installation:
         pki = self.private / "pki"
         self.secret(inventory["secret_metadata_arn"], {"key_id": "initial", "seal_key": base64.b64encode(secrets.token_bytes(32)).decode(),
                     "cursor_key": base64.b64encode(secrets.token_bytes(32)).decode()}, "runtime-keys")
-        edge_secret = {"tls_certificate": (pki / "edge.pem").read_text() + (pki / "tls-ca.pem").read_text(),
-                       "tls_private_key": (pki / "edge.key").read_text(), "provider_certificate": (pki / "provider.pem").read_text(),
-                       "provider_private_key": (pki / "provider.key").read_text()}
-        self.secret(inventory["edge_bootstrap_secret_arn"], edge_secret, "edge-material")
+        if "edge" in self.profiles:
+            edge_secret = {"tls_certificate": (pki / "edge.pem").read_text() + (pki / "tls-ca.pem").read_text(),
+                           "tls_private_key": (pki / "edge.key").read_text(), "provider_certificate": (pki / "provider.pem").read_text(),
+                           "provider_private_key": (pki / "provider.key").read_text()}
+            self.secret(inventory["edge_bootstrap_secret_arn"], edge_secret, "edge-material")
         token = self.private / "system-admin-token"
         if not self.state.get("metadata_provisioned"):
             if token.exists():
@@ -459,26 +466,29 @@ class Installation:
                     raise ValueError("Release manifest validation failed")
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         version = self.upload(inventory, archive, "releases/" + digest + "/" + archive.name)
-        platform, helper_sha = HELPERS[architecture]
-        helper = self.private / "aws_signing_helper"
-        if not helper.exists():
-            url = "https://rolesanywhere.amazonaws.com/releases/1.8.5/" + platform + "/Linux/Amzn2023/aws_signing_helper"
-            with urlopen(url, timeout=60) as response:
-                helper.write_bytes(response.read(50*1024*1024 + 1))
-            helper.chmod(0o600)
-        if hashlib.sha256(helper.read_bytes()).hexdigest() != helper_sha:
-            raise ValueError("Credential helper checksum mismatch")
-        helper_version = self.upload(inventory, helper, "deployment/helper/" + helper_sha + "/aws_signing_helper")
-        self.import_certificate()
+        helper_sha = helper_version = None
+        if "edge" in self.profiles:
+            platform, helper_sha = HELPERS[architecture]
+            helper = self.private / "aws_signing_helper"
+            if not helper.exists():
+                url = "https://rolesanywhere.amazonaws.com/releases/1.8.5/" + platform + "/Linux/Amzn2023/aws_signing_helper"
+                with urlopen(url, timeout=60) as response:
+                    helper.write_bytes(response.read(50*1024*1024 + 1))
+                helper.chmod(0o600)
+            if hashlib.sha256(helper.read_bytes()).hexdigest() != helper_sha:
+                raise ValueError("Credential helper checksum mismatch")
+            helper_version = self.upload(inventory, helper, "deployment/helper/" + helper_sha + "/aws_signing_helper")
+        if "cloud" in self.profiles:
+            self.import_certificate()
         active = read(self.private / "rendered/installation.tfvars.json")
-        active.update(paused=False, enable_asg=True, enable_alb=True, enable_edge=True,
+        active.update(paused=False, enable_asg="cloud" in self.profiles, enable_alb="cloud" in self.profiles, enable_edge="edge" in self.profiles,
                       fleet_instance_type=self.configuration.get("fleet_instance_type", self.configuration.get("instance_type", "t4g.small")),
-                      certificate_arn=self.state["certificate_arn"], release_sha256=digest, release_version_id=version,
+                      certificate_arn=self.state.get("certificate_arn"), release_sha256=digest, release_version_id=version,
                       edge_helper_sha256=helper_sha, edge_helper_version_id=helper_version)
         save(self.private / "active.tfvars.json", active)
         self.state["provisioned"] = True
         self.persist()
-        print("Backend provisioned and immutable Cloud/Edge artifacts published. Plan active next.")
+        print("Backend provisioned and immutable artifacts published for " + ", ".join(self.profiles) + ". Plan active next.")
 
     def import_certificate(self):
         if self.state.get("certificate_arn"):
@@ -541,6 +551,8 @@ class Installation:
         if key["KeyState"] != "PendingDeletion":
             raise ValueError("Runtime KMS key is not pending deletion")
         for arn in (inventory["secret_metadata_arn"], inventory["edge_bootstrap_secret_arn"]):
+            if arn is None:
+                continue
             if not self.aws("secretsmanager", "describe-secret", "--secret-id", arn).get("DeletedDate"):
                 raise ValueError("Runtime secret is not pending deletion")
         save(self.private / "cleanup-evidence.json", {"source_commit":self.state["source_commit"],
@@ -553,7 +565,7 @@ class Installation:
 
     def nodes(self):
         inventory = self.inventory()
-        groups = self.aws("autoscaling", "describe-auto-scaling-groups", "--auto-scaling-group-names", self.name + "-gateway")["AutoScalingGroups"]
+        groups = self.aws("autoscaling", "describe-auto-scaling-groups", "--auto-scaling-group-names", self.name + "-gateway")["AutoScalingGroups"] if "cloud" in self.profiles else []
         result = [(node["InstanceId"], "cloud") for group in groups for node in group["Instances"]]
         edge = inventory.get("edge")
         if edge and edge.get("instance_id"):
@@ -579,23 +591,29 @@ class Installation:
         self.check_source()
         self.identity()
         nodes = self.nodes()
-        if len(nodes) != 3:
-            raise ValueError("Expected two Cloud nodes and one Edge node")
+        expected = {"cloud": 2 if "cloud" in self.profiles else 0, "edge": 1 if "edge" in self.profiles else 0}
+        if (any(profile not in self.profiles for _, profile in nodes)
+                or len({node for node, _ in nodes}) != len(nodes)
+                or any(sum(profile == kind for _, profile in nodes) != count for kind, count in expected.items())):
+            raise ValueError("Node inventory differs from the selected deployment profiles")
         proof = []
         for node, profile in nodes:
             address = "127.0.0.1" if profile == "edge" else "$(hostname -I | awk '{print $1}')"
             output = self.command(node, "curl --fail --silent --max-time 10 http://" + address + ":9100/readyz && systemctl is-active miles" + (" nginx -q" if profile == "edge" else " -q"))
             proof.append({"node":node, "profile":profile, "readiness":True, "output":output})
         inventory = self.inventory()
-        targets = self.aws("elbv2", "describe-target-health", "--target-group-arn", inventory["target_group_arn"])["TargetHealthDescriptions"]
-        if len(targets) != 2 or any(t["TargetHealth"]["State"] != "healthy" for t in targets):
-            raise RuntimeError("ALB does not have two healthy Cloud targets")
+        targets = []
+        if "cloud" in self.profiles:
+            targets = self.aws("elbv2", "describe-target-health", "--target-group-arn", inventory["target_group_arn"])["TargetHealthDescriptions"]
+            if ({t["Target"]["Id"] for t in targets} != {node for node, profile in nodes if profile == "cloud"}
+                    or len(targets) != 2 or any(t["TargetHealth"]["State"] != "healthy" for t in targets)):
+                raise RuntimeError("ALB does not have the two healthy Cloud targets")
         save(self.private / "readiness-evidence.json", {"source_commit":self.state["source_commit"], "nodes":proof, "alb_targets":targets})
         spec = importlib.util.spec_from_file_location("installation_probe", REPO / "scripts/installation_probe.py")
         probe = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(probe)
         probe.verify(self, nodes, inventory)
-        print("Cloud/Edge readiness, ALB targets and signed cross-node PUT/GET hashes verified.")
+        print("Readiness and signed PUT/GET hashes verified for " + ", ".join(self.profiles) + ".")
 
     def drain(self):
         # Cloud must remain running until its ASG hook binds the invocation.
