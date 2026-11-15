@@ -34,6 +34,7 @@ output "runtime_inventory" {
     alb_name                  = module.alb.alb_name
     alb_arn                   = module.alb.alb_arn
     telemetry_document        = module.acceptance.telemetry_document
+    dashboard                 = module.observability.dashboard
   }
 }
 output "alb_contract" { value = module.alb.contract }
@@ -65,6 +66,7 @@ output "session_configuration" {
     nat_per_az                       = var.nat_per_az
     enable_alb                       = var.enable_alb
     certificate_arn                  = var.certificate_arn
+    enable_dashboard                 = var.enable_dashboard
   }
 }
 output "alarm_contract" { value = module.observability.contract }

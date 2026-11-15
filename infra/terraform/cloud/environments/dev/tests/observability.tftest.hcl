@@ -72,3 +72,25 @@ run "pause_removes_alarms" {
     error_message = "Paused environments must not retain paid runtime alarms."
   }
 }
+run "active_cloud_dashboard" {
+  command = plan
+  variables {
+    enable_dashboard   = true
+    monitored_profiles = ["cloud"]
+  }
+  assert {
+    condition     = output.runtime_inventory.dashboard.name == "miles-dev-ap-southeast-1-runtime" && output.session_configuration.enable_dashboard && length(output.alarm_contract) == 0
+    error_message = "Root wiring must expose the selected dashboard without enabling alarms."
+  }
+}
+run "paused_dashboard" {
+  command = plan
+  variables {
+    paused           = true
+    enable_dashboard = true
+  }
+  assert {
+    condition     = output.runtime_inventory.dashboard == null && output.session_configuration.enable_dashboard
+    error_message = "Pause removes dashboard while retaining the reviewed opt-in for resume."
+  }
+}

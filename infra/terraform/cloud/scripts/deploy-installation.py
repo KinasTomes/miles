@@ -527,6 +527,15 @@ class Installation:
             return module.get("resources", []) + [r for child in module.get("child_modules", []) for r in resources(child)]
         if any(r.get("mode") == "managed" for r in resources(managed)):
             raise ValueError("Runtime Terraform state still contains managed resources")
+        if self.configuration.get("enable_dashboard"):
+            name = self.name + "-" + self.region + "-runtime"
+            try:
+                self.aws("cloudwatch", "get-dashboard", "--dashboard-name", name)
+            except AWSFailure as error:
+                if error.code != "ResourceNotFound":
+                    raise
+            else:
+                raise ValueError("Runtime dashboard remains after teardown")
         checks = [
             ("ec2", "describe-instances", "Reservations", ["--filters", "Name=tag:Installation,Values=" + self.name, "Name=instance-state-name,Values=pending,running,stopping,stopped,shutting-down"]),
             ("ec2", "describe-volumes", "Volumes", ["--filters", "Name=tag:Installation,Values=" + self.name]),
@@ -557,7 +566,8 @@ class Installation:
                 raise ValueError("Runtime secret is not pending deletion")
         save(self.private / "cleanup-evidence.json", {"source_commit":self.state["source_commit"],
              "runtime_state_empty":True, "instances_volumes_vpcs_absent":True, "datastores_absent":True,
-             "kms_secrets_pending_deletion":True, "bootstrap_state_retained":True})
+             "kms_secrets_pending_deletion":True, "bootstrap_state_retained":True,
+             **({"dashboard_absent":True} if self.configuration.get("enable_dashboard") else {})})
         if self.bootstrap_mode == "existing":
             print("Runtime cleanup verified. External IAM/backend retained; ask their owner to review cleanup permissions.")
         else:

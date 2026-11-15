@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ManageInstallationDashboard",
+      "Effect": "Allow",
+      "Action": ["cloudwatch:PutDashboard", "cloudwatch:GetDashboard", "cloudwatch:DeleteDashboards"],
+      "Resource": "arn:aws:cloudwatch::{{ACCOUNT_ID}}:dashboard/{{INSTALLATION_NAME}}-{{REGION}}-runtime"
+    },
+    {
+      "Sid": "ReadRegionalDashboardMetrics",
+      "Effect": "Allow",
+      "Action": ["cloudwatch:GetMetricData", "cloudwatch:GetMetricStatistics", "cloudwatch:ListMetrics"],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "{{REGION}}"}}
+    }
+  ]
+}

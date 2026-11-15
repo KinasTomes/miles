@@ -269,6 +269,13 @@ variable "edge_helper_version_id" {
   default = null
 }
 
+variable "enable_dashboard" {
+  type        = bool
+  default     = false
+  nullable    = false
+  description = "Create a private CloudWatch runtime dashboard while active; pause removes it."
+}
+
 variable "enable_alarms" {
   description = "Opt-in paid pilot alarms; paused environments do not retain runtime alarms."
   type        = bool

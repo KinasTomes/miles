@@ -35,6 +35,27 @@ def change(address, actions):
 
 
 class SessionPlanTests(unittest.TestCase):
+    def test_dashboard_pause_resume_requires_exact_name_and_opt_in(self):
+        address = 'module.observability.aws_cloudwatch_dashboard.runtime[0]'
+        for action, operation, side in [('pause', 'delete', 'before'), ('resume', 'create', 'after')]:
+            plan = fixture(action)
+            plan['variables']['enable_dashboard'] = {'value': True}
+            resource = change(address, [operation])
+            resource['change'][side] = {'dashboard_name':'miles-dev-ap-southeast-1-runtime'}
+            plan['resource_changes'] = [resource]
+            self.assertEqual(gate.check_plan(plan, action, ACCOUNT), [address])
+            plan['variables']['enable_dashboard']['value'] = False
+            with self.assertRaisesRegex(ValueError, 'exact reviewed'):
+                gate.check_plan(plan, action, ACCOUNT)
+            plan['variables']['enable_dashboard']['value'] = True
+            resource['change'][side]['dashboard_name'] = 'other-ap-southeast-1-runtime'
+            with self.assertRaisesRegex(ValueError, 'exact reviewed'):
+                gate.check_plan(plan, action, ACCOUNT)
+        plan = fixture()
+        plan['planned_values']['outputs']['runtime_inventory']['value']['dashboard'] = {'name':'still-active'}
+        with self.assertRaisesRegex(ValueError, 'Paused outputs'):
+            gate.check_plan(plan, 'pause', ACCOUNT)
+
     def test_member_fleet_and_region_with_exact_expected_boundary(self):
         for action, operation in [('pause', 'delete'), ('resume', 'create')]:
             plan = fixture(action)
