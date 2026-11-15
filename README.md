@@ -109,6 +109,7 @@ Chủ bucket cấp/thu hồi grant bằng `grant set`/`grant rm`, dùng `bucket_
 ## Triển khai và vận hành
 
 - [Terraform Cloud và cấu hình installation](infra/terraform/cloud/README.md): hạ tầng, namespace riêng, IAM/bootstrap và teardown.
+- [Chuẩn bị demo Cloud](docs/planning/cloud-demo-deployment.md): cấu hình offline cho ALB, hai gateway và S3 thật, cùng điều kiện trước khi apply.
 - [Shared runtime](docs/development/shared-runtime.md): provision lần đầu, backend, keys, clock và cấu hình hai profile.
 - [Cloud deployment](deploy/cloud/README.md), [Edge deployment](deploy/edge/README.md): release, TLS và service lifecycle; đối chiếu với shared runtime cho wiring hiện hành.
 - [Lifecycle/recovery runbook](docs/runbooks/lifecycle-recovery-operations.md): tiering, restore/promote, GC, checkpoint/rebuild, drain và unknown outcomes.
