@@ -104,6 +104,7 @@ func (b *Buckets) CreateBucket(w http.ResponseWriter, r *Request) error {
 // HeadBucket answers 200 for a caller the router already authorized with
 // read on an existing bucket; 403 and 404 never had a body (API v2 4.2).
 func (b *Buckets) HeadBucket(w http.ResponseWriter, r *Request) error {
+	writeDebugDomain(w.Header(), r)
 	w.Header().Set("x-amz-bucket-region", r.Region())
 	w.WriteHeader(http.StatusOK)
 	return nil

@@ -5,6 +5,7 @@ import json
 import string
 
 from deploy.acceptance.common import ROOT, digest, load, now, require
+from deploy.acceptance import direct
 
 MANAGED = {
     "runtime-roles": "MilesDevDeployRuntimeRoles",
@@ -56,7 +57,7 @@ def review(r):
         "IAM already activated; preserve review",
     )
     expiry = (
-        (now() + dt.timedelta(hours=6))
+        (now() + dt.timedelta(hours=max(6, r.c["hours"] + 2)))
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z")
     )
@@ -69,6 +70,7 @@ def review(r):
         "RUNTIME_SECRET_NAME": r.read("names.json")["secret"],
         "AUDIT_ROLE_NAME": r.read("names.json")["auditor"],
         "IAM_EXPIRY": expiry,
+        "DIRECT_BUCKET_NAME": direct.name(r),
     }
     receipts = {}
     for src in sorted((ROOT / "deploy/acceptance/policies").glob("*.tmpl")):
@@ -200,7 +202,7 @@ def activate(r):
     cost = r.read("cost-review.json")
     require(
         now() - dt.datetime.fromisoformat(cost["at"]) < dt.timedelta(minutes=45)
-        and Decimal(cost["estimate_usd"]) <= Decimal(str(r.c["max_usd"]))
+        and (cost.get("mode") == "operator-envelope" or Decimal(cost["estimate_usd"]) <= Decimal(str(r.c["max_usd"])))
         and cost["envelope_usd"] == r.c["max_usd"]
         and cost["hours"] == r.c["hours"],
         "Cost review stale, over budget or configuration changed",
@@ -208,7 +210,7 @@ def activate(r):
     require(r.file("cost-review.json").exists(), "Cost review missing")
     require(
         dt.datetime.fromisoformat(reviewed["expires_at"].replace("Z", "+00:00")) - now()
-        > dt.timedelta(hours=4.5),
+        > dt.timedelta(hours=r.c["hours"] + 0.5),
         "IAM review is stale; refresh before activation",
     )
     for name, sha in reviewed["hashes"].items():

@@ -141,6 +141,7 @@ func (o *Objects) ListObjectsV2(w http.ResponseWriter, r *Request) error {
 	for i, p := range page.CommonPrefixes {
 		out.CommonPrefixes[i] = listPrefix{Prefix: enc(p)}
 	}
+	writeDebugDomain(w.Header(), r)
 	return WriteXML(w, out)
 }
 

@@ -119,6 +119,9 @@ func r1Observed[T any](observe Observe, k Key) (T, error) {
 	return r1Decode[T](item)
 }
 func (a *SharedAuthority) checkLease(ctx context.Context, f s.WriterFence, observe Observe) error {
+	if f.LeaseID == "" {
+		return s.ErrFenced
+	}
 	g, err := r1Observed[s.R1Gate](observe, r1GateKey())
 	if err != nil {
 		return err
@@ -239,6 +242,9 @@ func (m *Store) GetR1Gate(ctx context.Context) (s.R1Gate, error) {
 	return g, err
 }
 func (m *Store) GetR1Lease(ctx context.Context, id string) (s.R1Lease, error) {
+	if id == "" {
+		return s.R1Lease{}, s.ErrInvalid
+	}
 	var l s.R1Lease
 	err := m.view(ctx, func(t *transaction) error { var err error; l, err = r1Read[s.R1Lease](t, r1LeaseKey(id)); return err })
 	return l, err

@@ -2,6 +2,8 @@
 
 **Trạng thái: kế hoạch để review, chưa chạy benchmark.** Owner Hưng; phối hợp Chiến(client/API), Hải(engine/metadata/integrity), Phong(cache/Clock/lifecycle/recovery). Nguồn: [KT v4 §13.1–13.4/15.2/16](../docs/dedup-storage-gateway-architecture.md), [API v2 §2.7/4.5/6.3/11–12](../docs/dedup-storage-gateway-api.md), [DoD](../docs/acceptance/definition-of-done.md). Không thay R1–R4 hoặc mở UploadPartCopy P2.
 
+Bộ ca benchmark đề xuất và trạng thái runner tại [benchmark-matrix.md](benchmark-matrix.md); các ngưỡng và điều kiện PASS/FAIL/INCOMPLETE tại [thresholds.md](thresholds.md). Bản này là specification, không là bằng chứng các workload đã chạy.
+
 ## 1. Đối chứng và fairness
 
 | Run | Bên client | Backend/đường chính | Được kết luận |

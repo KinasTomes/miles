@@ -8,15 +8,26 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"sync/atomic"
 	"time"
 
 	"github.com/KinasTomes/miles/internal/secretfile"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go"
+	"github.com/aws/smithy-go/middleware"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
+
+type payloadHashContextKey struct{}
+
+// WithPayloadHash instructs the S3 client stack to use a precomputed SHA-256 hex digest
+// for SigV4 payload signing, allowing non-seekable streaming io.Reader bodies.
+func WithPayloadHash(ctx context.Context, hash string) context.Context {
+	return context.WithValue(ctx, payloadHashContextKey{}, hash)
+}
 
 // Config is private run input. It is deliberately not copied into the artifact:
 // endpoints, bucket names, key IDs and credential locations can identify accounts.
@@ -26,7 +37,9 @@ type Config struct {
 	Region          string      `json:"region"`
 	Bucket          string      `json:"bucket"`
 	CredentialsFile string      `json:"credentials_file"`
-	KMSKeyID        string      `json:"kms_key_id"`
+	KMSKeyID        string      `json:"kms_key_id,omitempty"`
+	StorageClass    string      `json:"storage_class,omitempty"`
+	DedupDomain     string      `json:"dedup_domain,omitempty"`
 	Environment     Environment `json:"environment"`
 }
 
@@ -89,10 +102,46 @@ func newClient(c Config, concurrency int, traffic *bodyTraffic) (*awss3.Client, 
 	if err = decode(b, &cred); err != nil || cred.AccessKeyID == "" || cred.SecretAccessKey == "" {
 		return nil, nil, errors.New("invalid credential JSON")
 	}
+	if traffic == nil {
+		traffic = &bodyTraffic{}
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	transport.DisableCompression = true // never transparently decode gzip object bytes
 	transport.MaxIdleConnsPerHost = concurrency
+	var rt http.RoundTripper = transport
+	if traffic != nil {
+		rt = &interceptTransport{
+			base: transport,
+			onResp: func(resp *http.Response) {
+				if resp == nil {
+					return
+				}
+				if d := resp.Header.Get("X-Dsg-Dedup-Domain"); d != "" {
+					traffic.observedDomain.Store(&d)
+				}
+				// Only successful PUT responses with BOTH valid counters
+				// provide physical dedup evidence. A missing/invalid counter
+				// must not silently become zero or count as verified telemetry.
+				if resp.Request == nil || resp.Request.Method != http.MethodPut || resp.StatusCode != http.StatusOK {
+					return
+				}
+				dupStr := resp.Header.Get("X-Dsg-Chunks-Dup")
+				storedStr := resp.Header.Get("X-Dsg-Bytes-Stored")
+				if dupStr == "" || storedStr == "" {
+					return
+				}
+				dup, dupErr := strconv.ParseUint(dupStr, 10, 64)
+				stored, storedErr := strconv.ParseUint(storedStr, 10, 64)
+				if dupErr != nil || storedErr != nil {
+					return
+				}
+				traffic.chunksDup.Add(dup)
+				traffic.bytesStored.Add(stored)
+				traffic.telemetryResponses.Add(1)
+			},
+		}
+	}
 	client := awss3.New(awss3.Options{
 		Region: c.Region, BaseEndpoint: aws.String(c.Endpoint), UsePathStyle: true, RetryMaxAttempts: 1,
 		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
@@ -100,9 +149,35 @@ func newClient(c Config, concurrency int, traffic *bodyTraffic) (*awss3.Client, 
 		Credentials: aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 			return aws.Credentials{AccessKeyID: cred.AccessKeyID, SecretAccessKey: cred.SecretAccessKey, SessionToken: cred.SessionToken}, nil
 		}),
-		HTTPClient: observability.CountHTTPClient(&http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, func(n int) { traffic.sent.Add(uint64(n)) }, func(n int) { traffic.received.Add(uint64(n)) }),
+		HTTPClient: observability.CountHTTPClient(&http.Client{Transport: rt, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, func(n int) { traffic.sent.Add(uint64(n)) }, func(n int) { traffic.received.Add(uint64(n)) }),
+		APIOptions: []func(*middleware.Stack) error{
+			func(stack *middleware.Stack) error {
+				return stack.Build.Add(middleware.BuildMiddlewareFunc("MilesSignDebugHeader", func(ctx context.Context, in middleware.BuildInput, next middleware.BuildHandler) (middleware.BuildOutput, middleware.Metadata, error) {
+					if req, ok := in.Request.(*smithyhttp.Request); ok {
+						req.Header.Set("X-Dsg-Debug", "1")
+					}
+					if h, ok := ctx.Value(payloadHashContextKey{}).(string); ok && h != "" {
+						ctx = v4.SetPayloadHash(ctx, h)
+					}
+					return next.HandleBuild(ctx, in)
+				}), middleware.Before)
+			},
+		},
 	})
 	return client, transport.CloseIdleConnections, nil
+}
+
+type interceptTransport struct {
+	base   http.RoundTripper
+	onResp func(*http.Response)
+}
+
+func (it *interceptTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := it.base.RoundTrip(req)
+	if err == nil && resp != nil && it.onResp != nil {
+		it.onResp(resp)
+	}
+	return resp, err
 }
 
 var bucketName = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
@@ -138,6 +213,16 @@ func responseDiagnostics(err error) (status int, requestID string) {
 // ErrInterrupted indicates the benchmark was interrupted by signal (e.g. SIGINT).
 var ErrInterrupted = errors.New("interrupted")
 
+// NewClient exports client creation for specialized benchmark runners.
+func NewClient(c Config, concurrency int) (*awss3.Client, func(), error) {
+	return newClient(c, concurrency, nil)
+}
+
+// ErrorCode exports sanitized error classification for runners.
+func ErrorCode(err error) string {
+	return errorCode(err)
+}
+
 // Do not persist SDK error strings: they can include URLs, request IDs or bodies.
 func errorCode(err error) string {
 	if err == nil {
@@ -161,7 +246,24 @@ func errorCode(err error) string {
 
 const requestTimeout = 30 * time.Minute
 
-type bodyTraffic struct{ sent, received atomic.Uint64 }
+type bodyTraffic struct {
+	sent, received     atomic.Uint64
+	observedDomain     atomic.Pointer[string]
+	chunksDup          atomic.Uint64
+	bytesStored        atomic.Uint64
+	telemetryResponses atomic.Uint64
+}
+
+func (t *bodyTraffic) getObservedDomain() string {
+	if t == nil {
+		return ""
+	}
+	p := t.observedDomain.Load()
+	if p == nil {
+		return ""
+	}
+	return *p
+}
 
 func (t *bodyTraffic) snapshot(target string) map[string]uint64 {
 	if target == "miles-warm" {

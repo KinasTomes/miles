@@ -75,7 +75,14 @@ def validate_pending_deletion_approvals(approvals, inventory, state_resources, b
     return approved
 
 
-def remove_approved_pending(residuals, approved, check_key, check_secret):
+def remove_approved_pending(
+    residuals,
+    approved,
+    check_key,
+    check_secret,
+    inventory=None,
+    approved_exceptions=None,
+):
     remaining = {kind: list(ids) for kind, ids in residuals.items()}
     for kind, approval, checker in (
         ("kms_keys", "kms_key", check_key),
@@ -89,6 +96,75 @@ def remove_approved_pending(residuals, approved, check_key, check_secret):
         ]
         if not remaining[kind]:
             del remaining[kind]
+
+    if not approved_exceptions:
+        return remaining
+
+    # Build exact set of owned identities from authoritative inventory to ensure
+    # owned resources that leaked can NEVER be exempted as unowned concurrent items.
+    owned_identities: Set[str] = set()
+    if inventory and isinstance(inventory, dict):
+        for k, v in inventory.items():
+            if k in METADATA_INVENTORY_KEYS:
+                continue
+            if isinstance(v, list):
+                for item in v:
+                    if isinstance(item, str) and item:
+                        owned_identities.add(item)
+                        if "/" in item:
+                            owned_identities.add(item.rsplit("/", 1)[-1])
+            elif isinstance(v, str) and v:
+                owned_identities.add(v)
+
+    parsed_exceptions: Set[Tuple[str, str]] = set()
+    exact_exception_ids: Set[str] = set()
+    for exc in approved_exceptions:
+        if isinstance(exc, tuple) and len(exc) == 2:
+            parsed_exceptions.add((str(exc[0]), str(exc[1])))
+        elif isinstance(exc, str):
+            if "=" in exc:
+                k, _, v = exc.partition("=")
+                parsed_exceptions.add((k.strip(), v.strip()))
+            else:
+                exact_exception_ids.add(exc.strip())
+
+    for kind in list(remaining.keys()):
+        filtered = []
+        for x in remaining[kind]:
+            x_str = str(x)
+            # Rule 1: Baseline loss prevention - *_removed represents deleted baseline resources.
+            # Baseline removals must NEVER be filtered by unowned or generic checks.
+            # Only an explicit approval targeting this exact removal allows exemption.
+            if kind.endswith("_removed"):
+                if (kind, x_str) in parsed_exceptions:
+                    continue  # explicitly approved baseline removal
+                filtered.append(x)
+                continue
+
+            # Rule 2: Owned resource integrity - owned resources cannot leak.
+            # If a resource identity belongs to this run's inventory, it cannot be exempted
+            # under concurrent/unowned exception rules.
+            # Exception: Shared Service-Linked Roles (e.g. AWSServiceRoleForRolesAnywhere)
+            # which are retained by concurrent workloads.
+            is_owned = (
+                x_str in owned_identities
+                or (kind == "kms_keys" and x_str.rsplit("/", 1)[-1] in owned_identities)
+            )
+            if is_owned and not x_str.startswith("AWSServiceRole"):
+                filtered.append(x)
+                continue
+
+            # Rule 3: Unowned concurrent resource - requires exact identity match in approved exceptions.
+            if (kind, x_str) in parsed_exceptions or x_str in exact_exception_ids:
+                continue  # verified unowned and explicitly approved exception
+
+            filtered.append(x)
+
+        if filtered:
+            remaining[kind] = filtered
+        else:
+            del remaining[kind]
+
     return remaining
 
 
@@ -236,6 +312,7 @@ class TeardownAbsenceVerifier:
         volume_baseline_json: Optional[bytes] = None,
         account_baseline_json: Optional[bytes] = None,
         final_audit: bool = False,
+        approved_exceptions: Optional[Union[List[str], Set[str]]] = None,
     ):
         self.inventory = inventory
         self.profile = profile
@@ -251,6 +328,7 @@ class TeardownAbsenceVerifier:
         self.volume_baseline_json = volume_baseline_json
         self.account_baseline_json = account_baseline_json
         self.final_audit = final_audit
+        self.approved_exceptions = list(approved_exceptions or [])
         self.caller_role = None
         if manifest_required is not None:
             self.manifest_required = manifest_required
@@ -1123,6 +1201,59 @@ class TeardownAbsenceVerifier:
                 "details": stderr.strip() or stdout.strip(),
             }
 
+        if resource_type == "iam_role" and name == "AWSServiceRoleForRolesAnywhere":
+            # Retention requires a complete native inventory, including owned anchor absence.
+            rc_ta, stdout_ta, stderr_ta = self._runner([
+                "rolesanywhere", "list-trust-anchors", "--output", "json"
+            ])
+            try:
+                if rc_ta != 0:
+                    raise ValueError(f"trust anchor discovery exit code {rc_ta}")
+                data = json.loads(stdout_ta)
+                anchors = data["trustAnchors"]
+                if not isinstance(anchors, list) or data.get("nextToken") or any(
+                    not isinstance(a, dict) or not isinstance(a.get("trustAnchorId"), str)
+                    or not a["trustAnchorId"] for a in anchors
+                ):
+                    raise ValueError("incomplete or malformed trust anchor inventory")
+                observed_anchors = {a["trustAnchorId"] for a in anchors}
+                owned_anchors = set(self.inventory.get("trust_anchors", []))
+                owned_present = sorted(observed_anchors & owned_anchors)
+                external_anchors = sorted(observed_anchors - owned_anchors)
+            except (ValueError, TypeError, KeyError) as exc:
+                return {
+                    "resource": name,
+                    "type": resource_type,
+                    "status": "UNEXPECTED_ERROR",
+                    "reason": f"trust_anchor_discovery_failed: {exc}",
+                    "details": stderr_ta.strip() or stdout_ta.strip(),
+                }
+
+            evidence = {
+                "external_trust_anchors": external_anchors,
+                "owned_trust_anchors_present": owned_present,
+                "owned_trust_anchors_absent": not owned_present,
+            }
+            if external_anchors and not owned_present:
+                return {
+                    "resource": name,
+                    "type": resource_type,
+                    "status": "RETAINED",
+                    "reason": "ADOPTED_BY_CONCURRENT_ACCOUNT_WORKLOAD",
+                    "details": f"Role retained by concurrent workload; surviving external trust anchors: {external_anchors}",
+                    "evidence": evidence,
+                }
+
+            # If no external trust anchors exist, keeping the role is unverified / leak
+            return {
+                "resource": name,
+                "type": resource_type,
+                "status": "STILL_PRESENT",
+                "reason": "RESOURCE_EXISTS_LEAK",
+                "details": "Shared role retention unverified: owned anchors remain or no external anchors exist",
+                "evidence": evidence,
+            }
+
         # Exit code 0 means resource was found and still exists!
         return {
             "resource": name,
@@ -1703,7 +1834,17 @@ class TeardownAbsenceVerifier:
                 account_residuals = compare_account_baseline(account_baseline, account_now)
             except (ValueError, TypeError, KeyError, AttributeError, json.JSONDecodeError) as error:
                 return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "UNVERIFIED", "all_absent": False, "error": "ACCOUNT_DISCOVERY_FAILED", "reason": str(error), "total_checked": 0, "resources": {}}
-            account_residuals = remove_approved_pending(account_residuals, approved_pending, self.check_kms_key_pending_deletion, self.check_secret_pending_deletion)
+            provenance = self.manifest.get("provenance", {}) if isinstance(self.manifest, dict) else {}
+            manifest_exceptions = provenance.get("approved_exceptions", [])
+            all_approved_exceptions = list(self.approved_exceptions) + list(manifest_exceptions)
+            account_residuals = remove_approved_pending(
+                account_residuals,
+                approved_pending,
+                self.check_kms_key_pending_deletion,
+                self.check_secret_pending_deletion,
+                inventory=self.inventory,
+                approved_exceptions=all_approved_exceptions,
+            )
             if account_residuals:
                 error = "ACCOUNT_BASELINE_CHANGED" if any(kind.endswith("_removed") for kind in account_residuals) else "ACCOUNT_RESOURCES_REMAIN"
                 return {"timestamp_utc": _iso_utc_now(), "mode": self.mode, "status": "FAIL", "all_absent": False, "error": error, "residuals": account_residuals, "total_checked": 0, "resources": {}}
@@ -2074,8 +2215,10 @@ class TeardownAbsenceVerifier:
                         "total_checked": len(results),
                         "absent_count": sum(1 for r in results.values() if r["status"] == "ABSENT"),
                         "pending_deletion_count": sum(1 for r in results.values() if r["status"] == "PENDING_DELETION"),
+                        "retained_count": sum(1 for r in results.values() if r["status"] in ("RETAINED", "SHARED")),
                         "still_present_count": sum(1 for r in results.values() if r["status"] == "STILL_PRESENT"),
                         "unexpected_error_count": sum(1 for r in results.values() if r["status"] == "UNEXPECTED_ERROR"),
+                        "retained": [r["resource"] for r in results.values() if r["status"] in ("RETAINED", "SHARED")],
                         "still_present": [r["resource"] for r in results.values() if r["status"] == "STILL_PRESENT"],
                         "unexpected_errors": [r for r in results.values() if r["status"] == "UNEXPECTED_ERROR"],
                         "resources": results,
@@ -2096,8 +2239,10 @@ class TeardownAbsenceVerifier:
                 "total_checked": 0,
                 "absent_count": 0,
                 "pending_deletion_count": 0,
+                "retained_count": 0,
                 "still_present_count": 0,
                 "unexpected_error_count": 0,
+                "retained": [],
                 "still_present": [],
                 "unexpected_errors": [],
                 "resources": {},
@@ -2105,7 +2250,9 @@ class TeardownAbsenceVerifier:
 
         absent_count = sum(1 for r in results.values() if r["status"] == "ABSENT")
         pending_del_count = sum(1 for r in results.values() if r["status"] == "PENDING_DELETION")
+        retained_count = sum(1 for r in results.values() if r["status"] in ("RETAINED", "SHARED"))
         still_present = [r["resource"] for r in results.values() if r["status"] == "STILL_PRESENT"]
+        retained = [r["resource"] for r in results.values() if r["status"] in ("RETAINED", "SHARED")]
         unexpected_errors = [r for r in results.values() if r["status"] == "UNEXPECTED_ERROR"]
         unapproved_pending = [
             r["resource"] for r in results.values()
@@ -2114,7 +2261,7 @@ class TeardownAbsenceVerifier:
         ]
 
         accepted = (len(still_present) == 0 and len(unexpected_errors) == 0 and not unapproved_pending)
-        all_absent = accepted and pending_del_count == 0
+        all_absent = accepted and pending_del_count == 0 and retained_count == 0
 
         summary = {
             "timestamp_utc": _iso_utc_now(),
@@ -2125,8 +2272,10 @@ class TeardownAbsenceVerifier:
             "total_checked": total,
             "absent_count": absent_count,
             "pending_deletion_count": pending_del_count,
+            "retained_count": retained_count,
             "still_present_count": len(still_present),
             "unexpected_error_count": len(unexpected_errors),
+            "retained": retained,
             "still_present": still_present,
             "unexpected_errors": unexpected_errors,
             "unapproved_pending": unapproved_pending,
@@ -2289,7 +2438,8 @@ def main():
         print(f"FAIL: Teardown verification status is UNVERIFIED ({err_detail}).", file=sys.stderr)
         return 1
     if summary.get("status") == "PASS_WITH_PENDING" and summary.get("accepted"):
-        print(f"PASS WITH PENDING: {summary['pending_deletion_count']} approved KMS/secret deletions remain scheduled. Mode: {summary['mode']}.")
+        retained_msg = f", {summary['retained_count']} retained/shared" if summary.get("retained_count") else ""
+        print(f"PASS WITH PENDING: {summary['pending_deletion_count']} approved KMS/secret deletions remain scheduled{retained_msg}. Mode: {summary['mode']}.")
         return 0
     if summary["all_absent"]:
         print(f"PASS: All {summary['total_checked']} resources verified absent ({summary['absent_count']} absent, {summary['pending_deletion_count']} pending deletion). Mode: {summary['mode']}.")

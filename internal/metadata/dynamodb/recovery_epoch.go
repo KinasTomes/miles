@@ -155,21 +155,29 @@ func (m *Store) BeginRecoveryCut(ctx context.Context, r s.RecoveryCutRequest) (s
 				return s.ErrConflict
 			}
 			if e.Worker != r.Worker {
-				old, err := r1Read[s.R1Lease](t, r1LeaseKey(e.Worker.LeaseID))
-				if err != nil {
-					return err
-				}
-				if old.Fence == e.Worker && (old.State != "Released" && old.State != "Closed" || len(old.Pending) != 0) {
-					return s.ErrR1Busy
-				}
-				// A reused slot can only be acquired after old Released, under R1 CAS.
-				if old.Fence != e.Worker && (old.Fence.LeaseID != e.Worker.LeaseID || old.Fence.Epoch <= e.Worker.Epoch) {
-					return s.ErrFenced
-				}
-				e.Worker = r.Worker
-				e.Revision++
-				if err = r1Put(t, recoveryEpochKey(r.HistoryID, r.Epoch), e); err != nil {
-					return err
+				if e.Worker.LeaseID == "" {
+					e.Worker = r.Worker
+					e.Revision++
+					if err = r1Put(t, recoveryEpochKey(r.HistoryID, r.Epoch), e); err != nil {
+						return err
+					}
+				} else {
+					old, err := r1Read[s.R1Lease](t, r1LeaseKey(e.Worker.LeaseID))
+					if err != nil {
+						return err
+					}
+					if old.Fence == e.Worker && (old.State != "Released" && old.State != "Closed" || len(old.Pending) != 0) {
+						return s.ErrR1Busy
+					}
+					// A reused slot can only be acquired after old Released, under R1 CAS.
+					if old.Fence != e.Worker && (old.Fence.LeaseID != e.Worker.LeaseID || old.Fence.Epoch <= e.Worker.Epoch) {
+						return s.ErrFenced
+					}
+					e.Worker = r.Worker
+					e.Revision++
+					if err = r1Put(t, recoveryEpochKey(r.HistoryID, r.Epoch), e); err != nil {
+						return err
+					}
 				}
 			}
 			out = e

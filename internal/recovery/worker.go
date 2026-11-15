@@ -154,6 +154,20 @@ func (w Worker) CloseAndSeal(ctx context.Context, r s.RecoveryCutRequest) (Attac
 	return result, err
 }
 
+// CloseAndSealSupervised is for an operator worker without the Jobs runner's
+// lease supervision. It renews the normal lease and joins before returning.
+func (w Worker) CloseAndSealSupervised(ctx context.Context, r s.RecoveryCutRequest) (out AttachmentReference, err error) {
+	err = w.supervise(ctx, func(ctx context.Context) error {
+		var e error
+		out, e = w.CloseAndSeal(ctx, r)
+		if ctx.Err() != nil {
+			return context.Cause(ctx)
+		}
+		return e
+	})
+	return out, err
+}
+
 // Run is a supervised worker for an already acquired recovery-kind R1 lease.
 // The runtime/job owner supplies that lease and joins Run before releasing it.
 // Dispatch never derives authority from this cadence or from job timestamps.

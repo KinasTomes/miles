@@ -91,8 +91,11 @@ func (m *Store) recoveryFence(t *transaction, f s.WriterFence, register bool) er
 	return nil
 }
 func (m *Store) CheckRecoveryWorker(ctx context.Context, f s.WriterFence) error {
-	if _, shared := m.authority.(*SharedAuthority); !shared && f == (s.WriterFence{}) {
-		return nil
+	if f == (s.WriterFence{}) || f.LeaseID == "" {
+		if _, shared := m.authority.(*SharedAuthority); !shared {
+			return nil
+		}
+		return s.ErrFenced
 	}
 	return m.view(ctx, func(t *transaction) error { return m.recoveryFence(t, f, false) })
 }
@@ -111,7 +114,7 @@ func (m *Store) reclaimRecoveryWorker(ctx context.Context, r s.RecoveryCutReques
 	if err != nil {
 		return err
 	}
-	if e.CloseID != r.CloseID || e.Worker == r.Worker || e.State == "Open" {
+	if e.CloseID != r.CloseID || e.Worker == r.Worker || e.State == "Open" || e.Worker.LeaseID == "" {
 		return nil
 	}
 	old, err := m.GetR1Lease(ctx, e.Worker.LeaseID)
@@ -125,6 +128,13 @@ func (m *Store) reclaimRecoveryWorker(ctx context.Context, r s.RecoveryCutReques
 		return s.ErrFenced
 	}
 	if old.State == "Active" {
+		bounds, err := m.r1Bounds(ctx)
+		if err != nil {
+			return err
+		}
+		if bounds.Upper.Before(old.ExpiresAt) && bounds.Upper.Before(old.Deadline) {
+			return s.ErrR1Busy
+		}
 		if err = m.ReclaimR1(ctx, old.Fence, 5*time.Second); err != nil {
 			return err
 		}

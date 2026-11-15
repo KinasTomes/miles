@@ -290,7 +290,7 @@
       ],
       "Resource": [
         "arn:aws:s3:::miles-dev-data-${ACCOUNT_ID}-${REGION}/*",
-        "arn:aws:s3:::miles-dev-pilot-direct-${ACCOUNT_ID}-${REGION}/*"
+        "arn:aws:s3:::${DIRECT_BUCKET_NAME}/*"
       ],
       "Condition": {
         "DateLessThan": {
@@ -306,7 +306,7 @@
       ],
       "Resource": [
         "arn:aws:s3:::miles-dev-data-${ACCOUNT_ID}-${REGION}",
-        "arn:aws:s3:::miles-dev-pilot-direct-${ACCOUNT_ID}-${REGION}"
+        "arn:aws:s3:::${DIRECT_BUCKET_NAME}"
       ],
       "Condition": {
         "DateLessThan": {
@@ -429,6 +429,65 @@
         "arn:aws:iam::${ACCOUNT_ID}:role/miles/acceptance/${AUDIT_ROLE_NAME}"
       ],
       "Condition": {
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "FixedCloudTelemetryDocument",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:SendCommand",
+        "ssm:DescribeDocument",
+        "ssm:GetDocument"
+      ],
+      "Resource": [
+        "arn:aws:ssm:${REGION}:${ACCOUNT_ID}:document/miles-dev-benchmark-telemetry"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "TaggedCloudTelemetryTargets",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:SendCommand"
+      ],
+      "Resource": [
+        "arn:aws:ec2:${REGION}:${ACCOUNT_ID}:instance/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}",
+          "ssm:resourceTag/Project": "Miles",
+          "ssm:resourceTag/Environment": "dev",
+          "ssm:resourceTag/Installation": "miles-dev"
+        },
+        "DateLessThan": {
+          "aws:CurrentTime": "${IAM_EXPIRY}"
+        }
+      }
+    },
+    {
+      "Sid": "ReadCloudTelemetryInvocation",
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetCommandInvocation"
+      ],
+      "Resource": [
+        "*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "${REGION}"
+        },
         "DateLessThan": {
           "aws:CurrentTime": "${IAM_EXPIRY}"
         }

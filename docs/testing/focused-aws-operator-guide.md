@@ -6,6 +6,13 @@ IAM review/rollback, dựng AWS, bootstrap, benchmark, telemetry, snapshot và
 cleanup. Những gì anh cung cấp là phiên AWS đăng nhập và quyết định duyệt gói
 quyền/chi phí mới; không phải tự viết script hay policy.
 
+Mọi lệnh mutation bên dưới cần approval receipt riêng. Chỉ chạy `kit approve`
+sau khi chủ account đã đọc/duyệt các artifact của action; receipt không tự apply,
+hết hạn sau 45 phút và vô hiệu nếu input thay đổi. Không cần process controller.
+Benchmark toàn ma trận dùng [runbook theo từng bước](../planning/full-aws-benchmark-execution-plan.md).
+Tiếp tục sau Warm pilot: giao [Plan A](../planning/aws-benchmark-plan-a.md)
+trước, review report rồi mới giao [Plan B](../planning/aws-benchmark-plan-b.md).
+
 ## 1. Chạy ở đâu và cần gì?
 
 **Chạy các lệnh bên dưới trên máy điều phối, từ gốc worktree chứa bản sửa.**
@@ -47,7 +54,11 @@ account đó. Lấy code trả về và dán vào prompt CLI, không vào chat/G
 
 Với IAM: browser session riêng đăng nhập root/MFA, dùng URL của phiên
 `miles-iam-bootstrap`. Phiên này chỉ IAM/audit; workload không chạy bằng root.
-Nếu nhờ agent tạo phiên, agent gửi link và chờ code như quy trình trước.
+Nếu nhờ agent tạo phiên qua SSH, agent phải in URL đầy đủ để copy sang browser
+cá nhân. Root/IAM dùng file `$HOME/.local/state/miles/iam-login-code.txt`;
+deploy dùng `$HOME/.local/state/miles/cli-login-code.txt`, đều 0600. Không gửi
+mã qua chat/log/Git; tắt echo khi nhập vào CLI, xóa mã đã dùng và kiểm lại STS
+identity. Không ghi đè profile root bằng danh tính deploy khi chọn nhầm phiên.
 
 ```bash
 umask 077
@@ -101,8 +112,9 @@ khác. Bootstrap/state, role ASG có sẵn và key/secret pending của lượt 
 preserve. Không dùng namespace `miles-dev` cho hai lượt song song cùng account/Region.
 
 Plan ghi saved plan, JSON và baseline Autopilot. IAM review render expiry mới,
-đọc default policy versions để rollback, validate/simulate native scopes và lấy
-regional prices. **Chưa attach grant, apply hoặc tạo VM.**
+đọc default policy versions để rollback và validate/simulate native scopes.
+Cost review ghi operator envelope, không cần Pricing API hoặc dự toán chi tiết.
+**Chưa attach grant, apply hoặc tạo VM.**
 
 Đọc trước khi chốt:
 
@@ -115,8 +127,10 @@ cat "$RUN/foundation-plan.json"
 Review cả plan JSON, `iam/*.json`, validation/simulation và baseline Autopilot
 trong `plans/`. Gói mô tả tối đa5 VM/root disposable, hai Cloud + Edge + client,
 private ALB/endpoints, shared S3/20tables, cap Chunks512/Outbox và bảng khác128,
-write128. Mặc định tối đa4giờ và envelope10USD trước thuế gồm cleanup, **không phải
-hard cap billing**. Lượt cũ không cấp phép cho lượt mới.
+write128. Config mặc định4giờ, envelope20USD gồm cleanup; có thể chọn window
+tối đa12giờ trước init, giữ90phút cleanup. Đây **không phải hard cap billing**.
+Plan A/B dùng tổng envelope đã chốt, không tự reset20USD cho mỗi plan.
+Lượt cũ không cấp phép cho lượt mới.
 
 Chỉ sau khi chủ tài khoản duyệt gói cụ thể mới chạy các mục mutate tiếp theo.
 `--confirm-run` buộc lệnh bind đúng lượt; nó không thay bước đọc và duyệt gói.
@@ -124,16 +138,23 @@ Chỉ sau khi chủ tài khoản duyệt gói cụ thể mới chạy các mục
 ## 5. Dựng foundation, Edge/client, rồi Cloud
 
 ```bash
+kit approve --action iam-activate --confirm-run "$RUN_ID"
 kit iam-activate --confirm-run "$RUN_ID"
+kit approve --action apply:foundation --confirm-run "$RUN_ID"
 kit apply foundation --confirm-run "$RUN_ID"
 kit plan hosts
 # Đọc hosts-plan.json và saved plan JSON trước apply.
+kit approve --action apply:hosts --confirm-run "$RUN_ID"
 kit apply hosts --confirm-run "$RUN_ID"
+kit approve --action install --confirm-run "$RUN_ID"
 kit install --confirm-run "$RUN_ID"
+kit approve --action material --confirm-run "$RUN_ID"
 kit material --confirm-run "$RUN_ID"
+kit approve --action bootstrap --confirm-run "$RUN_ID"
 kit bootstrap --confirm-run "$RUN_ID"
 kit plan active
 # Đọc active-plan.json và saved plan JSON trước apply.
+kit approve --action apply:active --confirm-run "$RUN_ID"
 kit apply active --confirm-run "$RUN_ID"
 ```
 
@@ -155,8 +176,10 @@ private và đọc lại caps native. Proxy byte/request-ID log bật sẵn trư
 ### A. GET correlation: C1, C4
 
 ```bash
+kit approve --action trial --confirm-run "$RUN_ID"
 kit trial --concurrency 1 --confirm-run "$RUN_ID"
 # Chỉ chạy C4 nếu C1 đạt, còn đủ deadline và đã xem artifact.
+kit approve --action trial --confirm-run "$RUN_ID"
 kit trial --concurrency 4 --confirm-run "$RUN_ID"
 ```
 
@@ -177,6 +200,7 @@ có epoch cũ, có thể đợi cut tự nhiên rồi tạo thêm current events
 
 ```bash
 kit wait-cut
+kit approve --action trial --confirm-run "$RUN_ID"
 kit trial --concurrency 1 --confirm-run "$RUN_ID"
 kit freeze
 kit snapshot
@@ -193,12 +217,14 @@ trước (1.242 historical /405 current events), không tuyên bố cùng điề
 **Baseline, không gây tải đọc:**
 
 ```bash
+kit approve --action shutdown --confirm-run "$RUN_ID"
 kit shutdown --confirm-run "$RUN_ID"
 ```
 
 **Hoặc bài cần ưu tiên, native throttling:**
 
 ```bash
+kit approve --action shutdown --confirm-run "$RUN_ID"
 kit shutdown --native-throttle --confirm-run "$RUN_ID"
 ```
 
@@ -217,9 +243,12 @@ Muốn chạy baseline rồi pressure trong **cùng hạ tầng**, giữ proof �
 có chủ đích, tạo thêm current events và snapshot mới:
 
 ```bash
+kit approve --action restart --confirm-run "$RUN_ID"
 kit restart --confirm-run "$RUN_ID"
+kit approve --action trial --confirm-run "$RUN_ID"
 kit trial --concurrency 1 --confirm-run "$RUN_ID"
 kit snapshot
+kit approve --action shutdown --confirm-run "$RUN_ID"
 kit shutdown --native-throttle --confirm-run "$RUN_ID"
 ```
 
@@ -246,11 +275,15 @@ IAM/deploy còn hợp lệ cho cả cleanup và audit, reauth bằng `kit login`
 `kit login --iam` nếu lệnh thật báo hết phiên.
 
 ```bash
+kit approve --action cleanup-grant --confirm-run "$RUN_ID"
 kit cleanup-grant --confirm-run "$RUN_ID"
+kit approve --action unprotect --confirm-run "$RUN_ID"
 kit unprotect --confirm-run "$RUN_ID"
 kit cleanup-plan
 # Đọc destroy-plan.json/destroy-reviewed.json: chỉ delete đúng managed graph.
+kit approve --action cleanup --confirm-run "$RUN_ID"
 kit cleanup --confirm-run "$RUN_ID"
+kit approve --action finish --confirm-run "$RUN_ID"
 kit finish --confirm-run "$RUN_ID"
 kit status
 kit logout

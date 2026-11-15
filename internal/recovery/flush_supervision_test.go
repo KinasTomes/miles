@@ -110,3 +110,45 @@ func TestFlushSupervisedRenewsAndJoins(t *testing.T) {
 		})
 	}
 }
+
+type blockedCut struct{ blockedFlush }
+
+func (m blockedCut) BeginRecoveryCut(ctx context.Context, _ s.RecoveryCutRequest) (s.RecoveryEpoch, error) {
+	close(m.started)
+	<-ctx.Done()
+	return s.RecoveryEpoch{}, ctx.Err()
+}
+
+func TestCloseAndSealSupervisedStopsWhenNativeLeaseIsFenced(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	catalog := Catalog{Version: 1, History: strings.Repeat("1", 32), Incarnation: strings.Repeat("2", 32), Genesis: ref([]byte("{}"))}
+	store := blockedCut{blockedFlush{catalog: catalog, started: make(chan struct{}), renewed: make(chan struct{}, 1), failure: s.ErrFenced}}
+	timer := flushClock{Clock: clock.NewReal(), sleep: make(chan time.Duration, 1), wake: make(chan struct{}, 1)}
+	fence := s.WriterFence{ServiceIncarnation: catalog.Incarnation, LeaseID: "operator-cut", Epoch: 1}
+	worker := Worker{Store: store, Payloads: memoryInputs{}, Objects: &memoryObjects{}, Catalog: catalog, Clock: timer, Fence: fence}
+	done := make(chan error, 1)
+	go func() {
+		_, err := worker.CloseAndSealSupervised(ctx, s.RecoveryCutRequest{HistoryID: catalog.History, CloseID: strings.Repeat("3", 32), Worker: fence})
+		done <- err
+	}()
+	select {
+	case <-store.started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case <-timer.sleep:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	timer.wake <- struct{}{}
+	select {
+	case err := <-done:
+		if !errors.Is(err, s.ErrFenced) {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
