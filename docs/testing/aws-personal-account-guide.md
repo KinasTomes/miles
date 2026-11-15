@@ -43,6 +43,7 @@ cp infra/terraform/cloud/environments/dev/installation.example.json \
 | `operator.state_bucket`, `state_key` | Với `existing`, tên bucket/key đã cấp; nếu bỏ trống dùng `<installation>-tfstate-<account>-<region>` và `cloud/<environment>/terraform.tfstate`. `new` không nhận override bucket |
 | `operator.utc_reference` | Nguồn chrony IPv4 trên máy operator |
 | `deployment.profile` | `cloud`, `edge` hoặc `both`; chọn trước `prepare`. Không cần sửa các serving flags thủ công; bộ dựng sinh foundation dừng và active theo profile. Single-profile không nhận `enable_acceptance_nodes=true` |
+| `enable_dashboard` | Mặc định `false`; bật trước `prepare` để dựng CloudWatch dashboard theo profile. Sample Cloud-only bật sẵn; quyền và cách mở xem [runbook](../runbooks/cloudwatch-dashboard.md) |
 | `deployment.max_cost_usd`, `max_active_minutes` | Envelope và thời hạn của lượt đã được chủ account duyệt |
 
 `operator.terraform_profile` dùng khi render và chạy Terraform trực tiếp. Bộ dựng xuất credential tạm vào môi trường của Terraform cho cả backend/provider. `deploy_role_arn` ở cấp installation giữ `null` vì CLI đã đăng nhập role.

@@ -149,6 +149,13 @@ bằng chứng riêng từ lượt AWS được duyệt.
 
 ## Audit và cleanup
 
+`enable_dashboard=true` sinh thêm `iam/deploy-dashboard.json` để quản lý đúng
+dashboard `<installation>-<region>-runtime`. ARN dashboard không có Region;
+tên đã gắn Region. Quyền đọc classic metrics là regional account-wide, không
+phải giới hạn theo namespace/installation. Chế độ `existing` chỉ xuất đề xuất
+này để chủ account duyệt/cấp, không sửa IAM. Gateway không nhận quyền quản lý
+dashboard. Xem [dashboard runbook](../../../../../docs/runbooks/cloudwatch-dashboard.md).
+
 `operator.audit_expires_at` là UTC ISO 8601 dạng `2026-12-01T10:00:00Z`. Khi có giá trị
 ở tương lai, renderer sinh thêm `iam/teardown-audit.json` với hạn dùng tương ứng.
 Grant này chỉ đọc inventory của installation. Gắn/gỡ nó trong cửa sổ audit đã duyệt,

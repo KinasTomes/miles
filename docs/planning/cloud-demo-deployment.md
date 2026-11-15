@@ -64,6 +64,7 @@ là fixture, phải thay theo quyền đã được cấp:
 | Operator | `login_profile`, `terraform_profile`, `utc_reference` khớp nguồn chrony IPv4; `admin_profile` không dùng khi `existing` |
 | Network | `client_cidrs` chứa IP egress thực của máy chạy curl/probe; giữ `egress_mode="interface"`, ALB public cho ví dụ này |
 | Vòng đời | `max_cost_usd` và `max_active_minutes` theo lượt được giao; đây không phải hard billing cap hoặc timer tự tắt AWS |
+| Giao diện theo dõi | Giữ `enable_dashboard=true` trong sample để dựng CloudWatch dashboard; không tạo máy chủ giao diện riêng |
 
 Nếu **chưa có IAM và state backend**, chọn `bootstrap_mode="new"` ngay từ đầu
 và làm bootstrap operator/state theo [installation guide §2–5](../testing/aws-personal-account-guide.md#2-đăng-nhập-quản-trị-iam-bằng-link-và-code).
@@ -143,6 +144,16 @@ user/bucket synthetic, lưu credential `0600` tại `test-credential.json` và b
 chứng tại `readiness-evidence.json`, `signed-data-evidence.json`. Cloud-only
 chỉ ghi evidence `cloud-to-cloud`; một probe qua ALB không chứng minh data
 request đã chạy trên cả hai node hoặc profile Edge đã được test.
+
+Sample cũng bật **CloudWatch dashboard**. Mở URL trong
+`runtime-inventory.json → dashboard.url` bằng trình duyệt đăng nhập đúng AWS
+account/role để xem biểu đồ cache hit/miss, traffic, lỗi, DynamoDB và recovery.
+Exporter gửi theo phút; upload/download rồi chờ vài chu kỳ. Nếu IAM/backend
+được cấp sẵn, chủ account cần review/cấp bổ sung quyền từ
+`rendered/iam/deploy-dashboard.json` trước apply. Xem
+[dashboard runbook](../runbooks/cloudwatch-dashboard.md) để mở URL, đọc đúng
+ý nghĩa dữ liệu và xử lý biểu đồ trống; dashboard chưa có dữ liệu không được
+coi là trạng thái healthy.
 
 Có thể sử dụng chính user synthetic này cho demo nhỏ. Tạo curl config private
 để không đưa secret vào command line, dùng hostname đúng certificate và nối

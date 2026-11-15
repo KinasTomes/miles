@@ -1,0 +1,148 @@
+# Theo dõi Miles bằng CloudWatch dashboard
+
+Dashboard là giao diện có sẵn trong **AWS CloudWatch Console**, không phải web
+app Miles và không cần EC2/Grafana riêng. Runtime đang có exporter
+`Miles/DSG`; Terraform chỉ thêm dashboard đọc các series đó. Cổng Admin và
+`/metrics` của gateway vẫn private.
+
+## Bật khi dựng installation
+
+Trong JSON private, chọn profile cần chạy và bật dashboard **trước `prepare`**:
+
+```json
+{
+  "deployment": {
+    "profile": "cloud",
+    "max_cost_usd": 5,
+    "max_active_minutes": 150
+  },
+  "enable_dashboard": true
+}
+```
+
+Đây chỉ là đoạn cấu hình bổ sung, không phải installation JSON đầy đủ hay
+quyền tự tạo tài nguyên. Mẫu [Cloud-only](../../infra/terraform/cloud/environments/dev/cloud-demo.example.json)
+đã bật cờ này; làm theo [hướng dẫn triển khai](../planning/cloud-demo-deployment.md)
+để điền IAM/backend/AMI/network và review saved plans.
+
+- `cloud`: tám biểu đồ cho Cloud; `edge`: tám biểu đồ cho Edge; `both`: hai
+  nhóm riêng. Bộ dựng sinh `monitored_profiles` từ `deployment.profile`.
+- Terraform trực tiếp cần đặt `monitored_profiles` đúng các profile thực sự chạy.
+- Dashboard mặc định tắt để giữ tương thích với các installation cũ; alarms là
+  tùy chọn riêng, không tự bật theo dashboard.
+- Một installation đã `prepare` giữ config hash. Muốn thêm dashboard vào lượt
+  đang tồn tại phải review migration riêng, không sửa hash hay state để vượt gate.
+
+Tên dashboard là `<installation_name>-<region>-runtime`. Dashboard AWS là
+resource toàn account; tên chứa Region để tránh trùng khi nhìn từ các Region
+khác. Runtime metrics vẫn được đọc từ đúng Region của installation.
+
+## Quyền AWS
+
+Với bootstrap `new`, renderer thêm quyền dashboard khi `enable_dashboard=true`;
+review/apply IAM plan như luồng cũ. Với `existing`, renderer chỉ tạo đề xuất
+private `rendered/iam/deploy-dashboard.json` để chủ account duyệt/cấp, không tự
+sửa IAM. Không thay toàn bộ policy role bằng file bổ sung này.
+
+Quyền Put/Get/Delete dashboard chỉ áp dụng đúng ARN
+`arn:aws:cloudwatch::<account_id>:dashboard/<installation_name>-<region>-runtime`.
+Không cấp quyền sửa dashboard của installation khác, không thêm quyền public
+sharing, không đưa Admin token Miles vào Console.
+
+Quyền đọc metrics trong đề xuất giới hạn theo Region nhưng cho phép đọc các
+classic metrics của account trong Region đó; bộ lọc installation của biểu đồ
+không phải một cơ chế IAM cô lập metrics. Người mở Console phải có quyền xem
+dashboard và đọc metrics phù hợp. Runtime tiếp tục dùng quyền
+`cloudwatch:PutMetricData` với namespace `Miles/DSG` trong role/boundary hiện có;
+không cần quyền quản lý dashboard trên gateway.
+
+Không tự nhận một dashboard đã tồn tại cùng tên ngoài state. Trước lần apply
+đầu, đối chiếu ownership/name với chủ account vì PutDashboard có thể thay toàn
+bộ dashboard cùng tên. Mọi thay đổi nội dung thực hiện trong source Terraform,
+không sửa bằng tay trên Console rồi bỏ qua drift.
+
+## Mở giao diện và dùng khi demo
+
+Sau `apply active` và `deploy verify`, xem URL từ private runtime inventory:
+
+```bash
+python3 - <<'PY'
+import json, os
+from pathlib import Path
+p = Path(os.environ['MILES_PRIVATE']) / 'runtime-inventory.json'
+dashboard = json.loads(p.read_text()).get('dashboard')
+if not dashboard:
+    raise SystemExit('Dashboard disabled or installation paused; inspect the applied plan.')
+print(dashboard['url'])
+PY
+```
+
+Copy URL đầy đủ từ terminal SSH sang trình duyệt đã đăng nhập đúng account/role.
+Cũng có thể vào CloudWatch → Dashboards → chọn đúng tên. Dùng dữ liệu synthetic
+upload/download theo Cloud guide rồi refresh biểu đồ. Dashboard mở mặc định
+một giờ gần nhất, mỗi điểm có period 60 giây; exporter gửi một batch mỗi phút.
+Chờ vài chu kỳ và kiểm ingestion trước khi dùng giao diện làm bằng chứng demo.
+
+| Biểu đồ | Cách đọc |
+|---|---|
+| Runtime health | Minimum readiness được báo cáo, trạng thái draining và maximum active requests trên một node |
+| Warm cache | Số cache hits/misses trong phút và tỷ lệ `hits/(hits+misses)` khi có traffic được báo cáo; đếm cache lookup, không phải tỷ lệ request HTTP |
+| Body traffic | Bytes/phút client↔gateway và gateway↔S3; không bao gồm mọi protocol/header overhead |
+| Warm reads | Requests, aborted và integrity failures/phút; không thay cho toàn bộ P0/P1 coverage |
+| Recovery/R1/telemetry | Maximum cut age, thời gian gate đóng và observation age, theo giây |
+| DynamoDB | Calls, transactions, throttles và retries/phút từ runtime |
+| Revival/orphans | Stored bytes được báo cáo trong phút; không phải current retained bytes hoặc phí AWS |
+| Operational failures | Job dispatch, dependency probe và runtime observation failures/phút |
+
+Các node cùng profile hiện xuất vào cùng series dimension `profile` và
+`installation` (table prefix có dấu `-` cuối). Vì vậy:
+
+- Counter deltas dùng `Sum`; gauges dùng `Minimum`/`Maximum` của những node đã
+  báo cáo. Không cộng gauge thành tổng cluster hoặc hứa có dữ liệu từng node.
+- Readiness bằng 1 chỉ cho biết các sample nhận được báo ready; node không báo
+  không tự trở thành sample 0. Kiểm đủ node bằng `dsgctl node ls`, SSM và
+  ALB targets, không dựa một đường biểu đồ để kết luận cả cụm khỏe.
+- Khoảng trống có thể là chưa phát sinh event, dừng node hoặc export lỗi. Không
+  fill bằng 0, không coi missing data là healthy. Cache ratio không có điểm nếu
+  không có lookup được báo cáo; counter deltas/ACK có thể thiếu hoặc lặp nên
+  không phải ledger chính xác cho nghiệm thu hay hóa đơn.
+- Gauge recovery cũ có thể bị runtime bỏ khỏi export khi observation stale;
+  kiểm observation age và thời điểm sample, không dùng sample cũ làm trạng thái hiện tại.
+
+Dung lượng logical/physical, dedup ratio, cache capacity và danh sách job/pack
+chi tiết vẫn dùng `dsgctl stats`, `cache stats`, `job ls`, `pack ls` qua Admin
+access đã xác thực. Dashboard không tự quét S3/DynamoDB để tính số liệu mới.
+
+## Khi biểu đồ trống
+
+1. Kiểm account/Region, time range, dashboard đúng installation/profile và runtime
+   đã chạy đủ thời gian xuất metrics. Không lấy metrics lịch sử của lượt cũ làm
+   trạng thái lượt mới.
+2. Kiểm quyền Console GetDashboard/GetMetricData và runtime PutMetricData;
+   xác nhận boundary, KMS/STS/network endpoints theo cấu hình hiện có.
+3. Dùng SSM/SSH đã duyệt kiểm service Miles, private readiness và `/metrics` trên
+   cổng health 9100 của từng node. Nếu `/metrics` có dữ liệu mà Console không có,
+   kiểm exporter/IAM/đường tới CloudWatch; không public cổng để chữa lỗi.
+4. Kiểm đúng dimension: `installation=<table-prefix>` và `profile=cloud|edge`;
+   riêng `miles_ready` có thêm `mode=runtime`. Chưa có kết quả thì ghi thiếu
+   telemetry, không sửa biểu đồ để giả số 0/PASS.
+
+## Pause và teardown
+
+Pause xóa dashboard cùng serving resources, giữ `enable_dashboard=true` trong
+session configuration để resume tạo lại đúng tên. Gate pause/resume chỉ nhận
+create/delete đúng dashboard đã chọn; update, rename hoặc graph khác cần review
+riêng. Full teardown vẫn xóa dashboard nếu còn trong state; `deploy closeout`
+kiểm native GetDashboard trả `ResourceNotFound`. AccessDenied hoặc lỗi API
+không được coi là bằng chứng đã xóa.
+
+Việc xóa dashboard không xóa lịch sử metric hoặc tắt chi phí của storage/key
+được giữ. Dashboard và custom metrics có thể tính phí theo
+[CloudWatch pricing](https://aws.amazon.com/cloudwatch/pricing/); không coi có
+Free Tier/credits là mọi thành phần đều miễn phí. Chưa tạo tài nguyên hoặc
+xác minh ingestion trên AWS cho phần hướng dẫn mới này.
+
+Nguồn: [dashboard JSON syntax](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-Dashboard-Body-Structure.html),
+[PutDashboard](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutDashboard.html),
+[provider dashboard v6.21.0](https://github.com/hashicorp/terraform-provider-aws/blob/v6.21.0/internal/service/cloudwatch/dashboard.go)
+và [CloudWatch authorization reference](https://docs.aws.amazon.com/service-authorization/latest/reference/list_amazoncloudwatch.html).
