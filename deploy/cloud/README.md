@@ -7,9 +7,9 @@ phải copy ra thư mục riêng và thay mọi placeholder trước plan.
 
 Muốn dựng mới từ một installation JSON, dùng
 [installation guide](../../docs/testing/aws-personal-account-guide.md). Bộ dựng
-đó bật cả Cloud và Edge. Đường fleet bên dưới có thể chạy chỉ Cloud bằng
-`enable_edge=false`; xem [Cloud demo](../../docs/planning/cloud-demo-deployment.md)
-để phân biệt cấu hình Terraform với hành vi của bộ dựng installation.
+đó hỗ trợ `deployment.profile="cloud"` để chỉ dựng Cloud; xem
+[hướng dẫn Cloud-only](../../docs/planning/cloud-demo-deployment.md). Đường
+Terraform trực tiếp bên dưới vẫn dùng `enable_edge=false`.
 
 Hai private subnet khác AZ, desired/min/max=2, ELB health `/readyz:9100`, HTTPS ACM
 443 → S3 8080. Tái dùng SG hiện có: 8080/9100 chỉ từ ALB (metrics thêm jobs/admin),
@@ -17,7 +17,10 @@ Hai private subnet khác AZ, desired/min/max=2, ELB health `/readyz:9100`, HTTPS
 target deregistration mặc định 1800s. ALB giữ Host và không có URL/Host rewrite rule.
 Launch template dùng AL2023 Amazon pin AMI/kiến trúc, IMDSv2, private ENI, encrypted
 gp3 20 GiB **disposable**. Không mount EBS data của single-node dev. Metadata phải
-shared DDB, không dùng Badger node-local thay thế. ASG dùng custom service-linked
+shared DDB, không dùng Badger node-local thay thế. Cache hiện tại là RAM LRU 64 MiB và
+disk cache tối đa 1 GiB tại `/var/lib/miles/cache` trên **từng EC2 Gateway**;
+không cần máy Edge hay máy cache riêng. Mất node làm cache lạnh lại; dữ liệu
+bền vững vẫn ở S3/DynamoDB. ASG dùng custom service-linked
 role `AWSServiceRoleForAutoScaling_<installation_name>`; KMS grant chỉ role đó, điều kiện
 `kms:GrantIsForAWSResource=true`.
 

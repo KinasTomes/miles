@@ -15,15 +15,27 @@ unready/fail startup; không sửa readiness để vượt health check.
 
 | Nhu cầu | Điểm bắt đầu |
 |---|---|
-| Một installation dev/test mới, Cloud và Edge cùng trên AWS | [Hướng dẫn installation từng bước](../docs/testing/aws-personal-account-guide.md) |
-| Chỉ demo Cloud, dùng S3/DynamoDB thật | [Chuẩn bị Cloud demo](../docs/planning/cloud-demo-deployment.md); chưa áp dụng cấu hình mẫu trực tiếp |
+| Một installation dev/test, chọn Cloud, Edge hoặc cả hai trên AWS | [Hướng dẫn installation từng bước](../docs/testing/aws-personal-account-guide.md) |
+| Chỉ demo Cloud, dùng S3/DynamoDB thật | [Hướng dẫn Cloud-only](../docs/planning/cloud-demo-deployment.md) |
 | Cloud fleet/ASG đã có shared backend | [Cloud fleet](cloud/README.md) |
 | Edge trên VM hoặc máy local có backend AWS | [Edge deployment](edge/README.md) |
 | Fixture phát triển không dùng AWS | [Local runtime](../docs/development/local-runtime.md) |
 
 ## Trình tự installation trên AWS
 
-Đường này triển khai **hai Cloud node và một Edge EC2**, không phải chỉ Cloud.
+Chọn `deployment.profile` trong JSON private trước `prepare`:
+
+| Giá trị | Serving compute được dựng | Cache nằm ở đâu |
+|---|---|---|
+| `cloud` | ALB + hai EC2 Miles Gateway trong ASG; không có Edge EC2 | RAM và disk của từng EC2 Gateway |
+| `edge` | Một Edge EC2 chạy Miles + Nginx; không có Cloud fleet/ALB | RAM và disk của Edge EC2 |
+| `both` | Cả hai nhóm trên | Mỗi node có cache riêng |
+
+Bỏ trường này giữ hành vi cũ (`both`). Máy operator chỉ giữ source, công cụ và
+artifacts private; không chạy gateway/cache. Edge trên máy local hoặc VM có sẵn
+dùng runbook Edge riêng. Không đổi profile giữa một lượt triển khai đã chuẩn bị;
+dùng installation mới hoặc migration được review.
+
 CLI hiện tại là `infra/terraform/cloud/scripts/deploy-installation.py`; từng
 subcommand độc lập, không tự chạy toàn bộ lifecycle. Lấy command wrapper, file
 JSON private, prerequisites và login từ [installation guide](../docs/testing/aws-personal-account-guide.md).
@@ -36,7 +48,7 @@ JSON private, prerequisites và login từ [installation guide](../docs/testing/
 | Shared storage và network | `plan foundation`, `apply foundation` | Saved plan đúng installation; backend rỗng hoặc đúng lineage của lượt đang resume |
 | Provision và publish | `provision` | Runtime dừng; bootstrap lần đầu; giữ token/intent nếu kết quả chưa xác định; pin release SHA và S3 VersionId |
 | Bật runtime | `plan active`, `apply active` | IAM/AMI/certificate/network và paid window đã kiểm; plan chỉ chứa resource được phép |
-| Smoke | `verify` | Hai Cloud target healthy; Cloud/Edge PUT→GET SHA-256 khớp qua TLS thật |
+| Smoke | `verify` | Đủ node của profile đã chọn; ALB targets healthy nếu có Cloud; PUT→GET SHA-256 khớp qua TLS thật |
 | Dừng/thu hồi | `plan paused` hoặc quy trình full teardown | Quiesce/drain đúng invocation; giữ state/evidence; native inventory xác nhận phần đã xóa hoặc còn giữ |
 
 Mỗi `apply` cần `--plan-sha256` của saved plan tương ứng vừa review; không dùng
