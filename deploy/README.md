@@ -15,8 +15,8 @@ unready/fail startup; không sửa readiness để vượt health check.
 
 | Nhu cầu | Điểm bắt đầu |
 |---|---|
+| Tổ chức tự dựng hệ thống theo mô hình **Cloud / Local / Hybrid** | [Hướng dẫn tự dựng cho tổ chức](../docs/organization-deployment-guide.md) |
 | Một installation dev/test, chọn Cloud, Edge hoặc cả hai trên AWS | [Hướng dẫn installation từng bước](../docs/testing/aws-personal-account-guide.md) |
-| Chỉ demo Cloud, dùng S3/DynamoDB thật | [Hướng dẫn Cloud-only](../docs/planning/cloud-demo-deployment.md) |
 | Cloud fleet/ASG đã có shared backend | [Cloud fleet](cloud/README.md) |
 | Edge trên VM hoặc máy local có backend AWS | [Edge deployment](edge/README.md) |
 | Fixture phát triển không dùng AWS | [Local runtime](../docs/development/local-runtime.md) |

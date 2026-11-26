@@ -108,6 +108,7 @@ Chủ bucket cấp/thu hồi grant bằng `grant set`/`grant rm`, dùng `bucket_
 
 ## Triển khai và vận hành
 
+- **[Hướng dẫn tự dựng cho tổ chức (Cloud / Local / Hybrid)](docs/organization-deployment-guide.md)**: chọn mô hình triển khai, dựng Local offline, dựng Cloud AWS, hoặc nối Edge on-prem với AWS backend và onboarding người dùng.
 - [Terraform Cloud và cấu hình installation](infra/terraform/cloud/README.md): hạ tầng, namespace riêng, IAM/bootstrap và teardown.
 - [Chạy thuần Cloud](docs/planning/cloud-demo-deployment.md): một JSON chọn profile, dựng ALB + EC2 Gateway có cache và sử dụng S3 API.
 - [CloudWatch dashboard](docs/runbooks/cloudwatch-dashboard.md): xem cache, traffic, lỗi và recovery trên AWS Console, không cần thêm máy chủ.
